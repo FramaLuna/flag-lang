@@ -1,0 +1,656 @@
+@trust
+use fs
+use os
+
+ERR = "\e[1;31merror:\e[0m "
+NOTE = "\e[1;36mnote:\e[0m "
+WARN = "\e[1;33mwarning:\e[0m "
+
+type error Fail
+
+type enum TokenKind:
+    Name, Builtin, Generic, Int, Float, Str, Symbol, Line, End
+
+type Token:
+    kind: TokenKind
+    text: &strview
+    at: usize
+    line: usize
+
+type File:
+    path: &str
+    code: &str
+    start: usize
+    module: &strview
+
+type Trust:
+    from: usize
+    to: usize
+    check: bool
+
+type Use:
+    file: usize
+    module: &strview
+    alias: &strview
+    at: usize
+
+type enum NodeKind:
+    Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Assign
+    TName, TUnary, TUnion
+    Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
+    Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Items, Pairs
+
+type Node:
+    kind: NodeKind
+    tok: usize
+    size: usize
+    module: &strview
+
+type Sym:
+    name: &strview
+    node: usize
+    next: usize
+    module: &strview
+    priv: bool
+    error: bool
+    packed: bool
+    export: bool
+
+type enum TypeKind:
+    Void, Bool, Int, Uint, Float, Ptr, Bytes, Struct, Fat, Union, Untagged, Array
+
+type Type:
+    kind: TypeKind
+    name: &strview
+    size: usize
+    align: usize
+    elem: usize
+    first: usize
+    count: usize
+    args: usize
+    decl: usize
+    error: bool
+    packed: bool
+
+type Item:
+    name: &strview
+    type: usize
+    n: usize
+    shared: bool
+
+type Inst:
+    node: usize
+    name: &strview
+    binds: usize
+    count: usize
+    ret: usize
+    at: usize
+    export: bool
+
+type enum ArgKind:
+    Empty, Temp, Const, Single, Double, Global
+
+type Arg:
+    kind: ArgKind
+    n: i64
+
+type Ins:
+    op: &strview
+    cls: u32
+    to: u32
+    a: Arg
+    b: Arg
+    c: Arg
+    first: u32
+    count: u32
+    pos: usize
+    mask: u64
+    number: bool
+    copy: bool
+
+type Pass:
+    cls: u32
+    arg: Arg
+    number: bool
+
+type Mention:
+    temp: u32
+    name: &strview
+
+type Proc:
+    name: &strview
+    cls: u32
+    file: usize
+    params: usize
+    count: usize
+    code: usize
+    end: usize
+    temps: u32
+    last: u32
+    labels: u32
+    mentions: usize
+    mentioned: usize
+    node: usize
+    inst: usize
+    export: bool
+
+type Local:
+    name: &strview
+    type: usize
+    addr: Arg
+    depth: usize
+    tok: usize
+    bound: usize
+
+type Value:
+    type: usize
+    at: Arg
+    mem: bool
+    lit: bool
+    neg: bool
+    n: usize
+    f: f64
+
+type Loop:
+    exit: u32
+    again: u32
+    defers: usize
+    broke: bool
+
+type Deferred:
+    node: usize
+    visible: usize
+    subject: Value
+
+context comp:
+    files: &list[File]
+    uses: &list[Use]
+    libs: &list[&strview]
+    tokens: &list[Token]
+    trusted: &list[Trust]
+    nodes: &list[Node]
+    pos: usize
+    width: usize
+    syms: &list[Sym]
+    names: &map[&strview, usize]
+    types: &list[Type]
+    type_ids: &map[&strview, usize]
+    items: &list[Item]
+    binds: &list[Item]
+    frame: usize
+    insts: &list[Inst]
+    inst_ids: &map[&strview, usize]
+    inst_binds: &list[Item]
+    resolving: &list[usize]
+    c_types: &list[usize]
+    c_defs: &str
+    data: &str
+    strings: usize
+    globals: &list[&strview]
+    global_ids: &map[&strview, usize]
+    reached: usize
+    procs: &list[Proc]
+    code: &list[Ins]
+    body: &list[Ins]
+    slots: &list[Ins]
+    passes: &list[Pass]
+    mentions: &list[Mention]
+    temps: u32
+    numbers: &list[bool]
+    labels: u32
+    at: usize
+    site: usize
+    vars: &list[Local]
+    limit: usize
+    defers: &list[Deferred]
+    loops: &list[Loop]
+    ret: usize
+    live: bool
+    inst: usize
+    asked: bool
+    target: usize
+    defined: &list[usize]
+    hover: &str
+    system: &strview
+    machine: &strview
+    choosing: bool
+
+extern "c":
+    func realpath(path: cstr, into: *u8) -> cstr
+    func _fullpath(into: *u8, path: cstr, size: usize) -> cstr
+    func getpid() -> i32
+    func qbe_main(count: i32, args: **u8) -> i32
+    func flag_embedded(index: usize, name: **u8, size: *usize) -> *bytes
+    func flag_version() -> *u8
+    func flag_stamp() -> *u8
+    func flag_target() -> *u8
+
+func main() -> i32:
+    output: &str
+    keep := false
+    check := false
+    memory := false
+    overlay: &strview
+    query: &strview
+    target := view(flag_target())
+    inputs: &list[&strview]
+    rest: &list[&strview]
+    running := arg_count() > 1 and arg(1) == "run"
+    program: &list[&strview]
+    i := 1 + usize(running)
+    while i < arg_count():
+        a := arg(i)
+        if running and a == "--":
+            for k in i + 1..arg_count():
+                append(program, arg(k))
+            break
+        if (a == "-o" or a == "-overlay" or a == "-at" or a == "-target") and i + 1 < arg_count():
+            if a == "-o":
+                output = arg(i + 1)
+            elif a == "-overlay":
+                overlay = arg(i + 1)
+            elif a == "-target":
+                target = arg(i + 1)
+            else:
+                query = arg(i + 1)
+            i += 1
+        elif a == "-keep":
+            keep = true
+        elif a == "-check":
+            check = true
+        elif a == "-memory":
+            memory = true
+        elif a == "-version":
+            print("flag ", view(flag_version()))
+            return 0
+        elif ends_with(a, ".flg"):
+            append(inputs, a)
+        elif is_dir(a):
+            found := walk(a)
+            if found is &slice[&strview]:
+                for path in found:
+                    if ends_with(path, ".flg"):
+                        append(inputs, path)
+        else:
+            append(rest, a)
+        i += 1
+    if inputs.len == 0:
+        eprint("usage: flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]")
+        return 2
+    backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
+    backend := get(backends, target)
+    if backend is null:
+        eprint(ERR, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
+        return 2
+    comp.system = target[0:trust find(target, "-")]
+    comp.machine = target[comp.system.len + 1:target.len]
+    texts: &map[&strview, &strview]
+    if overlay.len > 0:
+        given := read_text_file(overlay)
+        if given is FsError:
+            eprint(ERR, "cannot read ", overlay)
+            return 1
+        rest_of := view(given)
+        while rest_of.len > 0:
+            path_end := find(rest_of, "\n")
+            size_end: usize|null = null
+            size: i64|null = null
+            if path_end is usize:
+                size_end = find(rest_of[path_end + 1:rest_of.len], "\n")
+            if path_end is usize and size_end is usize:
+                size = parse_int(rest_of[path_end + 1:path_end + 1 + size_end])
+            if path_end is null or size_end is null or size is null or size < 0 or usize(size) > rest_of.len - path_end - size_end - 2:
+                eprint(ERR, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
+                return 1
+            from := path_end + size_end + 2
+            put(texts, real_path(rest_of[0:path_end]), rest_of[from:from + usize(size)])
+            rest_of = rest_of[from + usize(size):rest_of.len]
+    fleeting := running and output.len == 0
+    suffix: &strview = ".out"
+    if comp.system == "windows":
+        suffix = ".exe"
+    if fleeting:
+        output = "/tmp"
+        temp_dir := env("TEMP")
+        if temp_dir is &strview and temp_dir.len > 0:
+            output = temp_dir
+        output += "/flag-run-" + getpid() + suffix
+    elif output.len == 0:
+        output = "a" + suffix
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes emptyarray emptymap IterationEnd"
+    start: usize = 0
+    for k in 0..builtin.len + 1:
+        if k == builtin.len or items(builtin)[k] == ' ':
+            id := comp.types.len
+            t := Type{kind = Void, name = builtin[start:k], align = 1}
+            if id == BOOL:
+                t.kind = Bool
+                t.size = 1
+            elif id >= I8 and id <= I64:
+                t.kind = Int
+                t.size = usize(1) << (id - I8)
+            elif id >= U8 and id <= U64:
+                t.kind = Uint
+                t.size = usize(1) << (id - U8)
+            elif id == USIZE:
+                t.kind = Uint
+                t.size = 8
+            elif id >= F32 and id <= F64:
+                t.kind = Float
+                t.size = 4 * (id - F32 + 1)
+            elif id == BYTES:
+                t.kind = Bytes
+            if t.size > 0:
+                t.align = t.size
+            add_type(t)
+            start = k + 1
+    nothing: Sym
+    append(comp.syms, nothing)
+    lib: &str = dir_of(executable())
+    lib += "../lib/"
+    here := current_dir() + "/"
+    if starts_with(view(lib), here):
+        lib = lib[here.len:lib.len]
+    if not exists(join(lib, "core.flg")):
+        root: &str = "/tmp"
+        cache := env("XDG_CACHE_HOME")
+        local := env("LOCALAPPDATA")
+        home := env("HOME")
+        if cache is &strview and cache.len > 0:
+            root = cache
+        elif local is &strview and local.len > 0:
+            root = local
+        elif home is &strview and home.len > 0:
+            root = home
+            root += "/.cache"
+        lib = join(root, "flag/")
+        lib += view(flag_stamp()) + "/"
+        if not exists(join(lib, "core.flg")):
+            part: &str = lib[0:lib.len - 1]
+            part += ".part" + getpid()
+            _ = make_dir(view(part))
+            name: *u8
+            size: usize = 0
+            data := flag_embedded(0, ptr(name), ptr(size))
+            k: usize = 0
+            while data as usize != 0:
+                bytes: &slice[u8]
+                bytes = data
+                bytes.len = size
+                _ = write_file(join(part, view(name)), bytes)
+                k += 1
+                data = flag_embedded(k, ptr(name), ptr(size))
+            _ = rename(view(part), lib[0:lib.len - 1])
+            _ = remove(view(part))
+        if not exists(join(lib, "core.flg")):
+            eprint(ERR, "cannot unpack the library into ", lib)
+            return 1
+    core: &str = join(lib, "core.flg")
+    loaded: &list[&strview]
+    append(loaded, real_path(view(core)))
+    if add_file(core, source(view(core), texts)) is Fail:
+        return 1
+    for input in inputs:
+        real := real_path(input)
+        if not has_text(loaded, real):
+            append(loaded, real)
+            path: &str = input
+            if add_file(path, source(input, texts)) is Fail:
+                return 1
+    done: usize = 0
+    while done < comp.uses.len:
+        u := comp.uses[done]
+        done += 1
+        known := false
+        for f in comp.files:
+            known = known or f.module == u.module
+        names: &slice[&strview]|CannotOpen = CannotOpen
+        if not known:
+            names = list_dir(view(lib))
+        if names is &slice[&strview]:
+            header: &str = "module "
+            header += u.module
+            for name in names:
+                if ends_with(name, ".flg"):
+                    path: &str = join(lib, name)
+                    code := source(view(path), texts)
+                    if code is &str:
+                        line := view(code)
+                        stop := find(line, "\n")
+                        if stop is usize:
+                            line = line[0:stop]
+                        if trim(line) == header:
+                            known = true
+                            if add_file(path, code) is Fail:
+                                return 1
+        if not known:
+            eprint(ERR, "no module named ", u.module, " is loaded, and no file in the library declares it")
+            show(u.at)
+            return 1
+    if query.len > 0:
+        column_end := query.len
+        while column_end > 0 and items(query)[column_end - 1] != ':':
+            column_end -= 1
+        line_end := column_end - 1
+        while line_end > 0 and items(query)[line_end - 1] != ':':
+            line_end -= 1
+        line := parse_int(query[line_end:column_end - 1])
+        column := parse_int(query[column_end:query.len])
+        wanted := real_path(query[0:line_end - 1])
+        for f in comp.files:
+            if line is i64 and column is i64 and real_path(view(f.path)) == wanted:
+                spot: usize = 0
+                row: i64 = 1
+                while row < line and spot < f.code.len:
+                    if items(f.code)[spot] == '\n':
+                        row += 1
+                    spot += 1
+                spot += f.start + usize(column) - 1
+                for t in 0..comp.tokens.len:
+                    k := comp.tokens[t]
+                    if k.kind != Line and k.at <= spot and spot < k.at + k.text.len:
+                        comp.asked = true
+                        comp.target = t
+    failed := gen_program(check) is Fail
+    if memory and not failed:
+        check_memory()
+    if comp.asked:
+        for s in comp.syms:
+            if s.name.len > 0 and comp.nodes[s.node].tok == comp.target:
+                mark(comp.nodes[s.node].tok, header(comp.nodes[s.node].tok))
+        for d in comp.defined:
+            print("definition ", location(comp.tokens[d].at))
+        if comp.hover.len > 0:
+            for line in split(view(comp.hover), "\n"):
+                print("hover ", line)
+    if failed:
+        return 1
+    if check:
+        return 0
+    ssa: &str = view(output)
+    ssa += ".ssa"
+    asm: &str = view(output)
+    asm += ".s"
+    if write_file(view(ssa), listing()) is FsError:
+        eprint(ERR, "cannot write ", ssa)
+        return 1
+    args := array[*u8, 7]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8}
+    if qbe_main(6, ptr(args) as **u8) != 0:
+        return 1
+    link: &list[&strview]
+    compiler: &strview = "cc"
+    given := env("CC")
+    if given is &strview and given.len > 0:
+        compiler = given
+    for part in split(compiler, " "):
+        if part.len > 0:
+            append(link, part)
+    append(link, "-o")
+    append(link, output)
+    append(link, asm)
+    append(link, "-L" + lib)
+    for input in inputs:
+        append(link, "-L" + dir_of(input))
+    for l in comp.libs:
+        append(link, "-l" + l)
+    for r in rest:
+        append(link, r)
+    code := run(link)
+    if code == 127 or code < 0:
+        eprint(ERR, "cannot run ", link[0], ", flagc links with a C compiler and the CC variable chooses which")
+    if code != 0:
+        return 1
+    if not keep:
+        _ = remove(view(ssa))
+        _ = remove(view(asm))
+    if not running:
+        return 0
+    me := view(output)
+    if not contains(me, "/"):
+        me = "./" + me
+    insert(program, 0, me)
+    code = run(program)
+    if fleeting:
+        _ = remove(view(output))
+    return code
+
+func real_path(path: &strview) -> &strview where not @windows():
+    found := realpath(cstr(path), usize(0) as *u8)
+    if found as usize == 0:
+        return path
+    return view(found)
+
+func real_path(path: &strview) -> &strview where @windows():
+    found := _fullpath(usize(0) as *u8, cstr(path), 0)
+    if found as usize == 0:
+        return path
+    return view(found)
+
+func has_text(l: &list[&strview], v: &strview) -> bool:
+    for x in l:
+        if x == v:
+            return true
+    return false
+
+func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
+    given := get(texts, real_path(path))
+    if given is &strview:
+        out: &str = given
+        return out
+    return read_text_file(path)
+
+func add_file(path: &str, code: &str|FsError) -> Fail?:
+    if code is &str:
+        start: usize = 0
+        if comp.files.len > 0:
+            last := comp.files[comp.files.len - 1]
+            start = last.start + last.code.len + 1
+        append(comp.files, File{path, code, start, ""})
+        try lex(comp.files.len - 1)
+        return parse()
+    eprint(ERR, "cannot read ", path)
+    return Fail
+
+func show(at: usize):
+    f := comp.files[file_of(at)]
+    bytes := items(f.code)
+    local := at - f.start
+    first := local
+    while first > 0 and bytes[first - 1] != '\n':
+        first -= 1
+    last := local
+    while last < f.code.len and bytes[last] != '\n':
+        last += 1
+    eprint("  --> ", location(at))
+    eprint("   | ", f.code[first:last])
+    pad: &str = "   | "
+    for i in first..local:
+        if bytes[i] == '\t':
+            pad += "\t"
+        else:
+            pad += " "
+    pad += "^"
+    eprint(pad)
+    free(pad)
+
+func location(at: usize) -> &str:
+    f := comp.files[file_of(at)]
+    out: &str
+    out += f.path + ":" + line_of(at) + ":" + (at - line_start(at) + 1)
+    return out
+
+func line_of(at: usize) -> usize:
+    f := comp.files[file_of(at)]
+    low: usize = 0
+    high := comp.tokens.len
+    while high - low > 1:
+        middle := (low + high) / 2
+        if comp.tokens[middle].at <= at:
+            low = middle
+        else:
+            high = middle
+    line: usize = 1
+    from := f.start
+    if comp.tokens[low].at >= f.start and comp.tokens[low].at <= at:
+        line = comp.tokens[low].line
+        from = comp.tokens[low].at
+    for i in from..at:
+        if items(f.code)[i - f.start] == '\n':
+            line += 1
+    return line
+
+func line_start(at: usize) -> usize:
+    f := comp.files[file_of(at)]
+    first := at
+    while first > f.start and items(f.code)[first - f.start - 1] != '\n':
+        first -= 1
+    return first
+
+func header(tok: usize) -> &strview:
+    first := tok
+    while comp.tokens[first - 1].kind != Line:
+        first -= 1
+    last := tok
+    while comp.tokens[last + 1].kind != Line:
+        last += 1
+    f := comp.files[file_of(comp.tokens[tok].at)]
+    return f.code[comp.tokens[first].at - f.start:comp.tokens[last].at + comp.tokens[last].text.len - f.start]
+
+func mark(tok: usize, hover: &strview):
+    for d in comp.defined:
+        if d == tok:
+            return
+    append(comp.defined, tok)
+    if comp.hover.len > 0:
+        comp.hover += "\n"
+    comp.hover += hover
+
+func node_end(n: usize) -> usize:
+    return n + comp.nodes[n].size
+
+func kid(n: usize, k: usize) -> usize:
+    c := n + 1
+    for i in 0..k:
+        c += comp.nodes[c].size
+    return c
+
+func kids(n: usize) -> usize:
+    count: usize = 0
+    c := n + 1
+    while c < node_end(n):
+        count += 1
+        c += comp.nodes[c].size
+    return count
+
+func body(f: usize) -> usize:
+    last: usize = 0
+    c := f + 1
+    while c < node_end(f):
+        last = c
+        c = node_end(c)
+    if last != 0 and comp.nodes[last].kind == Block:
+        return last
+    return 0
+
+func text(n: usize) -> &strview:
+    return comp.tokens[comp.nodes[n].tok].text

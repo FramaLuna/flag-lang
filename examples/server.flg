@@ -1,0 +1,25 @@
+use net
+
+func main() -> i32:
+    server := listen(8080)
+    if server is NetError:
+        eprint("cannot listen on port 8080: ", server)
+        return 1
+    print("serving on http://localhost:8080, ctrl+c stops it")
+    visits := 0
+    while true:
+        client := accept(server)
+        if client is NetError:
+            continue
+        request := receive(client)
+        if request is &str:
+            line := view(request)
+            cut := find(line, "\r\n")
+            if cut is usize:
+                line = line[0:cut]
+            visits += 1
+            print(visits, " ", line)
+            body := "hello from flag, you are visit number " + visits + "\n"
+            _ = send(client, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + body.len + "\r\nConnection: close\r\n\r\n" + body)
+            free(request)
+        close(client)

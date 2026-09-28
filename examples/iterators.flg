@@ -1,0 +1,54 @@
+type Fibonacci:
+    limit: u64
+
+type FibonacciWalk:
+    a: u64
+    b: u64
+    limit: u64
+
+func iter(f: Fibonacci) -> FibonacciWalk:
+    return FibonacciWalk{0, 1, f.limit}
+
+func next(w: *FibonacciWalk) -> u64|IterationEnd:
+    if w.a > w.limit:
+        return IterationEnd
+    out := w.a
+    w.a = w.b
+    w.b += out
+    return out
+
+type Steps:
+    from: i32
+    to: i32
+    by: i32
+
+type StepWalk:
+    at: i32
+    to: i32
+    by: i32
+
+func iter(s: Steps) -> StepWalk:
+    return StepWalk{s.from, s.to, s.by}
+
+func reverse_iter(s: Steps) -> StepWalk:
+    last := s.from + (s.to - 1 - s.from) / s.by * s.by
+    return StepWalk{last, s.from - 1, -s.by}
+
+func next(w: *StepWalk) -> i32|IterationEnd:
+    if w.by > 0 and w.at >= w.to or w.by < 0 and w.at <= w.to:
+        return IterationEnd
+    w.at += w.by
+    return w.at - w.by
+
+func main():
+    line: &str
+    defer free(line)
+    for n in Fibonacci{100}:
+        line += n + " "
+    print(line)
+    for i, n in Steps{0, 20, 5}:
+        print(i, ": ", n)
+    for n in reverse Steps{0, 20, 5}:
+        print(n)
+    for c in reverse "flag":
+        print(c)

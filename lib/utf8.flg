@@ -1,0 +1,54 @@
+module utf8
+
+priv type Rune:
+    code: u32
+    size: usize
+
+func code(s: &strview) -> u32|null:
+    r := decoded(s, 0)
+    if r is null:
+        return null
+    return r.code
+
+func count(s: &strview) -> usize:
+    n: usize = 0
+    for c in s:
+        n += 1
+    return n
+
+func valid(s: &strview) -> bool:
+    i: usize = 0
+    while i < s.len:
+        r := decoded(s, i)
+        if r is null:
+            return false
+        i += r.size
+    return true
+
+priv func decoded(s: &strview, i: usize) -> Rune?:
+    if i >= s.len:
+        return null
+    b := items(s)[i]
+    if b < 0x80:
+        return Rune{u32(b), 1}
+    size: usize = 4
+    low: u32 = 0x10000
+    if b >= 0xC2 and b < 0xE0:
+        size = 2
+        low = 0x80
+    elif b >= 0xE0 and b < 0xF0:
+        size = 3
+        low = 0x800
+    elif b < 0xF0 or b >= 0xF5:
+        return null
+    if i + size > s.len:
+        return null
+    code := u32(b) and (u32(0x7F) >> u32(size))
+    for k in i + 1..i + size:
+        c := items(s)[k]
+        if (c and 0xC0) != 0x80:
+            return null
+        code = (code << 6) or u32(c and 0x3F)
+    if code < low or code > 0x10FFFF or code >= 0xD800 and code < 0xE000:
+        return null
+    return Rune{code, size}

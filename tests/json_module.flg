@@ -1,0 +1,21 @@
+use json
+
+func main() -> i32:
+    text := "{\"name\": \"ana\\n\\u00e9\\ud83d\\ude00\", \"age\": 31, \"tags\": [\"a\", \"b\"], \"ok\": true, \"none\": null, \"pos\": {\"x\": -1.5}}"
+    d := parse(text)
+    if d is NotJson:
+        print("bad")
+        return 1
+    print(text(d, get(d, 0, "name")))
+    print(integer(d, get(d, 0, "age")), " ", number(d, get(d, 0, "pos.x")), " ", boolean(d, get(d, 0, "ok")))
+    tags := get(d, 0, "tags")
+    for i in 0..count(d, tags):
+        print(i, " ", text(d, item(d, tags, i)))
+    for i in 0..count(d, 0):
+        print(key(d, 0, i), " ", kind(d, item(d, 0, i)))
+    print(get(d, 0, "missing") is null, " ", parse("{bad") is NotJson)
+    out: &str
+    quoted(out, "say \"hi\"\n")
+    print(out)
+    free(d)
+    return 0

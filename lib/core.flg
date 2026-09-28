@@ -1,0 +1,1026 @@
+extern "c":
+    func malloc(size: usize) -> *bytes
+    func calloc(count: usize, size: usize) -> *bytes
+    func realloc(at: *bytes, size: usize) -> *bytes
+    func free(at: *bytes)
+    func memcpy(to: *bytes, from: *bytes, size: usize) -> *bytes
+    func memmove(to: *bytes, from: *bytes, size: usize) -> *bytes
+    func memcmp(a: *bytes, b: *bytes, size: usize) -> i32
+    func strlen(s: cstr) -> usize
+    func write(fd: i32, at: *bytes, size: usize) -> i64
+    func exit(code: i32)
+    func snprintf(into: *u8, size: usize, format: cstr, ...) -> i32
+    func strtod(text: cstr, end: *bytes) -> f64
+
+func heap(v: $T) -> *$T:
+    p := malloc(sizeof($T)) as *$T
+    if p as usize == 0:
+        out_of_memory()
+    p.* = v
+    return p
+
+func panic(message: &strview, place: &strview = @here()):
+    eprint("flag: ", message)
+    eprint("  --> ", place)
+    exit(134)
+
+func assert(condition: bool, message: &strview = "assertion failed", place: &strview = @here()):
+    if not condition:
+        panic(message, place)
+
+type cstr = *u8
+
+func cstr(s: &strview) -> cstr:
+    return ptr(temp(s).*) as *u8
+
+func out_of_memory():
+    eprint("flag: out of memory")
+    exit(9)
+
+func out_of_bounds(i: usize, len: usize, place: &strview = @here()):
+    panic("index " + i + " is out of bounds, length " + len, place)
+
+func out_of_bounds(i: i64, len: usize, place: &strview = @here()):
+    panic("index " + i + " is out of bounds, length " + len, place)
+
+func natural(i: $I, len: usize, place: &strview) -> usize where $I is i8|i16|i32|i64:
+    if i >= 0:
+        return usize(i)
+    back := usize(0 - i64(i))
+    if back > len:
+        out_of_bounds(i64(i), len, place)
+    return len - back
+
+func natural(i: $I, len: usize, place: &strview) -> usize where $I is u8|u16|u32|u64|usize:
+    return usize(i)
+
+type fatptr slice[$T]:
+    len: usize
+
+func at(s: &slice[$T], i: $I, place: &strview = @here()) -> *$T where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    n := natural(i, s.len, place)
+    if n >= s.len:
+        out_of_bounds(n, s.len, place)
+    return (ptr(s.*) as usize + n * sizeof($T)) as *$T
+
+func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    first := natural(from, s.len, place)
+    last := natural(to, s.len, place)
+    if last > s.len:
+        out_of_bounds(last, s.len, place)
+    if first > last:
+        out_of_bounds(first, last, place)
+    out: &slice[$T]
+    out = (ptr(s.*) as usize + first * sizeof($T)) as *bytes
+    out.len = last - first
+    return out
+
+type walk[$T]:
+    base: *bytes
+    len: usize
+    i: usize
+
+func iter(s: &slice[$T]) -> walk[$T]:
+    w: walk[$T]
+    w.base = ptr(s.*)
+    w.len = s.len
+    return w
+
+func next(w: *walk[$T]) -> $T|IterationEnd:
+    if w.i >= w.len:
+        return IterationEnd
+    p := (w.base as usize + w.i * sizeof($T)) as *$T
+    w.i += 1
+    return p.*
+
+func iter(a: *array[$T, $$n]) -> walk[$T]:
+    s: &slice[$T] = a
+    return iter(s)
+
+func reverse_iter(a: *array[$T, $$n]) -> walk_back[$T]:
+    s: &slice[$T] = a
+    return reverse_iter(s)
+
+operator +(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] + b[i]
+    return out
+
+operator -(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] - b[i]
+    return out
+
+operator *(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] * b[i]
+    return out
+
+operator /(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] / b[i]
+    return out
+
+operator %(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] % b[i]
+    return out
+
+operator and(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] and b[i]
+    return out
+
+operator or(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] or b[i]
+    return out
+
+operator xor(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] xor b[i]
+    return out
+
+operator <<(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] << b[i]
+    return out
+
+operator >>(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    out: array[$T, $$n]
+    for i in 0..$$n:
+        out[i] = a[i] >> b[i]
+    return out
+
+operator ==(a: *array[$T, $$n], b: *array[$T, $$n]) -> bool:
+    for i in 0..$$n:
+        if a[i] != b[i]:
+            return false
+    return true
+
+type walk_back[$T]:
+    base: *bytes
+    i: usize
+
+func reverse_iter(s: &slice[$T]) -> walk_back[$T]:
+    w: walk_back[$T]
+    w.base = ptr(s.*)
+    w.i = s.len
+    return w
+
+func next(w: *walk_back[$T]) -> $T|IterationEnd:
+    if w.i == 0:
+        return IterationEnd
+    w.i -= 1
+    p := (w.base as usize + w.i * sizeof($T)) as *$T
+    return p.*
+
+type fatptr list[$T]:
+    len: usize
+    cap: usize
+
+func append(l: *&list[$T], v: $T):
+    if l.len == l.cap:
+        cap := l.cap * 2
+        if cap < 8:
+            cap = 8
+        grown := realloc(ptr(l.*.*), cap * sizeof($T))
+        if grown as usize == 0:
+            out_of_memory()
+        l.* = grown
+        l.cap = cap
+    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    p.* = v
+    l.len += 1
+
+func pop(l: *&list[$T]) -> $T|null:
+    if l.len == 0:
+        return null
+    l.len -= 1
+    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    return p.*
+
+func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    n := natural(at, l.len, place)
+    if n > l.len:
+        out_of_bounds(n, l.len, place)
+    append(l, v)
+    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
+    memmove((first as usize + sizeof($T)) as *bytes, first, (l.len - 1 - n) * sizeof($T))
+    l[n] = v
+
+func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    n := natural(at, l.len, place)
+    if n >= l.len:
+        out_of_bounds(n, l.len, place)
+    kept := l[n]
+    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
+    memmove(first, (first as usize + sizeof($T)) as *bytes, (l.len - 1 - n) * sizeof($T))
+    l.len -= 1
+    return kept
+
+func find(items: &slice[$T], v: $T) -> usize|null:
+    for i in 0..items.len:
+        if items[i] == v:
+            return i
+    return null
+
+func contains(items: &slice[$T], v: $T) -> bool:
+    return find(items, v) is usize
+
+func binary_search(items: &slice[$T], v: $T) -> usize|null:
+    low: usize = 0
+    high := items.len
+    while low < high:
+        middle := (low + high) / 2
+        if items[middle] < v:
+            low = middle + 1
+        elif v < items[middle]:
+            high = middle
+        else:
+            return middle
+    return null
+
+operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
+    if a.len != b.len:
+        return false
+    for i in 0..a.len:
+        if a[i] != b[i]:
+            return false
+    return true
+
+func reverse(items: &slice[$T]):
+    for i in 0..items.len / 2:
+        swap(items, i, items.len - 1 - i)
+
+func free(l: *&list[$T]):
+    free(ptr(l.*.*))
+    l.* = usize(0) as *bytes
+    l.len = 0
+    l.cap = 0
+
+func sort(s: &slice[$T]):
+    if s.len < 2:
+        return
+    spare: &slice[$T]
+    spare = malloc(s.len / 2 * sizeof($T))
+    if ptr(spare.*) as usize == 0:
+        out_of_memory()
+    spare.len = s.len / 2
+    merge_sort(s, spare)
+    free(ptr(spare.*))
+
+func merge_sort(s: &slice[$T], spare: &slice[$T]):
+    if s.len <= 16:
+        for i in 1..s.len:
+            v := s[i]
+            j := i
+            while j > 0 and v < s[j - 1]:
+                s[j] = s[j - 1]
+                j -= 1
+            s[j] = v
+        return
+    half := s.len / 2
+    merge_sort(s[0:half], spare)
+    merge_sort(s[half:s.len], spare)
+    if not (s[half] < s[half - 1]):
+        return
+    memcpy(ptr(spare.*), ptr(s.*), half * sizeof($T))
+    i: usize = 0
+    j := half
+    k: usize = 0
+    while i < half:
+        if j < s.len and s[j] < spare[i]:
+            s[k] = s[j]
+            j += 1
+        else:
+            s[k] = spare[i]
+            i += 1
+        k += 1
+
+func swap(s: &slice[$T], i: usize, j: usize):
+    kept := s[i]
+    s[i] = s[j]
+    s[j] = kept
+
+type fatptr strview:
+    len: usize
+
+type fatptr str:
+    len: usize
+    cap: usize
+
+func view(s: &str) -> &strview:
+    v: &strview
+    v = ptr(s.*)
+    v.len = s.len
+    return v
+
+func view(c: cstr) -> &strview:
+    out: &strview
+    if c as usize != 0:
+        out = c
+        out.len = strlen(c)
+    return out
+
+func items(v: &strview) -> &slice[u8]:
+    out: &slice[u8]
+    out = ptr(v.*)
+    out.len = v.len
+    return out
+
+func at(v: &strview, i: $I, place: &strview = @here()) -> *u8 where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    n := natural(i, v.len, place)
+    if n >= v.len:
+        out_of_bounds(n, v.len, place)
+    return (ptr(v.*) as usize + n) as *u8
+
+func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    first := natural(from, v.len, place)
+    last := natural(to, v.len, place)
+    if last > v.len:
+        out_of_bounds(last, v.len, place)
+    if first > last:
+        out_of_bounds(first, last, place)
+    out: &strview
+    out = (ptr(v.*) as usize + first) as *bytes
+    out.len = last - first
+    return out
+
+type chars:
+    rest: &strview
+
+func iter(v: &strview) -> chars:
+    c: chars
+    c.rest = v
+    return c
+
+func next(c: *chars) -> &strview|IterationEnd:
+    if c.rest.len == 0:
+        return IterationEnd
+    b := items(c.rest)[0]
+    width: usize = 1
+    if b >= 0xF0:
+        width = 4
+    elif b >= 0xE0:
+        width = 3
+    elif b >= 0xC0:
+        width = 2
+    if width > c.rest.len:
+        width = c.rest.len
+    out := c.rest[0:width]
+    c.rest = c.rest[width:c.rest.len]
+    return out
+
+type chars_back:
+    rest: &strview
+
+func reverse_iter(v: &strview) -> chars_back:
+    c: chars_back
+    c.rest = v
+    return c
+
+func next(c: *chars_back) -> &strview|IterationEnd:
+    if c.rest.len == 0:
+        return IterationEnd
+    start := c.rest.len - 1
+    while start > 0 and (items(c.rest)[start] and 0xC0) == 0x80:
+        start -= 1
+    out := c.rest[start:c.rest.len]
+    c.rest = c.rest[0:start]
+    return out
+
+func reserve(s: *&str, want: usize):
+    if want <= s.cap:
+        return
+    cap := s.cap * 2
+    if cap < want:
+        cap = want
+    if cap < 32:
+        cap = 32
+    grown := realloc(ptr(s.*.*), cap)
+    if grown as usize == 0:
+        out_of_memory()
+    s.* = grown
+    s.cap = cap
+
+type Scratch:
+    count: usize
+    used: usize
+
+priv context scratch_space:
+    blocks: &list[&strview]
+    count: usize
+    used: usize
+
+func scratch() -> Scratch:
+    return Scratch{scratch_space.count, scratch_space.used}
+
+func close(s: Scratch):
+    scratch_space.count = s.count
+    scratch_space.used = s.used
+
+func temp(size: usize) -> *bytes:
+    need := (size + 7) / 8 * 8
+    if scratch_space.count == 0 or scratch_space.used + need > scratch_space.blocks[scratch_space.count - 1].len:
+        if scratch_space.count == scratch_space.blocks.len or scratch_space.blocks[scratch_space.count].len < need:
+            room: usize = 65536
+            if room < need:
+                room = need
+            block: &strview
+            block = malloc(room)
+            if ptr(block.*) as usize == 0:
+                out_of_memory()
+            block.len = room
+            insert(scratch_space.blocks, scratch_space.count, block)
+        scratch_space.count += 1
+        scratch_space.used = 0
+    out := (ptr(scratch_space.blocks[scratch_space.count - 1].*) as usize + scratch_space.used) as *bytes
+    scratch_space.used += need
+    return out
+
+func temp(v: &strview) -> &strview:
+    at := temp(v.len + 1)
+    memcpy(at, ptr(v.*), v.len)
+    ((at as usize + v.len) as *u8).* = 0
+    out: &strview
+    out = at
+    out.len = v.len
+    return out
+
+func temp(items: &slice[$T]) -> &slice[$T]:
+    out: &slice[$T]
+    out = temp(items.len * sizeof($T))
+    out.len = items.len
+    memcpy(ptr(out.*), ptr(items.*), items.len * sizeof($T))
+    return out
+
+operator +=(s: *&str, v: &strview):
+    reserve(s, s.len + v.len)
+    memcpy((ptr(s.*.*) as usize + s.len) as *bytes, ptr(v.*), v.len)
+    s.len += v.len
+
+func c_text(s: *&str) -> cstr:
+    reserve(s, s.len + 1)
+    last := (ptr(s.*.*) as usize + s.len) as *u8
+    last.* = 0
+    return ptr(s.*.*) as *u8
+
+operator =(s: *&str, v: &strview) -> &str:
+    s.len = 0
+    s.* += v
+    return s.*
+
+func free(s: *&str):
+    free(ptr(s.*.*))
+    s.* = usize(0) as *bytes
+    s.len = 0
+    s.cap = 0
+
+operator ==(a: &strview, b: &strview) -> bool:
+    if a.len != b.len:
+        return false
+    if a.len == 0:
+        return true
+    return memcmp(ptr(a.*), ptr(b.*), a.len) == 0
+
+operator <(a: &strview, b: &strview) -> bool:
+    shorter := a.len
+    if b.len < shorter:
+        shorter = b.len
+    order: i32 = 0
+    if shorter > 0:
+        order = memcmp(ptr(a.*), ptr(b.*), shorter)
+    return order < 0 or order == 0 and a.len < b.len
+
+func add_byte(s: *&str, b: u8):
+    one := b
+    piece: &strview
+    piece = ptr(one) as *bytes
+    piece.len = 1
+    s.* += piece
+
+func add_char(s: *&str, code: u32):
+    if code < 0x80:
+        add_byte(s, u8(code))
+    elif code < 0x800:
+        add_byte(s, u8(0xC0 or code >> 6))
+        add_byte(s, u8(0x80 or code and 0x3F))
+    elif code < 0x10000:
+        add_byte(s, u8(0xE0 or code >> 12))
+        add_byte(s, u8(0x80 or (code >> 6) and 0x3F))
+        add_byte(s, u8(0x80 or code and 0x3F))
+    else:
+        add_byte(s, u8(0xF0 or code >> 18))
+        add_byte(s, u8(0x80 or (code >> 12) and 0x3F))
+        add_byte(s, u8(0x80 or (code >> 6) and 0x3F))
+        add_byte(s, u8(0x80 or code and 0x3F))
+
+func parse_hex(s: &strview) -> u64|null:
+    if s.len == 0 or s.len > 16:
+        return null
+    n: u64 = 0
+    for b in items(s):
+        digit: u64 = 16
+        if b >= '0' and b <= '9':
+            digit = u64(b - '0')
+        elif b >= 'a' and b <= 'f':
+            digit = u64(b - 'a') + 10
+        elif b >= 'A' and b <= 'F':
+            digit = u64(b - 'A') + 10
+        if digit == 16:
+            return null
+        n = n * 16 + digit
+    return n
+
+func find(s: &strview, part: &strview) -> usize|null:
+    if part.len > s.len:
+        return null
+    for i in 0..s.len - part.len + 1:
+        if s[i:i + part.len] == part:
+            return i
+    return null
+
+func contains(s: &strview, part: &strview) -> bool:
+    return find(s, part) is usize
+
+func replace(s: &strview, old: &strview, new: &strview) -> &strview:
+    out: &str
+    rest := s
+    cut := find(rest, old)
+    while cut is usize and old.len > 0:
+        out += rest[0:cut]
+        out += new
+        rest = rest[cut + old.len:rest.len]
+        cut = find(rest, old)
+    out += rest
+    result := temp(out)
+    free(out)
+    return result
+
+func join(parts: &slice[$T], separator: &strview) -> &strview:
+    out: &str
+    for i in 0..parts.len:
+        if i > 0:
+            out += separator
+        out += parts[i]
+    result := temp(out)
+    free(out)
+    return result
+
+func lower(s: &strview) -> &strview:
+    out := temp(s)
+    for i in 0..out.len:
+        if items(out)[i] >= 'A' and items(out)[i] <= 'Z':
+            items(out)[i] += 32
+    return out
+
+func upper(s: &strview) -> &strview:
+    out := temp(s)
+    for i in 0..out.len:
+        if items(out)[i] >= 'a' and items(out)[i] <= 'z':
+            items(out)[i] -= 32
+    return out
+
+func starts_with(s: &strview, head: &strview) -> bool:
+    return s.len >= head.len and s[0:head.len] == head
+
+func ends_with(s: &strview, tail: &strview) -> bool:
+    return s.len >= tail.len and s[s.len - tail.len:s.len] == tail
+
+func trim(s: &strview) -> &strview:
+    return trim_end(trim_start(s))
+
+func trim_start(s: &strview) -> &strview:
+    first: usize = 0
+    while first < s.len and blank(items(s)[first]):
+        first += 1
+    return s[first:s.len]
+
+func trim_end(s: &strview) -> &strview:
+    last := s.len
+    while last > 0 and blank(items(s)[last - 1]):
+        last -= 1
+    return s[0:last]
+
+func blank(b: u8) -> bool:
+    return b == ' ' or b == '\t' or b == '\n' or b == '\r'
+
+func split(s: &strview, separator: &strview) -> &slice[&strview]:
+    count: usize = 1
+    rest := s
+    cut := find(rest, separator)
+    while cut is usize and separator.len > 0:
+        count += 1
+        rest = rest[cut + separator.len:rest.len]
+        cut = find(rest, separator)
+    parts: &slice[&strview]
+    parts = temp(count * sizeof(&strview))
+    parts.len = count
+    rest = s
+    for k in 0..count - 1:
+        at := trust find(rest, separator)
+        parts[k] = rest[0:at]
+        rest = rest[at + separator.len:rest.len]
+    parts[count - 1] = rest
+    return parts
+
+func parse_int(s: &strview) -> i64|null:
+    b := items(s)
+    negative := s.len > 0 and b[0] == '-'
+    i: usize = 0
+    if negative or s.len > 0 and b[0] == '+':
+        i = 1
+    if i == s.len:
+        return null
+    limit: u64 = 0x7fff_ffff_ffff_ffff
+    if negative:
+        limit += 1
+    n: u64 = 0
+    while i < s.len:
+        if b[i] < '0' or b[i] > '9':
+            return null
+        digit := u64(b[i] - '0')
+        if n > (limit - digit) / 10:
+            return null
+        n = n * 10 + digit
+        i += 1
+    if negative:
+        return 0 - i64(n)
+    return i64(n)
+
+func parse_float(s: &strview) -> f64|null:
+    if s.len == 0 or blank(items(s)[0]):
+        return null
+    text := cstr(s)
+    end := text
+    x := strtod(text, ptr(end) as *bytes)
+    whole := end as usize == text as usize + s.len
+    if not whole:
+        return null
+    return x
+
+operator +=(s: *&str, n: usize):
+    digits: array[u8, 20]
+    i: usize = 20
+    v := n
+    while true:
+        i -= 1
+        digits[i] = u8(v % 10) + '0'
+        v = v / 10
+        if v == 0:
+            break
+    out: &strview
+    out = (ptr(digits) as usize + i) as *bytes
+    out.len = 20 - i
+    s.* += out
+
+operator +=(s: *&str, n: i64):
+    if n < 0:
+        s.* += "-" + usize(0 - n)
+    else:
+        s.* += usize(n)
+
+operator +=(s: *&str, n: i32):
+    s.* += i64(n)
+
+operator +=(s: *&str, n: i16):
+    s.* += i64(n)
+
+operator +=(s: *&str, n: i8):
+    s.* += i64(n)
+
+operator +=(s: *&str, n: u64):
+    s.* += usize(n)
+
+operator +=(s: *&str, n: u32):
+    s.* += usize(n)
+
+operator +=(s: *&str, n: u16):
+    s.* += usize(n)
+
+operator +=(s: *&str, n: u8):
+    s.* += usize(n)
+
+operator +=(s: *&str, b: bool):
+    if b:
+        s.* += "true"
+    else:
+        s.* += "false"
+
+operator +=(s: *&str, f: f64):
+    float_text(s, f, false)
+
+operator +=(s: *&str, f: f32):
+    float_text(s, f64(f), true)
+
+func float_text(s: *&str, f: f64, single: bool):
+    buf: array[u8, 40]
+    at := ptr(buf) as *u8
+    out: &strview
+    out = ptr(buf) as *bytes
+    digits: i32 = 1
+    out.len = usize(snprintf(at, 40, "%.*e", digits - 1, f))
+    while digits < 17 and strtod(at, usize(0) as *bytes) != f and not (single and f32(strtod(at, usize(0) as *bytes)) == f32(f)):
+        digits += 1
+        out.len = usize(snprintf(at, 40, "%.*e", digits - 1, f))
+    exponent: i32 = 100
+    mark: usize = 0
+    for i in 0..out.len:
+        if buf[i] == 'e':
+            mark = i
+            exponent = 0
+            for j in i + 2..out.len:
+                exponent = exponent * 10 + i32(buf[j]) - '0'
+            if buf[i + 1] == '-':
+                exponent = 0 - exponent
+    if exponent < -4 or exponent >= 16:
+        size := exponent
+        sign: &strview = "+"
+        if exponent < 0:
+            size = 0 - exponent
+            sign = "-"
+        s.* += out[0:mark] + "e" + sign
+        if size < 10:
+            s.* += "0"
+        s.* += size
+        return
+    decimals := digits - 1 - exponent
+    if decimals < 0:
+        decimals = 0
+    out.len = usize(snprintf(at, 40, "%.*f", decimals, f))
+    s.* += out
+    if decimals == 0:
+        s.* += ".0"
+
+operator +=(s: *&str, items: &slice[$T]):
+    s.* += "["
+    for i in 0..items.len:
+        if i > 0:
+            s.* += ", "
+        s.* += items[i]
+    s.* += "]"
+
+operator +=(s: *&str, p: *$T):
+    s.* += hex(p as u64)
+
+type Fixed:
+    value: f64
+    places: i32
+
+func fixed(value: f64, places: i32) -> Fixed:
+    return Fixed{value, places}
+
+func fixed(value: f32, places: i32) -> Fixed:
+    return Fixed{f64(value), places}
+
+operator +=(s: *&str, f: Fixed):
+    value := f.value
+    halves := value
+    for k in 0..f.places + 1:
+        halves *= 2.0
+    tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 # 2^53
+    bits := ptr(value) as *u64
+    bits.* -= u64(tie)
+    buf: array[u8, 64]
+    out: &strview
+    out = ptr(buf) as *bytes
+    out.len = usize(snprintf(ptr(buf) as *u8, 64, "%.*f", f.places, value))
+    if tie and out.len < 64 and buf[out.len - 1] % 2 == 1:
+        bits.* += 2
+        out.len = usize(snprintf(ptr(buf) as *u8, 64, "%.*f", f.places, value))
+    if out.len > 63:
+        out.len = 63
+    s.* += out
+
+type Hex:
+    value: u64
+
+func hex(value: u64) -> Hex:
+    return Hex{value}
+
+operator +=(s: *&str, h: Hex):
+    digits: &strview = "0123456789abcdef"
+    buf: array[u8, 16]
+    i: usize = 16
+    v := h.value
+    while true:
+        i -= 1
+        buf[i] = items(digits)[usize(v and 15)]
+        v = v >> 4
+        if v == 0:
+            break
+    out: &strview
+    out = (ptr(buf) as usize + i) as *bytes
+    out.len = 16 - i
+    s.* += "0x" + out
+
+func write(fd: i32, s: &strview):
+    write(fd, ptr(s.*), s.len)
+
+func arg_count() -> usize:
+    return usize(@argc())
+
+func arg(i: usize) -> &strview:
+    return view(((@argv() as usize + i * 8) as **u8).*)
+
+type entry[$K, $V]:
+    used: bool
+    key: $K
+    value: $V
+
+type fatptr map[$K, $V]:
+    len: usize
+    cap: usize
+
+func hash(s: &strview) -> u64:
+    # FNV-1a
+    h: u64 = 0xcbf2_9ce4_8422_2325
+    for b in items(s):
+        h = (h xor u64(b)) * 0x100_0000_01b3
+    return h
+
+func hash(n: $T) -> u64 where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    h := u64(n) * 0x9e37_79b9_7f4a_7c15 # 2^64 over the golden ratio
+    return h xor (h >> 32)
+
+func hash(f: f64) -> u64:
+    if f == 0.0:
+        return 0
+    return hash(f as u64)
+
+func hash(f: f32) -> u64:
+    return hash(f64(f))
+
+func hash(v: $T) -> u64 where not ($T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64):
+    bytes: &strview
+    bytes = ptr(v) as *bytes
+    bytes.len = sizeof($T)
+    return hash(bytes)
+
+func table(m: &map[$K, $V]) -> &slice[entry[$K, $V]]:
+    out: &slice[entry[$K, $V]]
+    out = ptr(m.*)
+    out.len = m.cap
+    return out
+
+func locate(m: &map[$K, $V], key: $K) -> usize:
+    entries := table(m)
+    i := usize(hash(key)) and m.cap - 1
+    while entries[i].used and entries[i].key != key:
+        i = (i + 1) and m.cap - 1
+    return i
+
+func put(m: *&map[$K, $V], key: $K, value: $V):
+    if (m.len + 1) * 2 > m.cap:
+        old := table(m.*)
+        cap := m.cap * 2
+        if cap < 16:
+            cap = 16
+        grown := calloc(cap, sizeof(entry[$K, $V]))
+        if grown as usize == 0:
+            out_of_memory()
+        m.* = grown
+        m.cap = cap
+        m.len = 0
+        for e in old:
+            if e.used:
+                put(m, e.key, e.value)
+        free(ptr(old.*))
+    i := locate(m.*, key)
+    if not table(m.*)[i].used:
+        m.len += 1
+    table(m.*)[i] = entry[$K, $V]{true, key, value}
+
+func get(m: &map[$K, $V], key: $K) -> $V|null:
+    if m.cap == 0:
+        return null
+    e := table(m)[locate(m, key)]
+    if e.used:
+        return e.value
+    return null
+
+func contains(m: &map[$K, $V], key: $K) -> bool:
+    return m.cap > 0 and table(m)[locate(m, key)].used
+
+func at(m: &map[$K, $V], key: $K) -> $V|null:
+    return get(m, key)
+
+func remove(m: *&map[$K, $V], key: $K) -> $V|null:
+    if not contains(m.*, key):
+        return null
+    hole := locate(m.*, key)
+    value := table(m.*)[hole].value
+    j := hole
+    while table(m.*)[(j + 1) and m.cap - 1].used:
+        j = (j + 1) and m.cap - 1
+        home := usize(hash(table(m.*)[j].key)) and m.cap - 1
+        if j > hole and (home <= hole or home > j) or j < hole and home <= hole and home > j:
+            table(m.*)[hole] = table(m.*)[j]
+            hole = j
+    table(m.*)[hole].used = false
+    m.len -= 1
+    return value
+
+func clear(m: *&map[$K, $V]):
+    for i in 0..m.cap:
+        table(m.*)[i].used = false
+    m.len = 0
+
+func free(m: *&map[$K, $V]):
+    free(ptr(m.*.*))
+    m.* = usize(0) as *bytes
+    m.len = 0
+    m.cap = 0
+
+type pairs[$K, $V]:
+    entries: &slice[entry[$K, $V]]
+    i: usize
+
+func iter(m: &map[$K, $V]) -> pairs[$K, $V]:
+    return pairs[$K, $V]{table(m), 0}
+
+func next(p: *pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
+    while p.i < p.entries.len:
+        p.i += 1
+        if p.entries[p.i - 1].used:
+            return p.entries[p.i - 1]
+    return IterationEnd
+
+operator +=(s: *&str, m: &map[$K, $V]):
+    s.* += "{"
+    first := true
+    for e in m:
+        if not first:
+            s.* += ", "
+        first = false
+        s.* += e.key + ": " + e.value
+    s.* += "}"
+
+type fixmap[$K, $V, $$max]:
+    len: usize
+    entries: array[entry[$K, $V], $$max]
+
+type error MapFull
+
+func place(m: *fixmap[$K, $V, $$max], key: $K) -> usize:
+    i: usize = 0
+    while i < m.len and m.entries[i].key != key:
+        i += 1
+    return i
+
+func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
+    i := place(m, key)
+    if i == $$max:
+        return MapFull
+    if i == m.len:
+        m.len += 1
+    m.entries[i] = entry[$K, $V]{true, key, value}
+    return null
+
+func get(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+    i := place(m, key)
+    if i == m.len:
+        return null
+    return m.entries[i].value
+
+func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+    return get(m, key)
+
+func contains(m: *fixmap[$K, $V, $$max], key: $K) -> bool:
+    return place(m, key) < m.len
+
+func remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+    i := place(m, key)
+    if i == m.len:
+        return null
+    value := m.entries[i].value
+    for k in i..m.len - 1:
+        m.entries[k] = m.entries[k + 1]
+    m.len -= 1
+    return value
+
+func clear(m: *fixmap[$K, $V, $$max]):
+    m.len = 0
+
+func iter(m: *fixmap[$K, $V, $$max]) -> walk[entry[$K, $V]]:
+    s: &slice[entry[$K, $V]] = ptr(m.entries)
+    s.len = m.len
+    return iter(s)
+
+operator +=(s: *&str, m: *fixmap[$K, $V, $$max]):
+    s.* += "{"
+    for i in 0..m.len:
+        if i > 0:
+            s.* += ", "
+        s.* += m.entries[i].key + ": " + m.entries[i].value
+    s.* += "}"

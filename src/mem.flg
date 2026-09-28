@@ -1,0 +1,2029 @@
+@trust
+use bits
+
+ANY = -1
+NONE = 0xffff_ffff_ffff_ffff
+FULL = 0xffff_ffff_ffff_ffff
+ALL = 0xffff_ffff
+DROPPED = 1 << 31
+AGED = 1 << 63
+
+EXACT = 4096
+DEPTH = 2
+ROOM = SLOTS - 3 # OVERFLOW, LOST and OVERFLOWTEMP
+HEAPS = 320
+CELLS = 1024
+VISITS = 30
+ROUNDS = 20
+
+SLOTS = 512
+FNVBASIS = 0xcbf2_9ce4_8422_2325
+FNVPRIME = 0x100_0000_01b3
+
+NOWHERE = 0
+OUTSIDE = 1
+STATIC = 2
+GONE = 3
+RETURNED = 4
+
+PARAM = 1
+FIELD = 2
+SHARED = 3
+SITE = 4
+GLOBAL = 5
+RECURSIVE = 6
+OVERFLOW = 7
+LOST = 8
+FIXED = 9
+OVERFLOWTEMP = 10
+PLACE = 11
+
+type enum Code:
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Fresh, Arena, Rewind, Grow, Release, Copy, Fill, Absent, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+
+type enum Kind:
+    Pinned, Heap, Entry, Shared, Slot
+
+type Operand:
+    n: i64
+    temp: u32
+    data: u32
+
+type Op:
+    pos: usize
+    mask: u64
+    a: Operand
+    b: Operand
+    to: u32
+    first: u32
+    count: u32
+    callee: u32
+    slot: u32
+    size: u32
+    from: u32
+    upto: u32
+    code: Code
+    blob: bool
+
+type Span:
+    first: u32
+    end: u32
+    yes: u32
+    no: u32
+
+type Set = Bits[8]
+
+type Target:
+    live: Set
+    dead: Set
+    must: Set
+    off: i32
+    stride: i32
+    slot: u32
+
+type Cell:
+    owner: u32
+    next: u32
+    off: i32
+    stride: i32
+
+type Obj:
+    key: u64
+    pos: usize
+    kill: usize
+    name: &strview
+    from: &strview
+    parent: usize
+    root: usize
+    site: usize
+    depth: usize
+    off: i32
+    stride: i32
+    born: usize
+    kind: Kind
+    many: bool
+    strict: bool
+    arena: bool
+
+type Marks:
+    live: Set
+    freed: Set
+    killed: Set
+    sure: Set
+    gone: Set
+    used: Set
+    made: Set
+
+type State:
+    ids: &list[u32]
+    vals: &list[u32]
+    temps: &list[u32]
+    marks: Marks
+    seen: bool
+
+type Summary:
+    ids: &list[u32]
+    aims: &list[Target]
+    marks: Marks
+    seen: bool
+
+type Write:
+    value: Target
+    id: usize
+    strong: bool
+
+type Warning:
+    text: &strview
+    at: usize
+    note: &strview
+    also: usize
+    strict: bool
+
+type Fn:
+    name: &strview
+    shown: &strview
+    params: &list[u32]
+    copies: &list[bool]
+    spans: &list[Span]
+    names: &list[&strview]
+    cross: &list[bool]
+    last: &list[u32]
+    crossing: &list[u32]
+    calls: &list[usize]
+    swaps: &list[u32]
+    renews: &list[u32]
+    slots: &list[u32]
+    alive: &list[u64]
+    keys: &list[u64]
+    objs: &list[Obj]
+    cells: &list[Cell]
+    heads: &list[u32]
+    found: &list[Warning]
+    sum: Summary
+    ret: Target
+    heaps: Set
+    outer: Set
+    roots: Set
+    many: Set
+    relevant: Set
+    global: Set
+    size: usize
+    at: usize
+    order: usize
+    low: usize
+    group: usize
+    strict: bool
+    blob: bool
+    stacked: bool
+    dirty: bool
+    done: bool
+    unsettled: bool
+    runs: usize
+    node: usize
+    inst: usize
+
+context mem:
+    pinned: Set
+    noheap: Set
+    fns: &list[Fn]
+    ids: &map[&strview, usize]
+    shared: &map[&strview, u32]
+    globals: &list[&strview]
+    callees: &list[&strview]
+    ops: &list[Op]
+    args: &list[Operand]
+    f: usize
+    names: &list[&strview]
+    cross: &list[bool]
+    last: &list[u32]
+    here: u32
+    crossing: &list[u32]
+    slots: usize
+    words: usize
+    alive: &list[u64]
+    blob: bool
+    keys: &list[u64]
+    objs: &list[Obj]
+    cells: &list[Cell]
+    heads: &list[u32]
+    heaps: Set
+    outer: Set
+    roots: Set
+    many: Set
+    temps: &list[Target]
+    active: &list[u32]
+    cur: &list[Target]
+    fresh: &list[u32]
+    stamp: &list[u32]
+    present: &list[u32]
+    known: &list[u32]
+    pool: &list[Target]
+    pooled: &map[Target, u32]
+    refs: &list[&list[u32]]
+    swept: &list[u64]
+    interned: &list[u32]
+    renamed: &list[u32]
+    ages: u32
+    tick: u32
+    marks: Marks
+    seen: bool
+    ins: &list[State]
+    held: &list[u64]
+    exit: State
+    ret: Target
+    loud: bool
+    final: bool
+    speak: bool
+    condemned: Set
+    strong: Set
+    callee: usize
+    call: u32
+    binds: &list[Target]
+    bound: Set
+    writes: &list[Write]
+    order: &list[u64]
+    warnings: &list[Warning]
+    said: &map[&strview, bool]
+    index: &map[u64, u32]
+    counter: usize
+    stack: &list[usize]
+
+operator <(a: Warning, b: Warning) -> bool:
+    return a.at < b.at
+
+func check_memory():
+    mem.pinned = bit(NOWHERE) or bit(OUTSIDE) or bit(STATIC)
+    mem.noheap = bit(STATIC) or bit(RETURNED)
+    labels: &map[u32, u32]
+    defer free(labels)
+    blocks: &list[u32]
+    defer free(blocks)
+    born: &list[u32]
+    defer free(born)
+    derived: &list[u32]
+    defer free(derived)
+    for func in comp.procs:
+        clear(labels)
+        blocks.len = 0
+        f: Fn
+        f.name = func.name
+        f.shown = func.name[1:func.name.len]
+        f.blob = func.cls >= AGG
+        f.node = func.node
+        f.inst = func.inst
+        if func.node != 0:
+            f.shown = text(func.node)
+            if comp.tokens[comp.nodes[func.node].tok].kind != Name:
+                quoted: &str = "'"
+                quoted += text(func.node) + "'"
+                f.shown = view(quoted)
+        for k in func.temps..func.last + 2:
+            append(f.names, "")
+        for k in func.params..func.params + func.count:
+            p := comp.passes[k]
+            t := u32(p.arg.n) + 1 - func.temps
+            if p.cls != L and p.cls < AGG or p.number:
+                t = 0
+            append(f.params, t)
+            append(f.copies, p.cls >= AGG)
+        for k in func.mentions..func.mentioned:
+            f.names[comp.mentions[k].temp + 1 - func.temps] = comp.mentions[k].name
+        append(f.spans, Span{first = u32(mem.ops.len)})
+        for k in func.code..func.end:
+            i := comp.code[k]
+            if f.at == 0:
+                f.at = i.pos
+            if i.op == "@":
+                f.spans[f.spans.len - 1].end = u32(mem.ops.len)
+                blocks[block_of(labels, blocks, u32(i.a.n))] = u32(f.spans.len)
+                append(f.spans, Span{first = u32(mem.ops.len)})
+                continue
+            o := Op{pos = i.pos, mask = FULL}
+            if i.copy:
+                o.mask = i.mask
+            if i.to != 0:
+                o.to = i.to + 1 - func.temps
+                o.blob = i.cls >= AGG
+            name := i.op
+            if name == "call":
+                o.code = Call
+                o.callee = u32(mem.callees.len)
+                append(mem.callees, comp.globals[usize(i.a.n)])
+                o.first = u32(mem.args.len)
+                for j in i.first..i.first + i.count:
+                    if comp.passes[j].cls != 0:
+                        append(mem.args, operand(func.temps, comp.passes[j].arg))
+                o.count = u32(mem.args.len) - o.first
+                if o.blob:
+                    o.slot = u32(f.slots.len)
+                    append(f.slots, o.to)
+            else:
+                o.a = operand(func.temps, i.a)
+                o.b = operand(func.temps, i.b)
+                if starts_with(name, "alloc"):
+                    o.code = Alloc
+                    o.slot = u32(f.slots.len)
+                    append(f.slots, o.to)
+                elif name == "loadl" and not i.number:
+                    o.code = Load
+                elif starts_with(name, "load"):
+                    o.code = Word
+                elif name == "storel":
+                    o.code = Store
+                elif starts_with(name, "store"):
+                    o.code = Clear
+                else:
+                    switch name:
+                    case "blit":
+                        o.code = Blit
+                        o.size = u32(i.c.n)
+                    case "absent":
+                        o.code = Absent
+                        o.size = u32(i.c.n)
+                    case "add", "copy":
+                        o.code = Offset
+                        if i.number:
+                            o.code = Count
+                    case "mul":
+                        o.code = Scale
+                    case "sub", "and", "or", "xor", "shl", "shr", "sar", "udiv", "div", "rem", "urem", "neg", "extsw", "extuw", "extsb", "extub", "extsh", "extuh":
+                        o.code = Mix
+                    case "jmp":
+                        o.code = Goto
+                        o.a.n = i64(block_of(labels, blocks, u32(i.a.n)))
+                    case "jnz":
+                        o.code = Fork
+                        o.a.n = i64(block_of(labels, blocks, u32(i.b.n)))
+                        o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
+                    case "ret":
+                        o.code = Leave
+                    case "hlt":
+                        o.code = Halt
+                    case:
+                        o.code = Plain
+            append(mem.ops, o)
+        f.spans[f.spans.len - 1].end = u32(mem.ops.len)
+        f.size = mem.ops.len - usize(f.spans[0].first)
+        born.len = 0
+        derived.len = 0
+        for t in 0..f.names.len:
+            append(born, u32(0))
+            append(derived, u32(0))
+            append(f.cross, false)
+            append(f.last, u32(0))
+        for t in f.params:
+            born[t] = 1
+            f.cross[t] = t != 0
+        for s in 0..f.spans.len:
+            span := f.spans[s]
+            if span.end > span.first:
+                last := mem.ops[span.end - 1]
+                if last.code == Goto:
+                    f.spans[s].yes = blocks[last.a.n] + 1
+                elif last.code == Fork:
+                    f.spans[s].yes = blocks[last.a.n] + 1
+                    f.spans[s].no = blocks[last.b.n] + 1
+                elif last.code != Leave and last.code != Halt and s + 1 < f.spans.len:
+                    f.spans[s].yes = u32(s + 2)
+            elif s + 1 < f.spans.len:
+                f.spans[s].yes = u32(s + 2)
+            for k in span.first..span.end:
+                o := mem.ops[k]
+                if o.to != 0:
+                    born[o.to] = u32(s + 1)
+                if o.code == Alloc or o.code == Call and o.blob:
+                    derived[o.to] = o.slot + 1
+                elif o.code == Offset and o.b.temp == 0 and o.b.data == 0:
+                    derived[o.to] = derived[o.a.temp]
+        words := (f.slots.len + 63) / 64
+        for k in 0..f.spans.len * words:
+            append(f.alive, u64(0))
+        for s in 0..f.spans.len:
+            for k in f.spans[s].first..f.spans[s].end:
+                o := mem.ops[k]
+                count: usize = 2
+                if o.code == Call:
+                    count = 2 + usize(o.count)
+                for m in 0..count:
+                    t := o.a.temp
+                    if m == 1:
+                        t = o.b.temp
+                    elif m > 1:
+                        t = mem.args[usize(o.first) + m - 2].temp
+                    if t != 0 and born[t] != u32(s + 1):
+                        f.cross[t] = true
+                    f.last[t] = u32(k)
+                    if derived[t] != 0:
+                        d := usize(derived[t] - 1)
+                        f.alive[s * words + d / 64] = f.alive[s * words + d / 64] or (u64(1) << u64(d % 64))
+        grew := true
+        while grew:
+            grew = false
+            s := f.spans.len
+            while s > 0:
+                s -= 1
+                for side in 0..2:
+                    next := f.spans[s].yes
+                    if side == 1:
+                        next = f.spans[s].no
+                    if next != 0:
+                        for w in 0..words:
+                            x := f.alive[s * words + w] or f.alive[usize(next - 1) * words + w]
+                            if x != f.alive[s * words + w]:
+                                f.alive[s * words + w] = x
+                                grew = true
+        for t in 0..f.names.len:
+            if f.cross[t] and derived[t] != 0:
+                f.cross[t] = false
+            if f.cross[t]:
+                append(f.crossing, u32(t))
+        for k in usize(f.spans[0].first)..mem.ops.len:
+            o := mem.ops[k]
+            if (o.code == Load or o.code == Offset or o.code == Mix) and f.names[o.to].len == 0:
+                f.names[o.to] = f.names[o.a.temp]
+        put(mem.ids, f.name, mem.fns.len)
+        append(mem.fns, f)
+    for g in 0..mem.fns.len:
+        spans := mem.fns[g].spans
+        for k in spans[0].first..spans[spans.len - 1].end:
+            if mem.ops[k].code == Call:
+                name := mem.callees[mem.ops[k].callee]
+                found := get(mem.ids, name)
+                if found is usize:
+                    mem.ops[k].callee = u32(found + 1)
+                    node := mem.fns[found].node
+                    core := node != 0 and file_of(comp.tokens[comp.nodes[node].tok].at) == 0
+                    if core and text(node) == "temp" and comp.types[comp.insts[mem.fns[found].inst].ret].kind == Ptr:
+                        mem.ops[k].code = Arena
+                    elif core and text(node) == "close":
+                        mem.ops[k].code = Rewind
+                        d := k
+                        while d > spans[0].first and mem.ops[d].to != mem.args[mem.ops[k].first].temp:
+                            d -= 1
+                        mem.ops[k].from = u32(d)
+                    elif not contains(mem.fns[g].calls, found):
+                        append(mem.fns[g].calls, found)
+                else:
+                    code: Code = Extern
+                    switch name:
+                    case "$malloc", "$calloc", "$realpath":
+                        code = Fresh
+                    case "$realloc":
+                        code = Grow
+                    case "$free":
+                        code = Release
+                    case "$memcpy", "$memmove":
+                        code = Copy
+                    case "$memset":
+                        code = Fill
+                    case "$strtod":
+                        code = Parse
+                    case "$exit", "$_exit":
+                        code = Stop
+                    mem.ops[k].code = code
+    closes: &list[usize]
+    defer free(closes)
+    for k in 0..mem.ops.len:
+        if mem.ops[k].code == Rewind:
+            append(closes, k)
+    for k in closes:
+        for j in closes:
+            if mem.ops[j].from == mem.ops[k].from and u32(j) > mem.ops[k].upto:
+                mem.ops[k].upto = u32(j)
+    none: Target
+    while mem.binds.len < SLOTS:
+        append(mem.binds, none)
+    for g in 0..mem.fns.len:
+        for t in comp.trusted:
+            if t.check and t.from <= mem.fns[g].at and mem.fns[g].at < t.to:
+                mem.fns[g].strict = true
+    for g in 0..mem.fns.len:
+        node := mem.fns[g].node
+        start := comp.tokens[comp.nodes[node].tok].at
+        end := start
+        for n in node..node_end(node):
+            if comp.tokens[comp.nodes[n].tok].at > end:
+                end = comp.tokens[comp.nodes[n].tok].at
+        inner: usize = 0
+        hidden := false
+        for t in comp.trusted:
+            if t.from <= start and start < t.to and t.from >= inner:
+                inner = t.from
+                hidden = not t.check
+        for t in comp.trusted:
+            hidden = hidden and not (t.check and t.from > start and t.from <= end)
+        for c in mem.fns[g].calls:
+            hidden = hidden and not mem.fns[c].strict
+        if (node != 0 and not hidden or mem.fns[g].strict) and mem.fns[g].order == 0:
+            connect(g)
+    sort(mem.warnings)
+    for w in mem.warnings:
+        inner: usize = 0
+        hidden := false
+        for t in comp.trusted:
+            if t.from <= w.at and w.at < t.to and t.from >= inner:
+                inner = t.from
+                hidden = not t.check
+        if hidden and w.strict:
+            low: usize = 0
+            high := comp.tokens.len
+            while high - low > 1:
+                middle := (low + high) / 2
+                if comp.tokens[middle].at <= w.at:
+                    low = middle
+                else:
+                    high = middle
+            while comp.tokens[low].kind != Line:
+                low -= 1
+            hidden = comp.tokens[low].at == inner
+        if hidden:
+            continue
+        eprint(WARN, w.text)
+        if w.at != 0:
+            show(w.at)
+        if w.also != 0:
+            eprint(NOTE, w.note)
+            show(w.also)
+
+func block_of(labels: *&map[u32, u32], blocks: *&list[u32], name: u32) -> u32:
+    found := get(labels.*, name)
+    if found is u32:
+        return found
+    put(labels, name, u32(blocks.len))
+    append(blocks, u32(0))
+    return u32(blocks.len - 1)
+
+func operand(first: u32, a: Arg) -> Operand:
+    out: Operand
+    if a.kind == Temp:
+        out.temp = u32(a.n) + 1 - first
+    elif a.kind == Global and starts_with(comp.globals[usize(a.n)], "$ctx."):
+        text := comp.globals[usize(a.n)]
+        found := get(mem.shared, text)
+        if found is u32:
+            out.data = found + 2
+        else:
+            out.data = u32(mem.globals.len) + 2
+            put(mem.shared, text, u32(mem.globals.len))
+            append(mem.globals, text)
+    elif a.kind == Global:
+        out.data = 1
+    elif a.kind == Const:
+        out.n = a.n
+    return out
+
+func connect(v: usize):
+    mem.counter += 1
+    mem.fns[v].order = mem.counter
+    mem.fns[v].low = mem.counter
+    append(mem.stack, v)
+    mem.fns[v].stacked = true
+    for w in mem.fns[v].calls:
+        if mem.fns[w].order == 0:
+            connect(w)
+            if mem.fns[w].low < mem.fns[v].low:
+                mem.fns[v].low = mem.fns[w].low
+        elif mem.fns[w].stacked and mem.fns[w].order < mem.fns[v].low:
+            mem.fns[v].low = mem.fns[w].order
+    if mem.fns[v].low != mem.fns[v].order:
+        return
+    members: &list[usize]
+    defer free(members)
+    while true:
+        w := trust pop(mem.stack)
+        mem.fns[w].stacked = false
+        mem.fns[w].group = v + 1
+        append(members, w)
+        if w == v:
+            break
+    if members.len > 1 or contains(mem.fns[v].calls, v):
+        for f in members:
+            mem.fns[f].dirty = true
+        budget := members.len * ROUNDS
+        while budget > 0:
+            picked := members.len
+            for k in 0..members.len:
+                if mem.fns[members[k]].dirty and (picked == members.len or mem.fns[members[k]].size < mem.fns[members[picked]].size):
+                    picked = k
+            if picked == members.len:
+                break
+            f := members[picked]
+            mem.fns[f].dirty = false
+            budget -= 1
+            if analyze(f):
+                for m in members:
+                    if contains(mem.fns[m].calls, f):
+                        mem.fns[m].dirty = true
+    settled := true
+    for f in members:
+        settled = settled and not mem.fns[f].dirty and mem.fns[f].runs > 0
+    mem.loud = true
+    for f in members:
+        mem.fns[f].unsettled = mem.fns[f].unsettled or mem.fns[f].dirty
+        if not settled:
+            analyze(f)
+    mem.loud = false
+    for f in members:
+        for w in mem.fns[f].found:
+            key: &str
+            key += w.text + " " + w.at
+            if contains(mem.said, view(key)):
+                free(key)
+            else:
+                put(mem.said, view(key), true)
+                append(mem.warnings, w)
+        free(mem.fns[f].found)
+
+func analyze(f: usize) -> bool:
+    mem.fns[f].runs += 1
+    mem.fns[f].found.len = 0
+    mem.f = f
+    mem.names = mem.fns[f].names
+    mem.cross = mem.fns[f].cross
+    mem.last = mem.fns[f].last
+    mem.crossing = mem.fns[f].crossing
+    mem.slots = mem.fns[f].slots.len
+    mem.words = (mem.slots + 63) / 64
+    mem.alive = mem.fns[f].alive
+    mem.blob = mem.fns[f].blob
+    mem.keys = mem.fns[f].keys
+    clear(mem.index)
+    for k in 0..mem.keys.len:
+        mem.index[mem.keys[k]] = u32(k)
+    mem.objs = mem.fns[f].objs
+    mem.cells = mem.fns[f].cells
+    mem.heads = mem.fns[f].heads
+    mem.heaps = mem.fns[f].heaps
+    mem.outer = mem.fns[f].outer
+    mem.roots = mem.fns[f].roots
+    mem.many = mem.fns[f].many
+    if mem.objs.len == 0:
+        mem.keys = malloc(SLOTS * sizeof(u64))
+        mem.keys.cap = SLOTS
+        mem.objs = malloc(SLOTS * sizeof(Obj))
+        mem.objs.cap = SLOTS
+        for k in 0..RETURNED + 1:
+            kind: Kind = Pinned
+            if k == RETURNED:
+                kind = Slot
+            object((u64(k) << 8) or FIXED, Obj{kind = kind})
+        for k in 0..SLOTS + mem.slots:
+            append(mem.heads, u32(0))
+    blank: Target
+    while mem.cur.len < mem.cells.len:
+        append(mem.cur, blank)
+        append(mem.fresh, u32(0))
+        append(mem.stamp, u32(0))
+        append(mem.renamed, u32(0))
+        append(mem.known, u32(0))
+    mem.pool.len = 0
+    clear(mem.pooled)
+    while mem.refs.len < SLOTS:
+        nothing: &list[u32]
+        append(mem.refs, nothing)
+        append(mem.swept, u64(0))
+    for k in 0..SLOTS:
+        mem.refs[k].len = 0
+    while mem.temps.len < mem.names.len:
+        append(mem.temps, blank)
+        append(mem.interned, u32(0))
+    for t in 0..mem.names.len:
+        mem.temps[t] = blank
+        mem.interned[t] = 0
+    params := mem.fns[f].params
+    for k in 0..params.len:
+        if params[k] != 0:
+            e := object((u64(k) << 8) or PARAM, Obj{kind = Entry, root = k + 1, name = mem.names[params[k]]})
+            mem.temps[params[k]] = Target{live = bit(e), must = bit(e)}
+    spans := mem.fns[f].spans
+    none: State
+    queued: &list[bool]
+    defer free(queued)
+    for b in 0..spans.len:
+        append(mem.ins, none)
+        append(queued, false)
+    mem.ins[0].seen = true
+    for t in mem.crossing:
+        append(mem.ins[0].temps, intern(mem.temps[t]))
+    queued[0] = true
+    low: usize = 0
+    visits: usize = 0
+    while true:
+        while low < spans.len and not queued[low]:
+            low += 1
+        if low == spans.len:
+            break
+        b := low
+        queued[b] = false
+        visits += 1
+        if visits > spans.len * VISITS + 100:
+            mem.fns[f].unsettled = true
+            break
+        visit(b)
+        if mem.seen:
+            out := snapshot()
+            mem.held.len = 0
+            for w in 0..mem.words:
+                append(mem.held, u64(0))
+            for v in out.vals:
+                hold(mem.pool[v].slot)
+            for v in out.temps:
+                hold(mem.pool[v].slot)
+            for side in 0..2:
+                s := spans[b].yes
+                if side == 1:
+                    s = spans[b].no
+                if s != 0:
+                    old := mem.ins[s - 1]
+                    joined := merge(old, out, usize(s - 1))
+                    if old.seen and equal(joined, old):
+                        release(joined)
+                    else:
+                        release(old)
+                        mem.ins[s - 1] = joined
+                        queued[s - 1] = true
+                        if usize(s - 1) < low:
+                            low = usize(s - 1)
+            release(out)
+    mem.final = true
+    mem.speak = true
+    release(mem.exit)
+    mem.exit = none
+    mem.ret = blank
+    for b in 0..spans.len:
+        if mem.ins[b].seen:
+            visit(b)
+    if mem.speak and mem.fns[f].unsettled:
+        at: usize = 0
+        for k in spans[0].first..spans[spans.len - 1].end:
+            if at == 0:
+                at = mem.ops[k].pos
+        text: &str
+        text += "-memory gives up on " + mem.fns[f].shown + ", its memory use does not settle, so its checks are incomplete"
+        warn(view(text), at, "", 0, false)
+    mem.final = false
+    mem.speak = false
+    for b in 0..spans.len:
+        release(mem.ins[b])
+    mem.ins.len = 0
+    sum: Summary
+    ret: Target
+    relevant: Set
+    global: Set
+    if mem.exit.seen:
+        restore(mem.exit)
+        escaping := reach(mem.ret, false, false, false)
+        global = reach(blank, false, true, false)
+        sum.seen = true
+        for k in 0..mem.exit.ids.len:
+            id := mem.exit.ids[k]
+            c := mem.cells[id]
+            owner := usize(c.owner)
+            if owner >= SLOTS or not (owner == RETURNED or mem.outer[owner] or escaping[owner]):
+                continue
+            v := mem.pool[mem.exit.vals[k]]
+            if mem.outer[owner] and v == initial(owner, c.off, c.stride) and empty(v.live and mem.exit.marks.killed):
+                continue
+            if v.slot != 0:
+                v.slot = 0
+                v.dead = v.dead or bit(GONE)
+            append(sum.ids, id)
+            append(sum.aims, v)
+            relevant = relevant or v.live or v.dead
+        ret = mem.ret
+        if ret.slot != 0:
+            ret.slot = 0
+            ret.dead = ret.dead or bit(GONE)
+        relevant = relevant or mem.outer or escaping or ret.live or ret.dead
+        m := mem.exit.marks
+        sum.marks = Marks{m.live and relevant, m.freed and relevant, m.killed and relevant, m.sure and relevant, m.gone and relevant, m.used and relevant, m.made and relevant}
+        global = global and mem.heaps
+    old := mem.fns[f]
+    changed := true
+    if old.done:
+        past := pack(old.sum)
+        fresh := pack(sum)
+        joined := merge(past, fresh, NONE)
+        ret = unite(old.ret, ret, alive(old.sum.marks), alive(sum.marks))
+        relevant = relevant or old.relevant
+        global = global or old.global
+        changed = not equal(joined, past) or ret != old.ret or relevant != old.relevant or global != old.global
+        release(sum)
+        sum = Summary{marks = joined.marks, seen = joined.seen}
+        for k in 0..joined.ids.len:
+            append(sum.ids, joined.ids[k])
+            append(sum.aims, mem.pool[joined.vals[k]])
+        release(past)
+        release(fresh)
+        release(joined)
+    release(old.sum)
+    release(mem.exit)
+    mem.exit = none
+    mem.fns[f].sum = sum
+    mem.fns[f].ret = ret
+    mem.fns[f].relevant = relevant
+    mem.fns[f].global = global
+    mem.fns[f].done = true
+    mem.fns[f].swaps.len = 0
+    mem.fns[f].renews.len = 0
+    for k in 0..mem.objs.len:
+        append(mem.fns[f].swaps, u32(0))
+    for k in 0..sum.ids.len:
+        append(mem.fns[f].renews, u32(0))
+        c := mem.cells[sum.ids[k]]
+        owner := usize(c.owner)
+        if owner < SLOTS and mem.outer[owner] and mem.objs[owner].depth < DEPTH:
+            key := child(owner, c.off, c.stride)
+            for h in 0..mem.keys.len:
+                if mem.keys[h] == key and sum.marks.killed[h]:
+                    if sum.aims[k].live[h]:
+                        mem.fns[f].renews[k] = u32(h + 1)
+                    for x in objects(sum.aims[k].live) and mem.heaps:
+                        if mem.fns[f].swaps[x] == 0:
+                            mem.fns[f].swaps[x] = u32(h + 1)
+    mem.fns[f].keys = mem.keys
+    mem.fns[f].objs = mem.objs
+    mem.fns[f].cells = mem.cells
+    mem.fns[f].heads = mem.heads
+    mem.fns[f].heaps = mem.heaps
+    mem.fns[f].outer = mem.outer
+    mem.fns[f].roots = mem.roots
+    mem.fns[f].many = mem.many
+    return changed
+
+func hold(slot: u32):
+    if slot == ALL:
+        for w in 0..mem.words:
+            mem.held[w] = FULL
+    elif slot != 0:
+        k := usize(slot) - 1
+        mem.held[k / 64] = mem.held[k / 64] or (u64(1) << u64(k % 64))
+
+func restore(st: State):
+    mem.tick += 1
+    mem.present.len = 0
+    for k in 0..st.ids.len:
+        id := st.ids[k]
+        mem.stamp[id] = mem.tick
+        mem.known[id] = st.vals[k] + 1
+        append(mem.present, id)
+    for k in 0..st.temps.len:
+        mem.temps[mem.crossing[k]] = mem.pool[st.temps[k]]
+        mem.interned[mem.crossing[k]] = st.temps[k] + 1
+    mem.marks = st.marks
+
+func visit(block: usize):
+    restore(mem.ins[block])
+    mem.seen = true
+    mem.active.len = 0
+    span := mem.fns[mem.f].spans[block]
+    for i in span.first..span.end:
+        if not mem.seen:
+            break
+        o := mem.ops[i]
+        mem.here = i
+        switch o.code:
+        case Alloc:
+            define(o.to, Target{slot = o.slot + 1})
+        case Load, Word:
+            address := target_of(o.a)
+            touch(address, mem.names[o.a.temp], o.pos)
+            if o.code == Word:
+                define(o.to, number(ANY))
+            else:
+                define(o.to, fetch(address))
+        case Store, Clear:
+            address := target_of(o.b)
+            touch(address, mem.names[o.b.temp], o.pos)
+            if o.code == Store:
+                stash(address, target_of(o.a))
+            else:
+                stash(address, number(0))
+        case Blit:
+            from := target_of(o.a)
+            to := target_of(o.b)
+            touch(from, mem.names[o.a.temp], o.pos)
+            touch(to, mem.names[o.b.temp], o.pos)
+            transfer(to, from, i64(o.size), o.mask)
+        case Offset:
+            x := target_of(o.a)
+            y := target_of(o.b)
+            if pointing(x) and pointing(y):
+                define(o.to, blur(x, y))
+            elif pointing(y):
+                define(o.to, plus(y, amount(x).off, amount(x).stride))
+            elif pointing(x):
+                define(o.to, plus(x, amount(y).off, amount(y).stride))
+            else:
+                define(o.to, plus(amount(x), amount(y).off, amount(y).stride))
+        case Scale:
+            x := amount(target_of(o.a))
+            y := amount(target_of(o.b))
+            if y.off == ANY or y.stride != 0:
+                y = x
+                x = amount(target_of(o.b))
+            n := i64(y.off)
+            v := number(ANY)
+            if y.off == ANY or y.stride != 0:
+                v = number(ANY)
+            elif n == 0:
+                v = number(0)
+            elif x.off != ANY and x.stride == 0 and i64(x.off) * n >= 0 - EXACT and i64(x.off) * n <= EXACT:
+                v = number(i32(i64(x.off) * n))
+            elif n > 0 and x.off != ANY and x.stride != 0 and i64(x.stride) * n <= EXACT:
+                v = Target{live = bit(NOWHERE), off = i32(i64(x.off) * n), stride = i32(i64(x.stride) * n)}
+            elif n > 0 and n <= EXACT:
+                v = Target{live = bit(NOWHERE), stride = i32(n)}
+            define(o.to, v)
+        case Mix:
+            define(o.to, blur(target_of(o.a), target_of(o.b)))
+        case Count:
+            given := target_of(o.a)
+            if mem.speak and (not empty((given.live or given.dead) - mem.pinned) or given.slot != 0):
+                name := mem.names[o.a.temp]
+                text: &str
+                if name.len > 0:
+                    text += "-memory cannot follow " + name + " once it is stored as an integer, store it with a pointer type"
+                else:
+                    text += "-memory cannot follow a pointer once it is stored as an integer, store it with a pointer type"
+                warn(view(text), o.pos, "", 0, false)
+            define(o.to, number(ANY))
+        case Plain:
+            define(o.to, number(ANY))
+        case Call:
+            g := usize(o.callee) - 1
+            if not mem.fns[g].done:
+                define(o.to, number(ANY))
+            elif not mem.fns[g].sum.seen:
+                mem.seen = false
+            else:
+                sum := mem.fns[g].sum
+                marks := sum.marks
+                relevant := mem.fns[g].relevant
+                heaps := mem.fns[g].heaps
+                outer := mem.fns[g].outer
+                shown := mem.fns[g].shown
+                mem.callee = g
+                mem.call = i
+                none: Set
+                mem.bound = none
+                inner := mem.fns[g].group == mem.fns[mem.f].group
+                recursive: usize = NONE
+                for x in relevant and heaps:
+                    if not marks.live[x] and not marks.freed[x] and not marks.killed[x]:
+                        continue
+                    if x < mem.fns[g].swaps.len and mem.fns[g].swaps[x] != 0:
+                        b := binding(usize(mem.fns[g].swaps[x]) - 1)
+                        if not empty(objects(b.live)):
+                            mem.binds[x] = Target{live = objects(b.live), must = b.must, off = b.off, stride = b.stride}
+                            mem.bound = mem.bound or bit(x)
+                            continue
+                    ob := obj_of(g, x)
+                    h: usize = 0
+                    replace := true
+                    if mem.fns[g].global[x]:
+                        h = object((u64(ob.site) << 8) or GLOBAL, Obj{kind = Heap, many = true, site = ob.site, born = i, pos = ob.pos, from = ob.from, arena = ob.arena})
+                        replace = false
+                    elif inner and recursive != NONE:
+                        h = recursive
+                        replace = false
+                    elif inner:
+                        h = birth(RECURSIVE, Obj{kind = Heap, site = ob.site, born = i, pos = o.pos, from = shown, arena = ob.arena})
+                        recursive = h
+                    else:
+                        h = birth((u64(i) << 16) or (u64(x) << 8) or SITE, Obj{kind = Heap, many = mem.fns[g].many[x], site = ob.site, born = i, pos = o.pos, from = shown, arena = ob.arena})
+                    mem.marks.live = carry(marks.live, x, mem.marks.live, h, replace)
+                    mem.marks.freed = carry(marks.freed, x, mem.marks.freed, h, replace)
+                    mem.marks.killed = carry(marks.killed, x, mem.marks.killed, h, replace)
+                    if (marks.freed[x] or marks.killed[x]) and mem.objs[h].kill == 0:
+                        mem.objs[h].kill = o.pos
+                    mem.binds[x] = Target{live = bit(h), must = sole(h)}
+                    if mem.fns[g].global[x]:
+                        mem.binds[x].must = none
+                    mem.objs[h].strict = mem.objs[h].strict or mem.fns[g].strict
+                    mem.bound = mem.bound or bit(x)
+                for x in relevant and outer:
+                    binding(x)
+                if mem.speak:
+                    for x in relevant and outer:
+                        b := mem.binds[x]
+                        ob := obj_of(g, x)
+                        name: &strview
+                        if ob.root > 0 and ob.root <= usize(o.count):
+                            name = mem.names[mem.args[usize(o.first) + ob.root - 1].temp]
+                        freed := marks.freed[x]
+                        stack := b.slot != 0 or not empty(b.live and (mem.noheap or mem.roots))
+                        text: &str
+                        if not empty(b.dead) and freed and name.len > 0:
+                            text += shown + " frees " + name + ", which may be freed already"
+                        elif not empty(b.dead) and freed:
+                            text += shown + " frees memory that may be freed already"
+                        elif not empty(b.dead) and marks.used[x] and name.len > 0:
+                            text += shown + " reads " + name + ", which may point to freed memory"
+                        elif not empty(b.dead) and marks.used[x]:
+                            text += shown + " reads memory that may be freed already"
+                        elif freed and stack and name.len > 0:
+                            text += shown + " frees " + name + ", which is not on the heap"
+                        elif freed and stack:
+                            text += shown + " frees memory that is not on the heap"
+                        if text.len > 0:
+                            warn(view(text), o.pos, "it may be freed here", killed_at(b.dead), mem.fns[g].strict)
+                        if marks.killed[x]:
+                            for y in relevant and outer:
+                                oy := obj_of(g, y)
+                                c := mem.binds[y]
+                                sibling := ob.depth > 0 and oy.depth > 0 and ob.parent == oy.parent
+                                shared := not empty((b.live and c.live) - mem.pinned) or b.slot != 0 and c.slot != 0 and (b.slot == c.slot or b.slot == ALL or c.slot == ALL)
+                                if y != x and not sibling and (marks.used[y] or marks.killed[y]) and shared:
+                                    said: &str
+                                    said += shown + " may free memory that it also reads through another argument"
+                                    warn(view(said), o.pos, "", 0, mem.fns[g].strict)
+                                    break
+                for x in relevant and outer:
+                    b := mem.binds[x]
+                    if marks.killed[x]:
+                        for h in b.live and (mem.heaps or mem.outer - mem.roots):
+                            strong := marks.sure[x] and b.must[h]
+                            condemn(h, strong)
+                            hb := bit(h)
+                            mem.marks.killed = mem.marks.killed or hb
+                            if marks.freed[x]:
+                                mem.marks.freed = mem.marks.freed or hb
+                            if marks.freed[x] and strong and marks.gone[x]:
+                                mem.marks.live = mem.marks.live - hb
+                                mem.marks.gone = mem.marks.gone or hb
+                            if strong:
+                                mem.marks.sure = mem.marks.sure or hb
+                            if mem.objs[h].kill == 0:
+                                mem.objs[h].kill = o.pos
+                    if marks.used[x]:
+                        mem.marks.used = mem.marks.used or b.live and mem.outer
+                    if marks.made[x]:
+                        mem.marks.made = mem.marks.made or b.live and mem.outer
+                sweep()
+                if o.blob:
+                    h := mem.heads[SLOTS + usize(o.slot)]
+                    while h != 0:
+                        drop(usize(h) - 1)
+                        h = mem.cells[h - 1].next
+                mem.writes.len = 0
+                for k in 0..sum.ids.len:
+                    c: Cell
+                    if g == mem.f:
+                        c = mem.cells[sum.ids[k]]
+                    else:
+                        c = mem.fns[g].cells[sum.ids[k]]
+                    x := usize(c.owner)
+                    if x == RETURNED and o.blob:
+                        append(mem.writes, Write{translate(sum.aims[k]), cell_at(SLOTS + usize(o.slot), c.off, c.stride), true})
+                    ob := obj_of(g, x)
+                    if x != RETURNED and not (ob.kind == Entry and ob.depth == 0 and ob.root > 0 and mem.fns[g].copies[ob.root - 1]):
+                        t := binding(x)
+                        v := translate(sum.aims[k])
+                        p := plus(t, c.off, c.stride)
+                        exact := p.off != ANY and p.stride == 0
+                        targets := t.live - mem.pinned
+                        one := t.slot == 0 and single(targets) or empty(targets) and t.slot != 0 and t.slot != ALL
+                        renew: Set
+                        if mem.fns[g].renews[k] != 0:
+                            renew = objects(binding(usize(mem.fns[g].renews[k]) - 1).live)
+                        for h in targets:
+                            id := cell_at(h, p.off, p.stride)
+                            old := current(id)
+                            if not empty(old.dead and renew):
+                                old.dead = old.dead - renew
+                                place(id, old)
+                            append(mem.writes, Write{v, id, (one or t.must[h]) and exact and not mem.many[h]})
+                        if t.slot != 0 and t.slot != ALL:
+                            append(mem.writes, Write{v, cell_at(SLOTS + usize(t.slot) - 1, p.off, p.stride), one and exact})
+                mem.order.len = 0
+                for k in 0..mem.writes.len:
+                    append(mem.order, (u64(mem.writes[k].id) << 32) or u64(k))
+                sort(mem.order)
+                live := alive(mem.marks)
+                k: usize = 0
+                while k < mem.order.len:
+                    id := usize(mem.order[k] >> 32)
+                    v: Target
+                    strong := false
+                    while k < mem.order.len and usize(mem.order[k] >> 32) == id:
+                        w := usize(mem.order[k] and 0xffff_ffff)
+                        v = unite(v, mem.writes[w].value, live, live)
+                        strong = strong or mem.writes[w].strong
+                        k += 1
+                    settle(id, v, strong)
+                if o.to != 0 and o.blob:
+                    define(o.to, Target{slot = o.slot + 1})
+                elif o.to != 0:
+                    define(o.to, translate(mem.fns[g].ret))
+        case Fresh, Arena:
+            reads(o)
+            from := mem.callees[o.callee]
+            h := birth((u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), born = usize(i), pos = o.pos, from = from[1:from.len], arena = o.code == Arena})
+            define(o.to, Target{live = bit(h), must = sole(h)})
+        case Rewind:
+            for h in mem.heaps:
+                x := mem.objs[h]
+                if x.arena and x.born > usize(o.from) and x.born < usize(o.upto):
+                    condemn(h, true)
+                    hb := bit(h)
+                    mem.marks.killed = mem.marks.killed or hb
+                    mem.marks.live = mem.marks.live - hb
+                    mem.marks.gone = mem.marks.gone or hb
+                    mem.marks.sure = mem.marks.sure or hb
+                    if mem.objs[h].kill == 0:
+                        mem.objs[h].kill = o.pos
+            sweep()
+        case Grow:
+            reads(o)
+            first := target_of(mem.args[o.first])
+            freeable := first.live and (mem.heaps or mem.outer - mem.roots)
+            out: Target
+            for h in freeable:
+                strong := first.must[h]
+                condemn(h, strong)
+                hb := bit(h)
+                mem.marks.killed = mem.marks.killed or hb
+                if strong:
+                    mem.marks.sure = mem.marks.sure or hb
+                    out.must = out.must or hb
+                if mem.outer[h]:
+                    mem.marks.made = mem.marks.made or hb
+                if mem.objs[h].kill == 0:
+                    mem.objs[h].kill = o.pos
+                out.live = out.live or hb
+            sweep()
+            unset := first.live[NOWHERE] or blank(first)
+            if unset and single(freeable) and not empty(freeable and mem.heaps and first.must):
+                mem.marks.live = mem.marks.live or freeable
+            elif unset:
+                h := birth((u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), pos = o.pos, from = "realloc"})
+                out.live = out.live or bit(h)
+                out.must = out.must or sole(h)
+            if empty(out.live):
+                out.live = bit(NOWHERE)
+            define(o.to, out)
+        case Release:
+            first := target_of(mem.args[o.first])
+            name := mem.names[mem.args[o.first].temp]
+            freeable := first.live and (mem.heaps or mem.outer - mem.roots)
+            stack := first.slot != 0 or not empty(first.live and (mem.noheap or mem.roots))
+            inside := empty(first.dead) and not stack and not empty(freeable) and first.off != ANY and first.off != 0 and first.stride == 0
+            if inside:
+                freeable = Set{}
+            if mem.speak and (not empty(first.dead) or stack or inside):
+                text: &str = "free cannot release "
+                if name.len > 0:
+                    text += name
+                else:
+                    text += "this memory"
+                if not empty(first.dead):
+                    text += ", it may be freed already"
+                elif stack:
+                    text += ", it is not on the heap"
+                else:
+                    text += ", it points inside a heap block, not at its start"
+                warn(view(text), o.pos, "it may be freed here", killed_at(first.dead), false)
+            for h in freeable:
+                strong := first.must[h]
+                condemn(h, strong)
+                hb := bit(h)
+                mem.marks.freed = mem.marks.freed or hb
+                mem.marks.killed = mem.marks.killed or hb
+                if strong:
+                    mem.marks.live = mem.marks.live - hb
+                    mem.marks.gone = mem.marks.gone or hb
+                    mem.marks.sure = mem.marks.sure or hb
+                if mem.objs[h].kill == 0:
+                    mem.objs[h].kill = o.pos
+            sweep()
+        case Copy, Fill:
+            reads(o)
+            to := target_of(mem.args[o.first])
+            size := mem.args[o.first + 2]
+            nothing: Target
+            if size.temp == 0 and size.data == 0 and size.n >= 0 and size.n <= EXACT:
+                if o.code == Copy:
+                    transfer(to, target_of(mem.args[o.first + 1]), size.n, o.mask)
+                else:
+                    for k in 0..size.n / 8:
+                        stash(plus(to, i32(k * 8), 0), number(0))
+            elif o.code == Copy:
+                stash(blur(to, nothing), fetch(blur(target_of(mem.args[o.first + 1]), nothing)))
+            else:
+                stash(blur(to, nothing), number(0))
+            define(o.to, to)
+        case Absent:
+            address := target_of(o.a)
+            for k in 0..i64(o.size) / 8:
+                spot := plus(address, i32(k * 8), 0)
+                gone := fetch(spot).must and mem.heaps and mem.marks.live
+                mem.marks.live = mem.marks.live - gone
+                mem.marks.gone = mem.marks.gone or gone
+                stash(spot, number(0))
+        case Parse:
+            reads(o)
+            nothing: Target
+            stash(target_of(mem.args[o.first + 1]), blur(target_of(mem.args[o.first]), nothing))
+            define(o.to, number(ANY))
+        case Extern:
+            reads(o)
+            define(o.to, Target{live = bit(OUTSIDE), must = bit(OUTSIDE)})
+        case Stop, Halt:
+            mem.seen = false
+        case Goto, Fork:
+            continue
+        case Leave:
+            given := target_of(o.a)
+            wipe := mem.heads[RETURNED]
+            while wipe != 0:
+                drop(usize(wipe) - 1)
+                wipe = mem.cells[wipe - 1].next
+            if mem.blob:
+                for owner in given.live - mem.pinned:
+                    pass_back(owner, given)
+                if given.slot != 0 and given.slot != ALL:
+                    pass_back(SLOTS + usize(given.slot) - 1, given)
+                given = number(0)
+            if mem.final:
+                unseen := mem.heaps - mem.marks.live - reach(given, false, false, true)
+                mem.marks.freed = mem.marks.freed - unseen
+                mem.marks.killed = mem.marks.killed - unseen
+                mem.marks.sure = mem.marks.sure - unseen
+                mem.marks.gone = mem.marks.gone - unseen
+                if mem.exit.seen:
+                    mem.ret = unite(mem.ret, given, alive(mem.exit.marks), alive(mem.marks))
+                else:
+                    mem.ret = given
+                out := snapshot()
+                joined := merge(mem.exit, out, NONE)
+                release(mem.exit)
+                release(out)
+                mem.exit = joined
+            if mem.speak:
+                must := reach(given, true, false, false)
+                may := reach(given, false, false, false)
+                for h in (mem.heaps and mem.marks.live) - must:
+                    x := mem.objs[h]
+                    if (x.key and 0xff) == GLOBAL or x.arena:
+                        continue
+                    never := not may[h] and not mem.marks.freed[h]
+                    text: &str
+                    if never and x.name.len > 0:
+                        text += "the memory allocated here for " + x.name + " is never freed"
+                    elif x.name.len > 0:
+                        text += "the memory allocated here for " + x.name + " may never be freed"
+                    elif never:
+                        text += "the memory that " + x.from + " allocates here is never freed"
+                    else:
+                        text += "the memory that " + x.from + " allocates here may never be freed"
+                    warn(view(text), x.pos, "it is still not freed when this returns", o.pos, x.strict)
+                escape(given, o.pos)
+                for id in mem.present:
+                    owner := usize(mem.cells[id].owner)
+                    if mem.stamp[id] == mem.tick and (owner == RETURNED or owner < SLOTS and mem.outer[owner]):
+                        escape(value(id), o.pos)
+            mem.seen = false
+
+func pass_back(owner: usize, given: Target):
+    k := mem.heads[owner]
+    while k != 0:
+        c := mem.cells[k - 1]
+        if mem.stamp[k - 1] == mem.tick:
+            v := value(k - 1)
+            if c.off == ANY or given.off == ANY or given.stride != 0 or c.stride != 0:
+                settle(cell_at(RETURNED, ANY, 0), v, false)
+            elif c.off >= given.off:
+                settle(cell_at(RETURNED, c.off - given.off, 0), v, true)
+        k = c.next
+
+func snapshot() -> State:
+    out := State{marks = mem.marks, seen = true}
+    ordered := true
+    for id in mem.present:
+        if mem.stamp[id] == mem.tick:
+            ordered = ordered and (out.ids.len == 0 or out.ids[out.ids.len - 1] < id)
+            append(out.ids, id)
+    if not ordered:
+        sort(out.ids)
+    for id in out.ids:
+        if mem.known[id] == 0:
+            mem.known[id] = intern(mem.cur[id]) + 1
+        append(out.vals, mem.known[id] - 1)
+    for t in mem.crossing:
+        if mem.interned[t] == 0:
+            mem.interned[t] = intern(mem.temps[t]) + 1
+        append(out.temps, mem.interned[t] - 1)
+    return out
+
+func needed(id: u32, s: usize) -> bool:
+    owner := usize(mem.cells[id].owner)
+    if owner < SLOTS or s == NONE:
+        return true
+    k := owner - SLOTS
+    return (((mem.alive[s * mem.words + k / 64] or mem.held[k / 64]) >> u64(k % 64)) and 1) != 0
+
+func merge(a: State, b: State, s: usize) -> State:
+    out := State{seen = true}
+    if not b.seen:
+        out.seen = a.seen
+        out.marks = a.marks
+        for k in 0..a.ids.len:
+            append(out.ids, a.ids[k])
+            append(out.vals, a.vals[k])
+        for v in a.temps:
+            append(out.temps, v)
+        return out
+    if not a.seen:
+        out.marks = b.marks
+        for k in 0..b.ids.len:
+            if needed(b.ids[k], s):
+                append(out.ids, b.ids[k])
+                append(out.vals, b.vals[k])
+        for v in b.temps:
+            append(out.temps, v)
+        return out
+    x := a.marks
+    y := b.marks
+    out.marks = Marks{x.live or y.live, x.freed or y.freed, x.killed or y.killed, x.sure and y.sure, x.gone and y.gone, x.used or y.used, x.made or y.made}
+    la := alive(x)
+    lb := alive(y)
+    dying := complement(la or lb)
+    i: usize = 0
+    j: usize = 0
+    while i < a.ids.len or j < b.ids.len:
+        if j == b.ids.len or i < a.ids.len and a.ids[i] < b.ids[j]:
+            id := a.ids[i]
+            c := mem.cells[id]
+            append(out.ids, id)
+            append(out.vals, intern(unite(mem.pool[a.vals[i]], initial(usize(c.owner), c.off, c.stride), la, lb)))
+            i += 1
+        elif i == a.ids.len or b.ids[j] < a.ids[i]:
+            id := b.ids[j]
+            c := mem.cells[id]
+            if needed(id, s):
+                append(out.ids, id)
+                append(out.vals, intern(unite(initial(usize(c.owner), c.off, c.stride), mem.pool[b.vals[j]], la, lb)))
+            j += 1
+        else:
+            append(out.ids, a.ids[i])
+            append(out.vals, blend(a.vals[i], b.vals[j], la, lb, dying))
+            i += 1
+            j += 1
+    for k in 0..a.temps.len:
+        append(out.temps, blend(a.temps[k], b.temps[k], la, lb, dying))
+    return out
+
+func blend(x: u32, y: u32, la: Set, lb: Set, dying: Set) -> u32:
+    if x == y and empty(mem.pool[x].live and dying):
+        return x
+    return intern(unite(mem.pool[x], mem.pool[y], la, lb))
+
+func equal(a: State, b: State) -> bool:
+    x := a.marks
+    y := b.marks
+    if a.seen != b.seen or a.ids.len != b.ids.len or a.temps.len != b.temps.len:
+        return false
+    if x.live != y.live or x.freed != y.freed or x.killed != y.killed or x.sure != y.sure or x.gone != y.gone or x.used != y.used or x.made != y.made:
+        return false
+    for k in 0..a.ids.len:
+        if a.ids[k] != b.ids[k] or a.vals[k] != b.vals[k]:
+            return false
+    for k in 0..a.temps.len:
+        if a.temps[k] != b.temps[k]:
+            return false
+    return true
+
+func pack(s: Summary) -> State:
+    out := State{marks = s.marks, seen = s.seen}
+    for k in 0..s.ids.len:
+        append(out.ids, s.ids[k])
+        append(out.vals, intern(s.aims[k]))
+    return out
+
+func intern(v: Target) -> u32:
+    found := mem.pooled[v]
+    if found is u32:
+        return found
+    mem.pooled[v] = u32(mem.pool.len)
+    append(mem.pool, v)
+    return u32(mem.pool.len - 1)
+
+func hash(v: Target) -> u64:
+    h := fold(fold(fold(FNVBASIS, v.live), v.dead), v.must)
+    h = (h xor u64(i64(v.off) + 2)) * FNVPRIME
+    h = (h xor u64(v.stride)) * FNVPRIME
+    h = (h xor u64(v.slot)) * FNVPRIME
+    # MurmurHash3 finalizer
+    h = (h xor (h >> 33)) * 0xff51_afd7_ed55_8ccd
+    h = (h xor (h >> 33)) * 0xc4ce_b9fe_1a85_ec53
+    return h xor (h >> 33)
+
+func fold(h: u64, x: Set) -> u64:
+    out := h
+    for i in 0..8:
+        out = (out xor x.words[i]) * FNVPRIME
+    return out
+
+operator ==(a: Target, b: Target) -> bool:
+    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot
+
+func release(st: State):
+    free(st.ids)
+    free(st.vals)
+    free(st.temps)
+
+func release(s: Summary):
+    free(s.ids)
+    free(s.aims)
+
+func target_of(a: Operand) -> Target:
+    if a.temp != 0:
+        return mem.temps[a.temp]
+    if a.data == 1:
+        return Target{live = bit(STATIC), must = bit(STATIC)}
+    if a.data > 1:
+        s := object((u64(a.data - 2) << 8) or SHARED, Obj{kind = Shared, name = mem.globals[a.data - 2]})
+        return Target{live = bit(s), must = bit(s)}
+    if a.n >= 0 - EXACT and a.n <= EXACT:
+        return number(i32(a.n))
+    return number(ANY)
+
+func number(off: i32) -> Target:
+    return Target{live = bit(NOWHERE), off = off}
+
+func amount(v: Target) -> Target:
+    if plain(v):
+        return v
+    return number(ANY)
+
+func define(t: u32, v: Target):
+    if t == 0:
+        return
+    mem.temps[t] = v
+    mem.interned[t] = 0
+    if not mem.cross[t] and mem.last[t] > mem.here and not empty(objects(v.live or v.dead)):
+        append(mem.active, t)
+
+func pointing(v: Target) -> bool:
+    return not empty(objects(v.live)) or not empty(v.dead) or v.slot != 0
+
+func plain(v: Target) -> bool:
+    return v.live == bit(NOWHERE) and empty(v.dead) and v.slot == 0
+
+func blank(v: Target) -> bool:
+    return empty(v.live) and empty(v.dead) and v.slot == 0
+
+func plus(a: Target, off: i32, stride: i32) -> Target:
+    out := a
+    if a.off == ANY or off == ANY or a.stride != 0 and stride != 0 and a.stride != stride:
+        out.off = ANY
+        out.stride = 0
+        return out
+    out.off = a.off + off
+    if stride != 0:
+        out.stride = stride
+    if out.off < 0 or out.off > EXACT or out.stride > EXACT:
+        out.off = ANY
+        out.stride = 0
+    return out
+
+func blur(x: Target, y: Target) -> Target:
+    out := Target{live = x.live or y.live or bit(NOWHERE), dead = x.dead or y.dead, off = ANY, slot = x.slot}
+    if x.slot == 0:
+        out.slot = y.slot
+    elif y.slot != 0 and y.slot != x.slot:
+        out.slot = ALL
+    return out
+
+func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
+    if blank(a):
+        return b
+    if blank(b):
+        return a
+    out := a
+    out.live = a.live or b.live
+    out.dead = a.dead or b.dead
+    out.must = (a.must or complement(la)) and (b.must or complement(lb)) and out.live
+    if a.slot == 0:
+        out.slot = b.slot
+    elif b.slot != 0 and b.slot != a.slot:
+        out.slot = ALL
+    stride := a.stride
+    if stride == 0:
+        stride = b.stride
+    if plain(a):
+        out.off = b.off
+        out.stride = b.stride
+    elif plain(b) or a.off == b.off and a.stride == b.stride:
+        return out
+    elif a.off == ANY or b.off == ANY or a.stride != 0 and b.stride != 0 and a.stride != b.stride or (a.off - b.off) % stride != 0:
+        out.off = ANY
+        out.stride = 0
+    else:
+        out.stride = stride
+        if b.off < a.off:
+            out.off = b.off
+    return out
+
+func fetch(a: Target) -> Target:
+    out: Target
+    owners := objects(a.live or a.dead)
+    count: usize = 0
+    exact := a.off != ANY and a.stride == 0
+    live := alive(mem.marks)
+    for o in owners:
+        count += 1
+        if o == STATIC or o == OUTSIDE:
+            out = unite(out, Target{live = bit(o), must = bit(o)}, live, live)
+        elif o != GONE:
+            exact = exact and not mem.many[o]
+            out = gather(out, o, a.off, a.stride, live)
+    if a.slot == ALL:
+        count += 2
+        for s in 0..mem.slots:
+            out = gather(out, SLOTS + s, a.off, a.stride, live)
+    elif a.slot != 0:
+        count += 1
+        out = gather(out, SLOTS + usize(a.slot) - 1, a.off, a.stride, live)
+    if blank(out):
+        return number(0)
+    if count > 1 or not exact:
+        out.must = Set{}
+    return out
+
+func gather(given: Target, owner: usize, off: i32, stride: i32, live: Set) -> Target:
+    out := given
+    own := false
+    h := mem.heads[owner]
+    while h != 0:
+        c := mem.cells[h - 1]
+        fits := c.off == ANY or off == ANY
+        if not fits and c.stride == 0 and stride == 0:
+            fits = c.off == off
+        elif not fits and c.stride == 0:
+            fits = c.off >= off and (c.off - off) % stride == 0
+        elif not fits and stride == 0:
+            fits = off >= c.off and (off - c.off) % c.stride == 0
+        elif not fits:
+            fits = c.stride != stride or (c.off - off) % stride == 0
+        if fits:
+            out = unite(out, current(usize(h) - 1), live, live)
+            own = own or c.off == off and c.stride == stride
+        h = c.next
+    if not own:
+        out = unite(out, initial(owner, off, stride), live, live)
+    return out
+
+func stash(a: Target, v: Target):
+    targets := a.live - mem.pinned
+    one := a.slot == 0 and single(targets) or empty(targets) and a.slot != 0 and a.slot != ALL
+    for o in targets:
+        settle(cell_at(o, a.off, a.stride), v, (one or a.must[o]) and not mem.many[o])
+    if a.slot == ALL:
+        for s in 0..mem.slots:
+            settle(cell_at(SLOTS + s, a.off, a.stride), v, false)
+    elif a.slot != 0:
+        settle(cell_at(SLOTS + usize(a.slot) - 1, a.off, a.stride), v, one)
+
+func settle(id: usize, given: Target, single: bool):
+    c := mem.cells[id]
+    v := given
+    if plain(v):
+        v = number(0)
+    if single and c.off != ANY and c.stride == 0:
+        place(id, v)
+        return
+    old := current(id)
+    live := alive(mem.marks)
+    w := unite(old, v, live, live)
+    w.must = Set{}
+    if c.off == ANY or c.stride != 0 or c.owner < SLOTS and mem.many[usize(c.owner)]:
+        w.must = (old.must or v.must) and w.live
+    place(id, w)
+
+func value(id: u32) -> Target:
+    if mem.fresh[id] == mem.tick:
+        return mem.cur[id]
+    return mem.pool[mem.known[id] - 1]
+
+func current(id: usize) -> Target:
+    if mem.stamp[id] == mem.tick:
+        return value(u32(id))
+    c := mem.cells[id]
+    return initial(usize(c.owner), c.off, c.stride)
+
+func place(id: usize, v: Target):
+    c := mem.cells[id]
+    if plain(v) and v.off == 0 and v.stride == 0 and (c.owner >= SLOTS or not mem.outer[usize(c.owner)]):
+        drop(id)
+        return
+    fresh := v.live or v.dead
+    if mem.stamp[id] == mem.tick:
+        old := value(u32(id))
+        fresh = fresh - (old.live or old.dead) or v.live - v.dead - (old.live - old.dead)
+    elif mem.stamp[id] == (mem.tick xor DROPPED):
+        mem.stamp[id] = mem.tick
+    else:
+        mem.stamp[id] = mem.tick
+        append(mem.present, u32(id))
+    for o in objects(fresh):
+        append(mem.refs[o], u32(id))
+    mem.cur[id] = v
+    mem.fresh[id] = mem.tick
+    mem.known[id] = 0
+
+func drop(id: usize):
+    if mem.stamp[id] == mem.tick:
+        mem.stamp[id] = mem.tick xor DROPPED
+
+func initial(owner: usize, off: i32, stride: i32) -> Target:
+    if owner >= SLOTS or not mem.outer[owner]:
+        return number(0)
+    x := mem.objs[owner]
+    c: usize = 0
+    if x.depth >= DEPTH:
+        c = lost()
+    else:
+        c = object(child(owner, off, stride), Obj{kind = Entry, parent = owner, off = off, stride = stride, root = x.root, depth = x.depth + 1, many = mem.many[owner] or off == ANY or stride != 0})
+    return Target{live = bit(c), must = bit(c)}
+
+func child(owner: usize, off: i32, stride: i32) -> u64:
+    code: u64 = 0
+    if off != ANY and stride == 0:
+        code = u64(off + 1)
+    elif off != ANY:
+        code = (u64(stride) << 13) or u64(off)
+    return (u64(owner) << 40) or (code << 8) or FIELD
+
+func cell_at(owner: usize, off: i32, stride: i32) -> usize:
+    h := mem.heads[owner]
+    n: usize = 0
+    while h != 0:
+        c := mem.cells[h - 1]
+        if c.off == off and c.stride == stride:
+            return usize(h) - 1
+        h = c.next
+        n += 1
+    if n >= CELLS and off != ANY:
+        return cell_at(owner, ANY, 0)
+    append(mem.cells, Cell{owner = u32(owner), next = mem.heads[owner], off = off, stride = stride})
+    mem.heads[owner] = u32(mem.cells.len)
+    if mem.cur.len < mem.cells.len:
+        blank: Target
+        append(mem.cur, blank)
+        append(mem.fresh, u32(0))
+        append(mem.stamp, u32(0))
+        append(mem.renamed, u32(0))
+        append(mem.known, u32(0))
+    return mem.cells.len - 1
+
+func object(key: u64, x: Obj) -> usize:
+    found := mem.index[key]
+    if found is u32:
+        return usize(found)
+    heaps: usize = 0
+    if x.kind == Heap:
+        heaps = count(mem.heaps)
+    if x.kind == Heap and key != OVERFLOW and key != OVERFLOWTEMP and (mem.keys.len >= ROOM or heaps >= HEAPS) and x.arena:
+        return object(OVERFLOWTEMP, Obj{kind = Heap, many = true, pos = x.pos, from = x.from, arena = true})
+    if x.kind == Heap and key != OVERFLOW and key != OVERFLOWTEMP and (mem.keys.len >= ROOM or heaps >= HEAPS):
+        return object(OVERFLOW, Obj{kind = Heap, many = true, pos = x.pos, from = x.from})
+    if mem.keys.len >= ROOM and key != OVERFLOW and key != LOST and key != OVERFLOWTEMP:
+        return lost()
+    n := mem.objs.len
+    y := x
+    y.key = key
+    append(mem.keys, key)
+    mem.index[key] = u32(n)
+    append(mem.objs, y)
+    if x.kind == Heap:
+        mem.heaps = mem.heaps or bit(n)
+    if x.kind == Entry or x.kind == Shared:
+        mem.outer = mem.outer or bit(n)
+    if x.kind == Shared:
+        mem.roots = mem.roots or bit(n)
+    if x.many:
+        mem.many = mem.many or bit(n)
+    return n
+
+func sole(h: usize) -> Set:
+    if mem.keys[h] == OVERFLOW or mem.keys[h] == OVERFLOWTEMP:
+        none: Set
+        return none
+    return bit(h)
+
+func lost() -> usize:
+    return object(LOST, Obj{kind = Entry, many = true, depth = DEPTH})
+
+func birth(key: u64, given: Obj) -> usize:
+    r := object(key, given)
+    if mem.keys[r] == OVERFLOW or mem.keys[r] == OVERFLOWTEMP:
+        mem.marks.live = mem.marks.live or bit(r)
+        return r
+    if mem.marks.live[r] or mem.marks.freed[r] or mem.marks.killed[r]:
+        x := mem.objs[r]
+        x.many = true
+        t := object(mem.keys[r] or AGED, x)
+        if t != r:
+            lr := mem.marks.live[r]
+            lt := mem.marks.live[t]
+            mem.ages += 1
+            for side in 0..2:
+                o := r
+                if side == 1:
+                    o = t
+                n := mem.refs[o].len
+                for k in 0..n:
+                    id := mem.refs[o][k]
+                    if mem.stamp[id] == mem.tick and mem.renamed[id] != mem.ages:
+                        mem.renamed[id] = mem.ages
+                        mem.cur[id] = rename(value(id), r, t, lr, lt)
+                        mem.fresh[id] = mem.tick
+                        mem.known[id] = 0
+                        if side == 0:
+                            append(mem.refs[t], id)
+            kept: usize = 0
+            for v in mem.active:
+                if mem.last[v] > mem.here:
+                    mem.temps[v] = rename(mem.temps[v], r, t, lr, lt)
+                    mem.active[kept] = v
+                    kept += 1
+            mem.active.len = kept
+            for v in mem.crossing:
+                mem.temps[v] = rename(mem.temps[v], r, t, lr, lt)
+                mem.interned[v] = 0
+            bound := mem.bound
+            for k in bound:
+                mem.binds[k] = rename(mem.binds[k], r, t, lr, lt)
+            live := alive(mem.marks)
+            h := mem.heads[r]
+            while h != 0:
+                id := usize(h) - 1
+                c := mem.cells[id]
+                if mem.stamp[id] == mem.tick:
+                    v := value(u32(id))
+                    drop(id)
+                    into := cell_at(t, c.off, c.stride)
+                    old := current(into)
+                    w := unite(old, v, live, live)
+                    w.must = (old.must or v.must) and w.live
+                    place(into, w)
+                h = c.next
+            m := mem.marks
+            pair := bit(r) or bit(t)
+            mem.marks = Marks{shift(m.live, r, t), shift(m.freed, r, t), shift(m.killed, r, t), m.sure - pair, m.gone - pair, shift(m.used, r, t), shift(m.made, r, t)}
+    b := bit(r)
+    mem.marks.live = mem.marks.live or b
+    mem.marks.freed = mem.marks.freed - b
+    mem.marks.killed = mem.marks.killed - b
+    mem.marks.sure = mem.marks.sure - b
+    mem.marks.gone = mem.marks.gone - b
+    return r
+
+func shift(m: Set, r: usize, t: usize) -> Set:
+    if not m[r]:
+        return m
+    return m - bit(r) or bit(t)
+
+func rename(v: Target, r: usize, t: usize, lr: bool, lt: bool) -> Target:
+    pair := bit(r) or bit(t)
+    if empty((v.live or v.dead or v.must) and pair):
+        return v
+    out := v
+    mr := v.must[r]
+    mt := v.must[t]
+    out.live = shift(v.live, r, t)
+    out.dead = shift(v.dead, r, t)
+    out.must = v.must - pair
+    if out.live[t] and (mr or not lr) and (mt or not lt):
+        out.must = out.must or bit(t)
+    return out
+
+func condemn(o: usize, strong: bool):
+    mem.condemned = mem.condemned or bit(o)
+    if strong:
+        mem.strong = mem.strong or bit(o)
+
+func sweep():
+    condemned := mem.condemned
+    if empty(condemned):
+        return
+    for o in condemned and mem.outer:
+        x := mem.objs[o]
+        if x.depth > 0 and x.key != LOST:
+            id := cell_at(x.parent, x.off, x.stride)
+            if mem.stamp[id] != mem.tick:
+                place(id, initial(x.parent, x.off, x.stride))
+    strong := mem.strong
+    for o in condemned:
+        first: usize = 0
+        if (mem.swept[o] >> 32) == u64(mem.tick) and not strong[o]:
+            first = usize(mem.swept[o] and 0xffff_ffff)
+        for k in first..mem.refs[o].len:
+            id := mem.refs[o][k]
+            if mem.stamp[id] == mem.tick and not empty(value(id).live and condemned):
+                mem.cur[id] = kill(value(id), condemned, strong)
+                mem.fresh[id] = mem.tick
+                mem.known[id] = 0
+        mem.swept[o] = (u64(mem.tick) << 32) or u64(mem.refs[o].len)
+    kept: usize = 0
+    for t in mem.active:
+        if mem.last[t] > mem.here:
+            mem.temps[t] = kill(mem.temps[t], condemned, strong)
+            mem.active[kept] = t
+            kept += 1
+    mem.active.len = kept
+    for t in mem.crossing:
+        mem.temps[t] = kill(mem.temps[t], condemned, strong)
+        mem.interned[t] = 0
+    none: Set
+    mem.condemned = none
+    mem.strong = none
+
+func kill(v: Target, condemned: Set, strong: Set) -> Target:
+    hit := v.live and condemned
+    if empty(hit):
+        return v
+    out := v
+    gone := hit and strong
+    out.dead = out.dead or hit
+    out.live = out.live - gone
+    out.must = out.must - gone
+    return out
+
+func touch(a: Target, name: &strview, pos: usize):
+    mem.marks.used = mem.marks.used or (a.live or a.dead) and mem.outer
+    if mem.speak and not empty(a.dead):
+        text: &str
+        if name.len > 0:
+            text += name + " points to memory that may be freed already"
+        else:
+            text += "this uses memory that may be freed already"
+        warn(view(text), pos, "it may be freed here", killed_at(a.dead), false)
+
+func reads(o: Op):
+    for k in o.first..o.first + o.count:
+        touch(target_of(mem.args[k]), mem.names[mem.args[k].temp], o.pos)
+
+func transfer(to: Target, from: Target, size: i64, mask: u64):
+    for k in 0..size / 8:
+        v := number(0)
+        if k < 63 and ((mask >> u64(k)) and 1) != 0 or k >= 63 and (mask >> 63) != 0:
+            v = fetch(plus(from, i32(k * 8), 0))
+        stash(plus(to, i32(k * 8), 0), v)
+
+func carry(from: Set, x: usize, into: Set, h: usize, replace: bool) -> Set:
+    out := into
+    if replace:
+        out = out - bit(h)
+    if from[x]:
+        out = out or bit(h)
+    return out
+
+func obj_of(g: usize, x: usize) -> Obj:
+    if g == mem.f:
+        return mem.objs[x]
+    return mem.fns[g].objs[x]
+
+func binding(x: usize) -> Target:
+    if mem.bound[x]:
+        return mem.binds[x]
+    g := mem.callee
+    o := mem.ops[mem.call]
+    ob := obj_of(g, x)
+    out := Target{dead = bit(GONE)}
+    home: Target
+    if x <= STATIC:
+        out = Target{live = bit(x), must = bit(x)}
+    elif ob.kind == Shared or ob.key == LOST:
+        s := object(ob.key, ob)
+        out = Target{live = bit(s), must = bit(s)}
+    elif ob.kind == Entry and ob.depth == 0:
+        out = number(0)
+        if ob.root <= usize(o.count):
+            out = target_of(mem.args[usize(o.first) + ob.root - 1])
+    elif ob.kind == Entry:
+        home = plus(binding(ob.parent), ob.off, ob.stride)
+        out = fetch(home)
+    if ob.kind == Entry and mem.fns[g].sum.marks.made[x]:
+        refs := objects(out.live)
+        unset := out.live[NOWHERE] or blank(out)
+        if unset and single(refs) and not empty(refs and mem.heaps and out.must):
+            mem.marks.live = mem.marks.live or refs
+        elif unset:
+            name: &strview
+            if ob.root > 0 and ob.root <= usize(o.count):
+                name = mem.names[mem.args[usize(o.first) + ob.root - 1].temp]
+            key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
+            holders := home.live - mem.pinned
+            exact := home.off != ANY and home.stride == 0
+            if exact and home.slot == 0 and single(holders):
+                for h in holders:
+                    key = (child(h, home.off, 0) xor FIELD) or PLACE
+            elif exact and empty(holders) and home.slot != 0 and home.slot != ALL:
+                key = (child(SLOTS + usize(home.slot) - 1, home.off, 0) xor FIELD) or PLACE
+            h := birth(key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.fns[g].shown, name = name})
+            mem.objs[h].strict = mem.objs[h].strict or mem.fns[g].strict
+            out.live = out.live or bit(h)
+            out.must = out.must or sole(h)
+        out.live = objects(out.live)
+    mem.binds[x] = out
+    mem.bound = mem.bound or bit(x)
+    return out
+
+func translate(v: Target) -> Target:
+    out: Target
+    live := alive(mem.marks)
+    must: Set
+    for x in objects(v.live):
+        b := plus(binding(x), v.off, v.stride)
+        if v.must[x]:
+            must = must or b.must
+        out = unite(out, b, live, live)
+    out.must = must and out.live
+    for x in v.dead:
+        b := binding(x)
+        out.dead = out.dead or objects(b.live or b.dead)
+    if blank(out):
+        return number(0)
+    if v.live[NOWHERE]:
+        out.live = out.live or bit(NOWHERE)
+    return out
+
+func escape(v: Target, pos: usize):
+    if v.slot == 0:
+        return
+    shown := mem.fns[mem.f].shown
+    text: &str
+    if v.slot == ALL:
+        text += "a pointer into the stack of " + shown + " cannot leave " + shown
+    else:
+        name := mem.names[mem.fns[mem.f].slots[v.slot - 1]]
+        if name.len > 0:
+            text += "a pointer to " + name + " cannot leave " + shown + ", " + name + " lives on its stack"
+        else:
+            text += "a pointer into the stack of " + shown + " cannot leave " + shown
+    warn(view(text), pos, "", 0, false)
+
+func reach(given: Target, strict: bool, common: bool, stale: bool) -> Set:
+    seen: Set
+    if not common and strict:
+        seen = given.must
+    elif not common:
+        seen = given.live
+    if not common and stale:
+        seen = seen or given.dead
+    for id in mem.present:
+        if mem.stamp[id] == mem.tick:
+            owner := usize(mem.cells[id].owner)
+            root := owner < SLOTS and (mem.roots[owner] or mem.outer[owner] and mem.objs[owner].root == 0)
+            if not common:
+                root = owner == RETURNED or owner < SLOTS and mem.outer[owner]
+            if root and strict:
+                seen = seen or value(id).must
+            elif root and stale:
+                seen = seen or value(id).live or value(id).dead
+            elif root:
+                seen = seen or value(id).live
+    seen = seen and mem.heaps
+    grew := not empty(seen)
+    while grew:
+        grew = false
+        for id in mem.present:
+            owner := usize(mem.cells[id].owner)
+            if mem.stamp[id] == mem.tick and owner < SLOTS and seen[owner]:
+                more := value(id).live
+                if strict:
+                    more = value(id).must
+                elif stale:
+                    more = more or value(id).dead
+                more = (more and mem.heaps) - seen
+                if not empty(more):
+                    seen = seen or more
+                    grew = true
+    return seen
+
+func warn(text: &strview, at: usize, note: &strview, also: usize, strict: bool):
+    append(mem.fns[mem.f].found, Warning{text, at, note, also, strict})
+
+func killed_at(mask: Set) -> usize:
+    for o in mask:
+        return mem.objs[o].kill
+    return 0
+
+func alive(m: Marks) -> Set:
+    return m.live or complement(mem.heaps or m.gone)
+
+func objects(x: Set) -> Set:
+    out := x
+    out[NOWHERE] = false
+    return out
+
+func single(x: Set) -> bool:
+    return count(x) == 1
+
+func bit(o: usize) -> Set:
+    out: Set
+    out[o] = true
+    return out

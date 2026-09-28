@@ -1,0 +1,60 @@
+type Tiny:
+    a: u8
+    b: u8
+    c: u8
+
+type Mixed:
+    f: f32
+    i: i32
+    d: f64
+
+type Big:
+    a: i64
+    b: i64
+    c: i64
+    d: i32
+    e: u8
+
+type Holder:
+    n: i16
+    arr: array[i32, 3]
+    tail: u8
+
+func tiny(n: u8) -> Tiny:
+    return Tiny{n, n + 1, n + 2}
+
+func mixed(m: Mixed) -> Mixed:
+    m.f *= 2.0
+    m.i += 1
+    m.d /= 4.0
+    return m
+
+func grow(b: Big) -> Big:
+    b.a += 1
+    b.e += 1
+    return b
+
+func bump(h: Holder) -> Holder:
+    h.arr[1] += 100
+    return h
+
+func main() -> i32:
+    t := tiny(7)
+    print(t.a, " ", t.b, " ", t.c, " ", sizeof(Tiny))
+    m := Mixed{1.5, 2, 10.0}
+    n := mixed(m)
+    print(m.f, " ", m.i, " ", m.d, " ", n.f, " ", n.i, " ", n.d, " ", sizeof(Mixed))
+    b := Big{1, 2, 3, 4, 255}
+    c := grow(b)
+    print(b.a, " ", b.e, " ", c.a, " ", c.e, " ", sizeof(Big))
+    h: Holder
+    h.arr[1] = 5
+    k := bump(h)
+    print(h.arr[1], " ", k.arr[1], " ", sizeof(Holder))
+    copy := h
+    copy.arr[0] = 9
+    print(h.arr[0], " ", copy.arr[0])
+    p := ptr(h)
+    p.arr[2] = 3
+    print(h.arr[2])
+    return 0

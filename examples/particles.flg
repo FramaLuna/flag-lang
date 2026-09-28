@@ -1,0 +1,50 @@
+use math
+
+type Particles:
+    x: &list[f32]
+    y: &list[f32]
+    speed_x: &list[f32]
+    speed_y: &list[f32]
+    bounces: &list[u32]
+
+func spawn(p: *Particles, count: usize):
+    for i in 0..count:
+        append(p.x, f32(random()) * 100)
+        append(p.y, f32(random()) * 100)
+        append(p.speed_x, f32(random(-50, 50)))
+        append(p.speed_y, 0)
+        append(p.bounces, 0)
+
+func step(p: *Particles, dt: f32):
+    for i in 0..p.x.len:
+        p.speed_y[i] -= 9.8 * dt
+        p.x[i] += p.speed_x[i] * dt
+        p.y[i] += p.speed_y[i] * dt
+        if p.y[i] < 0:
+            p.y[i] = -p.y[i]
+            p.speed_y[i] = -p.speed_y[i] * 0.8
+            p.bounces[i] += 1
+        if p.x[i] < 0 or p.x[i] > 100:
+            p.x[i] = clamp(p.x[i], 0, 100)
+            p.speed_x[i] = -p.speed_x[i]
+
+func free(p: *Particles):
+    free(p.x)
+    free(p.y)
+    free(p.speed_x)
+    free(p.speed_y)
+    free(p.bounces)
+
+func main():
+    seed(7)
+    p: Particles
+    defer free(ptr(p))
+    spawn(ptr(p), 10000)
+    for frame in 0..600:
+        step(ptr(p), 1.0 / 60.0)
+    highest: f32 = 0
+    total: u64 = 0
+    for i in 0..p.x.len:
+        highest = max(highest, p.y[i])
+        total += u64(p.bounces[i])
+    print(p.x.len, " particles, highest at ", fixed(highest, 1), ", ", total, " bounces")

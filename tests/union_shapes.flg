@@ -1,0 +1,49 @@
+type error Bad
+type A
+type B
+
+type P:
+    x: i32
+    y: i32
+
+type Q:
+    s: &strview
+    n: u8
+
+func pick(n: i32) -> P|Q|i64|Bad:
+    if n == 0:
+        return P{1, 2}
+    if n == 1:
+        return Q{"q", 9}
+    if n == 2:
+        return i64(-5)
+    return Bad
+
+func main() -> i32:
+    for i in 0..4:
+        v := pick(i)
+        if v is P:
+            print("P ", v.x + v.y)
+        elif v is Q:
+            print("Q ", v.s, " ", v.n)
+        elif v is i64:
+            print("i64 ", v)
+        else:
+            print("bad")
+    small: i32|null = 4
+    wide: i32|i64|null = small
+    if wide is i32:
+        print("still i32 ", wide)
+    wide = i64(9)
+    if wide is i64:
+        print("now i64 ", wide)
+    wide = null
+    print(wide is null)
+    both: P|Q = Q{"x", 1}
+    many: P|Q|i64|Bad = both
+    print(many is Q, " ", many is P|i64)
+    e: i32|u8|null = u8(3)
+    if e is i32|u8:
+        print("number")
+    print(sizeof(P|Q), " ", sizeof(i8|null), " ", sizeof(A|B))
+    return 0

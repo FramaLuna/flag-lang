@@ -1,0 +1,50 @@
+type Leaf:
+    value: i32
+
+type Pair:
+    left: *Tree
+    right: *Tree
+
+type Tree = Leaf|Pair
+
+type Holder:
+    root: Expr
+
+type Expr = Number|Sum
+
+type Number:
+    n: i64
+
+type Sum:
+    terms: &list[Expr]
+
+func total(t: *Tree) -> i32:
+    node := t.*
+    if node is Leaf:
+        return node.value
+    return total(node.left) + total(node.right)
+
+func value(e: Expr) -> i64:
+    if e is Number:
+        return e.n
+    out: i64 = 0
+    for term in e.terms:
+        out += value(term)
+    return out
+
+func main() -> i32:
+    left: Tree = Leaf{2}
+    right: Tree = Pair{heap(Tree(Leaf{3})), heap(Tree(Leaf{4}))}
+    root: Tree = Pair{heap(left), heap(right)}
+    print(total(ptr(root)))
+    inner: &list[Expr]
+    append(inner, Number{5})
+    append(inner, Number{6})
+    terms: &list[Expr]
+    append(terms, Number{1})
+    append(terms, Sum{inner})
+    h := Holder{Sum{terms}}
+    print(value(h.root))
+    empty := Tree{}
+    print(empty is Leaf)
+    return 0

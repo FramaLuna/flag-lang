@@ -1,0 +1,84 @@
+module ring
+
+type fatptr ring[$T]:
+    len: usize
+    cap: usize
+    first: usize
+
+priv func slot(r: &ring[$T], i: usize) -> *$T:
+    return (ptr(r.*) as usize + (r.first + i) % r.cap * sizeof($T)) as *$T
+
+priv func grow(r: *&ring[$T]):
+    if r.len < r.cap:
+        return
+    cap := r.cap * 2
+    if cap < 8:
+        cap = 8
+    moved := malloc(cap * sizeof($T))
+    if moved as usize == 0:
+        out_of_memory()
+    for i in 0..r.len:
+        ((moved as usize + i * sizeof($T)) as *$T).* = slot(r.*, i).*
+    free(ptr(r.*.*))
+    r.* = moved
+    r.cap = cap
+    r.first = 0
+
+func append(r: *&ring[$T], v: $T):
+    grow(r)
+    r.len += 1
+    slot(r.*, r.len - 1).* = v
+
+func prepend(r: *&ring[$T], v: $T):
+    grow(r)
+    r.first = (r.first + r.cap - 1) % r.cap
+    r.len += 1
+    slot(r.*, 0).* = v
+
+func pop(r: *&ring[$T]) -> $T|null:
+    if r.len == 0:
+        return null
+    r.len -= 1
+    return slot(r.*, r.len).*
+
+func take(r: *&ring[$T]) -> $T|null:
+    if r.len == 0:
+        return null
+    v := slot(r.*, 0).*
+    r.first = (r.first + 1) % r.cap
+    r.len -= 1
+    return v
+
+func at(r: &ring[$T], i: $I, place: &strview = @here()) -> *$T where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+    n := natural(i, r.len, place)
+    if n >= r.len:
+        out_of_bounds(n, r.len, place)
+    return slot(r, n)
+
+func free(r: *&ring[$T]):
+    free(ptr(r.*.*))
+    r.* = usize(0) as *bytes
+    r.len = 0
+    r.cap = 0
+    r.first = 0
+
+priv type Walk[$T]:
+    r: &ring[$T]
+    i: usize
+
+func iter(r: &ring[$T]) -> Walk[$T]:
+    return Walk[$T]{r, 0}
+
+func next(w: *Walk[$T]) -> $T|IterationEnd:
+    if w.i == w.r.len:
+        return IterationEnd
+    w.i += 1
+    return slot(w.r, w.i - 1).*
+
+operator +=(s: *&str, r: &ring[$T]):
+    s.* += "["
+    for i, v in r:
+        if i > 0:
+            s.* += ", "
+        s.* += v
+    s.* += "]"

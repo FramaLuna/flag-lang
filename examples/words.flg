@@ -1,0 +1,43 @@
+use fs
+use os
+
+type Count:
+    word: &strview
+    times: u32
+
+operator <(a: Count, b: Count) -> bool:
+    return a.times > b.times or a.times == b.times and a.word < b.word
+
+func main() -> i32:
+    if args().len < 2:
+        eprint("usage: words file.txt")
+        return 2
+    file := read_text_file(args()[1])
+    if file is FsError:
+        eprint("cannot read ", args()[1], ": ", file)
+        return 1
+    defer free(file)
+    text := lower(file)
+    counts: &map[&strview, u32]
+    defer free(counts)
+    start: usize = 0
+    for i in 0..text.len + 1:
+        c: u8 = ' '
+        if i < text.len:
+            c = text[i]
+        if c >= 'a' and c <= 'z' or c == '\'':
+            continue
+        if i > start:
+            word := text[start:i]
+            counts[word] = (counts[word] ifnull 0) + 1
+        start = i + 1
+    ranking: &list[Count]
+    defer free(ranking)
+    for e in counts:
+        append(ranking, Count{e.key, e.value})
+    sort(ranking)
+    for i, c in ranking:
+        if i == 10:
+            break
+        print(c.times, "\t", c.word)
+    return 0

@@ -1,0 +1,25 @@
+use net
+
+func main() -> i32:
+    server := listen(0)
+    if server is NetError:
+        print("cannot listen")
+        return 1
+    client := connect("127.0.0.1", port(server))
+    if client is NetError:
+        print("cannot connect")
+        return 1
+    peer := accept(server)
+    if peer is NetError:
+        print("cannot accept")
+        return 1
+    _ = send(client, "hello over tcp")
+    print(receive(peer))
+    _ = send(peer, "and back")
+    print(receive(client))
+    close(client)
+    print((trust receive(peer)).len)
+    close(peer)
+    close(server)
+    print(connect("127.0.0.1", 1) is CannotConnect)
+    return 0

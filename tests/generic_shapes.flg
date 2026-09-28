@@ -1,0 +1,71 @@
+type Pair[$A, $B]:
+    a: $A
+    b: $B
+
+type Buf[$$n]:
+    data: array[u8, $$n]
+
+func swap(p: Pair[$A, $B]) -> Pair[$B, $A]:
+    return Pair[$B, $A]{p.b, p.a}
+
+func twin(v: $T) -> Pair[$T, $T]:
+    return Pair[$T, $T]{v, v}
+
+func maybe(v: $T, ok: bool) -> $T|null:
+    if ok:
+        return v
+    return null
+
+func kind(v: $T) -> i32:
+    return 1
+
+func kind(v: i32) -> i32:
+    return 2
+
+func kind(v: *$T) -> i32:
+    return 3
+
+func count(a: array[$T, $$n]) -> usize:
+    return $$n
+
+func capacity(b: *Buf[$$n]) -> usize:
+    return $$n
+
+func set(p: *$T, v: $T):
+    p.* = v
+
+func biggest(a: $T, b: $T) -> $T:
+    if a > b:
+        return a
+    return b
+
+func main() -> i32:
+    p := Pair[i32, f64]{1, 2.5}
+    q := swap(p)
+    r := swap(q)
+    print(q.a, " ", q.b, " ", r.a, " ", r.b, " ", sizeof(Pair[u8, i64]))
+    t := twin(u16(7))
+    print(t.a + t.b, " ", sizeof(Pair[u16, u16]))
+    m := maybe(p, true)
+    if m is Pair[i32, f64]:
+        print(m.b)
+    print(maybe(3, false) is null)
+    x: i32 = 5
+    print(kind(x), " ", kind(i64(5)), " ", kind(ptr(x)), " ", kind(3))
+    a3: array[i8, 3]
+    a5: array[i8, 5]
+    print(count(a3), " ", count(a5))
+    b: Buf[64]
+    print(capacity(ptr(b)), " ", sizeof(Buf[64]))
+    y: i64 = 0
+    set(ptr(y), 42)
+    print(y)
+    print(biggest(u8(7), 2), " ", biggest(-1, -5), " ", biggest(1.5, 0.5))
+    grid: &list[&list[i32]]
+    for i in 0..3:
+        row: &list[i32]
+        for j in 0..i + 1:
+            append(row, i * 10 + j)
+        append(grid, row)
+    print(grid.len, " ", grid[2].len, " ", grid[2][2])
+    return 0

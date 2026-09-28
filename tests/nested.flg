@@ -1,0 +1,39 @@
+type error Empty
+
+func sum(l: &list[i32]) -> i32|Empty:
+    if l.len == 0:
+        return Empty
+    t := 0
+    for v in l:
+        t += v
+    return t
+
+func total(rows: &list[&list[i32]]) -> i32|Empty:
+    all := 0
+    for r in rows:
+        all += try sum(r)
+    return all
+
+func main() -> i32:
+    rows: &list[&list[i32]]
+    for i in 0..3:
+        row: &list[i32]
+        for j in 0..i + 1:
+            append(row, j + 1)
+        append(rows, row)
+    got := total(rows)
+    if got is i32:
+        print("total ", got)
+    empty: &list[i32]
+    append(rows, empty)
+    again := total(rows)
+    if again is Empty:
+        print("empty row")
+    groups: &map[&strview, &list[i32]]
+    first: &list[i32]
+    append(first, 7)
+    put(groups, "a", first)
+    found := get(groups, "a")
+    if found is &list[i32]:
+        print(found.len, " ", found[0])
+    return 0

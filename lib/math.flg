@@ -1,0 +1,127 @@
+module math
+
+PI = 3.141592653589793
+TAU = 6.283185307179586
+E = 2.718281828459045
+
+extern "m":
+    func sqrt(x: f64) -> f64
+    func sin(x: f64) -> f64
+    func cos(x: f64) -> f64
+    func tan(x: f64) -> f64
+    func atan2(y: f64, x: f64) -> f64
+    func pow(x: f64, y: f64) -> f64
+    func exp(x: f64) -> f64
+    func log(x: f64) -> f64
+    func log2(x: f64) -> f64
+    func log10(x: f64) -> f64
+    func floor(x: f64) -> f64
+    func ceil(x: f64) -> f64
+    func round(x: f64) -> f64
+    func trunc(x: f64) -> f64
+    func asin(x: f64) -> f64
+    func acos(x: f64) -> f64
+    func atan(x: f64) -> f64
+    func hypot(x: f64, y: f64) -> f64
+    func fmod(x: f64, y: f64) -> f64
+
+func sqrt(x: f32) -> f32:
+    return f32(sqrt(f64(x)))
+
+func sin(x: f32) -> f32:
+    return f32(sin(f64(x)))
+
+func cos(x: f32) -> f32:
+    return f32(cos(f64(x)))
+
+func tan(x: f32) -> f32:
+    return f32(tan(f64(x)))
+
+func atan2(y: f32, x: f32) -> f32:
+    return f32(atan2(f64(y), f64(x)))
+
+func pow(x: f32, y: f32) -> f32:
+    return f32(pow(f64(x), f64(y)))
+
+func exp(x: f32) -> f32:
+    return f32(exp(f64(x)))
+
+func log(x: f32) -> f32:
+    return f32(log(f64(x)))
+
+func log2(x: f32) -> f32:
+    return f32(log2(f64(x)))
+
+func log10(x: f32) -> f32:
+    return f32(log10(f64(x)))
+
+func floor(x: f32) -> f32:
+    return f32(floor(f64(x)))
+
+func ceil(x: f32) -> f32:
+    return f32(ceil(f64(x)))
+
+func round(x: f32) -> f32:
+    return f32(round(f64(x)))
+
+func trunc(x: f32) -> f32:
+    return f32(trunc(f64(x)))
+
+func asin(x: f32) -> f32:
+    return f32(asin(f64(x)))
+
+func acos(x: f32) -> f32:
+    return f32(acos(f64(x)))
+
+func atan(x: f32) -> f32:
+    return f32(atan(f64(x)))
+
+func hypot(x: f32, y: f32) -> f32:
+    return f32(hypot(f64(x), f64(y)))
+
+func fmod(x: f32, y: f32) -> f32:
+    return f32(fmod(f64(x), f64(y)))
+
+func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
+    return a + (b - a) * t
+
+func abs(x: $T) -> $T where $T is i8|i16|i32|i64|f32|f64:
+    if x < 0:
+        return -x
+    return x
+
+func min(a: $T, b: $T) -> $T:
+    if b < a:
+        return b
+    return a
+
+func max(a: $T, b: $T) -> $T:
+    if a < b:
+        return b
+    return a
+
+func clamp(x: $T, low: $T, high: $T) -> $T:
+    return min(max(x, low), high)
+
+priv context generator:
+    state: u64
+
+func seed(n: u64):
+    generator.state = n
+
+func random() -> f64:
+    return f64(next_random() >> 11) / 9007199254740992.0 # 2^53
+
+func random(low: i64, high: i64) -> i64:
+    span := u64(high - low) + 1
+    if span == 0:
+        return i64(next_random())
+    return low + i64(next_random() % span)
+
+# splitmix64
+priv func next_random() -> u64:
+    generator.state += 0x9E3779B97F4A7C15
+    z := generator.state
+    z = (z xor (z >> 30)) * 0xBF58476D1CE4E5B9
+    z = (z xor (z >> 27)) * 0x94D049BB133111EB
+    return z xor (z >> 31)

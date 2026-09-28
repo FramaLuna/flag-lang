@@ -1,0 +1,33 @@
+use json
+
+func main() -> i32:
+    text := "{\"store\": \"corner shop\", \"items\": [{\"name\": \"apple\", \"price\": 0.5, \"count\": 40}, {\"name\": \"bread\", \"price\": 2.25, \"count\": 12}, {\"name\": \"milk\", \"price\": 1.1, \"count\": 0}]}"
+    doc := parse(text)
+    if doc is NotJson:
+        eprint("the inventory is not valid json")
+        return 1
+    defer free(doc)
+    print("store: ", text(doc, get(doc, 0, "store")))
+    items := get(doc, 0, "items")
+    worth := 0.0
+    for i in 0..count(doc, items):
+        at := item(doc, items, i)
+        name := text(doc, get(doc, at, "name"))
+        price := number(doc, get(doc, at, "price"))
+        units := integer(doc, get(doc, at, "count"))
+        if price is null or units is null:
+            eprint(name, " has no price or count")
+            return 1
+        if units == 0:
+            print(name, ": sold out")
+        else:
+            print(name, ": ", units, " at ", fixed(price, 2))
+            worth += price * f64(units)
+    print("the stock is worth ", fixed(worth, 2))
+    out: &str
+    defer free(out)
+    out += "{\"store\": "
+    quoted(out, "corner \"shop\"")
+    out += ", \"worth\": " + worth + "}"
+    print(out)
+    return 0

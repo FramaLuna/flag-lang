@@ -1,0 +1,241 @@
+module fs
+
+priv extern "c":
+    func fopen(path: cstr, mode: cstr) -> *bytes
+    func fread(into: *bytes, size: usize, count: usize, file: *bytes) -> usize
+    func fwrite(from: *bytes, size: usize, count: usize, file: *bytes) -> usize
+    func fseek(file: *bytes, offset: i64, whence: i32) -> i32
+    func fgetpos(file: *bytes, into: *i64) -> i32
+    func ferror(file: *bytes) -> i32
+    func fgets(into: *u8, size: i32, file: *bytes) -> *u8
+    func fclose(file: *bytes) -> i32
+    func access(path: cstr, mode: i32) -> i32
+    func remove(path: cstr) -> i32
+    func rmdir(path: cstr) -> i32
+    func rename(from: cstr, to: cstr) -> i32
+    func mkdir(path: cstr, mode: u32) -> i32
+    func opendir(path: cstr) -> *bytes
+    func readdir(dir: *bytes) -> *u8
+    func closedir(dir: *bytes) -> i32
+
+type error enum FsError = CannotOpen|CannotRead|CannotWrite|CannotRemove|CannotCreate|CannotRename
+
+type File:
+    handle: *bytes
+
+func open(path: &strview) -> File|CannotOpen:
+    handle := fopen(cstr(path), "rb")
+    if handle as usize == 0:
+        return CannotOpen
+    return File{handle}
+
+func create(path: &strview) -> File|CannotCreate:
+    handle := fopen(cstr(path), "wb")
+    if handle as usize == 0:
+        return CannotCreate
+    return File{handle}
+
+func read(f: File, into: *&str, size: usize) -> usize|CannotRead:
+    reserve(into, into.len + size)
+    got := fread((ptr(into.*.*) as usize + into.len) as *bytes, 1, size, f.handle)
+    into.len += got
+    if got < size and ferror(f.handle) != 0:
+        return CannotRead
+    return got
+
+func read_line(f: File) -> &strview|null:
+    line: &str
+    defer free(line)
+    buf: array[u8, 4096]
+    while fgets(ptr(buf) as *u8, 4096, f.handle) as usize != 0:
+        part := view(ptr(buf) as *u8)
+        line += part
+        if ends_with(part, "\n"):
+            break
+    if line.len == 0:
+        return null
+    text := view(line)
+    if ends_with(text, "\n"):
+        text = text[0:text.len - 1]
+    if ends_with(text, "\r"):
+        text = text[0:text.len - 1]
+    return temp(text)
+
+func write(f: File, text: &strview) -> CannotWrite?:
+    if fwrite(ptr(text.*), 1, text.len, f.handle) != text.len:
+        return CannotWrite
+    return null
+
+func close(f: File):
+    fclose(f.handle)
+
+func read_text_file(path: &strview) -> &str|FsError:
+    name := cstr(path)
+    file := fopen(name, "rb")
+    if file as usize == 0:
+        return CannotOpen
+    out: &str
+    got: usize = 1
+    while got > 0:
+        reserve(out, out.len + 65536)
+        got = fread((ptr(out.*) as usize + out.len) as *bytes, 1, out.cap - out.len, file)
+        out.len += got
+    failed := ferror(file) != 0
+    fclose(file)
+    if failed:
+        free(out)
+        return CannotRead
+    return out
+
+func write_file(path: &strview, from: &slice[u8]) -> usize|FsError:
+    return put_file(path, from, "wb")
+
+func write_file(path: &strview, text: &strview) -> usize|FsError:
+    return put_file(path, items(text), "wb")
+
+func append_file(path: &strview, from: &slice[u8]) -> usize|FsError:
+    return put_file(path, from, "ab")
+
+func append_file(path: &strview, text: &strview) -> usize|FsError:
+    return put_file(path, items(text), "ab")
+
+priv func put_file(path: &strview, from: &slice[u8], mode: cstr) -> usize|FsError:
+    name := cstr(path)
+    file := fopen(name, mode)
+    if file as usize == 0:
+        return CannotOpen
+    done := fwrite(ptr(from.*), 1, from.len, file)
+    if fclose(file) != 0 or done != from.len:
+        return CannotWrite
+    return done
+
+func exists(path: &strview) -> bool:
+    name := cstr(path)
+    found := access(name, 0) == 0
+    return found
+
+func is_dir(path: &strview) -> bool:
+    name := cstr(path)
+    dir := opendir(name)
+    if dir as usize == 0:
+        return false
+    closedir(dir)
+    return true
+
+func file_size(path: &strview) -> usize|FsError:
+    name := cstr(path)
+    file := fopen(name, "rb")
+    if file as usize == 0:
+        return CannotOpen
+    at: array[i64, 4]
+    failed := fseek(file, 0, 2) != 0 or fgetpos(file, ptr(at) as *i64) != 0
+    fclose(file)
+    if failed:
+        return CannotRead
+    return usize(at[0])
+
+func remove(path: &strview) -> CannotRemove?:
+    name := cstr(path)
+    failed := remove(name) != 0 and rmdir(name) != 0
+    if failed:
+        return CannotRemove
+    return null
+
+func rename(from: &strview, to: &strview) -> CannotRename?:
+    old := cstr(from)
+    new := cstr(to)
+    failed := rename(old, new) != 0
+    if failed:
+        return CannotRename
+    return null
+
+func make_dir(path: &strview) -> CannotCreate?:
+    for i in 1..path.len + 1:
+        if i == path.len or slash(items(path)[i]):
+            part := cstr(path[0:i])
+            mkdir(part, 493)
+    if is_dir(path):
+        return null
+    return CannotCreate
+
+func list_dir(path: &strview) -> &slice[&strview]|CannotOpen:
+    dir := opendir(cstr(path))
+    if dir as usize == 0:
+        return CannotOpen
+    names: &list[&strview]
+    entry := readdir(dir)
+    while entry as usize != 0:
+        part := view((entry as usize + name_in_entry()) as *u8)
+        if part != "." and part != "..":
+            append(names, temp(part))
+        entry = readdir(dir)
+    closedir(dir)
+    sort(names)
+    out := temp(names)
+    free(names)
+    return out
+
+func walk(folder: &strview) -> &slice[&strview]|CannotOpen:
+    files: &list[&strview]
+    defer free(files)
+    folders: &list[&strview]
+    defer free(folders)
+    append(folders, folder)
+    i: usize = 0
+    while i < folders.len:
+        names := list_dir(folders[i])
+        if names is CannotOpen and i == 0:
+            return CannotOpen
+        if names is &slice[&strview]:
+            for name in names:
+                path := join(folders[i], name)
+                if is_dir(path):
+                    append(folders, path)
+                else:
+                    append(files, path)
+        i += 1
+    sort(files)
+    return temp(files)
+
+func join(first: &strview, second: &strview) -> &strview:
+    if first.len > 0 and not slash(items(first)[first.len - 1]) and (second.len == 0 or not slash(items(second)[0])):
+        return first + "/" + second
+    return first + second
+
+func base_name(path: &strview) -> &strview:
+    return path[name_start(path):path.len]
+
+func extension(path: &strview) -> &strview:
+    name := base_name(path)
+    for i in 0..name.len:
+        at := name.len - 1 - i
+        if items(name)[at] == '.' and at > 0:
+            return name[at:name.len]
+    return ""
+
+func dir_of(path: &strview) -> &strview:
+    if name_start(path) == 0:
+        return "./"
+    return path[0:name_start(path)]
+
+priv func name_in_entry() -> usize where @linux():
+    return 19
+
+priv func name_in_entry() -> usize where @macos():
+    return 21
+
+priv func name_in_entry() -> usize where @windows():
+    return 8
+
+priv func slash(c: u8) -> bool where not @windows():
+    return c == '/'
+
+priv func slash(c: u8) -> bool where @windows():
+    return c == '/' or c == '\\'
+
+priv func name_start(path: &strview) -> usize:
+    cut: usize = 0
+    for k in 0..path.len:
+        if slash(items(path)[k]):
+            cut = k + 1
+    return cut

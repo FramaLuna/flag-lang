@@ -1,0 +1,38 @@
+type Stack[$T]:
+    items: &list[$T]
+
+func push(s: *Stack[$T], v: $T):
+    append(s.items, v)
+
+func pop(s: *Stack[$T]) -> $T|null:
+    return pop(s.items)
+
+func free(s: *Stack[$T]):
+    free(s.items)
+
+func describe(v: $T) -> &strview where $T is i8|i16|i32|i64:
+    return "a signed number"
+
+func describe(v: $T) -> &strview where $T is u8|u16|u32|u64|usize:
+    return "an unsigned number"
+
+func describe(v: $T) -> &strview where can_assign(&strview, $T):
+    return "some text"
+
+func sum(values: array[$T, $$n]) -> $T:
+    total: $T
+    for v in values:
+        total += v
+    return total
+
+func main():
+    words: Stack[&strview]
+    defer free(ptr(words))
+    push(ptr(words), "first")
+    push(ptr(words), "second")
+    top := pop(ptr(words))
+    while top is &strview:
+        print(top)
+        top = pop(ptr(words))
+    print(describe(-3), ", ", describe(u8(3)), ", ", describe("hi"))
+    print(sum([1, 2, 3, 4]), " ", sum([0.5, 0.25]))

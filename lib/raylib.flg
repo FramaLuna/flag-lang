@@ -1,0 +1,258 @@
+module raylib
+use math
+
+type Vector2:
+    x: f32
+    y: f32
+
+type Vector3:
+    x: f32
+    y: f32
+    z: f32
+
+type Color:
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+
+type Rectangle:
+    x: f32
+    y: f32
+    width: f32
+    height: f32
+
+type Image:
+    data: *bytes
+    width: i32
+    height: i32
+    mipmaps: i32
+    format: i32
+
+type Texture:
+    id: u32
+    width: i32
+    height: i32
+    mipmaps: i32
+    format: i32
+
+type Camera2D:
+    offset: Vector2
+    target: Vector2
+    rotation: f32
+    zoom: f32
+
+type Camera3D:
+    position: Vector3
+    target: Vector3
+    up: Vector3
+    fovy: f32
+    projection: i32
+
+type AudioStream:
+    buffer: *bytes
+    processor: *bytes
+    sample_rate: u32
+    sample_size: u32
+    channels: u32
+
+type Sound:
+    stream: AudioStream
+    frame_count: u32
+
+type Music:
+    stream: AudioStream
+    frame_count: u32
+    looping: bool
+    context_type: i32
+    context_data: *bytes
+
+extern "raylib":
+    func InitWindow(width: i32, height: i32, title: cstr)
+    func CloseWindow()
+    func WindowShouldClose() -> bool
+    func SetConfigFlags(flags: u32)
+    func SetTargetFPS(fps: i32)
+    func SetWindowTitle(title: cstr)
+    func ToggleFullscreen()
+    func GetScreenWidth() -> i32
+    func GetScreenHeight() -> i32
+    func GetFrameTime() -> f32
+    func GetTime() -> f64
+    func GetFPS() -> i32
+    func GetRandomValue(low: i32, high: i32) -> i32
+    func TakeScreenshot(path: cstr)
+    func BeginDrawing()
+    func EndDrawing()
+    func ClearBackground(color: Color)
+    func BeginMode2D(camera: Camera2D)
+    func EndMode2D()
+    func BeginMode3D(camera: Camera3D)
+    func EndMode3D()
+    func IsKeyPressed(key: i32) -> bool
+    func IsKeyDown(key: i32) -> bool
+    func IsKeyReleased(key: i32) -> bool
+    func GetKeyPressed() -> i32
+    func GetCharPressed() -> i32
+    func IsMouseButtonPressed(button: i32) -> bool
+    func IsMouseButtonDown(button: i32) -> bool
+    func IsMouseButtonReleased(button: i32) -> bool
+    func GetMousePosition() -> Vector2
+    func GetMouseDelta() -> Vector2
+    func GetMouseWheelMove() -> f32
+    func DrawPixel(x: i32, y: i32, color: Color)
+    func DrawLine(x1: i32, y1: i32, x2: i32, y2: i32, color: Color)
+    func DrawLineV(from: Vector2, to: Vector2, color: Color)
+    func DrawLineEx(from: Vector2, to: Vector2, thick: f32, color: Color)
+    func DrawCircle(x: i32, y: i32, radius: f32, color: Color)
+    func DrawCircleV(center: Vector2, radius: f32, color: Color)
+    func DrawCircleLines(x: i32, y: i32, radius: f32, color: Color)
+    func DrawRectangle(x: i32, y: i32, width: i32, height: i32, color: Color)
+    func DrawRectangleV(position: Vector2, size: Vector2, color: Color)
+    func DrawRectangleRec(rec: Rectangle, color: Color)
+    func DrawRectangleLines(x: i32, y: i32, width: i32, height: i32, color: Color)
+    func DrawRectangleLinesEx(rec: Rectangle, thick: f32, color: Color)
+    func DrawRectangleRounded(rec: Rectangle, roundness: f32, segments: i32, color: Color)
+    func DrawTriangle(a: Vector2, b: Vector2, c: Vector2, color: Color)
+    func DrawText(text: cstr, x: i32, y: i32, size: i32, color: Color)
+    func MeasureText(text: cstr, size: i32) -> i32
+    func DrawFPS(x: i32, y: i32)
+    func DrawCube(position: Vector3, width: f32, height: f32, length: f32, color: Color)
+    func DrawCubeWires(position: Vector3, width: f32, height: f32, length: f32, color: Color)
+    func DrawSphere(center: Vector3, radius: f32, color: Color)
+    func DrawPlane(center: Vector3, size: Vector2, color: Color)
+    func DrawGrid(slices: i32, spacing: f32)
+    func LoadImage(path: cstr) -> Image
+    func GenImageColor(width: i32, height: i32, color: Color) -> Image
+    func UnloadImage(image: Image)
+    func LoadTexture(path: cstr) -> Texture
+    func LoadTextureFromImage(image: Image) -> Texture
+    func UnloadTexture(texture: Texture)
+    func DrawTexture(texture: Texture, x: i32, y: i32, tint: Color)
+    func DrawTextureV(texture: Texture, position: Vector2, tint: Color)
+    func DrawTextureEx(texture: Texture, position: Vector2, rotation: f32, scale: f32, tint: Color)
+    func DrawTextureRec(texture: Texture, source: Rectangle, position: Vector2, tint: Color)
+    func DrawTexturePro(texture: Texture, source: Rectangle, dest: Rectangle, origin: Vector2, rotation: f32, tint: Color)
+    func CheckCollisionRecs(a: Rectangle, b: Rectangle) -> bool
+    func CheckCollisionCircles(a: Vector2, radius_a: f32, b: Vector2, radius_b: f32) -> bool
+    func CheckCollisionCircleRec(center: Vector2, radius: f32, rec: Rectangle) -> bool
+    func CheckCollisionPointRec(point: Vector2, rec: Rectangle) -> bool
+    func CheckCollisionPointCircle(point: Vector2, center: Vector2, radius: f32) -> bool
+    func GetCollisionRec(a: Rectangle, b: Rectangle) -> Rectangle
+    func Fade(color: Color, alpha: f32) -> Color
+    func ColorFromHSV(hue: f32, saturation: f32, value: f32) -> Color
+    func InitAudioDevice()
+    func CloseAudioDevice()
+    func LoadSound(path: cstr) -> Sound
+    func UnloadSound(sound: Sound)
+    func PlaySound(sound: Sound)
+    func StopSound(sound: Sound)
+    func SetSoundVolume(sound: Sound, volume: f32)
+    func LoadMusicStream(path: cstr) -> Music
+    func UnloadMusicStream(music: Music)
+    func PlayMusicStream(music: Music)
+    func StopMusicStream(music: Music)
+    func UpdateMusicStream(music: Music)
+
+extern "m":
+
+operator +(a: Vector2, b: Vector2) -> Vector2:
+    return Vector2{a.x + b.x, a.y + b.y}
+
+operator -(a: Vector2, b: Vector2) -> Vector2:
+    return Vector2{a.x - b.x, a.y - b.y}
+
+operator *(v: Vector2, s: f32) -> Vector2:
+    return Vector2{v.x * s, v.y * s}
+
+operator +(a: Vector3, b: Vector3) -> Vector3:
+    return Vector3{a.x + b.x, a.y + b.y, a.z + b.z}
+
+operator -(a: Vector3, b: Vector3) -> Vector3:
+    return Vector3{a.x - b.x, a.y - b.y, a.z - b.z}
+
+operator *(v: Vector3, s: f32) -> Vector3:
+    return Vector3{v.x * s, v.y * s, v.z * s}
+
+func length(v: Vector2) -> f32:
+    return sqrt(v.x * v.x + v.y * v.y)
+
+func normalize(v: Vector2) -> Vector2:
+    l := length(v)
+    if l == 0.0:
+        return v
+    return v * (1.0 / l)
+
+FLAG_FULLSCREEN_MODE = 2
+FLAG_WINDOW_RESIZABLE = 4
+FLAG_MSAA_4X_HINT = 32
+FLAG_VSYNC_HINT = 64
+
+MOUSE_BUTTON_LEFT = 0
+MOUSE_BUTTON_RIGHT = 1
+MOUSE_BUTTON_MIDDLE = 2
+
+KEY_SPACE = 32
+KEY_ESCAPE = 256
+KEY_ENTER = 257
+KEY_TAB = 258
+KEY_BACKSPACE = 259
+KEY_RIGHT = 262
+KEY_LEFT = 263
+KEY_DOWN = 264
+KEY_UP = 265
+KEY_LEFT_SHIFT = 340
+KEY_LEFT_CONTROL = 341
+KEY_A = 65
+KEY_B = 66
+KEY_C = 67
+KEY_D = 68
+KEY_E = 69
+KEY_F = 70
+KEY_G = 71
+KEY_H = 72
+KEY_I = 73
+KEY_J = 74
+KEY_K = 75
+KEY_L = 76
+KEY_M = 77
+KEY_N = 78
+KEY_O = 79
+KEY_P = 80
+KEY_Q = 81
+KEY_R = 82
+KEY_S = 83
+KEY_T = 84
+KEY_U = 85
+KEY_V = 86
+KEY_W = 87
+KEY_X = 88
+KEY_Y = 89
+KEY_Z = 90
+
+LIGHTGRAY = Color{200, 200, 200, 255}
+GRAY = Color{130, 130, 130, 255}
+DARKGRAY = Color{80, 80, 80, 255}
+YELLOW = Color{253, 249, 0, 255}
+GOLD = Color{255, 203, 0, 255}
+ORANGE = Color{255, 161, 0, 255}
+PINK = Color{255, 109, 194, 255}
+RED = Color{230, 41, 55, 255}
+MAROON = Color{190, 33, 55, 255}
+GREEN = Color{0, 228, 48, 255}
+LIME = Color{0, 158, 47, 255}
+DARKGREEN = Color{0, 117, 44, 255}
+SKYBLUE = Color{102, 191, 255, 255}
+BLUE = Color{0, 121, 241, 255}
+DARKBLUE = Color{0, 82, 172, 255}
+PURPLE = Color{200, 122, 255, 255}
+VIOLET = Color{135, 60, 190, 255}
+DARKPURPLE = Color{112, 31, 126, 255}
+BEIGE = Color{211, 176, 131, 255}
+BROWN = Color{127, 106, 79, 255}
+DARKBROWN = Color{76, 63, 47, 255}
+WHITE = Color{255, 255, 255, 255}
+BLACK = Color{0, 0, 0, 255}
+BLANK = Color{0, 0, 0, 0}
+MAGENTA = Color{255, 0, 255, 255}
+RAYWHITE = Color{245, 245, 245, 255}

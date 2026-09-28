@@ -1,0 +1,71 @@
+type Pair[$T]:
+    a: $T
+    b: $T
+
+type Meters = i32
+
+type error Failed:
+    code: i32
+
+type Node:
+    value: i32
+    next: *Node
+
+context saved:
+    count: i32
+
+func check(n: i32) -> i32|Failed:
+    if n < 0:
+        return Failed{n * 10}
+    return n
+
+func length(list: *Node) -> i32:
+    if list as usize == 0:
+        return 0
+    return 1 + length(list.next)
+
+func even(n: u32) -> bool:
+    if n == 0:
+        return true
+    return odd(n - 1)
+
+func odd(n: u32) -> bool:
+    if n == 0:
+        return false
+    return even(n - 1)
+
+func biggest(items: &list[$T]) -> $T:
+    best := items[0]
+    for x in items:
+        if x > best:
+            best = x
+    return best
+
+func main() -> i32:
+    p := Pair[i64]{3, 4}
+    print(p.a + p.b, " ", sizeof(Pair[u8]))
+    m: Meters = 5
+    n: i32 = m
+    print(n)
+    r := check(-3)
+    if r is Failed:
+        print("failed ", r.code)
+    third := heap(Node{3, usize(0) as *Node})
+    second := heap(Node{2, third})
+    first := Node{1, second}
+    print(length(ptr(first)))
+    print(even(10), " ", odd(7))
+    l: &list[u64]
+    append(l, 5)
+    append(l, 50)
+    append(l, 7)
+    print(biggest(l))
+    saved.count = 7
+    copy := saved
+    saved.count = 1
+    print(copy.count, " ", saved.count)
+    v: i32? = null
+    got := trust v
+    x: i64 = -9223372036854775807 - 1
+    print(x)
+    return 0

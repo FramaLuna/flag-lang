@@ -1,0 +1,1034 @@
+@trust
+func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
+    l := a
+    r := b
+    if l.lit and r.lit and integer(l.type) and integer(r.type):
+        nb := r.neg
+        m: usize = 0
+        negative := false
+        overflow := false
+        switch o:
+        case "==", "!=", "<", "<=", ">", ">=":
+            less := l.neg and not nb or l.neg and nb and l.n > r.n or not l.neg and not nb and l.n < r.n
+            same := l.neg == nb and l.n == r.n
+            switch o:
+            case "==":
+                return truth(same)
+            case "!=":
+                return truth(not same)
+            case "<":
+                return truth(less)
+            case "<=":
+                return truth(less or same)
+            case ">":
+                return truth(not less and not same)
+            case:
+                return truth(not less)
+        case "+", "-":
+            if o == "-":
+                nb = not nb and r.n != 0
+            if l.neg == nb:
+                overflow = l.n > 0xffff_ffff_ffff_ffff - r.n
+                m = l.n + r.n
+                negative = nb
+            elif l.n >= r.n:
+                m = l.n - r.n
+                negative = l.neg
+            else:
+                m = r.n - l.n
+                negative = nb
+        case "*":
+            m = l.n * r.n
+            overflow = l.n != 0 and m / l.n != r.n
+            negative = l.neg != nb
+        case "/", "%":
+            if r.n == 0:
+                eprint(ERR, "division by zero")
+                show(at)
+                return Fail
+            m = l.n / r.n
+            negative = l.neg != nb
+            if o == "%":
+                m = l.n % r.n
+                negative = l.neg
+        case "<<", ">>":
+            if nb or r.n > 63:
+                eprint(ERR, "a shift expects an amount from 0 to 63, this one is ", r.n)
+                show(at)
+                return Fail
+            if o == "<<":
+                overflow = l.n > 0xffff_ffff_ffff_ffff >> r.n
+                m = l.n << r.n
+                negative = l.neg
+            elif l.neg:
+                m = ((l.n - 1) >> r.n) + 1
+                negative = true
+            else:
+                m = l.n >> r.n
+        case:
+            x := l.n
+            if l.neg:
+                x = 0 - x
+            y := r.n
+            if nb:
+                y = 0 - y
+            switch o:
+            case "and":
+                m = x and y
+                negative = l.neg and nb
+            case "or":
+                m = x or y
+                negative = l.neg or nb
+            case:
+                m = x xor y
+                negative = l.neg != nb
+            if negative:
+                m = 0 - m
+        if overflow or negative and m > 1 << 63:
+            eprint(ERR, "the result of this literal arithmetic does not fit in 64 bits")
+            show(at)
+            return Fail
+        return literal(negative, m)
+    if l.lit and r.lit and numeric(l.type) and numeric(r.type):
+        x := real(l)
+        y := real(r)
+        switch o:
+        case "+":
+            return float_literal(x + y, at)
+        case "-":
+            return float_literal(x - y, at)
+        case "*":
+            return float_literal(x * y, at)
+        case "/":
+            return float_literal(x / y, at)
+        case "==":
+            return truth(x == y)
+        case "!=":
+            return truth(x != y)
+        case "<":
+            return truth(x < y)
+        case "<=":
+            return truth(x <= y)
+        case ">":
+            return truth(x > y)
+        case ">=":
+            return truth(x >= y)
+    if l.lit and not r.lit and numeric(l.type) and numeric(r.type):
+        l = try convert(l, r.type, Arg{}, at)
+    if r.lit and not l.lit and numeric(r.type) and numeric(l.type):
+        r = try convert(r, l.type, Arg{}, at)
+    lt := comp.types[l.type]
+    rt := comp.types[r.type]
+    if numeric(l.type) and numeric(r.type) and l.type != r.type:
+        eprint(ERR, o, " expects two numbers of one type but got ", lt.name, " and ", rt.name, ", convert one side with ", lt.name, "(...) or ", rt.name, "(...)")
+        show(at)
+        return Fail
+    if o == "==" or o == "!=":
+        c: &strview = "ceqw"
+        if o == "!=":
+            c = "cnew"
+        if lt.kind == Union and rt.kind == Void and has(members(l.type), r.type):
+            return Value{type = BOOL, at = op(W, c, tag(l), int_arg(i64(r.type)))}
+        if rt.kind == Union and lt.kind == Void and has(members(r.type), l.type):
+            return Value{type = BOOL, at = op(W, c, tag(r), int_arg(i64(l.type)))}
+        if l.type == r.type and lt.kind == Union and lt.size == 4:
+            return Value{type = BOOL, at = op(W, c, tag(l), tag(r))}
+    k := lt.kind
+    if l.type != r.type or not (k == Bool or k == Int or k == Uint or k == Float or k == Ptr):
+        return operate(o, l, r, at)
+    x := load(l).at
+    y := load(r).at
+    compare: &strview
+    switch o:
+    case "==":
+        compare = "ceq"
+    case "!=":
+        compare = "cne"
+    case "<":
+        compare = "cslt"
+    case "<=":
+        compare = "csle"
+    case ">":
+        compare = "csgt"
+    case ">=":
+        compare = "csge"
+    case:
+        compare = ""
+    if compare.len > 0 and (compare.len == 3 or k != Bool):
+        return Value{type = BOOL, at = op(W, cmp_name(compare, l.type), x, y)}
+    name: &strview
+    switch o:
+    case "+", "-", "*":
+        if k != Bool and k != Ptr:
+            switch o:
+            case "+":
+                name = "add"
+            case "-":
+                name = "sub"
+            case:
+                name = "mul"
+    case "/":
+        if k == Int or k == Float:
+            name = "div"
+        elif k == Uint:
+            name = "udiv"
+    case "%":
+        if k == Int:
+            name = "rem"
+        elif k == Uint:
+            name = "urem"
+    case "and", "or", "xor":
+        if k == Int or k == Uint or k == Bool and o == "xor":
+            name = o
+    case "<<":
+        if k == Int or k == Uint:
+            name = "shl"
+    case ">>":
+        if k == Int:
+            name = "sar"
+        elif k == Uint:
+            name = "shr"
+    case:
+        name = ""
+    if name.len == 0:
+        return operate(o, l, r, at)
+    if (o == "<<" or o == ">>") and lt.size == 8:
+        y = op1(W, "copy", y)
+    if k != Float and (o == "/" or o == "%") and y.kind == Const and y.n == 0:
+        eprint(ERR, "division by zero")
+        show(at)
+        return Fail
+    if k != Float and (o == "/" or o == "%") and y.kind == Temp:
+        l_zero := label()
+        l_fine := label()
+        branch(op(W, cmp_name("ceq", l.type), y, int_arg(0)), l_zero, l_fine)
+        open_block(l_zero)
+        message: &list[Value]
+        append(message, Value{type = try text_type("strview", at), at = text_data("division by zero"), mem = true})
+        try invoke("panic", message, at)
+        terminate("hlt", Arg{})
+        open_block(l_fine)
+    if k == Int and (name == "div" or name == "rem") and (y.kind == Temp or y.kind == Const and y.n == -1):
+        slot := alloc(l.type)
+        l_minus := label()
+        l_plain := label()
+        l_done := label()
+        branch(op(W, cmp_name("ceq", l.type), y, int_arg(-1)), l_minus, l_plain)
+        open_block(l_minus)
+        if name == "div":
+            store(l.type, Value{type = l.type, at = extend(l.type, op1(cls(l.type), "neg", x))}, slot)
+        else:
+            store(l.type, Value{type = l.type, at = int_arg(0)}, slot)
+        jump(l_done)
+        open_block(l_plain)
+        store(l.type, Value{type = l.type, at = op(cls(l.type), name, x, y)}, slot)
+        jump(l_done)
+        open_block(l_done)
+        return load(Value{type = l.type, at = slot, mem = true})
+    return Value{type = l.type, at = extend(l.type, op(cls(l.type), name, x, y))}
+
+func operate(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
+    name := o
+    if o == "!=":
+        name = "=="
+    elif o == ">" or o == "<=" or o == ">=":
+        name = "<"
+    args: &list[Value]
+    if o == ">" or o == "<=":
+        append(args, r)
+        append(args, l)
+    else:
+        append(args, l)
+        append(args, r)
+    v := try invoke(name, args, at)
+    if o != "!=" and o != "<=" and o != ">=":
+        return v
+    if v.type != BOOL:
+        eprint(ERR, o, " is the negation of ", name, ", which answers ", comp.types[v.type].name, " here instead of bool")
+        show(at)
+        return Fail
+    return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
+
+func invoke(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
+    names: &list[&strview]
+    return call(name, "", args, names, at)
+
+func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
+    best: usize = 0
+    best_score: i64 = -1
+    best_near: usize = 0
+    tied := false
+    seen := false
+    scores: &list[i64]
+    s := first_sym(name)
+    while s != 0:
+        f := comp.syms[s].node
+        if callable(s, module, args, at):
+            seen = true
+            order := arrange(f, args.len, names)
+            if order is &list[usize]:
+                saved := comp.frame
+                comp.frame = comp.binds.len
+                score := try bind(f, order, args)
+                comp.binds.len = comp.frame
+                comp.frame = saved
+                append(scores, score)
+                near: usize = 2
+                if comp.syms[s].module == comp.files[file_of(at)].module:
+                    near = 0
+                elif comp.syms[s].module.len == 0:
+                    near = 1
+                if score > best_score or score >= 0 and score == best_score and near < best_near:
+                    best = s
+                    best_score = score
+                    best_near = near
+                    tied = false
+                elif score >= 0 and score == best_score and near == best_near:
+                    tied = true
+        s = comp.syms[s].next
+    if not seen and is_letter(items(name)[0]):
+        try hidden(name, true, at)
+        eprint(ERR, "no function named ", name, " is visible here")
+        show(at)
+        return Fail
+    if best == 0 or tied:
+        for wanted in names:
+            declared := wanted.len == 0
+            s = first_sym(name)
+            while s != 0 and not declared:
+                f := comp.syms[s].node
+                for k in 0..params(f):
+                    declared = declared or callable(s, module, args, at) and text(kid(f, k)) == wanted
+                s = comp.syms[s].next
+            if not declared:
+                eprint(ERR, name, " has no parameter named ", wanted)
+                show(at)
+                return Fail
+        shown: &str
+        for i in 0..args.len:
+            if i > 0:
+                shown += ", "
+            shown += comp.types[args[i].type].name
+        if tied:
+            eprint(ERR, "ambiguous call to ", name, ", several overloads match (", shown, ") equally")
+        else:
+            eprint(ERR, "no overload of ", name, " matches (", shown, ")")
+        show(at)
+        k: usize = 0
+        s = first_sym(name)
+        while s != 0:
+            if callable(s, module, args, at):
+                arranged := arrange(comp.syms[s].node, args.len, names) is &list[usize]
+                if not tied or arranged and scores[k] == best_score:
+                    decl := comp.nodes[comp.syms[s].node].tok
+                    eprint(NOTE, "an overload of ", name, " is declared here")
+                    show(comp.tokens[decl].at)
+                    if noted(at) and comp.tokens[comp.target].text == name:
+                        mark(decl, header(decl))
+                if arranged:
+                    k += 1
+            s = comp.syms[s].next
+        return Fail
+    f := comp.syms[best].node
+    if noted(at) and comp.tokens[comp.target].text == name:
+        mark(comp.nodes[f].tok, header(comp.nodes[f].tok))
+    order := trust arrange(f, args.len, names)
+    saved := comp.frame
+    comp.frame = comp.binds.len
+    try bind(f, order, args)
+    wanted: &list[usize]
+    for k in 0..order.len:
+        append(wanted, try resolve(kid(f, k) + 1))
+    id := try instantiate(f, at)
+    comp.binds.len = comp.frame
+    comp.frame = saved
+    foreign := body(f) == 0 or comp.insts[id].export
+    passes: &list[Pass]
+    for k in 0..order.len:
+        v: Value
+        if order[k] < args.len and comp.types[wanted[k]].kind == Ptr and comp.types[wanted[k]].elem == args[order[k]].type:
+            given := args[order[k]]
+            if not given.mem and not aggregate(given.type):
+                slot := alloc(given.type)
+                store(given.type, given, slot)
+                given.at = slot
+            v = Value{type = wanted[k], at = given.at}
+        elif order[k] < args.len:
+            v = try convert(args[order[k]], wanted[k], Arg{}, at)
+        else:
+            given := node_end(kid(f, k) + 1)
+            limit := comp.limit
+            site := comp.site
+            comp.limit = 0
+            comp.site = at
+            v = try convert(try gen(given, wanted[k]), wanted[k], Arg{}, source(given))
+            comp.limit = limit
+            comp.site = site
+        pass: u32 = L
+        if comp.types[wanted[k]].kind != Fat:
+            pass = try passing(wanted[k], foreign, at)
+        x := load(v).at
+        if x.kind == Empty:
+            x = int_arg(0)
+        append(passes, Pass{pass, x, is_number(x)})
+    if order.len < params(f):
+        append(passes, Pass{})
+        for k in order.len..args.len:
+            v := args[k]
+            t := comp.types[v.type]
+            if aggregate(v.type) or t.kind == Void:
+                eprint(ERR, name, " expects integers, floats, bool and pointers after its declared parameters but got ", t.name)
+                show(at)
+                return Fail
+            x := load(v).at
+            pass := cls(v.type)
+            if v.type == F32:
+                x = op1(D, "exts", x)
+                pass = D
+            append(passes, Pass{pass, x, is_number(x)})
+    first := comp.passes.len
+    for p in passes:
+        append(comp.passes, p)
+    ret := comp.insts[id].ret
+    result := Arg{}
+    back: u32 = 0
+    if ret != VOID:
+        result = temp()
+        back = try passing(ret, foreign, at)
+    here := comp.at
+    comp.at = at
+    add(Ins{op = "call", cls = back, to = u32(result.n), a = global(comp.insts[id].name), first = u32(first), count = u32(passes.len)})
+    comp.at = here
+    if foreign and ret != VOID and not aggregate(ret):
+        result = extend(ret, result)
+    return Value{type = ret, at = result, mem = aggregate(ret)}
+
+func bind(f: usize, order: &list[usize], args: &list[Value]) -> i64|Fail:
+    score: i64 = 0
+    for pass in 0..2:
+        for k in 0..order.len:
+            if order[k] < args.len and args[order[k]].lit == (pass == 1):
+                got := try match(kid(f, k) + 1, args[order[k]])
+                if got < 0 or score < 0:
+                    score = -1
+                else:
+                    score += got
+    c := kid(f, params(f))
+    while c < node_end(f) and score >= 0:
+        if comp.nodes[c].kind == Where:
+            choosing := comp.choosing
+            comp.choosing = true
+            kept := holds(c + 1)
+            comp.choosing = choosing
+            if kept is Fail:
+                return Fail
+            if not kept:
+                score = -1
+        c = node_end(c)
+    return score
+
+func arrange(f: usize, count: usize, names: &list[&strview]) -> &list[usize]?:
+    fixed := params(f)
+    variadic := fixed > 0 and text(kid(f, fixed - 1)) == ".."
+    if variadic:
+        fixed -= 1
+    order: &list[usize]
+    for k in 0..fixed:
+        append(order, count)
+    next: usize = 0
+    for i in 0..count:
+        named := i < names.len and names[i].len > 0
+        slot := next
+        if named:
+            slot = fixed
+            for k in 0..fixed:
+                if text(kid(f, k)) == names[i]:
+                    slot = k
+        else:
+            next += 1
+        if named and (slot == fixed or variadic) or slot >= fixed and not variadic:
+            return null
+        if slot < fixed and order[slot] != count:
+            return null
+        if slot < fixed:
+            order[slot] = i
+    for k in 0..fixed:
+        if order[k] == count and kids(kid(f, k)) == 1:
+            return null
+    return order
+
+func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
+    ty := comp.types[t]
+    if foreign and aggregate(t):
+        return c_type(t, at)
+    if foreign and ty.size == 1 and ty.kind == Int:
+        return SB
+    if foreign and ty.size == 1:
+        return UB
+    if foreign and ty.size == 2 and ty.kind == Int:
+        return SH
+    if foreign and ty.size == 2:
+        return UH
+    return cls(t)
+
+func c_type(t: usize, at: usize) -> u32|Fail:
+    ty := comp.types[t]
+    if has(comp.c_types, t):
+        return CAGG + u32(t)
+    if ty.kind != Struct and ty.kind != Untagged:
+        eprint(ERR, ty.name, " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do")
+        show(at)
+        return Fail
+    if ty.packed:
+        eprint(ERR, ty.name, " cannot cross the C ABI by value, it is packed: pass a pointer")
+        show(at)
+        return Fail
+    fields: &str
+    for i in 0..ty.count:
+        item := comp.items[ty.first + i]
+        e := item.type
+        count: usize = 1
+        if comp.types[e].kind == Array:
+            count = comp.types[e].count
+            e = comp.types[e].elem
+        k := comp.types[e].kind
+        one: &str
+        if item.shared:
+            eprint(ERR, ty.name, " cannot cross the C ABI by value, its field ", item.name, " shares storage: pass a pointer, or declare that part as an untagged union")
+            show(at)
+            return Fail
+        elif comp.types[e].size == 0:
+            continue
+        elif k == Struct or k == Untagged:
+            one += ":c" + (try c_type(e, at) - CAGG)
+        elif k == Bool or comp.types[e].size == 1 and integer(e):
+            one += "b"
+        elif comp.types[e].size == 2 and integer(e):
+            one += "h"
+        elif cls(e) == S:
+            one += "s"
+        elif cls(e) == D:
+            one += "d"
+        elif cls(e) == L:
+            one += "l"
+        elif numeric(e) or k == Ptr:
+            one += "w"
+        else:
+            eprint(ERR, ty.name, " cannot cross the C ABI, it holds ", comp.types[item.type].name)
+            show(at)
+            return Fail
+        one += " " + count
+        if ty.kind == Untagged:
+            fields += "{ " + one + " } "
+        else:
+            fields += one + ", "
+    append(comp.c_types, t)
+    comp.c_defs += "type :c" + t + " = { " + fields + "}\n"
+    return CAGG + u32(t)
+
+func match(n: usize, v: Value) -> i64|Fail:
+    node := comp.nodes[n]
+    tok := comp.tokens[node.tok]
+    t := comp.types[v.type]
+    if node.kind == TName and tok.kind == Generic:
+        b := bound(tok.text)
+        if b == 0:
+            append(comp.binds, Item{tok.text, v.type, 0, false})
+            return 0
+        if comp.binds[b - 1].type == v.type:
+            return 0
+        return accepts(comp.binds[b - 1].type, v)
+    if not generic(n):
+        score := accepts(try resolve(n), v)
+        if score < 0 and node.kind == TUnary and tok.text == "*" and try resolve(n + 1) == v.type:
+            return 1
+        return score
+    if node.kind == TUnion or node.kind == TUnary and tok.text == "?":
+        concrete: &list[usize]
+        binder: usize = 0
+        if node.kind == TUnary:
+            append(concrete, NULL)
+        c := n + 1
+        while c < node_end(n):
+            if binder == 0 and comp.nodes[c].kind == TName and comp.tokens[comp.nodes[c].tok].kind == Generic:
+                binder = c
+            elif generic(c):
+                return -1
+            else:
+                for m in members(try resolve(c)):
+                    append(concrete, m)
+            c = node_end(c)
+        rest: &list[usize]
+        for m in members(v.type):
+            if not has(concrete, m):
+                append(rest, m)
+        if binder == 0 or rest.len == 0:
+            return -1
+        inner := try match(binder, Value{type = try union_of(rest, Union, tok.at), at = v.at})
+        if inner < 0:
+            return -1
+        return inner + 1
+    if node.kind == TUnary and tok.text == "*":
+        if t.kind == Ptr:
+            inner := try match(n + 1, Value{type = t.elem, at = v.at})
+            if inner < 0:
+                return -1
+            return inner + 1
+        pointee := comp.nodes[n + 1]
+        if pointee.kind == TName and comp.tokens[pointee.tok].kind == Generic:
+            return -1
+        inner := try match(n + 1, v)
+        if inner < 1 or try resolve(n + 1) != v.type:
+            return -1
+        return inner - 1
+    fat := node.kind == TUnary and tok.text == "&"
+    head := n + usize(fat)
+    spreads := fat and t.kind == Ptr and comp.types[t.elem].kind == Array
+    if comp.nodes[head].kind != TName or fat != (t.kind == Fat) and not spreads:
+        return -1
+    if text(head) == "array" and comp.nodes[head].module.len == 0:
+        if t.kind != Array or not try arg_fits(kid(head, 1), VOID, t.count):
+            return -1
+        inner := try match(head + 1, Value{type = t.elem, at = v.at})
+        if inner < 0:
+            return -1
+        return inner + 1
+    s := try find_type(text(head), comp.nodes[head].module, comp.tokens[comp.nodes[head].tok].at)
+    if spreads:
+        if s == 0 or kids(head) != 1:
+            return -1
+        inner := try match(head + 1, Value{type = comp.types[t.elem].elem, at = v.at})
+        if inner < 0 or not spread(v.type, try resolve(n)):
+            return -1
+        return inner
+    if s == 0 or kids(head) == 0 or t.decl != comp.syms[s].node and (not fat or type_params(t.decl) != kids(head)):
+        return -1
+    score: i64 = 1
+    c := head + 1
+    i: usize = 0
+    while c < node_end(head):
+        arg := comp.items[t.args + i]
+        if arg.type == VOID or comp.nodes[c].kind == Literal:
+            if not try arg_fits(c, arg.type, arg.n):
+                return -1
+        else:
+            inner := try match(c, Value{type = arg.type, at = v.at})
+            if inner < 0:
+                return -1
+            score += inner
+        c = node_end(c)
+        i += 1
+    if t.decl != comp.syms[s].node:
+        if not prefix(v.type, try resolve(n)):
+            return -1
+        score -= 1
+    return score
+
+func prefix(from: usize, to: usize) -> bool:
+    a := comp.types[from]
+    b := comp.types[to]
+    if a.kind != Fat or b.kind != Fat or from == to or b.count > a.count or type_params(a.decl) != type_params(b.decl):
+        return false
+    for i in 0..type_params(a.decl):
+        if comp.items[a.args + i].type != comp.items[b.args + i].type or comp.items[a.args + i].n != comp.items[b.args + i].n:
+            return false
+    for i in 0..b.count:
+        if comp.items[a.first + i].name != comp.items[b.first + i].name or comp.items[a.first + i].type != comp.items[b.first + i].type:
+            return false
+    return true
+
+func arg_fits(n: usize, t: usize, value: usize) -> bool|Fail:
+    if t != VOID:
+        return false
+    count := try count_of(n)
+    if count is usize:
+        return count == value
+    tok := comp.tokens[comp.nodes[n].tok]
+    if tok.kind != Generic or bound(tok.text) != 0:
+        return false
+    append(comp.binds, Item{tok.text, VOID, value, false})
+    return true
+
+func generic(n: usize) -> bool:
+    i := n
+    while i < node_end(n):
+        k := comp.nodes[i].kind
+        if k == Field or k == Where or k == Block:
+            i = node_end(i)
+        elif comp.tokens[comp.nodes[i].tok].kind == Generic:
+            return true
+        else:
+            i += 1
+    return false
+
+func accepts(to: usize, v: Value) -> i64:
+    if to == v.type:
+        return 2
+    if prefix(v.type, to) or spread(v.type, to):
+        return 1
+    target := comp.types[to]
+    if v.lit and integer(v.type) and integer(to):
+        if fits(v, to):
+            return 1
+        return -1
+    if v.lit and comp.types[v.type].kind == Float and target.kind == Float:
+        return 1
+    if v.lit and integer(v.type) and target.kind == Float:
+        return i64(to == F64)
+    if (v.lit or comp.types[v.type].name == "&str") and comp.types[v.type].kind == Fat and target.kind == Ptr and target.elem == U8:
+        return 1
+    if v.lit and numeric(v.type) and target.kind == Union:
+        for m in members(to):
+            if accepts(m, v) >= 0:
+                return 1
+    if untagged_member(to, v.type) or untagged_member(v.type, to):
+        return 1
+    if target.kind == Union and within(v.type, to):
+        return 1
+    return -1
+
+func fits(v: Value, t: usize) -> bool:
+    if comp.types[t].kind == Uint:
+        return not v.neg and v.n <= largest(t)
+    if v.neg:
+        return v.n <= largest(t) + 1
+    return v.n <= largest(t)
+
+func largest(t: usize) -> usize:
+    bits := comp.types[t].size * 8
+    if comp.types[t].kind == Int:
+        bits -= 1
+    if bits == 64:
+        return 0xffff_ffff_ffff_ffff
+    return (usize(1) << bits) - 1
+
+func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
+    if v.type == to:
+        return v
+    if prefix(v.type, to):
+        slot := alloc(to)
+        blit(v.at, slot, to)
+        return Value{type = to, at = slot, mem = true}
+    if spread(v.type, to):
+        slot := dest
+        if slot.kind == Empty:
+            slot = alloc(to)
+        zero(to, slot)
+        if comp.types[v.type].kind == Ptr:
+            store(v.type, v, slot)
+            count: usize = 0
+            if comp.types[v.type].elem != EMPTYARRAY:
+                count = comp.types[comp.types[v.type].elem].count
+            for i in 0..comp.types[to].count:
+                field := comp.items[comp.types[to].first + i]
+                if field.name == "len" or field.name == "cap":
+                    store(USIZE, Value{type = USIZE, at = int_arg(i64(count))}, offset(slot, field.n))
+        return Value{type = to, at = slot, mem = true}
+    from := comp.types[v.type]
+    target := comp.types[to]
+    if v.lit and integer(v.type) and integer(to):
+        if fits(v, to):
+            return Value{type = to, at = v.at}
+        shown: &str
+        if v.neg:
+            shown += "-"
+        shown += v.n
+        if v.neg and target.kind == Uint:
+            eprint(ERR, shown, " does not fit in ", target.name, ", the smallest ", target.name, " is 0")
+        else:
+            eprint(ERR, shown, " does not fit in ", target.name, ", the largest ", target.name, " is ", largest(to))
+        show(at)
+        return Fail
+    if v.lit and numeric(v.type) and target.kind == Float:
+        x := real(v)
+        if to == F32 and f32(x) - f32(x) != 0.0:
+            eprint(ERR, x, " does not fit in f32")
+            show(at)
+            return Fail
+        f := try float_literal(x, at)
+        if to == F32:
+            f.at.kind = Single
+        return Value{type = to, at = f.at}
+    if v.lit and from.kind == Fat and target.kind == Ptr and target.elem == U8:
+        return Value{type = to, at = op1(L, "loadl", v.at)}
+    if from.name == "&str" and target.kind == Ptr and target.elem == U8:
+        args: &list[Value]
+        append(args, v)
+        return invoke("c_text", args, at)
+    if v.lit and numeric(v.type) and target.kind == Union and not has(members(to), v.type):
+        found: usize = VOID
+        tied: usize = VOID
+        best: i64 = -1
+        for m in members(to):
+            score := accepts(m, v)
+            if score > best:
+                found = m
+                tied = VOID
+                best = score
+            elif score == best and score >= 0:
+                tied = m
+        if tied != VOID:
+            shown: &str
+            if v.neg:
+                shown += "-"
+            if comp.types[v.type].kind == Float:
+                shown += v.f
+            else:
+                shown += v.n
+            eprint(ERR, shown, " fits more than one member of ", target.name, " equally, name its type: ", comp.types[found].name, "(", shown, ")")
+            show(at)
+            return Fail
+        if found != VOID:
+            return convert(try convert(v, found, Arg{}, at), to, dest, at)
+    if target.kind == Untagged and untagged_member(to, v.type):
+        slot := alloc(to)
+        zero(to, slot)
+        store(v.type, v, slot)
+        return Value{type = to, at = slot, mem = true}
+    if from.kind == Untagged and untagged_member(v.type, to):
+        return Value{type = to, at = v.at, mem = true}
+    if widens(v.type, to):
+        x := load(v).at
+        if target.size == 8 and from.kind == Int:
+            x = op1(L, "extsw", x)
+        elif target.size == 8:
+            x = op1(L, "extuw", x)
+        return Value{type = to, at = x}
+    if target.kind == Union and within(v.type, to):
+        slot := alloc(to)
+        if from.kind == Union:
+            current := tag(v)
+            blit(v.at, slot, v.type)
+            add(Ins{op = "storew", a = current, b = slot})
+        else:
+            add(Ins{op = "storew", a = int_arg(i64(v.type)), b = slot})
+            store(v.type, v, offset(slot, 8))
+        return Value{type = to, at = slot, mem = true}
+    args: &list[Value]
+    append(args, Value{type = to, at = dest, mem = true})
+    append(args, v)
+    if try offers("=", args, at):
+        if dest.kind == Empty:
+            args[0].at = alloc(to)
+            zero(to, args[0].at)
+        return invoke("=", args, at)
+    if from.kind == Union:
+        current := tag(v)
+        slot := alloc(to)
+        l_done := label()
+        for m in members(v.type):
+            l_arm := label()
+            l_next := label()
+            branch(op(W, "ceqw", current, int_arg(i64(m))), l_arm, l_next)
+            open_block(l_arm)
+            store(to, try convert(Value{type = m, at = payload(v.at, m), mem = true}, to, dest, at), slot)
+            jump(l_done)
+            open_block(l_next)
+        terminate("hlt", Arg{})
+        open_block(l_done)
+        return Value{type = to, at = slot, mem = true}
+    eprint(ERR, "cannot assign ", from.name, " to ", target.name)
+    show(at)
+    return Fail
+
+func spread(from: usize, to: usize) -> bool:
+    target := comp.types[to]
+    if target.kind != Fat:
+        return false
+    elem := element(to)
+    if from == EMPTYMAP:
+        return text(target.decl) == "map"
+    if from == EMPTYARRAY:
+        return elem != VOID
+    source := comp.types[from]
+    if source.kind != Ptr or elem == VOID:
+        return false
+    return source.elem == EMPTYARRAY or comp.types[source.elem].kind == Array and comp.types[source.elem].elem == elem
+
+func element(fat: usize) -> usize:
+    params := type_params(comp.types[fat].decl)
+    if params == 0:
+        return U8
+    if params == 1:
+        return comp.items[comp.types[fat].args].type
+    return VOID
+
+func within(part: usize, whole: usize) -> bool:
+    for m in members(part):
+        if not has(members(whole), m):
+            return false
+    return true
+
+func untagged_member(t: usize, m: usize) -> bool:
+    for i in 0..comp.types[t].count:
+        if comp.items[comp.types[t].first + i].type == m:
+            return comp.types[t].kind == Untagged
+    return false
+
+func widens(from: usize, to: usize) -> bool:
+    a := comp.types[from]
+    b := comp.types[to]
+    return integer(from) and integer(to) and b.size > a.size and (a.kind == b.kind or a.kind == Uint)
+
+func offers(name: &strview, args: &list[Value], at: usize) -> bool|Fail:
+    names: &list[&strview]
+    s := first_sym(name)
+    while s != 0:
+        if callable(s, "", args, at):
+            order := arrange(comp.syms[s].node, args.len, names)
+            if order is &list[usize]:
+                saved := comp.frame
+                comp.frame = comp.binds.len
+                score := try bind(comp.syms[s].node, order, args)
+                comp.binds.len = comp.frame
+                comp.frame = saved
+                if score >= 0:
+                    return true
+        s = comp.syms[s].next
+    return false
+
+func noted(at: usize) -> bool:
+    return comp.asked and comp.tokens[comp.target].at == at
+
+func described(name: &strview, t: usize) -> &strview:
+    out: &str
+    out += name + ": " + comp.types[t].name
+    return view(out)
+
+func callable(s: usize, module: &strview, args: &list[Value], at: usize) -> bool:
+    sym := comp.syms[s]
+    if comp.nodes[sym.node].kind != Func:
+        return false
+    if visible(s, module, at):
+        return true
+    if module.len > 0 or sym.priv:
+        return false
+    for a in args:
+        if sym.module == comp.files[file_of(comp.tokens[comp.nodes[comp.types[a.type].decl].tok].at)].module:
+            return true
+    return false
+
+func holds(n: usize) -> bool|Fail:
+    node := comp.nodes[n]
+    o := text(n)
+    left := n + 1
+    right := node_end(left)
+    if node.kind == Unary and o == "not":
+        return not try holds(left)
+    if node.kind == Call and o == "can_assign" and kids(n) == 2:
+        return assignable(try resolve(left), try resolve(right), source(n))
+    if node.kind == Binary and (o == "and" or o == "or"):
+        a := try holds(left)
+        b := try holds(right)
+        if o == "and":
+            return a and b
+        return a or b
+    if node.kind == Binary and o == "is":
+        return within(try resolve(left), try resolve(right))
+    if node.kind == Binary and (o == "==" or o == "!=") and comp.tokens[comp.nodes[left].tok].kind == Generic:
+        b := bound(text(left))
+        if b != 0 and comp.binds[b - 1].type != VOID:
+            return (try resolve(left) == try resolve(right)) == (o == "==")
+    v := try gen(n, VOID)
+    if v.type != BOOL or not v.lit:
+        eprint(ERR, "a where condition compares numbers and types known when the call is resolved, this one is not")
+        show(source(n))
+        return Fail
+    return v.n == 1
+
+func assignable(to: usize, from: usize, at: usize) -> bool|Fail:
+    v := Value{type = from}
+    args: &list[Value]
+    append(args, Value{type = to, mem = true})
+    append(args, v)
+    if accepts(to, v) >= 0 or widens(from, to) or try offers("=", args, at):
+        return true
+    if comp.types[from].kind != Union:
+        return false
+    for m in members(from):
+        if not try assignable(to, m, at):
+            return false
+    return true
+
+func convert_number(v: Value, to: usize, at: usize) -> Value|Fail:
+    from := comp.types[v.type]
+    target := comp.types[to]
+    if not numeric(v.type) and from.kind != Bool:
+        eprint(ERR, target.name, "() converts numbers, ", from.name, " is not one")
+        show(at)
+        return Fail
+    if v.lit and (integer(v.type) or target.kind == Float):
+        typed := try convert(v, to, Arg{}, at)
+        typed.lit = false
+        return typed
+    if v.type == to:
+        return v
+    x := load(v).at
+    if from.kind == Float and target.kind == Float:
+        if to == F64:
+            return Value{type = to, at = op1(D, "exts", x)}
+        return Value{type = to, at = op1(S, "truncd", x)}
+    if from.kind == Float:
+        wide := x
+        if from.size == 4:
+            wide = op1(D, "exts", x)
+        top := Arg{Double, f64(largest(to)) as i64}
+        bottom := Arg{Double, 0.0 as i64}
+        low: i64 = 0
+        if target.kind == Int:
+            low = 0 - i64(largest(to)) - 1
+            bottom = Arg{Double, f64(low) as i64}
+        name: &strview = "dtoui"
+        if target.kind == Int:
+            name = "dtosi"
+        slot := alloc(to)
+        zero(to, slot)
+        l_number := label()
+        l_high := label()
+        l_low := label()
+        l_below := label()
+        l_inside := label()
+        l_done := label()
+        branch(op(W, "ceqd", wide, wide), l_number, l_done)
+        open_block(l_number)
+        branch(op(W, "cged", wide, top), l_high, l_low)
+        open_block(l_high)
+        store(to, Value{type = to, at = int_arg(i64(largest(to)))}, slot)
+        jump(l_done)
+        open_block(l_low)
+        branch(op(W, "cled", wide, bottom), l_below, l_inside)
+        open_block(l_below)
+        store(to, Value{type = to, at = int_arg(low)}, slot)
+        jump(l_done)
+        open_block(l_inside)
+        store(to, Value{type = to, at = extend(to, op1(cls(to), name, wide))}, slot)
+        jump(l_done)
+        open_block(l_done)
+        return load(Value{type = to, at = slot, mem = true})
+    if target.kind == Float:
+        if from.kind == Uint and from.size == 4:
+            return Value{type = to, at = op1(cls(to), "ultof", op1(L, "extuw", x))}
+        name: &str = "u"
+        if from.kind == Int:
+            name = "s"
+        if from.size == 8:
+            name += "ltof"
+        else:
+            name += "wtof"
+        return Value{type = to, at = op1(cls(to), view(name), x)}
+    if target.size == 8 and from.size < 8:
+        if from.kind == Int:
+            return Value{type = to, at = op1(L, "extsw", x)}
+        return Value{type = to, at = op1(L, "extuw", x)}
+    if target.size < 8 and from.size == 8:
+        x = op1(W, "copy", x)
+    return Value{type = to, at = extend(to, x)}
+
+func assign(addr: Arg, t: usize, v: Value, at: usize) -> Fail?:
+    if comp.types[t].kind == Fat and comp.types[v.type].kind == Ptr and (comp.types[v.type].elem == BYTES or comp.types[v.type].elem == element(t)):
+        store(v.type, v, addr)
+        return null
+    converted := try convert(v, t, addr, at)
+    if converted.at.kind != addr.kind or converted.at.n != addr.n:
+        store(t, converted, addr)
+    return null

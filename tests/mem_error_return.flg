@@ -1,0 +1,27 @@
+type error Bad
+
+func build(n: i32) -> &str|Bad:
+    if n < 0:
+        return Bad
+    out: &str = "items:"
+    out += n
+    return out
+
+func first(n: i32) -> usize|Bad:
+    text := try build(n)
+    defer free(text)
+    return text.len
+
+func main() -> i32:
+    got := build(3)
+    if got is Bad:
+        return 1
+    defer free(got)
+    size := build(4)
+    if size is &str:
+        print(size.len)
+        free(size)
+    else:
+        print("bad")
+    print(got, " ", first(2) iferror 0)
+    return 0

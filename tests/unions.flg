@@ -1,0 +1,44 @@
+type error NotFound
+type error TooBig
+
+func look(k: i32) -> i32|NotFound|TooBig:
+    if k == 0:
+        return NotFound
+    if k > 100:
+        return TooBig
+    return k * 2
+
+func twice(k: i32) -> i32|NotFound|TooBig:
+    v := try look(k)
+    return v + v
+
+func describe(r: i32|NotFound|TooBig):
+    if r is i32:
+        print("value ", r)
+    elif r is NotFound:
+        print("missing")
+    else:
+        print("too big")
+
+func first(a: i32?, b: i32?) -> i32:
+    if a is null:
+        return 0
+    r: i32 = a
+    if b is null:
+        return r
+    return r + b
+
+func main() -> i32:
+    describe(look(4))
+    describe(look(0))
+    describe(twice(200))
+    describe(twice(3))
+    print(first(null, 5), " ", first(2, null), " ", first(2, 3))
+    v: i32? = 7
+    w: i32 = trust v
+    print(w)
+    x: i64|null = 5
+    if x is i64:
+        print(x + 1)
+    print(sizeof(i32?), " ", sizeof(NotFound|TooBig))
+    return 0

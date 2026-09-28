@@ -1,0 +1,765 @@
+@trust
+func parse() -> Fail?:
+    file := comp.files.len - 1
+    first := comp.pos
+    start := comp.nodes.len
+    while here().kind != End:
+        t := here()
+        if t.kind == Line:
+            if t.text.len != 0:
+                eprint(ERR, "a declaration starts at the first column")
+                show(t.at)
+                return Fail
+            comp.pos += 1
+            continue
+        after := comp.tokens[comp.pos + 1]
+        if (t.text == "module" or t.text == "use") and after.kind == Name:
+            if t.text == "module" and comp.pos != first + 1:
+                eprint(ERR, "module goes on the first line of its file")
+                show(t.at)
+                return Fail
+            if comp.nodes.len != start:
+                eprint(ERR, t.text, " goes in the header of the file, before the first declaration")
+                show(t.at)
+                return Fail
+            comp.pos += 2
+            if t.text == "module":
+                comp.files[file].module = after.text
+            else:
+                alias: &strview
+                if peek("as") and comp.tokens[comp.pos + 1].kind == Name:
+                    alias = comp.tokens[comp.pos + 1].text
+                    comp.pos += 2
+                name := alias
+                if name.len == 0:
+                    name = after.text
+                if module_of(name, file).len > 0:
+                    eprint(ERR, name, " already names a module in this file")
+                    show(t.at)
+                    return Fail
+                append(comp.uses, Use{file, after.text, alias, t.at})
+            try end_line()
+            continue
+        sym := Sym{module = comp.files[file].module}
+        sym.priv = t.text == "priv"
+        if sym.priv:
+            comp.pos += 1
+        sym.packed = peek("packed")
+        sym.export = peek("export")
+        if sym.packed and comp.tokens[comp.pos + 1].text != "type" or sym.export and comp.tokens[comp.pos + 1].text != "func":
+            what: &strview = "packed goes before a type with fields: packed type Name:"
+            if sym.export:
+                what = "export goes before a func declaration: export func name():"
+            eprint(ERR, what)
+            show(here().at)
+            return Fail
+        if sym.packed or sym.export:
+            comp.pos += 1
+        t = here()
+        after = comp.tokens[comp.pos + 1]
+        n := comp.nodes.len
+        if t.text == "type" or t.text == "context":
+            comp.pos += 1
+            sym.error = t.text == "type" and peek("error")
+            if sym.error:
+                comp.pos += 1
+            form := t.text
+            if t.text == "type" and (peek("enum") or peek("fatptr")):
+                form = here().text
+                comp.pos += 1
+            if here().kind != Name:
+                return unexpected("a type declaration expects a name")
+            begin(Void, comp.pos)
+            comp.pos += 1
+            if peek("[") and form != "context" and form != "enum":
+                comp.pos += 1
+                while true:
+                    if here().kind != Generic:
+                        return unexpected("a type parameter is a $name or a $$name")
+                    finish(begin(TName, comp.pos))
+                    comp.pos += 1
+                    if not peek(","):
+                        break
+                    comp.pos += 1
+                try expect("]")
+            if form == "enum" and (peek("=") or peek(":")):
+                comp.nodes[n].kind = Alias
+                union := begin(TUnion, comp.pos)
+                block := peek(":")
+                separator: &strview = "|"
+                if block:
+                    separator = ","
+                comp.pos += 1
+                if block and (here().kind != Line or here().text.len == 0):
+                    eprint(ERR, "enum ", text(n), " expects its variants in an indented block after ':'")
+                    show(here().at)
+                    return Fail
+                while true:
+                    if block and here().kind == Line and here().text.len > 0:
+                        comp.pos += 1
+                    if here().kind != Name:
+                        return unexpected("enum variants are plain names")
+                    finish(begin(TName, comp.pos))
+                    comp.pos += 1
+                    if peek(separator):
+                        comp.pos += 1
+                    elif not block or here().kind != Line or here().text.len == 0:
+                        break
+                finish(union)
+            elif peek("=") and form == "type":
+                comp.nodes[n].kind = Alias
+                comp.pos += 1
+                try type_expr()
+            elif peek(":") and form != "enum":
+                comp.nodes[n].kind = Struct
+                if form == "fatptr":
+                    comp.nodes[n].kind = Fat
+                elif form == "context":
+                    comp.nodes[n].kind = Context
+                comp.pos += 1
+                if here().kind != Line or here().text.len == 0:
+                    eprint(ERR, form, " ", text(n), " expects its fields in an indented block after ':'")
+                    show(here().at)
+                    return Fail
+                try fields()
+            elif form != "type":
+                what: &strview = "fields in an indented block after ':'"
+                if form == "enum":
+                    what = "variants after '=' or in an indented block after ':'"
+                eprint(ERR, form, " ", text(n), " expects its ", what)
+                show(here().at)
+                return Fail
+            if sym.packed and comp.nodes[n].kind != Struct:
+                eprint(ERR, "packed goes before a type with fields: packed type Name:")
+                show(comp.tokens[comp.nodes[n].tok].at)
+                return Fail
+            finish(n)
+            if form == "enum":
+                for c in n + 2..node_end(n):
+                    finish(begin(Void, comp.nodes[c].tok))
+        elif t.text == "func" or t.text == "operator":
+            try func_decl(true)
+        elif t.text == "extern":
+            if after.kind != Str:
+                eprint(ERR, "extern expects the library name as text: extern \"c\":")
+                show(t.at)
+                return Fail
+            begin(Extern, comp.pos + 1)
+            comp.pos += 2
+            try condition()
+            try expect(":")
+            while here().kind == Line and here().text.len > 0:
+                comp.pos += 1
+                if not peek("func"):
+                    eprint(ERR, "an extern block declares functions only")
+                    show(here().at)
+                    return Fail
+                try func_decl(false)
+            finish(n)
+        elif t.kind == Name and after.text == "=":
+            try argument()
+        elif sym.priv:
+            return unexpected("priv expects a declaration after it")
+        else:
+            return unexpected("only declarations go here and code belongs inside a function")
+        c := n
+        while c < comp.nodes.len:
+            sym.name = text(c)
+            try declare(c, sym)
+            try nested(c, sym)
+            c = node_end(c)
+        try end_line()
+    while comp.pos < comp.tokens.len and here().kind == End:
+        comp.pos += 1
+    return null
+
+func fields() -> Fail?:
+    width := here().text.len
+    while here().kind == Line and here().text.len == width:
+        comp.pos += 1
+        if here().kind != Name or comp.tokens[comp.pos + 1].text != ":":
+            return unexpected("a field is written name: type")
+        f := begin(Field, comp.pos)
+        comp.pos += 2
+        if here().kind == Line and here().text.len > width:
+            inner := begin(Struct, comp.pos - 2)
+            try fields()
+            finish(inner)
+        else:
+            try type_expr()
+            if here().kind == Builtin:
+                finish(begin(Name, comp.pos))
+                comp.pos += 1
+            try end_line()
+        finish(f)
+    if here().kind == Line and here().text.len > width:
+        eprint(ERR, "unexpected indentation, this line is deeper than the fields around it")
+        show(here().at)
+        return Fail
+    return null
+
+func nested(n: usize, outer: Sym) -> Fail?:
+    k := comp.nodes[n].kind
+    if k != Struct and k != Context and k != Fat:
+        return null
+    c := kid(n, type_params(n))
+    while c < node_end(n):
+        if comp.nodes[c].kind == Field and comp.nodes[c + 1].kind == Struct:
+            inner := outer
+            inner.name = outer.name + "." + text(c)
+            try declare(c + 1, inner)
+            try nested(c + 1, inner)
+        c = node_end(c)
+    return null
+
+func declare(n: usize, sym: Sym) -> Fail?:
+    kind := comp.nodes[n].kind
+    if kind == Extern:
+        c := n + 1
+        while c < node_end(n):
+            if comp.nodes[c].kind != Where:
+                inner := sym
+                inner.name = text(c)
+                try declare(c, inner)
+            c = node_end(c)
+        return null
+    at := comp.tokens[comp.nodes[n].tok].at
+    id := get(comp.type_ids, sym.name)
+    if id is usize and id <= ITERATIONEND and kind != Func:
+        eprint(ERR, sym.name, " is a built-in type, it cannot be declared again")
+        show(at)
+        return Fail
+    s := first_sym(sym.name)
+    while s != 0:
+        old := comp.syms[s]
+        other := comp.nodes[old.node].kind
+        if old.module == sym.module and (other == Func) == (kind == Func):
+            if kind == Func:
+                if body(old.node) == 0 and body(n) == 0:
+                    return null
+            elif other != Void or kind != Void:
+                eprint(ERR, sym.name, " is declared twice")
+                show(at)
+                return Fail
+            elif old.error != sym.error:
+                eprint(ERR, sym.name, " is declared as an error and as a plain void type, it cannot be both")
+                show(at)
+                return Fail
+            else:
+                return null
+        s = old.next
+    made := sym
+    made.node = n
+    made.next = first_sym(sym.name)
+    append(comp.syms, made)
+    put(comp.names, sym.name, comp.syms.len - 1)
+    if kind == Void:
+        none: &list[Item]
+        try make_type(comp.syms.len - 1, none, false, at)
+    return null
+
+func func_decl(body: bool) -> Fail?:
+    keyword := here().text
+    comp.pos += 1
+    name := here()
+    if keyword == "func" and name.kind != Name or keyword == "operator" and name.kind != Symbol and name.kind != Name:
+        return unexpected("a declaration expects a name here")
+    if keyword == "operator" and (name.text == "!=" or name.text == ">" or name.text == "<=" or name.text == ">="):
+        base: &strview = "<"
+        if name.text == "!=":
+            base = "=="
+        eprint(ERR, "operator ", name.text, " follows from ", base, ", declare operator ", base, " instead")
+        show(name.at)
+        return Fail
+    n := begin(Func, comp.pos)
+    comp.pos += 1
+    try expect("(")
+    while not peek(")"):
+        if not body and peek("..") and comp.tokens[comp.pos + 1].text == "." and comp.tokens[comp.pos + 2].text == ")":
+            finish(begin(Var, comp.pos))
+            comp.pos += 2
+            break
+        if here().kind != Name or comp.tokens[comp.pos + 1].text != ":":
+            return unexpected("a parameter is written name: type")
+        try variable()
+        if not peek(","):
+            break
+        comp.pos += 1
+    try expect(")")
+    if peek("->"):
+        comp.pos += 1
+        try type_expr()
+    try condition()
+    if body:
+        try block()
+    finish(n)
+    return null
+
+func condition() -> Fail?:
+    if peek("where"):
+        w := begin(Where, comp.pos)
+        comp.pos += 1
+        try expr(1)
+        finish(w)
+    return null
+
+func block() -> Fail?:
+    try expect(":")
+    outer := comp.width
+    t := here()
+    if t.kind != Line or t.text.len <= outer:
+        eprint(ERR, "':' expects an indented block after it")
+        show(t.at)
+        return Fail
+    inner := t.text.len
+    n := begin(Block, comp.pos)
+    while here().kind == Line and here().text.len >= inner:
+        if here().text.len > inner:
+            eprint(ERR, "unexpected indentation, this line is deeper than the block it belongs to")
+            show(here().at)
+            return Fail
+        comp.width = inner
+        comp.pos += 1
+        try stmt()
+        try end_line()
+    finish(n)
+    comp.width = outer
+    return null
+
+func stmt() -> Fail?:
+    t := here()
+    after := comp.tokens[comp.pos + 1].text
+    if t.kind != Name:
+        try assignment()
+    elif t.text == "if":
+        opened: &list[usize]
+        defer free(opened)
+        append(opened, begin(If, comp.pos))
+        comp.pos += 1
+        try expr(1)
+        try block()
+        while same_line_next("elif") or same_line_next("else"):
+            comp.pos += 1
+            if peek("else"):
+                comp.pos += 1
+                try block()
+                break
+            append(opened, begin(If, comp.pos))
+            comp.pos += 1
+            try expr(1)
+            try block()
+        while opened.len > 0:
+            finish(opened[opened.len - 1])
+            opened.len -= 1
+    elif t.text == "elif" or t.text == "else":
+        eprint(ERR, t.text, " expects an if above it at the same column")
+        show(t.at)
+        return Fail
+    elif t.text == "while" or t.text == "with":
+        n := begin(While, comp.pos)
+        if t.text == "with":
+            comp.nodes[n].kind = With
+        comp.pos += 1
+        try expr(1)
+        try block()
+        finish(n)
+    elif t.text == "for":
+        counted := comp.tokens[comp.pos + 2].text == ","
+        name := comp.pos + 1 + 2 * usize(counted)
+        if comp.tokens[comp.pos + 1].kind != Name or comp.tokens[name].kind != Name or comp.tokens[name + 1].text != "in":
+            eprint(ERR, "for expects a name and 'in' after it: for x in items: or for i, x in items:")
+            show(t.at)
+            return Fail
+        comp.pos += 1
+        try local_name()
+        comp.pos = name
+        try local_name()
+        n := begin(For, comp.pos)
+        if counted:
+            finish(begin(Name, comp.pos - 2))
+        comp.pos += 2
+        if peek("reverse"):
+            backward := begin(Unary, comp.pos)
+            comp.pos += 1
+            try expr(1)
+            finish(backward)
+        else:
+            try expr(1)
+        try block()
+        finish(n)
+    elif t.text == "switch":
+        n := begin(Switch, comp.pos)
+        comp.pos += 1
+        try expr(1)
+        try expect(":")
+        if not same_line_next("case"):
+            eprint(ERR, "switch expects its cases on the lines below it, at the same column")
+            show(here().at)
+            return Fail
+        while same_line_next("case"):
+            comp.pos += 1
+            c := begin(Case, comp.pos)
+            comp.pos += 1
+            while not peek(":"):
+                try expr(1)
+                if not peek(","):
+                    break
+                comp.pos += 1
+            try block()
+            finish(c)
+        finish(n)
+    elif t.text == "case":
+        eprint(ERR, "case expects a switch above it at the same column")
+        show(t.at)
+        return Fail
+    elif t.text == "return":
+        n := begin(Return, comp.pos)
+        comp.pos += 1
+        if here().kind != Line:
+            try expr(1)
+        finish(n)
+    elif t.text == "break" or t.text == "continue":
+        n := begin(Jump, comp.pos)
+        comp.pos += 1
+        if here().kind == Int:
+            finish(begin(Literal, comp.pos))
+            comp.pos += 1
+        finish(n)
+    elif t.text == "defer":
+        n := begin(Defer, comp.pos)
+        comp.pos += 1
+        if here().kind == Line:
+            eprint(ERR, "defer expects a statement after it")
+            show(t.at)
+            return Fail
+        try stmt()
+        finish(n)
+    elif after == ":" or after == ":=":
+        try variable()
+    else:
+        try assignment()
+    return null
+
+func variable() -> Fail?:
+    try local_name()
+    n := begin(Var, comp.pos)
+    comp.pos += 1
+    if peek(":="):
+        comp.pos += 1
+        try expr(1)
+    else:
+        comp.pos += 1
+        try type_expr()
+        if peek("="):
+            comp.pos += 1
+            try expr(1)
+    finish(n)
+    return null
+
+func assignment() -> Fail?:
+    start := comp.nodes.len
+    try expr(1)
+    t := here()
+    if t.kind == Symbol and (t.text == "=" or t.text == "+=" or t.text == "-=" or t.text == "*=" or t.text == "/=" or t.text == "%="):
+        wrap(start, Assign, comp.pos)
+        comp.pos += 1
+        try expr(1)
+        finish(start)
+    return null
+
+func expr(min: usize) -> Fail?:
+    start := comp.nodes.len
+    try unary()
+    while true:
+        t := here()
+        prec: usize = 0
+        if t.kind == Symbol or t.kind == Name:
+            switch t.text:
+            case "or":
+                prec = 1
+            case "and", "xor":
+                prec = 2
+            case "is":
+                prec = 3
+            case "==", "!=":
+                prec = 4
+            case "<", ">", "<=", ">=":
+                prec = 5
+            case "iferror", "ifnull":
+                prec = 6
+            case "..", "<<", ">>":
+                prec = 7
+            case "+", "-":
+                prec = 8
+            case "*", "/", "%":
+                prec = 9
+            case "as":
+                prec = 10
+        if prec == 0 or prec < min:
+            break
+        wrap(start, Binary, comp.pos)
+        comp.pos += 1
+        if t.text == "is" or t.text == "as":
+            try type_expr()
+        else:
+            try expr(prec + 1)
+        finish(start)
+    return null
+
+func unary() -> Fail?:
+    t := here()
+    if t.text == "-" or t.text == "not" or t.text == "try" or t.text == "trust":
+        n := begin(Unary, comp.pos)
+        comp.pos += 1
+        try unary()
+        finish(n)
+        return null
+    start := comp.nodes.len
+    name := comp.pos
+    if qualifier().len > 0:
+        name += 2
+    t = comp.tokens[name]
+    after := comp.tokens[name + 1].text
+    brace := after == "{"
+    if t.kind == Name and after == "[":
+        depth: usize = 0
+        i := name + 1
+        while comp.tokens[i].kind != Line and comp.tokens[i].kind != End:
+            if comp.tokens[i].text == "[":
+                depth += 1
+            elif comp.tokens[i].text == "]":
+                depth -= 1
+                if depth == 0:
+                    brace = comp.tokens[i + 1].text == "{"
+                    break
+            i += 1
+    if t.kind == Name and not brace:
+        j := name
+        while comp.tokens[j + 1].text == "." and comp.tokens[j + 2].kind == Name:
+            j += 2
+        brace = j > name and comp.tokens[j + 1].text == "{"
+    if t.kind == Name and brace:
+        n := begin(Brace, name)
+        try type_expr()
+        try expect("{")
+        while not peek("}"):
+            try argument()
+            if not peek(","):
+                break
+            comp.pos += 1
+        try expect("}")
+        finish(n)
+    elif (t.kind == Name or t.kind == Builtin) and after == "(":
+        n := qualified(Call)
+        comp.pos += 1
+        while not peek(")"):
+            if t.text == "sizeof" or t.text == "can_assign":
+                try type_expr()
+            else:
+                try argument()
+            if not peek(","):
+                break
+            comp.pos += 1
+        try expect(")")
+        finish(n)
+    elif t.kind == Name or t.kind == Generic:
+        finish(qualified(Name))
+    elif t.kind == Int or t.kind == Float or t.kind == Str:
+        finish(begin(Literal, comp.pos))
+        comp.pos += 1
+    elif t.text == "(":
+        comp.pos += 1
+        try expr(1)
+        try expect(")")
+    elif t.text == "[":
+        n := begin(Items, comp.pos)
+        comp.pos += 1
+        while not peek("]"):
+            try expr(1)
+            if not peek(","):
+                break
+            comp.pos += 1
+        try expect("]")
+        finish(n)
+    elif t.text == "{":
+        n := begin(Pairs, comp.pos)
+        comp.pos += 1
+        count: usize = 0
+        while not peek("}"):
+            try argument()
+            count += 1
+            pair := peek(":")
+            if count == 1 and not pair:
+                comp.nodes[n].kind = Fill
+            if pair != (comp.nodes[n].kind == Pairs):
+                return unexpected("a {} literal holds key: value pairs or values, not both")
+            if pair:
+                comp.pos += 1
+                try expr(1)
+            if not peek(","):
+                break
+            comp.pos += 1
+        try expect("}")
+        finish(n)
+    else:
+        return unexpected("expected a value")
+    while true:
+        if peek(".") and comp.tokens[comp.pos + 1].kind == Name:
+            if comp.tokens[comp.pos + 2].text == "(":
+                comp.pos += 2
+                if comp.nodes[start].kind == Name and comp.nodes[start].size == 1:
+                    eprint(ERR, "unexpected '(', a field cannot be called, and ", text(start), " is not a module this file uses")
+                    show(here().at)
+                    return Fail
+                return unexpected("a field cannot be called")
+            wrap(start, Field, comp.pos + 1)
+            comp.pos += 2
+            finish(start)
+        elif peek(".*"):
+            wrap(start, Unary, comp.pos)
+            comp.pos += 1
+            finish(start)
+        elif peek("["):
+            wrap(start, Index, comp.pos)
+            comp.pos += 1
+            try expr(1)
+            if peek(":"):
+                comp.pos += 1
+                try expr(1)
+            try expect("]")
+            finish(start)
+        else:
+            break
+    return null
+
+func argument() -> Fail?:
+    if here().kind == Name and comp.tokens[comp.pos + 1].text == "=":
+        n := begin(Named, comp.pos)
+        comp.pos += 2
+        try expr(1)
+        finish(n)
+        return null
+    return expr(1)
+
+func type_expr() -> Fail?:
+    start := comp.nodes.len
+    while true:
+        at := comp.nodes.len
+        prefixes: usize = 0
+        while peek("*") or peek("&"):
+            begin(TUnary, comp.pos)
+            comp.pos += 1
+            prefixes += 1
+        t := here()
+        if t.kind == Name or t.kind == Generic:
+            outer: &str
+            while qualifier().len == 0 and here().kind == Name and comp.tokens[comp.pos + 1].text == "." and comp.tokens[comp.pos + 2].kind == Name:
+                if outer.len > 0:
+                    outer += "."
+                outer += here().text
+                comp.pos += 2
+            n := qualified(TName)
+            if outer.len > 0:
+                comp.nodes[n].module = view(outer)
+            if peek("["):
+                comp.pos += 1
+                while true:
+                    if here().kind == Int:
+                        finish(begin(Literal, comp.pos))
+                        comp.pos += 1
+                    else:
+                        try type_expr()
+                    if not peek(","):
+                        break
+                    comp.pos += 1
+                try expect("]")
+            finish(n)
+        elif t.text == "(":
+            comp.pos += 1
+            try type_expr()
+            try expect(")")
+        else:
+            return unexpected("expected a type")
+        while prefixes > 0:
+            prefixes -= 1
+            finish(at + prefixes)
+        if peek("?"):
+            wrap(at, TUnary, comp.pos)
+            comp.pos += 1
+            finish(at)
+        if not peek("|") and not peek("||"):
+            break
+        if at == start:
+            wrap(start, TUnion, comp.pos)
+        elif here().text != text(start):
+            return unexpected("a type mixes | and ||, group one side in parentheses")
+        comp.pos += 1
+    if comp.nodes[start].kind == TUnion:
+        finish(start)
+    return null
+
+func qualifier() -> &strview:
+    if here().kind == Name and comp.tokens[comp.pos + 1].text == "." and comp.tokens[comp.pos + 2].kind == Name:
+        return module_of(here().text, comp.files.len - 1)
+    return ""
+
+func qualified(kind: NodeKind) -> usize:
+    module := qualifier()
+    if module.len > 0:
+        comp.pos += 2
+    n := begin(kind, comp.pos)
+    comp.nodes[n].module = module
+    comp.pos += 1
+    return n
+
+func local_name() -> Fail?:
+    t := here()
+    if module_of(t.text, comp.files.len - 1).len > 0:
+        eprint(ERR, t.text, " names a module in this file, a variable cannot take it")
+        show(t.at)
+        return Fail
+    return null
+
+func same_line_next(word: &strview) -> bool:
+    t := here()
+    return t.kind == Line and t.text.len == comp.width and comp.tokens[comp.pos + 1].text == word
+
+func end_line() -> Fail?:
+    if here().kind != Line and here().kind != End:
+        return unexpected("the statement already ended")
+    return null
+
+func peek(s: &strview) -> bool:
+    t := here()
+    return t.kind != Str and t.text == s
+
+func expect(s: &strview) -> Fail?:
+    if not peek(s):
+        eprint(ERR, "unexpected '", here().text, "', expected '", s, "'")
+        show(here().at)
+        return Fail
+    comp.pos += 1
+    return null
+
+func unexpected(message: &strview) -> Fail?:
+    eprint(ERR, "unexpected '", here().text, "', ", message)
+    show(here().at)
+    return Fail
+
+func here() -> Token:
+    return comp.tokens[comp.pos]
+
+func begin(kind: NodeKind, tok: usize) -> usize:
+    append(comp.nodes, Node{kind, tok, 0, ""})
+    return comp.nodes.len - 1
+
+func finish(n: usize):
+    comp.nodes[n].size = comp.nodes.len - n
+
+func wrap(start: usize, kind: NodeKind, tok: usize):
+    append(comp.nodes, Node{kind, tok, 0, ""})
+    i := comp.nodes.len - 1
+    while i > start:
+        comp.nodes[i] = comp.nodes[i - 1]
+        i -= 1
+    comp.nodes[start] = Node{kind, tok, 0, ""}

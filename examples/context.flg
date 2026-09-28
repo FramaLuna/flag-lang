@@ -1,0 +1,34 @@
+type Node:
+    name: &strview
+    children: &list[i32]
+
+context log:
+    depth: u32
+    lines: u32
+
+func say(text: &strview):
+    pad: &str
+    defer free(pad)
+    for i in 0..log.depth:
+        pad += "  "
+    print(pad, text)
+    log.lines += 1
+
+func show(nodes: &list[Node], at: i32):
+    say(nodes[at].name)
+    log.depth += 1
+    defer log.depth -= 1
+    for child in nodes[at].children:
+        show(nodes, child)
+
+func main():
+    nodes: &list[Node]
+    append(nodes, Node{"src", heap([1, 2])})
+    append(nodes, Node{"main.flg", heap([])})
+    append(nodes, Node{"lib", heap([3])})
+    append(nodes, Node{"core.flg", heap([])})
+    show(nodes, 0)
+    print(log.lines, " lines, depth back to ", log.depth)
+    for n in nodes:
+        free(n.children)
+    free(nodes)

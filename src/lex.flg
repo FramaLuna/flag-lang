@@ -1,0 +1,233 @@
+@trust
+func lex(file: usize) -> Fail?:
+    code := comp.files[file].code
+    base := comp.files[file].start
+    bytes := items(code)
+    nothing: &strview
+    opens: &list[usize]
+    defer free(opens)
+    scopes: &list[usize]
+    defer free(scopes)
+    limits: &list[usize]
+    defer free(limits)
+    head: usize = 0
+    width: usize = 0
+    at: usize = 0
+    line: usize = 1
+    newline := true
+    while true:
+        if newline:
+            newline = false
+            start := at
+            while at < code.len and (bytes[at] == ' ' or bytes[at] == '\t'):
+                at += 1
+            if opens.len == 0 and at < code.len and bytes[at] != '\n' and bytes[at] != '\r' and bytes[at] != '#':
+                while limits.len > 0 and at - start < limits[limits.len - 1]:
+                    comp.trusted[trust pop(scopes)].to = base + at
+                    limits.len -= 1
+                head = base + at
+                width = at - start
+                append(comp.tokens, Token{Line, code[start:at], base + at, line})
+        if at >= code.len:
+            break
+        b := bytes[at]
+        start := at
+        if b == '\n':
+            newline = true
+            line += 1
+            at += 1
+        elif b == ' ' or b == '\t' or b == '\r':
+            at += 1
+        elif b == '#':
+            while at < code.len and bytes[at] != '\n':
+                at += 1
+        elif is_letter(b):
+            while at < code.len and (is_letter(bytes[at]) or is_digit(bytes[at])):
+                at += 1
+            append(comp.tokens, Token{Name, code[start:at], base + start, line})
+        elif b == '@' or b == '$':
+            at += 1
+            if b == '$' and at < code.len and bytes[at] == '$':
+                at += 1
+            if at >= code.len or not is_letter(bytes[at]):
+                eprint(ERR, "'", code[start:at], "' expects a name after it")
+                show(base + start)
+                return Fail
+            while at < code.len and (is_letter(bytes[at]) or is_digit(bytes[at])):
+                at += 1
+            rest := at
+            while rest < code.len and (bytes[rest] == ' ' or bytes[rest] == '\t' or bytes[rest] == '\r'):
+                rest += 1
+            marker := code[start:at] == "@trust" or code[start:at] == "@check"
+            if marker and (opens.len > 0 or rest < code.len and bytes[rest] != '\n' and bytes[rest] != '#'):
+                eprint(ERR, code[start:at], " goes at the end of a line or on a line of its own")
+                show(base + start)
+                return Fail
+            if marker:
+                limit := width + 1
+                if comp.tokens[comp.tokens.len - 1].kind == Line:
+                    comp.tokens.len -= 1
+                    limit = width
+                append(scopes, comp.trusted.len)
+                append(limits, limit)
+                append(comp.trusted, Trust{head, 0, code[start:at] == "@check"})
+            elif b == '@':
+                append(comp.tokens, Token{Builtin, code[start:at], base + start, line})
+            else:
+                append(comp.tokens, Token{Generic, code[start:at], base + start, line})
+        elif is_digit(b):
+            kind: TokenKind = Int
+            if b == '0' and at + 1 < code.len and (bytes[at + 1] == 'x' or bytes[at + 1] == 'b'):
+                hex := bytes[at + 1] == 'x'
+                at += 2
+                while at < code.len and (is_letter(bytes[at]) or is_digit(bytes[at])):
+                    c := bytes[at]
+                    if c == '_' and bytes[at - 1] != '_' and at + 1 < code.len and (is_letter(bytes[at + 1]) or is_digit(bytes[at + 1])):
+                        at += 1
+                        continue
+                    if hex and not (is_digit(c) or c >= 'a' and c <= 'f' or c >= 'A' and c <= 'F'):
+                        eprint(ERR, "invalid character '", code[at:at + 1], "' in the hexadecimal number ", code[start:at + 1])
+                        show(base + at)
+                        return Fail
+                    if not hex and c != '0' and c != '1':
+                        eprint(ERR, "invalid character '", code[at:at + 1], "' in the binary number ", code[start:at + 1])
+                        show(base + at)
+                        return Fail
+                    at += 1
+                if at == start + 2:
+                    eprint(ERR, "'", code[start:at], "' expects digits after it")
+                    show(base + start)
+                    return Fail
+            else:
+                while at < code.len:
+                    c := bytes[at]
+                    if is_digit(c) or c == '_' and is_digit(bytes[at - 1]) and at + 1 < code.len and is_digit(bytes[at + 1]):
+                        at += 1
+                    elif c == '.' and kind == Int and at + 1 < code.len and is_digit(bytes[at + 1]):
+                        kind = Float
+                        at += 1
+                    elif c == 'e' or c == 'E':
+                        kind = Float
+                        at += 1
+                        if at < code.len and (bytes[at] == '+' or bytes[at] == '-'):
+                            at += 1
+                        if at >= code.len or not is_digit(bytes[at]):
+                            eprint(ERR, "the exponent of ", code[start:at], " expects digits after it")
+                            show(base + at)
+                            return Fail
+                    elif is_letter(c) or c == '.' and at + 1 < code.len and is_digit(bytes[at + 1]):
+                        eprint(ERR, "invalid character '", code[at:at + 1], "' in the number ", code[start:at + 1])
+                        show(base + at)
+                        return Fail
+                    else:
+                        break
+            append(comp.tokens, Token{kind, code[start:at], base + start, line})
+        elif b == '\'':
+            at += 1
+            if at < code.len and bytes[at] == '\\':
+                at += 1
+                if at >= code.len or not escape_known(bytes[at]):
+                    eprint(ERR, "unknown escape sequence in a character literal")
+                    show(base + at - 1)
+                    return Fail
+                if bytes[at] == 'x' and not hex_pair(code, at + 1):
+                    eprint(ERR, "\\x expects two hexadecimal digits: \\x41")
+                    show(base + at - 1)
+                    return Fail
+                if bytes[at] == 'x':
+                    at += 2
+            if at + 1 >= code.len or bytes[at] < ' ' or bytes[at] > '~' or bytes[at + 1] != '\'':
+                eprint(ERR, "a character literal holds one ASCII character: 'a'")
+                show(base + start)
+                return Fail
+            at += 2
+            append(comp.tokens, Token{Int, code[start:at], base + start, line})
+        elif b == '"':
+            at += 1
+            while at < code.len and bytes[at] != '"' and bytes[at] != '\n':
+                if bytes[at] == '\\':
+                    at += 1
+                    if at >= code.len or not escape_known(bytes[at]):
+                        eprint(ERR, "unknown escape sequence '\\", code[at:at + 1], "' in a text literal")
+                        show(base + at - 1)
+                        return Fail
+                    if bytes[at] == 'x' and not hex_pair(code, at + 1):
+                        eprint(ERR, "\\x expects two hexadecimal digits: \\x41")
+                        show(base + at - 1)
+                        return Fail
+                    if bytes[at] == 'x':
+                        at += 2
+                at += 1
+            if at >= code.len or bytes[at] != '"':
+                eprint(ERR, "this text literal never closes, it expects a '\"' before the end of the line")
+                show(base + start)
+                return Fail
+            at += 1
+            append(comp.tokens, Token{Str, code[start:at], base + start, line})
+        else:
+            pair := code[start:start + 1]
+            if at + 1 < code.len:
+                pair = code[start:start + 2]
+            switch pair:
+            case "==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "->", ":=", "..", ".*", "<<", ">>", "||":
+                at += 2
+            case "<+":
+                eprint(ERR, "'<+' is gone, append to a &str with +=: s += x")
+                show(base + start)
+                return Fail
+            case:
+                one := code[start:start + 1]
+                switch one:
+                case "+", "-", "*", "/", "%", "=", "<", ">", "&", "|", "?", ":", ".", ",", "(", ")", "{", "}", "[", "]":
+                    at += 1
+                case "!":
+                    eprint(ERR, "'!' is not an operator, write: not")
+                    show(base + start)
+                    return Fail
+                case:
+                    eprint(ERR, "invalid character '", one, "'")
+                    show(base + start)
+                    return Fail
+            append(comp.tokens, Token{Symbol, code[start:at], base + start, line})
+            if b == '(' or b == '[' or b == '{':
+                append(opens, start)
+            elif b == ')' or b == ']' or b == '}':
+                if opens.len == 0:
+                    eprint(ERR, "unexpected '", code[start:at], "' with nothing open to close")
+                    show(base + start)
+                    return Fail
+                opener := opens[opens.len - 1]
+                opens.len -= 1
+                if b == ')' and bytes[opener] != '(' or b == ']' and bytes[opener] != '[' or b == '}' and bytes[opener] != '{':
+                    eprint(ERR, "unexpected '", code[start:at], "', the bracket open here is '", code[opener:opener + 1], "'")
+                    show(base + start)
+                    return Fail
+    if opens.len > 0:
+        eprint(ERR, "this bracket never closes")
+        show(base + opens[opens.len - 1])
+        return Fail
+    append(comp.tokens, Token{Line, nothing, base + code.len, line})
+    append(comp.tokens, Token{End, nothing, base + code.len, line})
+    append(comp.tokens, Token{End, nothing, base + code.len, line})
+    append(comp.tokens, Token{End, nothing, base + code.len, line})
+    for k in scopes:
+        comp.trusted[k].to = base + code.len
+    return null
+
+func is_letter(b: u8) -> bool:
+    return b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b == '_'
+
+func is_digit(b: u8) -> bool:
+    return b >= '0' and b <= '9'
+
+func escape_known(b: u8) -> bool:
+    return b == 'n' or b == 't' or b == 'r' or b == '0' or b == '\\' or b == '"' or b == '\'' or b == 'e' or b == 'x'
+
+func hex_pair(code: &strview, at: usize) -> bool:
+    if at + 1 >= code.len:
+        return false
+    for k in at..at + 2:
+        c := items(code)[k]
+        if not (is_digit(c) or c >= 'a' and c <= 'f' or c >= 'A' and c <= 'F'):
+            return false
+    return true

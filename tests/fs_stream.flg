@@ -1,0 +1,23 @@
+use fs
+
+func main():
+    out := create("build/tests/fs_stream.txt")
+    if out is File:
+        with out:
+            _ = write(out, "one\r\ntwo\n\nlast")
+    input := open("build/tests/fs_stream.txt")
+    if input is File:
+        with input:
+            line := read_line(input)
+            while line is &strview:
+                print("<", line, ">")
+                line = read_line(input)
+    again := open("build/tests/fs_stream.txt")
+    if again is File:
+        with again:
+            text: &str
+            defer free(text)
+            got := trust read(again, text, 5)
+            got += trust read(again, text, 100)
+            print(got, " ", text.len)
+    print(open("build/tests/nowhere/x.txt") is CannotOpen)

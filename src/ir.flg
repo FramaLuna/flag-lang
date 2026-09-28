@@ -1,0 +1,193 @@
+@trust
+W = 1
+L = 2
+S = 3
+D = 4
+SB = 5
+UB = 6
+SH = 7
+UH = 8
+AGG = 16
+CAGG = 1 << 30
+
+func temp() -> Arg:
+    comp.temps += 1
+    append(comp.numbers, false)
+    return Arg{Temp, i64(comp.temps)}
+
+func label() -> u32:
+    comp.labels += 1
+    return comp.labels
+
+func int_arg(n: i64) -> Arg:
+    return Arg{Const, n}
+
+func global(name: &strview) -> Arg:
+    found := get(comp.global_ids, name)
+    if found is usize:
+        return Arg{Global, i64(found)}
+    put(comp.global_ids, name, comp.globals.len)
+    append(comp.globals, name)
+    return Arg{Global, i64(comp.globals.len - 1)}
+
+func is_number(a: Arg) -> bool:
+    return a.kind != Temp or comp.numbers[usize(a.n) - 1]
+
+func add(i: Ins) -> Arg:
+    made := i
+    made.pos = comp.at
+    append(comp.body, made)
+    if i.to == 0:
+        return Arg{}
+    comp.numbers[i.to - 1] = i.number
+    return Arg{Temp, i64(i.to)}
+
+func op(cls: u32, name: &strview, a: Arg, b: Arg) -> Arg:
+    return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a, b = b})
+
+func op1(cls: u32, name: &strview, a: Arg) -> Arg:
+    return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a})
+
+func terminate(name: &strview, a: Arg):
+    add(Ins{op = name, a = a})
+    comp.live = false
+
+func jump(l: u32):
+    if comp.live:
+        add(Ins{op = "jmp", a = int_arg(i64(l))})
+    comp.live = false
+
+func branch(c: Arg, yes: u32, no: u32):
+    add(Ins{op = "jnz", a = c, b = int_arg(i64(yes)), c = int_arg(i64(no))})
+    comp.live = false
+
+func open_block(l: u32):
+    add(Ins{op = "@", a = int_arg(i64(l))})
+    comp.live = true
+
+func mention(name: &strview, a: Arg):
+    if a.kind == Temp:
+        append(comp.mentions, Mention{u32(a.n), name})
+
+func listing() -> &str:
+    out: &str
+    for t in 0..comp.reached:
+        if aggregate(t):
+            out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
+    out += comp.c_defs
+    out += comp.data
+    for f in comp.procs:
+        out += "dbgfile \"" + comp.files[f.file].path + "\"\n"
+        if f.export:
+            out += "export "
+        out += "function "
+        if f.cls != 0:
+            put_cls(out, f.cls)
+            out += " "
+        out += f.name + "("
+        for k in f.params..f.params + f.count:
+            if k > f.params:
+                out += ", "
+            put_cls(out, comp.passes[k].cls)
+            out += " "
+            put_arg(out, comp.passes[k].arg, f.temps)
+        out += ") {\n@start\n"
+        shown: usize = 0
+        for k in f.code..f.end:
+            i := comp.code[k]
+            if i.op == "absent":
+                continue
+            if i.pos != 0 and i.pos != shown and i.op != "@" and i.op != "alloc8":
+                out += "\tdbgloc " + line_of(i.pos) + ", " + (i.pos - line_start(i.pos) + 1) + "\n"
+                shown = i.pos
+            if i.op == "@":
+                out += "@L" + (i.a.n - i64(f.labels)) + "\n"
+                continue
+            out += "\t"
+            if i.op == "jmp":
+                out += "jmp @L" + (i.a.n - i64(f.labels)) + "\n"
+                continue
+            if i.op == "jnz":
+                out += "jnz "
+                put_arg(out, i.a, f.temps)
+                out += ", @L" + (i.b.n - i64(f.labels)) + ", @L" + (i.c.n - i64(f.labels)) + "\n"
+                continue
+            if i.to != 0:
+                out += "%t" + (i.to - f.temps) + " ="
+                put_cls(out, i.cls)
+                out += " "
+            out += i.op
+            if i.op == "call":
+                out += " "
+                put_arg(out, i.a, f.temps)
+                out += "("
+                for j in i.first..i.first + i.count:
+                    if j > i.first:
+                        out += ", "
+                    p := comp.passes[j]
+                    if p.cls == 0:
+                        out += "..."
+                    else:
+                        put_cls(out, p.cls)
+                        out += " "
+                        put_arg(out, p.arg, f.temps)
+                out += ")\n"
+                continue
+            if i.a.kind != Empty:
+                out += " "
+                put_arg(out, i.a, f.temps)
+            if i.b.kind != Empty:
+                out += ", "
+                put_arg(out, i.b, f.temps)
+            if i.c.kind != Empty:
+                out += ", "
+                put_arg(out, i.c, f.temps)
+            out += "\n"
+        out += "}\n"
+    return out
+
+func put_cls(out: *&str, c: u32):
+    if c >= CAGG:
+        out.* += ":c" + (c - CAGG)
+        return
+    if c >= AGG:
+        out.* += ":t" + (c - AGG)
+        return
+    switch c:
+    case W:
+        out.* += "w"
+    case L:
+        out.* += "l"
+    case S:
+        out.* += "s"
+    case D:
+        out.* += "d"
+    case SB:
+        out.* += "sb"
+    case UB:
+        out.* += "ub"
+    case SH:
+        out.* += "sh"
+    case:
+        out.* += "uh"
+
+func put_arg(out: *&str, a: Arg, first: u32):
+    switch a.kind:
+    case Temp:
+        out.* += "%t" + (a.n - i64(first))
+    case Const:
+        out.* += a.n
+    case Global:
+        out.* += comp.globals[usize(a.n)]
+    case Single, Double:
+        if a.kind == Single:
+            out.* += "s_"
+        else:
+            out.* += "d_"
+        buf: array[u8, 40]
+        printed: &strview
+        printed = ptr(buf) as *bytes
+        printed.len = usize(snprintf(ptr(buf) as *u8, 40, "%.17g", a.n as f64))
+        out.* += printed
+    case:
+        return

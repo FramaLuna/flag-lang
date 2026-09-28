@@ -1,0 +1,317 @@
+module os
+
+priv type Clock:
+    seconds: i64
+    nanos: i64
+
+type Date:
+    year: i32
+    month: i32
+    day: i32
+    hour: i32
+    minute: i32
+    second: i32
+    weekday: i32
+
+priv extern "c":
+    func getenv(name: cstr) -> cstr
+    func system(command: cstr) -> i32
+    func clock_gettime(id: i32, into: *Clock) -> i32
+    func nanosleep(want: *Clock, left: *Clock) -> i32
+    func read(fd: i32, at: *bytes, size: usize) -> i32
+    func close(fd: i32) -> i32
+    func pipe(fds: *i32) -> i32
+    func _pipe(fds: *i32, size: u32, mode: i32) -> i32
+    func dup(fd: i32) -> i32
+    func dup2(from: i32, to: i32) -> i32
+    func fork() -> i32
+    func execvp(file: cstr, args: **u8) -> i32
+    func _spawnvp(mode: i32, file: cstr, args: **u8) -> i64
+    func waitpid(pid: i32, status: *i32, options: i32) -> i32
+    func _cwait(status: *i32, process: i64, action: i32) -> i64
+    func _exit(code: i32)
+    func access(path: cstr, mode: i32) -> i32
+    func realpath(path: cstr, into: *u8) -> cstr
+    func GetModuleFileNameA(module: *bytes, into: *u8, size: u32) -> u32
+    func getcwd(into: *u8, size: usize) -> cstr
+    func chdir(path: cstr) -> i32
+    func uname(into: *bytes) -> i32
+    func time(into: *i64) -> i64
+    func localtime_r(when: *i64, into: *bytes) -> *bytes
+    func _time64(into: *i64) -> i64
+    func _localtime64_s(into: *bytes, when: *i64) -> i32
+    func GetSystemTimePreciseAsFileTime(into: *u64)
+    func QueryPerformanceCounter(into: *i64) -> i32
+    func QueryPerformanceFrequency(into: *i64) -> i32
+    func Sleep(milliseconds: u32)
+    func popen(command: cstr, mode: cstr) -> *bytes
+    func fread(into: *bytes, size: usize, count: usize, stream: *bytes) -> usize
+    func pclose(stream: *bytes) -> i32
+
+priv context input:
+    text: &str
+    start: usize
+
+func env(name: &strview) -> &strview|null:
+    key := cstr(name)
+    found := getenv(key)
+    if found as usize == 0:
+        return null
+    return view(found)
+
+func args() -> &slice[&strview]:
+    out: &slice[&strview]
+    out = temp(arg_count() * sizeof(&strview))
+    out.len = arg_count()
+    for i in 0..out.len:
+        out[i] = arg(i)
+    return out
+
+func run(command: &strview) -> i32 where not @windows():
+    text := cstr(command)
+    return exit_code(system(text))
+
+func run(command: &strview) -> i32 where @windows():
+    text := cstr(command)
+    return system(text)
+
+func run(program: &list[&strview]) -> i32:
+    return finish(spawn(program, -1, -1))
+
+func output(command: &strview) -> &strview:
+    stream := popen(cstr(command), "r")
+    if stream as usize == 0:
+        return ""
+    out: &str
+    got: usize = 1
+    while got > 0:
+        reserve(out, out.len + 65536)
+        got = fread((ptr(out.*) as usize + out.len) as *bytes, 1, out.cap - out.len, stream)
+        out.len += got
+    pclose(stream)
+    result := temp(out)
+    free(out)
+    return result
+
+func output(program: &list[&strview]) -> &strview:
+    fds: array[i32, 2]
+    if not make_pipe(ptr(fds) as *i32):
+        return ""
+    out: &str
+    pid := spawn(program, fds[1], fds[0])
+    close(fds[1])
+    got: i32 = 1
+    while got > 0:
+        reserve(out, out.len + 65536)
+        got = read(fds[0], (ptr(out.*) as usize + out.len) as *bytes, out.cap - out.len)
+        if got > 0:
+            out.len += usize(got)
+    close(fds[0])
+    finish(pid)
+    result := temp(out)
+    free(out)
+    return result
+
+priv func make_pipe(fds: *i32) -> bool where not @windows():
+    return pipe(fds) == 0
+
+priv func make_pipe(fds: *i32) -> bool where @windows():
+    return _pipe(fds, 65536, 32768) == 0
+
+priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where not @windows():
+    table := (program.len + 1) * 8
+    size := table
+    for part in program:
+        size += part.len + 1
+    args := malloc(size) as **u8
+    at := table
+    for i in 0..program.len + 1:
+        slot := (args as usize + i * 8) as **u8
+        slot.* = usize(0) as *u8
+        if i < program.len:
+            text := (args as usize + at) as *u8
+            memcpy(text as *bytes, ptr(program[i].*), program[i].len)
+            ((text as usize + program[i].len) as *u8).* = 0
+            slot.* = text
+            at += program[i].len + 1
+    pid := fork()
+    if pid == 0:
+        if into >= 0:
+            dup2(into, 1)
+            close(into)
+            close(other)
+        execvp(args.*, args)
+        _exit(127)
+    free(args as *bytes)
+    return i64(pid)
+
+priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where @windows():
+    line: &str
+    for part in program:
+        if line.len > 0:
+            line += " "
+        if part.len > 0 and not contains(part, " ") and not contains(part, "\t") and not contains(part, "\""):
+            line += part
+        else:
+            line += "\""
+            slashes: usize = 0
+            for c in items(part):
+                if c == '"':
+                    for k in 0..slashes + 1:
+                        add_byte(line, '\\')
+                add_byte(line, c)
+                if c == '\\':
+                    slashes += 1
+                else:
+                    slashes = 0
+            for k in 0..slashes:
+                add_byte(line, '\\')
+            line += "\""
+    args := array[*u8, 2]{c_text(line), usize(0) as *u8}
+    saved: i32 = -1
+    if into >= 0:
+        saved = dup(1)
+        dup2(into, 1)
+    process := _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
+    if into >= 0:
+        dup2(saved, 1)
+        close(saved)
+    free(line)
+    return process
+
+priv func finish(pid: i64) -> i32 where not @windows():
+    status: i32 = 0
+    if pid < 0 or waitpid(i32(pid), ptr(status), 0) < 0:
+        return -1
+    return exit_code(status)
+
+priv func exit_code(status: i32) -> i32:
+    if (status and 127) != 0:
+        return 128 + (status and 127)
+    return (status >> 8) and 255
+
+priv func finish(process: i64) -> i32 where @windows():
+    status: i32 = 0
+    if process < 0 or _cwait(ptr(status), process, 0) < 0:
+        return -1
+    return status
+
+func executable() -> &strview where @windows():
+    buf: array[u8, 4096]
+    GetModuleFileNameA(usize(0) as *bytes, ptr(buf) as *u8, 4096)
+    return replace(view(ptr(buf) as *u8), "\\", "/")
+
+func executable() -> &strview where not @windows():
+    name := arg(0)
+    found := name
+    if find(name, "/") is null:
+        dirs := env("PATH")
+        if dirs is &strview:
+            for dir in split(dirs, ":"):
+                candidate := dir + "/" + name
+                if access(cstr(candidate), 1) == 0:
+                    found = candidate
+                    break
+    real := realpath(cstr(found), usize(0) as *u8)
+    if real as usize != 0:
+        found = temp(view(real))
+    free(real as *bytes)
+    return found
+
+func system_name() -> &strview where @windows():
+    return "Windows"
+
+func system_name() -> &strview where not @windows():
+    buf: array[u8, 2048]
+    if uname(ptr(buf) as *bytes) != 0:
+        return ""
+    return temp(view(ptr(buf) as *u8))
+
+func current_dir() -> &strview where not @windows():
+    buf: array[u8, 4096]
+    if getcwd(ptr(buf) as *u8, 4096) as usize == 0:
+        return ""
+    return temp(view(ptr(buf) as *u8))
+
+func current_dir() -> &strview where @windows():
+    buf: array[u8, 4096]
+    if getcwd(ptr(buf) as *u8, 4096) as usize == 0:
+        return ""
+    return replace(view(ptr(buf) as *u8), "\\", "/")
+
+func change_dir(path: &strview) -> bool:
+    name := cstr(path)
+    done := chdir(name) == 0
+    return done
+
+func now() -> f64 where not @windows():
+    c: Clock
+    clock_gettime(0, ptr(c))
+    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+
+func now() -> f64 where @windows():
+    ticks: u64 = 0
+    GetSystemTimePreciseAsFileTime(ptr(ticks))
+    return f64(ticks - 116444736000000000) / 10000000.0
+
+func clock() -> f64 where @linux():
+    c: Clock
+    clock_gettime(1, ptr(c))
+    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+
+func clock() -> f64 where @macos():
+    c: Clock
+    clock_gettime(6, ptr(c))
+    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+
+func clock() -> f64 where @windows():
+    ticks: i64 = 0
+    rate: i64 = 1
+    QueryPerformanceCounter(ptr(ticks))
+    QueryPerformanceFrequency(ptr(rate))
+    return f64(ticks) / f64(rate)
+
+func date() -> Date where not @windows():
+    moment := time(usize(0) as *i64)
+    fields: array[i32, 16]
+    localtime_r(ptr(moment), ptr(fields) as *bytes)
+    return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
+
+func date() -> Date where @windows():
+    moment := _time64(usize(0) as *i64)
+    fields: array[i32, 16]
+    _localtime64_s(ptr(fields) as *bytes, ptr(moment))
+    return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
+
+func sleep(seconds: f64) where not @windows():
+    c := Clock{i64(seconds), 0}
+    c.nanos = i64((seconds - f64(c.seconds)) * 1000000000.0)
+    nanosleep(ptr(c), ptr(c))
+
+func sleep(seconds: f64) where @windows():
+    if seconds > 0.0:
+        Sleep(u32(seconds * 1000.0))
+
+func read_line() -> &strview|null:
+    while true:
+        rest := input.text[input.start:input.text.len]
+        cut := find(rest, "\n")
+        if cut is usize:
+            input.start += cut + 1
+            line := rest[0:cut]
+            if ends_with(line, "\r"):
+                line = line[0:line.len - 1]
+            return temp(line)
+        kept: &str = rest
+        free(input.text)
+        input.text = kept
+        input.start = 0
+        reserve(input.text, input.text.len + 4096)
+        got := read(0, (ptr(input.text.*) as usize + input.text.len) as *bytes, 4096)
+        if got <= 0 and input.text.len == 0:
+            return null
+        if got <= 0:
+            last := temp(view(input.text))
+            input.text.len = 0
+            return last
+        input.text.len += usize(got)

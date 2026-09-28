@@ -1,0 +1,48 @@
+use math
+
+type Circle:
+    radius: f64
+
+type Rect:
+    width: f64
+    height: f64
+
+type Triangle:
+    base: f64
+    height: f64
+
+type Shape = Circle|Rect|Triangle
+
+func area(s: Shape) -> f64:
+    if s is Circle:
+        return PI * s.radius * s.radius
+    elif s is Rect:
+        return s.width * s.height
+    else:
+        return s.base * s.height / 2.0
+
+operator +=(out: *&str, c: Circle):
+    out.* += "circle of radius " + c.radius
+
+operator +=(out: *&str, r: Rect):
+    out.* += "rect " + r.width + "x" + r.height
+
+operator +=(out: *&str, t: Triangle):
+    out.* += "triangle of base " + t.base
+
+operator <(a: Shape, b: Shape) -> bool:
+    return area(a) < area(b)
+
+func main():
+    shapes: &list[Shape]
+    defer free(shapes)
+    append(shapes, Circle{1.5})
+    append(shapes, Rect{2.0, 3.0})
+    append(shapes, Triangle{4.0, 1.0})
+    append(shapes, Circle{0.5})
+    sort(shapes)
+    total := 0.0
+    for s in shapes:
+        print(s, " has area ", fixed(area(s), 2))
+        total += area(s)
+    print("total ", fixed(total, 2))

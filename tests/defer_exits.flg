@@ -1,0 +1,53 @@
+type error Fail
+
+context log:
+    count: i32
+
+func mark(s: &strview):
+    log.count += 1
+    print(s)
+
+func risky(n: i32) -> i32|Fail:
+    if n < 0:
+        return Fail
+    return n
+
+func guarded(n: i32) -> i32|Fail:
+    defer mark("guarded out")
+    v := try risky(n)
+    defer mark("after try")
+    return v + 1
+
+func nested() -> i32:
+    defer mark("outer")
+    for i in 0..3:
+        defer mark("iteration")
+        if i == 1:
+            defer mark("inside if")
+            return i
+    return 99
+
+func main() -> i32:
+    i: i32 = 0
+    while i < 5:
+        defer print("round ", i)
+        i += 1
+        if i == 3:
+            break
+    for a in 0..2:
+        for b in 0..3:
+            defer print("inner ", a, " ", b)
+            if b == 1:
+                break
+        if a == 0:
+            defer print("if block")
+            print("in if")
+        print("after if ", a)
+    r := guarded(-1)
+    print(r is Fail)
+    s := guarded(5)
+    if s is i32:
+        print(s)
+    print(nested())
+    print(log.count)
+    return 0

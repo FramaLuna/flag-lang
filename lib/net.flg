@@ -1,0 +1,134 @@
+module net
+use math
+
+priv extern "c":
+    func socket(family: i32, kind: i32, protocol: i32) -> i32
+    func connect(fd: i64, address: *bytes, size: u32) -> i32
+    func bind(fd: i64, address: *bytes, size: u32) -> i32
+    func listen(fd: i64, backlog: i32) -> i32
+    func accept(fd: i64, address: *bytes, size: *u32) -> i32
+    func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
+    func setsockopt(fd: i64, level: i32, name: i32, value: *bytes, size: u32) -> i32
+    func getaddrinfo(host: cstr, service: cstr, hints: *bytes, found: **bytes) -> i32
+    func freeaddrinfo(found: *bytes)
+    func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func signal(number: i32, handler: *bytes) -> *bytes
+    func close(fd: i64) -> i32
+
+priv extern "ws2_32" where @windows():
+    func WSAStartup(version: u16, into: *bytes) -> i32
+    func closesocket(fd: i64) -> i32
+
+type error enum NetError = CannotResolve|CannotConnect|CannotListen|CannotAccept|CannotSend|CannotReceive
+
+type Socket:
+    fd: i64
+
+func connect(host: &strview, port: u16) -> Socket|NetError:
+    prepare()
+    hints: array[i32, 12]
+    hints[2] = 1
+    name := cstr(host)
+    service: &str
+    service += port
+    found: *bytes
+    failed := getaddrinfo(name, service, ptr(hints) as *bytes, ptr(found)) != 0
+    free(service)
+    if failed:
+        return CannotResolve
+    out: Socket|NetError = CannotConnect
+    entry := found
+    while entry as usize != 0 and out is NetError:
+        fields := entry as *array[i32, 4]
+        fd := i64(socket(fields.*[1], fields.*[2], fields.*[3]))
+        address := ((entry as usize + address_in_info()) as **bytes).*
+        size := ((entry as usize + 16) as *u32).*
+        if fd >= 0 and connect(fd, address, size) == 0:
+            out = Socket{fd}
+        elif fd >= 0:
+            close(Socket{fd})
+        entry = ((entry as usize + 40) as **bytes).*
+    freeaddrinfo(found)
+    return out
+
+func listen(port: u16) -> Socket|NetError:
+    prepare()
+    fd := i64(socket(2, 1, 0))
+    if fd < 0:
+        return CannotListen
+    yes: i32 = 1
+    reuse_address(fd, ptr(yes) as *bytes)
+    address := inet_address()
+    address[2] = u8(port >> 8)
+    address[3] = u8(port and 255)
+    if bind(fd, ptr(address) as *bytes, 16) != 0 or listen(fd, 64) != 0:
+        close(Socket{fd})
+        return CannotListen
+    return Socket{fd}
+
+func accept(server: Socket) -> Socket|NetError:
+    fd := i64(accept(server.fd, usize(0) as *bytes, usize(0) as *u32))
+    if fd < 0:
+        return CannotAccept
+    return Socket{fd}
+
+func port(s: Socket) -> u16:
+    address: array[u8, 128]
+    size: u32 = 128
+    if getsockname(s.fd, ptr(address) as *bytes, ptr(size)) != 0:
+        return 0
+    return u16(address[2]) << 8 or u16(address[3])
+
+func send(s: Socket, text: &strview) -> CannotSend?:
+    done: usize = 0
+    while done < text.len:
+        wrote := send(s.fd, (ptr(text.*) as usize + done) as *bytes, min(text.len - done, 65536), 0)
+        if wrote <= 0:
+            return CannotSend
+        done += usize(wrote)
+    return null
+
+func receive(s: Socket) -> &str|CannotReceive:
+    out: &str
+    reserve(out, 65536)
+    got := recv(s.fd, ptr(out.*), out.cap, 0)
+    if got < 0:
+        free(out)
+        return CannotReceive
+    out.len = usize(got)
+    return out
+
+func close(s: Socket) where not @windows():
+    close(s.fd)
+
+func close(s: Socket) where @windows():
+    closesocket(s.fd)
+
+priv func prepare() where not @windows():
+    signal(13, usize(1) as *bytes)
+
+priv func prepare() where @windows():
+    data: array[u8, 408]
+    WSAStartup(514, ptr(data) as *bytes)
+
+priv func address_in_info() -> usize where @linux():
+    return 24
+
+priv func address_in_info() -> usize where @macos() or @windows():
+    return 32
+
+priv func reuse_address(fd: i64, yes: *bytes) where @linux():
+    setsockopt(fd, 1, 2, yes, 4)
+
+priv func reuse_address(fd: i64, yes: *bytes) where @macos():
+    setsockopt(fd, 65535, 4, yes, 4)
+
+priv func reuse_address(fd: i64, yes: *bytes) where @windows():
+    return
+
+priv func inet_address() -> array[u8, 16] where @linux() or @windows():
+    return array[u8, 16]{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+priv func inet_address() -> array[u8, 16] where @macos():
+    return array[u8, 16]{16, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}

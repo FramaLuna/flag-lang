@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+    branches: [main, "release-*"]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: msys2 {0}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc git diffutils
+      - if: runner.os == 'Windows'
+        run: echo "CC=gcc" >> "$GITHUB_ENV"
+      - run: ./build.sh package
+      - run: ./test.sh build/flagc
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flag-${{ runner.os }}
+          path: build/flag-*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: grep -qx "version=${GITHUB_REF_NAME#v}" build.sh
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+      - run: awk -v v="${GITHUB_REF_NAME#v}" '/^## /{p = $2 == v; next} p' CHANGELOG.md > notes.md
+      - run: gh release create "$GITHUB_REF_NAME" packages/*.tar.gz --draft --title "Flag $GITHUB_REF_NAME" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}

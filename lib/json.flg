@@ -1,0 +1,253 @@
+module json
+
+type enum Kind:
+    Nothing, Boolean, Number, Text, Array, Object
+
+type Node:
+    kind: Kind
+    from: usize
+    to: usize
+    size: usize
+
+type Document:
+    text: &strview
+    nodes: &list[Node]
+
+type error NotJson
+
+func parse(text: &strview) -> Document|NotJson:
+    nodes: &list[Node]
+    end := value(text, 0, nodes)
+    if end is null or skip(text, end) != text.len:
+        free(nodes)
+        return NotJson
+    return Document{text, nodes}
+
+func free(d: Document):
+    free(d.nodes)
+
+func get(d: Document, at: usize|null, path: &strview) -> usize|null:
+    found := at
+    keys := split(path, ".")
+    for key in keys:
+        if found is null or d.nodes[found].kind != Object:
+            return null
+        object := found
+        found = null
+        c := object + 1
+        while c < object + d.nodes[object].size and found is null:
+            if d.text[d.nodes[c].from + 1:d.nodes[c].to - 1] == key:
+                found = c + d.nodes[c].size
+            c += d.nodes[c].size
+            c += d.nodes[c].size
+    return found
+
+priv type Children:
+    d: Document
+    at: usize
+    end: usize
+    object: bool
+
+func children(d: Document, at: usize|null) -> Children:
+    if at is null or d.nodes[at].kind != Array and d.nodes[at].kind != Object:
+        return Children{d, 0, 0, false}
+    return Children{d, at + 1, at + d.nodes[at].size, d.nodes[at].kind == Object}
+
+func iter(c: Children) -> Children:
+    return c
+
+func next(c: *Children) -> usize|IterationEnd:
+    if c.at >= c.end:
+        return IterationEnd
+    if c.object:
+        c.at += c.d.nodes[c.at].size
+    value := c.at
+    c.at += c.d.nodes[c.at].size
+    return value
+
+func count(d: Document, at: usize|null) -> usize:
+    n: usize = 0
+    for c in children(d, at):
+        n += 1
+    return n
+
+func item(d: Document, at: usize|null, index: usize) -> usize|null:
+    for i, c in children(d, at):
+        if i == index:
+            return c
+    return null
+
+func key(d: Document, at: usize|null, index: usize) -> &strview:
+    value := item(d, at, index)
+    if value is null or kind(d, at) != Object:
+        return ""
+    return text(d, value - 1)
+
+func kind(d: Document, at: usize|null) -> Kind:
+    if at is null:
+        return Nothing
+    return d.nodes[at].kind
+
+func raw(d: Document, at: usize|null) -> &strview:
+    if at is null:
+        return ""
+    return d.text[d.nodes[at].from:d.nodes[at].to]
+
+func number(d: Document, at: usize|null) -> f64|null:
+    if at is null or d.nodes[at].kind != Number:
+        return null
+    return parse_float(raw(d, at))
+
+func integer(d: Document, at: usize|null) -> i64|null:
+    if at is null or d.nodes[at].kind != Number:
+        return null
+    return parse_int(raw(d, at))
+
+func boolean(d: Document, at: usize|null) -> bool|null:
+    if at is null or d.nodes[at].kind != Boolean:
+        return null
+    return raw(d, at) == "true"
+
+func text(d: Document, at: usize|null) -> &strview:
+    if at is null or d.nodes[at].kind != Text:
+        return ""
+    out: &str
+    s := d.text
+    i := d.nodes[at].from + 1
+    end := d.nodes[at].to - 1
+    while i < end:
+        run := i
+        while run < end and items(s)[run] != '\\':
+            run += 1
+        out += s[i:run]
+        i = run
+        if i < end:
+            e := s[i + 1:i + 2]
+            i += 2
+            switch e:
+            case "n":
+                out += "\n"
+            case "t":
+                out += "\t"
+            case "r":
+                out += "\r"
+            case "b":
+                add_byte(out, 8)
+            case "f":
+                add_byte(out, 12)
+            case "u":
+                code := u32(hex_at(s, i))
+                i += 4
+                if code >= 0xD800 and code < 0xDC00 and i + 6 <= end and items(s)[i] == '\\':
+                    code = 0x10000 + (code - 0xD800) * 0x400 + u32(hex_at(s, i + 2)) - 0xDC00
+                    i += 6
+                add_char(out, code)
+            case:
+                out += e
+    result := temp(out)
+    free(out)
+    return result
+
+func quoted(out: *&str, text: &strview):
+    digits: &strview = "0123456789abcdef"
+    out.* += "\""
+    i: usize = 0
+    while i < text.len:
+        run := i
+        while run < text.len and items(text)[run] >= ' ' and items(text)[run] != '"' and items(text)[run] != '\\':
+            run += 1
+        out.* += text[i:run]
+        i = run
+        if i < text.len:
+            b := items(text)[i]
+            if b == '"' or b == '\\':
+                out.* += "\\" + text[i:i + 1]
+            elif b == '\n':
+                out.* += "\\n"
+            elif b == '\t':
+                out.* += "\\t"
+            else:
+                out.* += "\\u00" + digits[usize(b) / 16:usize(b) / 16 + 1] + digits[usize(b) % 16:usize(b) % 16 + 1]
+            i += 1
+    out.* += "\""
+
+priv func hex_at(s: &strview, at: usize) -> u64:
+    if at + 4 > s.len:
+        return 0
+    got := parse_hex(s[at:at + 4])
+    if got is u64:
+        return got
+    return 0
+
+priv func value(s: &strview, start: usize, nodes: *&list[Node]) -> usize|null:
+    b := items(s)
+    at := skip(s, start)
+    if at >= s.len:
+        return null
+    n := nodes.len
+    append(nodes, Node{Nothing, at, at, 1})
+    c := b[at]
+    if c == '{' or c == '[':
+        close: u8 = ']'
+        nodes[n].kind = Array
+        if c == '{':
+            close = '}'
+            nodes[n].kind = Object
+        at = skip(s, at + 1)
+        if at < s.len and b[at] == close:
+            at += 1
+        else:
+            while true:
+                if c == '{':
+                    name := nodes.len
+                    after := value(s, at, nodes)
+                    if after is null or nodes[name].kind != Text:
+                        return null
+                    at = skip(s, after)
+                    if at >= s.len or b[at] != ':':
+                        return null
+                    at += 1
+                next := value(s, at, nodes)
+                if next is null:
+                    return null
+                at = skip(s, next)
+                if at < s.len and b[at] == ',':
+                    at += 1
+                elif at < s.len and b[at] == close:
+                    at += 1
+                    break
+                else:
+                    return null
+    elif c == '"':
+        nodes[n].kind = Text
+        at += 1
+        while at < s.len and b[at] != '"':
+            if b[at] == '\\':
+                at += 1
+            at += 1
+        if at >= s.len:
+            return null
+        at += 1
+    elif c == '-' or c >= '0' and c <= '9':
+        nodes[n].kind = Number
+        while at < s.len and (b[at] == '-' or b[at] == '+' or b[at] == '.' or b[at] == 'e' or b[at] == 'E' or b[at] >= '0' and b[at] <= '9'):
+            at += 1
+    elif starts_with(s[at:s.len], "true"):
+        nodes[n].kind = Boolean
+        at += 4
+    elif starts_with(s[at:s.len], "false"):
+        nodes[n].kind = Boolean
+        at += 5
+    elif starts_with(s[at:s.len], "null"):
+        at += 4
+    else:
+        return null
+    nodes[n].to = at
+    nodes[n].size = nodes.len - n
+    return at
+
+priv func skip(s: &strview, start: usize) -> usize:
+    at := start
+    while at < s.len and blank(items(s)[at]):
+        at += 1
+    return at

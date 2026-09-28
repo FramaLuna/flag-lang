@@ -1,0 +1,116 @@
+module bits
+
+type Bits[$$words]:
+    words: array[u64, $$words]
+
+func at(b: *Bits[$$w], i: usize, place: &strview = @here()) -> bool:
+    if i >= $$w * 64:
+        out_of_bounds(i, $$w * 64, place)
+    return ((b.words[i / 64] >> u64(i % 64)) and 1) != 0
+
+func put(b: *Bits[$$w], i: usize, on: bool, place: &strview = @here()):
+    if i >= $$w * 64:
+        out_of_bounds(i, $$w * 64, place)
+    one := u64(1) << u64(i % 64)
+    if on:
+        b.words[i / 64] = b.words[i / 64] or one
+    else:
+        b.words[i / 64] = b.words[i / 64] and (one xor 0xffff_ffff_ffff_ffff)
+
+operator or(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
+    out: Bits[$$w]
+    for i in 0..$$w:
+        out.words[i] = a.words[i] or b.words[i]
+    return out
+
+operator and(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
+    out: Bits[$$w]
+    for i in 0..$$w:
+        out.words[i] = a.words[i] and b.words[i]
+    return out
+
+operator xor(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
+    out: Bits[$$w]
+    for i in 0..$$w:
+        out.words[i] = a.words[i] xor b.words[i]
+    return out
+
+operator -(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
+    out: Bits[$$w]
+    for i in 0..$$w:
+        out.words[i] = a.words[i] and (b.words[i] xor 0xffff_ffff_ffff_ffff)
+    return out
+
+operator ==(a: *Bits[$$w], b: *Bits[$$w]) -> bool:
+    for i in 0..$$w:
+        if a.words[i] != b.words[i]:
+            return false
+    return true
+
+func complement(b: *Bits[$$w]) -> Bits[$$w]:
+    out: Bits[$$w]
+    for i in 0..$$w:
+        out.words[i] = b.words[i] xor 0xffff_ffff_ffff_ffff
+    return out
+
+func empty(b: *Bits[$$w]) -> bool:
+    for i in 0..$$w:
+        if b.words[i] != 0:
+            return false
+    return true
+
+func count(b: *Bits[$$w]) -> usize:
+    n: usize = 0
+    for i in 0..$$w:
+        w := b.words[i]
+        while w != 0:
+            w = w and (w - 1)
+            n += 1
+    return n
+
+priv type Ones[$$w]:
+    words: array[u64, $$w]
+    at: usize
+    left: u64
+
+func iter(b: *Bits[$$w]) -> Ones[$$w]:
+    return Ones[$$w]{b.words, 0, 0}
+
+func next(o: *Ones[$$w]) -> usize|IterationEnd:
+    while o.left == 0:
+        if o.at == $$w:
+            return IterationEnd
+        o.left = o.words[o.at]
+        o.at += 1
+    low := o.left and (0 - o.left)
+    o.left = o.left xor low
+    n := (o.at - 1) * 64
+    # binary search for the bit
+    if (low and 0xffff_ffff) == 0:
+        n += 32
+        low = low >> 32
+    if (low and 0xffff) == 0:
+        n += 16
+        low = low >> 16
+    if (low and 0xff) == 0:
+        n += 8
+        low = low >> 8
+    if (low and 0xf) == 0:
+        n += 4
+        low = low >> 4
+    if (low and 0b11) == 0:
+        n += 2
+        low = low >> 2
+    if (low and 1) == 0:
+        n += 1
+    return n
+
+operator +=(s: *&str, b: *Bits[$$w]):
+    s.* += "{"
+    first := true
+    for i in b.*:
+        if not first:
+            s.* += ", "
+        first = false
+        s.* += i
+    s.* += "}"

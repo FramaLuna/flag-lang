@@ -1,0 +1,44 @@
+type error enum ConfigError = MissingEquals|BadNumber|UnknownKey
+
+type Config:
+    width: i64
+    height: i64
+    lives: i64
+
+func apply(config: *Config, line: &strview) -> ConfigError?:
+    cut := find(line, "=")
+    if cut is null:
+        return MissingEquals
+    key := trim(line[0:cut])
+    value := parse_int(trim(line[cut + 1:line.len]))
+    if value is null:
+        return BadNumber
+    switch key:
+    case "width":
+        config.width = value
+    case "height":
+        config.height = value
+    case "lives":
+        config.lives = value
+    case:
+        return UnknownKey
+    return null
+
+func load(text: &strview) -> Config|ConfigError:
+    config := Config{800, 600, 3}
+    for line in split(text, "\n"):
+        if trim(line).len > 0:
+            try apply(ptr(config), line)
+    return config
+
+func main() -> i32:
+    good := load("width = 1024\nlives = 5\n")
+    if good is Config:
+        print("loaded ", good)
+    for text in ["height: 10", "width = ten", "speed = 3"]:
+        got := load(text)
+        if got is ConfigError:
+            print("\"", text, "\" fails with ", got)
+    sure := trust load("height = 720")
+    print("trusted height ", sure.height)
+    return 0
