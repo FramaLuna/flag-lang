@@ -17,7 +17,7 @@ type error NotJson
 
 func parse(text: &strview) -> Document|NotJson:
     nodes: &list[Node]
-    end := value(text, 0, nodes)
+    end := value(text, 0, nodes, 0)
     if end is null or skip(text, end) != text.len:
         free(nodes)
         return NotJson
@@ -28,18 +28,18 @@ func free(d: Document):
 
 func get(d: Document, at: usize|null, path: &strview) -> usize|null:
     found := at
-    keys := split(path, ".")
-    for key in keys:
-        if found is null or d.nodes[found].kind != Object:
-            return null
-        object := found
-        found = null
-        c := object + 1
-        while c < object + d.nodes[object].size and found is null:
-            if d.text[d.nodes[c].from + 1:d.nodes[c].to - 1] == key:
-                found = c + d.nodes[c].size
-            c += d.nodes[c].size
-            c += d.nodes[c].size
+    with scratch():
+        for key in split(path, "."):
+            if found is null or d.nodes[found].kind != Object:
+                return null
+            object := found
+            found = null
+            c := object + 1
+            while c < object + d.nodes[object].size and found is null:
+                if text(d, c) == key:
+                    found = c + 1
+                c += 1
+                c += d.nodes[c].size
     return found
 
 priv type Children:
@@ -111,39 +111,19 @@ func boolean(d: Document, at: usize|null) -> bool|null:
 func text(d: Document, at: usize|null) -> &strview:
     if at is null or d.nodes[at].kind != Text:
         return ""
+    s := d.text[d.nodes[at].from + 1:d.nodes[at].to - 1]
+    if find(items(s), '\\') is null:
+        return temp(s)
     out: &str
-    s := d.text
-    i := d.nodes[at].from + 1
-    end := d.nodes[at].to - 1
-    while i < end:
-        run := i
-        while run < end and items(s)[run] != '\\':
-            run += 1
-        out += s[i:run]
-        i = run
-        if i < end:
-            e := s[i + 1:i + 2]
-            i += 2
-            switch e:
-            case "n":
-                out += "\n"
-            case "t":
-                out += "\t"
-            case "r":
-                out += "\r"
-            case "b":
-                add_byte(out, 8)
-            case "f":
-                add_byte(out, 12)
-            case "u":
-                code := u32(hex_at(s, i))
-                i += 4
-                if code >= 0xD800 and code < 0xDC00 and i + 6 <= end and items(s)[i] == '\\':
-                    code = 0x10000 + (code - 0xD800) * 0x400 + u32(hex_at(s, i + 2)) - 0xDC00
-                    i += 6
-                add_char(out, code)
-            case:
-                out += e
+    i: usize = 0
+    while i < s.len:
+        if items(s)[i] == '\\':
+            e := trust escape(s, i)
+            add_char(out, e.code)
+            i += e.size
+        else:
+            add_byte(out, items(s)[i])
+            i += 1
     result := temp(out)
     free(out)
     return result
@@ -171,18 +151,36 @@ func quoted(out: *&str, text: &strview):
             i += 1
     out.* += "\""
 
-priv func hex_at(s: &strview, at: usize) -> u64:
-    if at + 4 > s.len:
-        return 0
-    got := parse_hex(s[at:at + 4])
-    if got is u64:
-        return got
-    return 0
+priv type Escape:
+    code: u32
+    size: usize
 
-priv func value(s: &strview, start: usize, nodes: *&list[Node]) -> usize|null:
+priv func escape(s: &strview, at: usize) -> Escape?:
+    if at + 2 > s.len:
+        return null
+    names: &strview = "\"\\/bfnrt"
+    codes: &strview = "\"\\/\x08\x0c\n\r\t"
+    simple := find(items(names), items(s)[at + 1])
+    if simple is usize:
+        return Escape{u32(items(codes)[simple]), 2}
+    if items(s)[at + 1] != 'u' or at + 6 > s.len:
+        return null
+    code := parse_hex(s[at + 2:at + 6])
+    if code is null:
+        return null
+    if code < 0xD800 or code >= 0xE000:
+        return Escape{u32(code), 6}
+    if code >= 0xDC00 or at + 12 > s.len or s[at + 6:at + 8] != "\\u":
+        return null
+    low := parse_hex(s[at + 8:at + 12])
+    if low is null or low < 0xDC00 or low >= 0xE000:
+        return null
+    return Escape{u32(0x10000 + (code - 0xD800) * 0x400 + low - 0xDC00), 12}
+
+priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) -> usize|null:
     b := items(s)
     at := skip(s, start)
-    if at >= s.len:
+    if at >= s.len or depth > 512:
         return null
     n := nodes.len
     append(nodes, Node{Nothing, at, at, 1})
@@ -200,14 +198,14 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node]) -> usize|null:
             while true:
                 if c == '{':
                     name := nodes.len
-                    after := value(s, at, nodes)
+                    after := value(s, at, nodes, depth + 1)
                     if after is null or nodes[name].kind != Text:
                         return null
                     at = skip(s, after)
                     if at >= s.len or b[at] != ':':
                         return null
                     at += 1
-                next := value(s, at, nodes)
+                next := value(s, at, nodes, depth + 1)
                 if next is null:
                     return null
                 at = skip(s, next)
@@ -222,16 +220,39 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node]) -> usize|null:
         nodes[n].kind = Text
         at += 1
         while at < s.len and b[at] != '"':
+            if b[at] < ' ':
+                return null
             if b[at] == '\\':
+                e := escape(s, at)
+                if e is null:
+                    return null
+                at += e.size
+            else:
                 at += 1
-            at += 1
         if at >= s.len:
             return null
         at += 1
     elif c == '-' or c >= '0' and c <= '9':
         nodes[n].kind = Number
-        while at < s.len and (b[at] == '-' or b[at] == '+' or b[at] == '.' or b[at] == 'e' or b[at] == 'E' or b[at] >= '0' and b[at] <= '9'):
+        if c == '-':
             at += 1
+        end := digits(s, at)
+        if end == at or end > at + 1 and b[at] == '0':
+            return null
+        at = end
+        if at < s.len and b[at] == '.':
+            end = digits(s, at + 1)
+            if end == at + 1:
+                return null
+            at = end
+        if at < s.len and (b[at] == 'e' or b[at] == 'E'):
+            at += 1
+            if at < s.len and (b[at] == '+' or b[at] == '-'):
+                at += 1
+            end = digits(s, at)
+            if end == at:
+                return null
+            at = end
     elif starts_with(s[at:s.len], "true"):
         nodes[n].kind = Boolean
         at += 4
@@ -247,7 +268,10 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node]) -> usize|null:
     return at
 
 priv func skip(s: &strview, start: usize) -> usize:
+    return s.len - trim_start(s[start:s.len]).len
+
+priv func digits(s: &strview, start: usize) -> usize:
     at := start
-    while at < s.len and blank(items(s)[at]):
+    while at < s.len and items(s)[at] >= '0' and items(s)[at] <= '9':
         at += 1
     return at

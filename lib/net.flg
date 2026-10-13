@@ -29,14 +29,10 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     prepare()
     hints: array[i32, 12]
     hints[2] = 1
-    name := cstr(host)
-    service: &str
-    service += port
     found: *bytes
-    failed := getaddrinfo(name, service, ptr(hints) as *bytes, ptr(found)) != 0
-    free(service)
-    if failed:
-        return CannotResolve
+    with scratch():
+        if getaddrinfo(cstr(host), cstr("" + port), ptr(hints) as *bytes, ptr(found)) != 0:
+            return CannotResolve
     out: Socket|NetError = CannotConnect
     entry := found
     while entry as usize != 0 and out is NetError:

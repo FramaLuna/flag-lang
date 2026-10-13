@@ -14,8 +14,9 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Automatic context management across functions with the `context` keyword
 - Generics support
 - Function and operator overloading, with `where` to choose an overload at compile time
+- Function values, without closures
 - ABI FFI to interop with other languages (both ways)
-- QBE backend for really fast compilation, for example, the compiler builds itself in under a second
+- QBE backend for really fast compilation, for example, the compiler builds itself in about a second
 - Support for Linux, macOS and Windows
 
 ## Quick Code Example
@@ -53,16 +54,16 @@ Except for the lexer which is the base of the code style, all the code in the co
 
 ## Installation
 
-Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.1.0-linux-x86_64.tar.gz`, `flag-0.1.0-macos-arm64.tar.gz` or `flag-0.1.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
+Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.2.0-linux-x86_64.tar.gz`, `flag-0.2.0-macos-arm64.tar.gz` or `flag-0.2.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
 
 ```sh
-tar -xzf flag-0.1.0-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.1.0-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.2.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.2.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
 `flagc` is a single file, the standard library is inside it. You also need a C compiler, see [Requirements](#requirements).
-- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.1.0-macos-arm64/bin/flagc`
+- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.2.0-macos-arm64/bin/flagc`
 - On Windows, unpack it the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell
 
 For errors, hover and go to definition in your editor, see [flag-lsp](https://github.com/FramaLuna/flag-lsp).

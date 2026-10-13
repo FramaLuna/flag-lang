@@ -35,7 +35,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)).
 
-The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error.
 
@@ -45,18 +45,22 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 ```
 flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]
 ```
-- An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name. The order of the files doesn't matter, all of them are compiled together
-- `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>` and removed after it runs. The exit code of flagc is the exit code of the program
+- An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
+- `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
 - `-o` names the program, `a.out` if you don't give one, `a.exe` on Windows
 - `-check` stops after checking the code, it writes nothing and it doesn't need a `main`
 - `-memory` runs the memory checker, the warnings don't change the exit code
 - `-keep` keeps the `.ssa` and `.s` files
-- `-target` builds for another system (see [Platforms](#platforms))
+- `-target` builds for another system (see [Platforms](#platforms)). A target that doesn't exist is a wrong command line
 - `-overlay` and `-at` are for editors (see [Editor support](#editor-support))
 - `-version` prints the version and the commit it was built from
 - Anything else goes to the C compiler, in the same order: `.c`, `.o` and `.a` files, `-l` flags, `-static`...
 
-flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong.
+flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay` or `-at` is the last argument, and when `-at` is not a place inside one of the files
+```
+error: -target expects a value after it
+error: the folder notes has no .flg file to compile
+```
 
 ### The C compiler
 The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link is always
@@ -71,34 +75,51 @@ error: cannot run cc, flagc links with a C compiler and the CC variable chooses 
 ```
 
 ## Files, folders and the library
-`core.flg` is always loaded first. It has no module, so all of it is visible everywhere, it's where `print`, lists, maps and text live.
+`core.flg` is always loaded first. It has no module, so everything in it that is not `priv` is visible everywhere, it's where `print`, lists, maps and text live.
 
-The library is the `lib` folder next to the folder of flagc (`bin/../lib`). If it's not there flagc uses the copy of the library that is built inside it, and unpacks it the first time into a cache folder: `$XDG_CACHE_HOME/flag/<version>`, or `%LOCALAPPDATA%\flag\<version>` on Windows, or `$HOME/.cache/flag/<version>`, or `/tmp/flag/<version>`. So a single `flagc` file is enough to compile, and if you keep the `lib` folder next to it you can read and change the library.
+The library is the `lib` folder next to the folder of flagc (`bin/../lib`). If it's not there flagc uses the copy of the library that is built inside it, and unpacks it the first time into a cache folder: `$XDG_CACHE_HOME/flag/<version>-<number>`, or `%LOCALAPPDATA%\flag\<version>-<number>` on Windows, or `$HOME/.cache/flag/<version>-<number>`, or `/tmp/flag/<version>-<number>`, where the number changes when the library does. So a single `flagc` file is enough to compile, and if you keep the `lib` folder next to it you can read and change the library.
 
-When a file says `use something` and no file you gave declares `module something`, flagc looks at every `.flg` in the library and loads the ones whose first line is `module something`.
+When a file says `use something` and no file you gave declares `module something`, flagc loads `something.flg` from the library, a module of the library is the file of its name.
+
+A file can start with the UTF-8 mark (the BOM) that some editors write, it's skipped.
 
 A file given twice is loaded once. The paths in the errors are the ones you gave, and the library is shown relative to the current folder when it's inside it.
 
 ## Syntax
 ### Lines and blocks
 - A block is the lines after a `:` that are more indented than the line with the `:`. The width of the block is the indentation of its first line, and a line deeper than that is an error. Tabs and spaces count one each, so don't mix them
-- A `:` always needs an indented block after it, there is no `if x: print(x)` in one line
+- A line that goes back to a column where no block started is an error too: `unexpected indentation, this line matches no block open above it`. The fields of a type, the variants of an enum block and the functions of an `extern` block are blocks like any other
+- A `:` always needs an indented block after it, there is no `if x: print(x)` in one line. `pass` is the statement that does nothing, for a block that must be empty. Only an `extern` block can have nothing after its `:`
 - Declarations (`func`, `type`, constants, `extern`...) start at the first column, and code goes inside functions
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
-- `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work
+- `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
+- Expressions and types nest up to 300 levels: `this code nests more than 300 levels deep, move the inner part to a function or a variable`
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
 - `@name` is a builtin (`@linux()`, `@argc()`...), and `@trust`/`@check` are markers for the memory checker
 - `$T` is a type parameter and `$$n` a number parameter
-- Integers: `42`, `0xff`, `0b101`, and `_` can go between digits to read them better, `1_000_000`, `0xff_ff`. There are no octal numbers
-- Floats: `2.5`, `1e3`, `1.5e-3`. A float needs digits on both sides of the `.` (`.5` and `5.` are not floats)
-- Characters: `'a'` is one ASCII character or one escape, and it's the number of that character
+- Integers: `42`, `0xff`, `0b101`, and one `_` can go between two digits to read them better, `1_000_000`, `0xff_ff`. There are no octal numbers
+- Floats: `2.5`, `1e3`, `1.5e-3`. A float needs digits on both sides of the `.` (`.5` and `5.` are not floats) and has one exponent
+- Characters: `'a'` is one ASCII character or one escape, and it's the number of that character. A tab or any other control byte is written as its escape, `'\t'`
 - Text: `"..."` in one line, with the escapes `\n \t \r \0 \\ \" \' \e` and `\x41`, a byte by its two hexadecimal digits
 - The two character symbols are `== != <= >= += -= *= /= %= -> := .. .* << >> ||`
 
 `!`, `&&` and `||` are not the logical operators, it's `not`, `and` and `or`. The compiler tells you: `'!' is not an operator, write: not`.
+
+### Keywords
+These words are the language, so nothing you declare can have one as its name, not a variable, a parameter, a constant, a function, a type, a field or a module
+```
+if elif else while for in switch case break continue return defer with pass
+and or xor not is as try trust iferror ifnull true false null
+```
+```
+error: 'return' is a keyword of the language, it cannot be used as a name
+```
+`reverse` cannot name a variable, a parameter or a constant, because a `for` reads it as the direction, but it's also the function `reverse(items)`.
+
+The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field.
 
 ## Types in memory
 ### Sizes
@@ -107,7 +128,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 | `bool`, `i8`, `u8` | 1 |
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
-| `i64`, `u64`, `usize`, `f64`, pointers | 8 |
+| `i64`, `u64`, `usize`, `f64`, pointers, function values | 8 |
 | void types, `null`, `IterationEnd` | 0 |
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
@@ -122,9 +143,9 @@ type S:
     b: i32  # offset 4
     c: u8   # offset 8, and the size is 12
 ```
-A nested field is inline in the struct, and its type is named after the struct and the field, `Car.motor`.
+A nested field is inline in the struct, and its type is named after the struct and the field: `Car.motor`, or `cars.Car.motor` when it comes from the module `cars`.
 
-A field with `@other` uses the same bytes as a field declared above it, it cannot be bigger than that field, and a literal can fill only one of the two. Printing skips the shared fields, and a struct with shared fields cannot be passed to C by value.
+A field with `@other` uses the same bytes as a field declared above it, it cannot be bigger than that field, and a literal can fill only one of the two. It starts with the same zero bytes as the field above, so when it holds a union without `null` it's not a value until you assign it. Printing skips the shared fields, and a struct with shared fields cannot be passed to C by value.
 
 A `packed type` has no padding, each field starts where the one before ends and its alignment is 1, so `packed type T:` with `a: u8` and `b: i64` takes 9 bytes. Fields can share storage with `@` there too. A packed struct cannot be passed to C by value, pass a pointer.
 
@@ -139,13 +160,13 @@ A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from wh
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A union of void types is only the tag, 4 bytes, that's why enums are small.
 
-The tag is the id of the type inside that compilation, it can change when you change the program, so don't save it to a file.
+The tag says which member the union holds. It comes from the id the type has inside that compilation, so it can change when you change the program, don't save it to a file. The tag of `null` is always 0.
 
-A union that starts at zero holds its member with the lowest id, the builtin types first and then your types in the order they are declared. So `T?` starts as `null`, and an enum starts as its first variant.
+A union that gets no value starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`, and an enum starts as its first variant, unless one of its variants was declared before the enum. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, and inside a `context` it's part of the program file, 4 bytes for each element or more. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
-The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it.
+The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
-An untagged union (`i32||f32`) is as big as its biggest member and has no tag.
+An untagged union (`i32||f32`) is as big as its biggest member and has no tag. It starts at zero, and a member that holds a union without `null` is not a value until you assign it.
 
 ### Fat pointers
 A fat pointer is the address of the data and then its fields
@@ -191,10 +212,11 @@ From the loosest to the tightest
 3. `is`
 4. `==`, `!=`
 5. `<`, `>`, `<=`, `>=`
-6. `..`, `<<`, `>>`
-7. `+`, `-`
-8. `*`, `/`, `%`
-9. `as`
+6. `iferror`, `ifnull`
+7. `..`, `<<`, `>>`
+8. `+`, `-`
+9. `*`, `/`, `%`
+10. `as`
 
 The unary operators (`-`, `not`, `try`, `trust`) are tighter than all of them. So `not x == 3` is `(not x) == 3`, write `x != 3` or `not (x == 3)`. And `x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
 
@@ -204,7 +226,7 @@ When you pass an argument, the value is converted only if it's
 - the same type
 - a `&str` going to a `&strview`, or a `&list[T]` going to a `&slice[T]`
 - a `*array[T, N]` going to a fat pointer of `T` (a list, a slice, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
-- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map
+- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
 - a value going to a union that has its type, or a union going to a bigger union
@@ -235,7 +257,7 @@ Calling a struct or an alias with one value does the same conversion as an assig
 - a union to one of its members or to a smaller union, without checking the tag
 - a member in or out of an untagged union
 
-Anything else is `cannot reinterpret i32 as i64, they do not have the same byte size`.
+`as` never writes a tag, so nothing becomes a union with it, and two unions of the same size don't read as each other. Anything else is `cannot reinterpret i32 as i64, they do not have the same byte size`.
 
 ### Pointers into fat pointers
 Assigning a `*bytes`, or a pointer to the element type, to a fat pointer sets only its address, and you set `len` yourself. It's how the library builds views over memory
@@ -264,7 +286,7 @@ The rules
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
 
-`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. To compare the value of a member, narrow first: `x is i32 and x == 3`.
+`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union made only of void types compare too, and so do two such unions when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member, narrow first: `x is i32 and x == 3`.
 
 ## Functions and calls
 ### Which functions a call sees
@@ -273,7 +295,7 @@ A call sees the functions of its own module, the global ones (from files without
 ### Arguments
 The arguments fill the parameters in order, and named arguments fill their parameter. After a named argument the rest must be named too, and a parameter can't be filled twice.
 
-A default value is computed at the call, every time it's used. It can use constants, contexts and functions, not the other parameters. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
+A default value is computed at the call, every time it's used. It can use constants, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
 ```flag
 func pick(a: i32 = 1, b: i32) -> i32:
     return a * 10 + b
@@ -288,20 +310,53 @@ Every overload that can take the arguments gets a score, and the highest one win
 - a conversion gives 1 (`&str` to `&strview`, a literal to another type, a value into a union...)
 - an integer literal to `f32` gives 0, so `f64` wins
 - a `$T` that is still free gives 0 and takes the type of the argument
-- a `*T` parameter with a variable of type `T` gives one less than `T` would, and passes the address of the variable. It doesn't work with a bare `*$T`, that one takes any pointer
+- a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives only what its inside gives
+- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. It doesn't work with a bare `*$T`, that one takes any pointer. The counter of a `for` over a range with literal ends is the exception, the loop trusts it to index without checks: `i counts this loop, so a pointer to it is not taken on its own: write ptr(i)`
+
+When two overloads have the same score, the one that takes more arguments through a shape like `&slice[$T]`, instead of a bare `$T`, wins.
 
 The arguments that are not literals are matched first, so `$T` comes from your variables and the literals adapt to it: `biggest(2, u8(7))` makes `$T` an `u8`.
 
 Then `where` removes the overloads whose condition is false.
 
-When two overloads have the same score the nearest one wins: the one of your module, then a global one, then one of another module. If they are still tied it's an error, with a note for each one
+If they are still tied the nearest one wins: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one
 ```
 error: ambiguous call to show, several overloads match (i32) equally
 ```
 
-The order of the declarations doesn't matter, a function can call one declared below it or in another file. Functions are not values, you can't store one in a variable.
+The order of the declarations doesn't matter, a function can call one declared below it or in another file.
+
+Declaring the same function twice in a module is an error, with a note that points to the other one. Two functions are the same when everything from the name to the `:` is equal, and the names of the parameters don't count
+```
+error: main is declared twice with the same parameters
+```
 
 A text literal doesn't go to a `&str` parameter, because a `&str` is text that you own. Take `&strview` when you only read the text, a `&str` also goes there.
+
+### Function values
+The name of a function is a value, and its type is the declaration without the names: `func(i32, i32) -> bool`, or `func(i32)` when it returns nothing. It takes 8 bytes, the address of the function.
+```flag
+func double(x: i32) -> i32:
+    return x * 2
+
+func apply(f: func(i32) -> i32, x: i32) -> i32:
+    return f(x)
+
+func main():
+    f := double
+    print(f(4), " ", apply(double, 5)) # 8 10
+```
+- `->` takes everything after it, so `func(i32) -> bool?` returns a `bool?`. A function that may be missing is `(func(i32) -> bool)?`, or `func(i32)?` when it returns nothing, and it's checked with `is` like any union
+- when the place says the type (a variable with its type, an assignment, a `return`, a field of a literal, an element of an array with its type), the name gives the overload with exactly those parameters. A union says it only when it has one function type, and a generic function gets its types from them: `top: func(f64, f64) -> f64 = biggest`
+- when nothing says the type, like in `f := show` or in an argument, the name must have one function and it cannot be generic: `show names several functions and nothing here says which: give it to a variable that says its function type first`
+- the parameters must be exactly those, defaults included, and there is no conversion between function types. Overloads are chosen by their parameters, never by what they return
+- a call is `(` after any value: `f(x)`, `button.on_click(x)`, `steps[i](x)`, `pick(true)(x)`. `name(...)` calls the variable `name` only when it holds a function, any other variable leaves the functions of that name reachable. A constant that holds a function is called by its name too, when no function has that name
+- the arguments convert like in any call (an `i32` doesn't go to an `i64` parameter here either), but a function value has no parameter names and no defaults
+- a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`
+- `==` and `!=` compare two values of the same function type. Printing one shows its address
+- a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
+- C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
+- there are no closures, no functions inside functions and no functions without a name. A function gets what it needs as arguments
 
 ### Protocol functions
 The compiler calls some functions by their name, so you make your types work with the language by declaring them
@@ -318,41 +373,50 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and for arrays, lists and slices also the `for`. They don't go through `at`, `iter` or `next`. So declaring `at` with an integer index for an array, a list, a slice or text is an error (`x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`), and so is `iter` or `reverse_iter` for an array, a list or a slice. A generic one, like `at(l: &list[$T], i: $I)`, is accepted and never called for an integer. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+
 ## Generics and where
 ### Type parameters
 `$T` gets its type only from the parameters, there is no way to give it by hand (`ident[i32](3)` doesn't exist). A `$T` that is only in the return type is an error when you call the function: `$T is not bound here, a generic gets its type from a parameter`.
 
-`$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array.
+`$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array. It comes through a generic alias too (`func get(x: Opt[$T])` with `type Opt[$T] = $T|null`), and from inside a function type (`less: func($T, $T) -> bool`). In a union one member can carry it, `$T|null` or `(func($T) -> bool)?`, and a `null` given there is fine when another parameter already says what `$T` is.
 
 `$$n` is a number, it comes from an array size (`array[$T, $$n]`) or from a type with a number parameter, and inside the function it's an integer literal.
 
-Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`). A generic that makes bigger types with every call (like `f(x: $T)` calling `f(Pair[$T, $T]{...})`) stops at 100000 instances: `instancing f never ends, each call builds a bigger type than the last`.
+Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`), and it cannot have a nested field, its `$T` would not reach the inner type: declare that type on its own. A generic that makes bigger types with every call doesn't compile: `f(x: $T)` calling `f(ptr(x))` gives `instancing f never ends, each call builds a bigger type than the last`, and a type that grows the same way gives `type Pair never ends, each instance builds a bigger one than the last`.
 
 ### where
 A `where` condition can be
 - `$T is i8|i16`, true when the type of `$T` is inside that union
-- `$T == i32` and `$T != i32`, with the type parameter on the left
+- `$T == i32` and `$T != i32`, with the type parameter on either side
 - `can_assign(&strview, $T)`, true when a `$T` can be assigned to a `&strview`
 - `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()`, for the system the program is built for
 - `not`, `and`, `or` and parentheses
 - anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `sizeof($T) >= 8`, `$$n <= 16`
 
-The values of the parameters are not known when the call is chosen, so `where x > 0` is an error.
+The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `x is not known when the call is chosen: a where reads types, numbers and constants, not the parameters`.
 
 The platform builtins and `can_assign` only work inside a `where`.
 
 `@compile_error("text")` in a function stops the compilation with that text, pointing at the call that made that instance of the function. A function that nothing calls doesn't fail, so it's the way to say that an overload chosen by `where` can't be used.
 
 ## Operators
-You can overload `+ - * / % == < << >> and or xor` for your types. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and declaring them is an error that tells you which one to declare
+You can overload `+ - * / % == < << >> and or xor` for your types, and also `=` and `+=`, that are explained below. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `-=`, `*=`, `/=` and `%=` from `-`, `*`, `/` and `%`, and declaring them is an error that tells you which one to declare
 ```
 error: operator >= follows from <, declare operator < instead
 ```
-`a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`.
+Any other operator is an error too: `operator foo cannot be declared, the operators to declare are + - * / % == < << >> and or xor = +=`.
+
+An operator has two parameters, its left side and its right side, there are no unary operators to overload. It can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and one between two numbers of different types could never run, numbers of different types don't mix. `==` and `<` return `bool`.
+
+`a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
 `==` doesn't exist for structs until you declare it, the compiler doesn't compare them field by field. Text compares by content, and `sort` uses `<`.
 
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
+
+### Assignments
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -363,9 +427,9 @@ There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
 
 ### Everything else
-`for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
+Over an array, a list or a slice the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
 
-- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). `items(text)` gives the bytes
+- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a whole character comes alone, and `reverse` gives the same pieces. `items(text)` gives the bytes
 - A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed. A fixed map gives them in the order they were put
 - An array gives its elements, the loop takes its address so it doesn't copy it, and it can be reversed
 - A pointer to a list is not iterable, use `p.*`
@@ -385,26 +449,29 @@ They work on the innermost loop, there are no labels, and with a number they rea
 
 ### defer
 - The deferred statements run when their block ends, in reverse order, also on `return`, `break` and `continue`. In a loop they run every round
-- The statement is run at the end, so it reads the values the variables have then
-- It only sees the variables declared before the `defer`
+- The statement is run at the end, so it reads the values the variables have then, and it's checked with the types they have then: after `defer x = "text"` runs, `x` is no longer the `i32` that an `is` left
+- It only sees the variables declared before the `defer`, and the ones it declares itself
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
+- It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
 - If the deferred call returns an error, the error is lost
 
 ### with
-`with value:` keeps the value and calls `close(value)` when the block ends, also when you leave it early. What `close` returns is lost. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
+`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. What `close` returns is lost. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
 
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
 - Code after `return`, `break` or `continue` in the same block is an error: `this code can never run, the block already left`
 - `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code
-- `_ = value` throws the value away. `_ := 3` is a real variable named `_`
+- `_ = value` throws the value away, also when there is a variable named `_`
+- A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
+- Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
 An expression statement that leaves an error without handling it doesn't compile
 ```
-error: this statement left errors unconsumed, handle them with try, is or _ =
+error: this statement drops an error: test it with is, pass it up with try or drop it with _ =
 ```
-If you keep the result in a variable, you can't use its value until you check it with `is`, but if you never use the variable the error is lost.
+If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. A `switch` over the value with a `case:` counts as handling its errors, the default takes them.
 
 `try` gives the value and returns the errors from the function, so each error must be in the return type of the function
 - `try passes Bad up but this function returns i32`
@@ -412,19 +479,23 @@ If you keep the result in a variable, you can't use its value until you check it
 
 `trust` removes the errors without checking, or the `null` if there are no errors. If it was an error you get garbage, and printing it can crash the program.
 
-`a iferror b` is the value of `a` without its errors, or `b` when `a` has an error, and `a ifnull b` is the same with `null`. `b` only runs when it's needed. If `b` fits the type left from `a` the result has that type, and if not it's the union of both. They bind tighter than comparisons and looser than arithmetic, so `get(m, k) ifnull 0 > 3` compares the result and `m[k] ifnull 0 + 1` adds to the default, put parentheses when you mean the other one.
+`a iferror b` is the value of `a` without its errors, or `b` when `a` has an error, and `a ifnull b` is the same with `null`. `b` only runs when it's needed. When `b` gives nothing, like a call to a function that returns nothing, `a iferror b` is a statement that runs `b` when `a` failed. If `b` fits the type left from `a` the result has that type, and if not it's the union of both. They bind tighter than comparisons and looser than arithmetic, so `get(m, k) ifnull 0 > 3` compares the result and `m[k] ifnull 0 + 1` adds to the default, put parentheses when you mean the other one.
 
 ### Runtime errors
-These stop the program, and write the message and then the place (`  --> main.flg:12:11`) to the error output
+These stop the program, and write the message to the error output
 | Message | Exit code |
 |---|---|
 | `flag: index 5 is out of bounds, length 3` | 134 |
+| `flag: slice 2:9 is out of bounds, length 3` | 134 |
 | `flag: division by zero` | 134 |
 | `flag: assertion failed`, or the message of `assert(condition, message)` | 134 |
 | `flag: <text>` (from `panic`) | 134 |
+| `flag: call of an empty function value` | 134 |
 | `flag: out of memory` | 9 |
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that.
+The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.
+
+A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice always has its two ends, there is no `s[2:]`. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
@@ -439,17 +510,22 @@ func main():
     small: u8 = N
     print(small, " ", BIG)
 ```
-Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. When the expression fails for one of them, a note says which: `PAIR is read here`. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+
+A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`.
 
 ### Contexts
 A context is one global value with its fields at zero. It has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Who can see it follows the module rules, like a type.
 
 ## Modules
-- `module name` goes in the first line and `use` goes before the first declaration
-- `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`
+- `module name` goes in the first line and `use` goes before the first declaration. A file doesn't `use` its own module, it already sees it
+- `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`. Without the `use`, `a.name` is an error. A nested type of a module is `a.Car.motor`
 - `priv` hides a name from the files outside the module
+- a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
+- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg`
+- a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files. A `priv` function that fits a call wins over every function that is not `priv`, even one with closer types
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
-- a function of your module wins over a global one, and a global one over one of another module
+- when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).
@@ -479,23 +555,63 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 
 ## The memory checker
 `-memory` reads the IL of your program and follows every allocation, and warns about
-- memory that is never freed, or that may never be freed: `the memory allocated here for names is never freed`
-- memory freed twice: `free cannot release names, it may be freed already`
-- memory used after it was freed, also after a list grew and moved: `names points to memory that may be freed already`
-- freeing what is not on the heap, or a pointer to the middle of a block
-- temporaries used after their `with scratch():` ended
-- a pointer to a local variable that leaves its function: `a pointer to x cannot leave make, x lives on its stack`
-- a function that frees one argument and reads another that may be the same memory, like `t += t`
+- memory that is never freed, or that some path doesn't free: `the memory allocated here for names is never freed`, `the memory that make allocates here may never be freed`
+- memory freed twice: `free cannot release p, it may be freed already`
+- memory used after it was freed, also after a list grew and moved: `first points to memory that may be freed already`
+- freeing what is not a heap block: `free cannot release x, it is not on the heap`, `free cannot release p, it points inside a heap block, not at its start`, `free cannot release t, it is temporary memory: a with scratch() block releases it`
+- temporaries used after their `with scratch():` ended: `kept points to memory that may be freed already`
+- a pointer to a local variable that leaves its function: `a pointer to buf cannot leave name, buf lives on its stack`
+- a function that frees one argument and reads another that may be the same memory, like `t += t`: `this call may free memory that it also reads through another argument`
 
-A warning has a note that points to the other place involved, where it was freed or allocated.
+A message names your variable when there is one, and says `this memory` when there is none. It names a function only when you wrote the call: `drop cannot release path, it is temporary memory: a with scratch() block releases it`. The calls the compiler writes for you, for `print`, `+`, `for` or a conversion, are never named.
+
+A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the end of the function that loses it
+```flag
+func main():
+    names: &list[i32]
+    defer free(names)
+    append(names, 1)
+    first := ptr(names[0])
+    append(names, 2)
+    print(first.*)
+```
+```
+warning: first points to memory that may be freed already
+  --> main.flg:7:5
+   |     print(first.*)
+   |     ^
+note: it may be freed here
+  --> main.flg:6:5
+   |     append(names, 2)
+   |     ^
+```
 
 ### What it doesn't know
-It doesn't follow the values of the conditions, it looks at every path. So these give warnings that are not real
-- freeing in `if c:` and again in `if not c:` warns that it may be freed twice and may never be freed
-- the elements of a list freed in a loop, `for s in names: free(s)`, because it sees all the elements of a list as one
-- a value that goes into a map and is removed and freed later
+It doesn't follow the values of the conditions, it looks at every path. It does follow `is`: after `if node is *Node:` it knows that the other path has no node to free.
 
-It cannot follow a pointer once you store it as an integer, and it tells you: `-memory cannot follow x once it is stored as an integer, store it with a pointer type`. And if a function is too complex it gives up on it: `-memory gives up on f, its memory use does not settle, so its checks are incomplete`.
+It sees all the elements of a list, an array or a map as one. And it sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others. So these give warnings that are not real
+- freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
+- elements freed one by one, in a loop like `for s in names: free(s)` or `for i in 0..names.len: free(names[i])`, or one taken with `pop`, `remove` or `names[0]`. It warns `free cannot release s, it may be freed already` and `the memory allocated here for s may never be freed`
+- the same with the values of a map, in `for e in m: free(e.value)` or after `remove(m, key)`
+- elements moved to another list or to a context warn that they may never be freed
+- linked lists and trees whose nodes are allocated in a loop or by a recursive function
+- a pointer that may point to one of several fields, when you store or free through it
+- memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
+- a text appended to itself, `t += t`: `+=` copies the text first when it is a view of the same memory, but the checker only sees that it may free what it reads
+- memory that a function frees more than three pointers away from its parameters, like `free(p.a.b.c.d)`: the caller is told that it is never freed
+
+`@trust` at the end of the line hides them (see below).
+
+What it cannot follow it leaves alone, without warnings
+- what a function reads or writes more than three pointers away from its parameters, like `p.a.b.c.d`. Only a `free` that far gives a warning, the one above
+- what is past the first 4096 bytes of a struct or an array, when the index is a literal
+- what you store in memory that a C function gave you
+
+A pointer that you store as an integer is lost. The checker tells you, `-memory cannot follow x once it is stored as an integer, store it with a pointer type`, and then reports that memory as never freed.
+
+And it gives up on a function that is too much for it. It still shows what it found there, but it doesn't see everything
+- `-memory gives up on f, it has more than 512 blocks of memory to follow, so its checks are incomplete`. A block is every place that allocates, every temporary and everything a parameter points to, and the checker keeps a few for itself, so about 500 are yours. Split the function
+- `-memory gives up on f, its memory use does not settle, so its checks are incomplete`
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked
@@ -531,7 +647,7 @@ extern "c":
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
 ```
-`ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has.
+`ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has. Inside Flag you don't need `ptr`, the name of a function is already a value (see [Function values](#function-values)), but that value doesn't cross to C.
 
 ### Types
 | Flag | C |
@@ -544,15 +660,15 @@ export func ascending(a: *i32, b: *i32) -> i32:
 | `*T`, `cstr` | pointers |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
 
-Tagged unions and fat pointers can't cross to C, pass their parts. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
+Tagged unions, fat pointers and function values can't cross to C, pass their parts: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
-A C function can end with `...`. The extra arguments must be integers, floats, `bool` or pointers, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
+A C function can end with `...`. The extra arguments must be integers, floats, `bool` or pointers, not function values, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
 
 ### Text
 `cstr` is `*u8`, a text that ends with a zero byte
 - a text literal goes as a `cstr` without copying, literals already end with a zero
-- a `&str` goes as a `cstr` without copying, the compiler writes the zero after its text
+- a `&str` goes as a `cstr` without copying when it has room for the zero after its text, and as a temporary copy when it's full. It never grows the text, so the other copies of that `&str` stay good
 - any other `&strview` needs `cstr(text)`, that makes a temporary copy
 - `view(c)` turns a `cstr` back into a `&strview`
 
@@ -591,7 +707,7 @@ These are for editors and tools, they don't build the program.
 
 `-overlay file` replaces the text of some files with the text in that file, so an editor can check what you are typing before you save. The file is a list of entries, and each one is the path in a line, the length in bytes in another line, and that many bytes of text.
 
-`-at file:line:column` says what is at that place, it prints a `definition` line with where it's declared and `hover` lines with its type or its declaration
+`-at file:line:column` says what is at that place, it prints a `definition` line with where it's declared and `hover` lines with its type or its declaration. The column counts bytes, like the ones in the errors. A place that is not inside one of the files is a wrong command line: `-at main.flg:1:18 is past the end of the line, its last column is 13`
 ```sh
 flagc main.flg -check -at main.flg:12:5
 ```
@@ -603,12 +719,22 @@ hover func add(a: i32, b: i32) -> i32:
 ## Diagnostics
 Errors, warnings and notes go to the error output with the place and the line, and a `^` under the column
 ```
-error: no overload of iter matches (array[i32,3])
-  --> main.flg:3:9
-   |     for v in values:
-   |         ^
+error: Point has no field z
+  --> main.flg:7:13
+   |     print(p.z)
+   |             ^
 ```
 Only the first error is shown, and a note follows it when there is another place involved. The messages always say what is wrong and why, if one doesn't, it's a bug in the compiler.
+
+The place is `file:line:column`, both start at 1 and the column counts bytes, so a `ñ` before it counts two. The `^` is drawn under the character anyway. A byte that cannot be shown is written as its escape, `invalid character '\x1b'`.
+
+When a line ends before it should, the error points after its last word
+```
+error: the line ends here, expected ':'
+  --> main.flg:2:13
+   |     if ready
+   |             ^
+```
 
 ## Building the compiler
 `./build.sh` builds the compiler in stages
@@ -622,19 +748,26 @@ Only the first error is shown, and a note follows it when there is another place
 `./build.sh package` makes `build/flag-<version>-<system>-<machine>.tar.gz` with the compiler.
 
 `./test.sh build/flagc` runs every test in `tests/`
-- `name.flg` with `name.out` must print that
+- `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
+- `name.args` has more arguments for the compiler in that test
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with two changes: its `main` returns instead of calling `exit`, so flagc can call it, and on Windows it probes the stack for functions with more than 4 KiB of locals.
+QBE is in `vendor/qbe` with three changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, so the assembler has nothing to warn about.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
 - `m[k] += 1` on a map doesn't compile, `m[k]` is a value that can be `null`, write `m[k] = (m[k] ifnull 0) + 1`
 - `m[k] = v` on a fixed map gives the `MapFull?` of `put`, so write `trust put(m, k, v)` when you know there is room, or `try put(m, k, v)`
-- An error kept in a variable that you never use is lost, and so are the errors of a deferred call and of `close`
+- The errors of a deferred call and of `close` are lost
+- A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
+- `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
+- A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
+- A map compares its keys with `==` and finds them with `hash`. The `hash` of a type you made reads its bytes, so when your `==` compares something else (the text behind a `&strview` field), declare a `hash` for it too
 - `trust` on a real error gives garbage, and it can crash
+- A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
+- An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

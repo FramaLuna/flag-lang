@@ -35,7 +35,6 @@ priv extern "c":
     func GetModuleFileNameA(module: *bytes, into: *u8, size: u32) -> u32
     func getcwd(into: *u8, size: usize) -> cstr
     func chdir(path: cstr) -> i32
-    func uname(into: *bytes) -> i32
     func time(into: *i64) -> i64
     func localtime_r(when: *i64, into: *bytes) -> *bytes
     func _time64(into: *i64) -> i64
@@ -53,11 +52,11 @@ priv context input:
     start: usize
 
 func env(name: &strview) -> &strview|null:
-    key := cstr(name)
-    found := getenv(key)
-    if found as usize == 0:
-        return null
-    return view(found)
+    with scratch():
+        found := getenv(cstr(name))
+        if found as usize != 0:
+            return view(found)
+    return null
 
 func args() -> &slice[&strview]:
     out: &slice[&strview]
@@ -68,12 +67,12 @@ func args() -> &slice[&strview]:
     return out
 
 func run(command: &strview) -> i32 where not @windows():
-    text := cstr(command)
-    return exit_code(system(text))
+    with scratch():
+        return exit_code(system(cstr(command)))
 
 func run(command: &strview) -> i32 where @windows():
-    text := cstr(command)
-    return system(text)
+    with scratch():
+        return system(cstr(command))
 
 func run(program: &list[&strview]) -> i32:
     return finish(spawn(program, -1, -1))
@@ -140,12 +139,15 @@ priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where no
             dup2(into, 1)
             close(into)
             close(other)
-        execvp(args.*, args)
+        if program.len > 0:
+            execvp(args.*, args)
         _exit(127)
     free(args as *bytes)
     return i64(pid)
 
 priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where @windows():
+    if program.len == 0:
+        return -1
     line: &str
     for part in program:
         if line.len > 0:
@@ -172,7 +174,9 @@ priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where @w
     if into >= 0:
         saved = dup(1)
         dup2(into, 1)
-    process := _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
+    process: i64 = -1
+    with scratch():
+        process = _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
     if into >= 0:
         dup2(saved, 1)
         close(saved)
@@ -208,6 +212,8 @@ func executable() -> &strview where not @windows():
         dirs := env("PATH")
         if dirs is &strview:
             for dir in split(dirs, ":"):
+                if dir.len == 0:
+                    dir = "."
                 candidate := dir + "/" + name
                 if access(cstr(candidate), 1) == 0:
                     found = candidate
@@ -218,14 +224,14 @@ func executable() -> &strview where not @windows():
     free(real as *bytes)
     return found
 
+func system_name() -> &strview where @linux():
+    return "Linux"
+
+func system_name() -> &strview where @macos():
+    return "Darwin"
+
 func system_name() -> &strview where @windows():
     return "Windows"
-
-func system_name() -> &strview where not @windows():
-    buf: array[u8, 2048]
-    if uname(ptr(buf) as *bytes) != 0:
-        return ""
-    return temp(view(ptr(buf) as *u8))
 
 func current_dir() -> &strview where not @windows():
     buf: array[u8, 4096]
@@ -240,9 +246,8 @@ func current_dir() -> &strview where @windows():
     return replace(view(ptr(buf) as *u8), "\\", "/")
 
 func change_dir(path: &strview) -> bool:
-    name := cstr(path)
-    done := chdir(name) == 0
-    return done
+    with scratch():
+        return chdir(cstr(path)) == 0
 
 func now() -> f64 where not @windows():
     c: Clock
@@ -284,9 +289,10 @@ func date() -> Date where @windows():
     return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
 
 func sleep(seconds: f64) where not @windows():
-    c := Clock{i64(seconds), 0}
-    c.nanos = i64((seconds - f64(c.seconds)) * 1000000000.0)
-    nanosleep(ptr(c), ptr(c))
+    left := Clock{i64(seconds), 0}
+    left.nanos = i64((seconds - f64(left.seconds)) * 1000000000.0)
+    while left.seconds >= 0 and left.nanos >= 0 and left.nanos < 1000000000 and nanosleep(ptr(left), ptr(left)) != 0:
+        pass
 
 func sleep(seconds: f64) where @windows():
     if seconds > 0.0:

@@ -15,6 +15,11 @@ EMPTYARRAY = 15
 EMPTYMAP = 16
 ITERATIONEND = 17
 
+DEEP = 300
+LONG = 64000000
+STEP = 256
+PRIVATE = STEP << 32
+
 func first_sym(name: &strview) -> usize:
     s := get(comp.names, name)
     if s is usize:
@@ -85,7 +90,7 @@ func hidden(name: &strview, function: bool, at: usize) -> Fail?:
             for u in comp.uses:
                 if u.file == file and u.module == sym.module:
                     alias = u.alias
-            if sym.priv and sym.module != comp.files[file].module:
+            if sym.priv:
                 eprint(ERR, name, " is priv to module ", sym.module)
             elif alias.len > 0:
                 eprint(ERR, name, " is declared in module ", sym.module, ", reach it as ", alias, ".", name)
@@ -96,38 +101,48 @@ func hidden(name: &strview, function: bool, at: usize) -> Fail?:
         s = sym.next
     return null
 
-func find_type(name: &strview, module: &strview, at: usize) -> usize|Fail:
-    if module.len > 0:
-        inner := first_sym(module + "." + name)
-        while inner != 0 and not visible(inner, "", at):
-            inner = comp.syms[inner].next
-        if inner != 0:
-            return inner
-    s := try named(name, module, at)
+func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
+    module := path
+    inner := name
+    dot := find(path, ".")
+    if dot is usize:
+        module = path[0:dot]
+        inner = path[dot + 1:path.len] + "." + name
+    s := try named(inner, module, at)
     k := comp.nodes[comp.syms[s].node].kind
     if k == Struct or k == Fat or k == Context or k == Alias or k == Void:
         return s
     return 0
 
-func text_type(name: &strview, at: usize) -> usize|Fail:
+func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
     s := first_sym(name)
     while s != 0 and (comp.syms[s].module.len > 0 or comp.nodes[comp.syms[s].node].kind != Fat):
         s = comp.syms[s].next
     if s == 0:
-        eprint(ERR, "text needs the fat pointer ", name, ", and the library does not declare it")
+        eprint(ERR, "the language needs the fat pointer ", name, ", and the library does not declare it")
         show(at)
         return Fail
-    none: &list[Item]
-    return make_type(s, none, true, at)
+    args: &list[Item]
+    if elem != VOID:
+        append(args, Item{name = "", type = elem})
+    return make_type(s, args, true, at)
 
 func add_type(t: Type) -> usize:
+    if t.kind != Union:
+        comp.spelled += t.name.len
     append(comp.types, t)
     put(comp.type_ids, t.name, comp.types.len - 1)
     return comp.types.len - 1
 
+func enclosed(t: usize) -> &strview:
+    ty := comp.types[t]
+    if ty.kind == Union or ty.kind == Untagged or ty.kind == Func and ty.elem != VOID:
+        return "(" + ty.name + ")"
+    return ty.name
+
 func pointer(t: usize) -> usize:
     key: &str = "*"
-    key += comp.types[t].name
+    key += enclosed(t)
     id := get(comp.type_ids, view(key))
     if id is usize:
         free(key)
@@ -176,7 +191,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     for m in flat:
         if key.len > 0:
             key += separator
-        key += comp.types[m].name
+        key += enclosed(m)
     id := get(comp.type_ids, view(key))
     if id is usize:
         return id
@@ -248,6 +263,16 @@ func resolve(n: usize) -> usize|Fail:
         if tok.text == "||":
             return union_of(parts, Untagged, tok.at)
         return union_of(parts, Union, tok.at)
+    if node.kind == TFunc:
+        ret: usize = VOID
+        c := n + 1
+        while c < node_end(n):
+            if comp.nodes[c].kind == Var:
+                append(parts, try resolve(c + 1))
+            else:
+                ret = try resolve(c)
+            c = node_end(c)
+        return func_of(parts, ret)
     if tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:
@@ -286,11 +311,19 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             eprint(ERR, "type ", comp.types[args[0].type].name, " contains itself, hold it through a pointer")
             show(tok.at)
             return Fail
+        if comp.types[args[0].type].kind == Bytes:
+            eprint(ERR, "an array needs elements with a size, bytes is a run of unknown length: array[u8, ", args[1].n, "] holds that many bytes")
+            show(tok.at)
+            return Fail
         return array_of(args[0].type, args[1].n)
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
-        eprint(ERR, "type ", tok.text, " is not defined")
+        other := try named(tok.text, node.module, tok.at)
+        if other != 0 and comp.nodes[comp.syms[other].node].kind == Named:
+            eprint(ERR, tok.text, " is a constant, not a type")
+        else:
+            eprint(ERR, "type ", tok.text, " is not defined")
         show(tok.at)
         return Fail
     if noted(tok.at):
@@ -312,7 +345,7 @@ func count_of(n: usize) -> usize|null|Fail:
     s := try named(tok.text, node.module, tok.at)
     if s == 0 or comp.nodes[comp.syms[s].node].kind != Named:
         return null
-    v := try constant(s, tok.at)
+    v := try constant(s, VOID, tok.at)
     if not v.lit or v.neg or not integer(v.type):
         eprint(ERR, tok.text, " is a constant that is not a count, a type expects a number here")
         show(tok.at)
@@ -334,12 +367,15 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         for i in 0..args.len:
             if i > 0:
                 key += ","
-            if args[i].type == VOID:
-                key += args[i].n
-            else:
-                key += comp.types[args[i].type].name
+            key += arg_name(args[i])
         key += "]"
     id := get(comp.type_ids, view(key))
+    if id is usize and kind != Alias and comp.types[id].decl != decl:
+        eprint(ERR, "two types are named ", key, ", one of a module and one inside a type: rename one of them")
+        show(at)
+        eprint(NOTE, "the other ", key, " is declared here")
+        show(comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
+        return Fail
     if id is usize:
         return id
     if kind == Fat and not fat:
@@ -350,7 +386,7 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         eprint(ERR, sym.name, " is not a fat pointer, &", sym.name, " has no meaning")
         show(at)
         return Fail
-    if comp.types.len > 100000:
+    if comp.types.len > 100000 or comp.resolving.len > DEEP or comp.spelled > LONG:
         eprint(ERR, "type ", sym.name, " never ends, each instance builds a bigger one than the last")
         show(at)
         return Fail
@@ -454,10 +490,15 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         append(comp.items, f)
     comp.types[made].size = align_up(offset, align)
     comp.types[made].align = align
-    for t in 0..comp.types.len:
+    for t in made..comp.types.len:
         if (comp.types[t].kind == Union or comp.types[t].kind == Untagged) and comp.types[t].align == 0:
             lay_out(t)
     return made
+
+func arg_name(a: Item) -> &strview:
+    if a.type == VOID:
+        return "" + a.n
+    return comp.types[a.type].name
 
 func array_of(elem: usize, count: usize) -> usize:
     e := comp.types[elem]
@@ -467,6 +508,23 @@ func array_of(elem: usize, count: usize) -> usize:
     if id is usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
+
+func func_of(taken: &list[usize], ret: usize) -> usize:
+    key: &str = "func("
+    for i in 0..taken.len:
+        if i > 0:
+            key += ","
+        key += comp.types[taken[i]].name
+    key += ")"
+    if ret != VOID:
+        key += "->" + comp.types[ret].name
+    id := get(comp.type_ids, view(key))
+    if id is usize:
+        return id
+    first := comp.items.len
+    for t in taken:
+        append(comp.items, Item{name = "", type = t})
+    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, elem = ret, first = first, count = taken.len})
 
 func type_params(decl: usize) -> usize:
     count: usize = 0

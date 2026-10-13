@@ -1,0 +1,28 @@
+use fs
+
+extern "c" where not @windows():
+    func symlink(target: cstr, path: cstr) -> i32
+
+func walked() where not @windows():
+    _ = make_dir("build/tests/fs_walk_link.dir/real")
+    _ = write_file("build/tests/fs_walk_link.dir/real/a.txt", "a")
+    _ = remove("build/tests/fs_walk_link.dir/real/loop")
+    _ = remove("build/tests/fs_walk_link.dir/side")
+    symlink("..", "build/tests/fs_walk_link.dir/real/loop")
+    symlink("real", "build/tests/fs_walk_link.dir/side")
+    found := walk("build/tests/fs_walk_link.dir")
+    if found is &slice[&strview]:
+        for path in found:
+            print(path)
+    through := walk("build/tests/fs_walk_link.dir/side")
+    if through is &slice[&strview]:
+        print(through)
+
+func walked() where @windows():
+    print("build/tests/fs_walk_link.dir/real/a.txt")
+    print("build/tests/fs_walk_link.dir/real/loop")
+    print("build/tests/fs_walk_link.dir/side")
+    print("[build/tests/fs_walk_link.dir/side/a.txt, build/tests/fs_walk_link.dir/side/loop]")
+
+func main():
+    walked()

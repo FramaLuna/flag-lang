@@ -1,0 +1,55 @@
+# function values: a table of commands, each one a function
+
+type Command:
+    name: &strview
+    help: &strview
+    run: func(&slice[&strview]) -> i32
+
+func hello(args: &slice[&strview]) -> i32:
+    who: &strview = "world"
+    if args.len > 0:
+        who = args[0]
+    print("hello ", who)
+    return 0
+
+func total(args: &slice[&strview]) -> i32:
+    sum: i64 = 0
+    for a in args:
+        n := parse_int(a)
+        if n is null:
+            eprint(a, " is not a number")
+            return 1
+        sum += n
+    print(sum)
+    return 0
+
+func longest(items: &slice[$T], longer: func($T, $T) -> bool) -> $T:
+    best := items[0]
+    for v in items:
+        if longer(v, best):
+            best = v
+    return best
+
+func longer_name(a: Command, b: Command) -> bool:
+    return a.name.len > b.name.len
+
+func main() -> i32:
+    commands := [Command{"hello", "says hello to a name", hello}, Command{"total", "adds numbers", total}]
+    if arg_count() < 2:
+        width := longest(ptr(commands), longer_name).name.len
+        for c in commands:
+            pad: &str
+            defer free(pad)
+            for i in c.name.len..width:
+                pad += " "
+            print(c.name, pad, "  ", c.help)
+        return 0
+    rest: &list[&strview]
+    defer free(rest)
+    for i in 2..arg_count():
+        append(rest, arg(i))
+    for c in commands:
+        if c.name == arg(1):
+            return c.run(rest)
+    eprint("there is no command named ", arg(1))
+    return 1

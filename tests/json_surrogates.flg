@@ -1,0 +1,14 @@
+use json
+
+func main():
+    d := parse("[\"\\ud83d\\ude00\", \"\\uD83D\\uDE00!\", \"\\ud7ff\\ue000\"]")
+    if d is NotJson:
+        return
+    defer free(d)
+    for node in children(d, 0):
+        print(text(d, node), " ", text(d, node).len)
+    for wrong in ["\"\\ud83d\"", "\"\\ud83dA\"", "\"\\ud83d\\n1234\"", "\"\\ud83d\\u0041\"", "\"\\ude00\"", "\"\\ude00\\ud83d\"", "\"\\ud83d\\ud83d\""]:
+        bad := parse(wrong)
+        if bad is Document:
+            print(wrong, " is not json")
+            free(bad)

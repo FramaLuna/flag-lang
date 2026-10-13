@@ -86,8 +86,8 @@ func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
     return a + (b - a) * t
 
 func abs(x: $T) -> $T where $T is i8|i16|i32|i64|f32|f64:
-    if x < 0:
-        return -x
+    if x <= 0:
+        return 0 - x # -0.0 gives 0.0
     return x
 
 func min(a: $T, b: $T) -> $T:
@@ -113,6 +113,8 @@ func random() -> f64:
     return f64(next_random() >> 11) / 9007199254740992.0 # 2^53
 
 func random(low: i64, high: i64) -> i64:
+    if high < low:
+        return random(high, low)
     span := u64(high - low) + 1
     if span == 0:
         return i64(next_random())

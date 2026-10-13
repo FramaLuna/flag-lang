@@ -1,6 +1,6 @@
 type Node:
     name: &strview
-    children: &list[i32]
+    children: &slice[i32]
 
 context log:
     depth: u32
@@ -22,13 +22,12 @@ func show(nodes: &list[Node], at: i32):
         show(nodes, child)
 
 func main():
+    links := [1, 2, 3]
     nodes: &list[Node]
-    append(nodes, Node{"src", heap([1, 2])})
-    append(nodes, Node{"main.flg", heap([])})
-    append(nodes, Node{"lib", heap([3])})
-    append(nodes, Node{"core.flg", heap([])})
+    defer free(nodes)
+    append(nodes, Node{"src", links[0:2]})
+    append(nodes, Node{"main.flg", []})
+    append(nodes, Node{"lib", links[2:3]})
+    append(nodes, Node{"core.flg", []})
     show(nodes, 0)
     print(log.lines, " lines, depth back to ", log.depth)
-    for n in nodes:
-        free(n.children)
-    free(nodes)

@@ -1,0 +1,81 @@
+type Counter:
+    n: i32
+
+type Handler = func(i32) -> bool
+type Less[$T] = func($T, $T) -> bool
+
+type Button:
+    name: &strview
+    on_click: func(*Counter)
+    check: Handler?
+
+func double(x: i32) -> i32:
+    return x * 2
+
+func bump(c: *Counter):
+    c.n += 1
+
+func show(x: i32) -> &strview:
+    return "int"
+
+func show(x: f64) -> &strview:
+    return "float"
+
+func biggest(a: $T, b: $T) -> $T:
+    if a < b:
+        return b
+    return a
+
+func positive(x: i32) -> bool:
+    return x > 0
+
+func by_size(a: i32, b: i32) -> bool:
+    return a < b
+
+func apply(f: func($T) -> $U, x: $T) -> $U:
+    return f(x)
+
+func first_sorted(items: &slice[$T], less: func($T, $T) -> bool) -> $T:
+    best := items[0]
+    for v in items:
+        if less(v, best):
+            best = v
+    return best
+
+func pick(up: bool) -> func(i32) -> i32:
+    if up:
+        return double
+    return half
+
+func half(x: i32) -> i32:
+    return x / 2
+
+func main():
+    f := double
+    print(f(4), " ", sizeof(func(i32) -> i32))
+    g: func(f64) -> &strview = show
+    print(g(1.5), " ", apply(double, 5), " ", apply(positive, -1))
+    top: func(f64, f64) -> f64 = biggest
+    print(top(1.5, 2.5))
+    b := Button{"ok", bump, positive}
+    c := Counter{0}
+    b.on_click(c)
+    b.on_click(ptr(c))
+    print(c.n)
+    check := b.check
+    if check is Handler:
+        print(check(3), " ", check(-3))
+    steps: array[func(i32) -> i32, 2] = [double, half]
+    print(steps[0](10), " ", steps[1](10), " ", pick(true)(7), " ", pick(false)(7))
+    nums := [5, 2, 9]
+    print(first_sorted(ptr(nums), by_size))
+    less: Less[i32] = by_size
+    print(less(1, 2), " ", f == double, " ", f != half, " ", f == pick(true))
+    empty: func(i32) -> i32
+    print(empty == f)
+    table: &map[&strview, func(i32) -> i32]
+    defer free(table)
+    table["double"] = double
+    run := table["double"]
+    if run is func(i32) -> i32:
+        print(run(21))

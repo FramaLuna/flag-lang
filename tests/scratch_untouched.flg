@@ -1,0 +1,64 @@
+use fs
+use os
+use json
+use net
+
+func untouched(mark: Scratch) -> bool:
+    now := scratch()
+    return now.count == mark.count and now.used == mark.used
+
+func main():
+    mark := scratch()
+    _ = parse_float("12.5")
+    text: &str = "abcdefgh"
+    defer free(text)
+    text += text
+    text = text[4:12]
+    text += fixed(2.5, 3)
+    text += 0.1
+    print("core ", untouched(mark))
+    _ = make_dir("build/tests/scratch_untouched.dir/inside")
+    _ = write_file("build/tests/scratch_untouched.dir/a.txt", "12345")
+    _ = append_file("build/tests/scratch_untouched.dir/a.txt", "6")
+    _ = rename("build/tests/scratch_untouched.dir/a.txt", "build/tests/scratch_untouched.dir/b.txt")
+    _ = file_size("build/tests/scratch_untouched.dir/b.txt")
+    _ = exists("build/tests/scratch_untouched.dir/b.txt")
+    _ = is_dir("build/tests/scratch_untouched.dir")
+    read := read_text_file("build/tests/scratch_untouched.dir/b.txt")
+    if read is &str:
+        free(read)
+    file := open("build/tests/scratch_untouched.dir/b.txt")
+    if file is File:
+        close(file)
+    made := create("build/tests/scratch_untouched.dir/c.txt")
+    if made is File:
+        close(made)
+    _ = remove("build/tests/scratch_untouched.dir/b.txt")
+    _ = remove("build/tests/scratch_untouched.dir/c.txt")
+    print("fs ", untouched(mark))
+    _ = env("PATH")
+    _ = change_dir(".")
+    _ = run("true")
+    program: &list[&strview]
+    defer free(program)
+    append(program, "true")
+    _ = run(program)
+    _ = system_name()
+    print("os ", untouched(mark))
+    d := parse("{\"user\": {\"n\\u0061me\": 1.5, \"age\": 7}, \"tags\": [true]}")
+    if d is Document:
+        _ = number(d, get(d, 0, "user.name"))
+        _ = integer(d, get(d, 0, "user.age"))
+        _ = boolean(d, item(d, get(d, 0, "tags"), 0))
+        _ = count(d, 0)
+        _ = kind(d, 0)
+        _ = raw(d, 0)
+        free(d)
+    print("json ", untouched(mark))
+    server := listen(0)
+    if server is Socket:
+        client := connect("127.0.0.1", port(server))
+        if client is Socket:
+            close(client)
+        close(server)
+    print("net ", untouched(mark))

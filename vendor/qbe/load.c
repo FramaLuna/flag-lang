@@ -86,8 +86,11 @@ cast(Ref *r, int cls, Loc *l)
 {
 	int cls0;
 
-	if (rtype(*r) == RCon)
+	if (rtype(*r) == RCon) {
+		if (cls == Kw && curf->con[r->val].type == CBits)
+			*r = getcon((int32_t)curf->con[r->val].bits.i, curf);
 		return;
+	}
 	assert(rtype(*r) == RTmp);
 	cls0 = curf->tmp[r->val].cls;
 	if (cls0 == cls || (cls == Kw && cls0 == Kl))

@@ -36,7 +36,7 @@ type Use:
 
 type enum NodeKind:
     Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Assign
-    TName, TUnary, TUnion
+    TName, TUnary, TUnion, TFunc
     Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
     Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Items, Pairs
 
@@ -57,7 +57,7 @@ type Sym:
     export: bool
 
 type enum TypeKind:
-    Void, Bool, Int, Uint, Float, Ptr, Bytes, Struct, Fat, Union, Untagged, Array
+    Void, Bool, Int, Uint, Float, Ptr, Func, Bytes, Struct, Fat, Union, Untagged, Array
 
 type Type:
     kind: TypeKind
@@ -86,6 +86,7 @@ type Inst:
     ret: usize
     at: usize
     export: bool
+    depth: usize
 
 type enum ArgKind:
     Empty, Temp, Const, Single, Double, Global
@@ -141,11 +142,13 @@ type Local:
     depth: usize
     tok: usize
     bound: usize
+    unread: bool
 
 type Value:
     type: usize
     at: Arg
     mem: bool
+    place: bool
     lit: bool
     neg: bool
     n: usize
@@ -171,6 +174,7 @@ context comp:
     nodes: &list[Node]
     pos: usize
     width: usize
+    depth: usize
     syms: &list[Sym]
     names: &map[&strview, usize]
     types: &list[Type]
@@ -182,6 +186,7 @@ context comp:
     inst_ids: &map[&strview, usize]
     inst_binds: &list[Item]
     resolving: &list[usize]
+    spelled: usize
     c_types: &list[usize]
     c_defs: &str
     data: &str
@@ -201,9 +206,10 @@ context comp:
     at: usize
     site: usize
     vars: &list[Local]
-    limit: usize
     defers: &list[Deferred]
     loops: &list[Loop]
+    leaving: usize
+    staying: usize
     ret: usize
     live: bool
     inst: usize
@@ -231,7 +237,7 @@ func main() -> i32:
     check := false
     memory := false
     overlay: &strview
-    query: &strview
+    query: &strview|null = null
     target := view(flag_target())
     inputs: &list[&strview]
     rest: &list[&strview]
@@ -244,16 +250,19 @@ func main() -> i32:
             for k in i + 1..arg_count():
                 append(program, arg(k))
             break
-        if (a == "-o" or a == "-overlay" or a == "-at" or a == "-target") and i + 1 < arg_count():
-            if a == "-o":
-                output = arg(i + 1)
-            elif a == "-overlay":
-                overlay = arg(i + 1)
-            elif a == "-target":
-                target = arg(i + 1)
-            else:
-                query = arg(i + 1)
+        if a == "-o" or a == "-overlay" or a == "-at" or a == "-target":
             i += 1
+            if i == arg_count():
+                eprint(ERR, a, " expects a value after it")
+                return 2
+            if a == "-o":
+                output = arg(i)
+            elif a == "-overlay":
+                overlay = arg(i)
+            elif a == "-target":
+                target = arg(i)
+            else:
+                query = arg(i)
         elif a == "-keep":
             keep = true
         elif a == "-check":
@@ -266,11 +275,15 @@ func main() -> i32:
         elif ends_with(a, ".flg"):
             append(inputs, a)
         elif is_dir(a):
+            before := inputs.len
             found := walk(a)
             if found is &slice[&strview]:
                 for path in found:
                     if ends_with(path, ".flg"):
                         append(inputs, path)
+            if inputs.len == before:
+                eprint(ERR, "the folder ", a, " has no .flg file to compile")
+                return 2
         else:
             append(rest, a)
         i += 1
@@ -317,7 +330,7 @@ func main() -> i32:
         output += "/flag-run-" + getpid() + suffix
     elif output.len == 0:
         output = "a" + suffix
-    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes emptyarray emptymap IterationEnd"
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes [] {} IterationEnd"
     start: usize = 0
     for k in 0..builtin.len + 1:
         if k == builtin.len or items(builtin)[k] == ' ':
@@ -404,53 +417,55 @@ func main() -> i32:
         known := false
         for f in comp.files:
             known = known or f.module == u.module
-        names: &slice[&strview]|CannotOpen = CannotOpen
+        path: &str = join(lib, u.module + ".flg")
+        if not known and not has_text(loaded, real_path(view(path))) and exists(view(path)):
+            if add_file(path, source(view(path), texts)) is Fail:
+                return 1
+            known = comp.files[comp.files.len - 1].module == u.module
         if not known:
-            names = list_dir(view(lib))
-        if names is &slice[&strview]:
-            header: &str = "module "
-            header += u.module
-            for name in names:
-                if ends_with(name, ".flg"):
-                    path: &str = join(lib, name)
-                    code := source(view(path), texts)
-                    if code is &str:
-                        line := view(code)
-                        stop := find(line, "\n")
-                        if stop is usize:
-                            line = line[0:stop]
-                        if trim(line) == header:
-                            known = true
-                            if add_file(path, code) is Fail:
-                                return 1
-        if not known:
-            eprint(ERR, "no module named ", u.module, " is loaded, and no file in the library declares it")
+            eprint(ERR, "no module named ", u.module, " is loaded, and the library has no ", u.module, ".flg that declares it")
             show(u.at)
             return 1
-    if query.len > 0:
-        column_end := query.len
-        while column_end > 0 and items(query)[column_end - 1] != ':':
-            column_end -= 1
-        line_end := column_end - 1
-        while line_end > 0 and items(query)[line_end - 1] != ':':
-            line_end -= 1
-        line := parse_int(query[line_end:column_end - 1])
-        column := parse_int(query[column_end:query.len])
-        wanted := real_path(query[0:line_end - 1])
-        for f in comp.files:
-            if line is i64 and column is i64 and real_path(view(f.path)) == wanted:
-                spot: usize = 0
-                row: i64 = 1
-                while row < line and spot < f.code.len:
-                    if items(f.code)[spot] == '\n':
-                        row += 1
-                    spot += 1
-                spot += f.start + usize(column) - 1
-                for t in 0..comp.tokens.len:
-                    k := comp.tokens[t]
-                    if k.kind != Line and k.at <= spot and spot < k.at + k.text.len:
-                        comp.asked = true
-                        comp.target = t
+    if query is &strview:
+        parts := split(query, ":")
+        line: i64|null = null
+        column: i64|null = null
+        if parts.len > 2:
+            line = parse_int(parts[parts.len - 2])
+            column = parse_int(parts[parts.len - 1])
+        if line is null or column is null or line < 1 or column < 1:
+            eprint(ERR, "-at expects file:line:column but got ", query)
+            return 2
+        path := query[0:query.len - parts[parts.len - 2].len - parts[parts.len - 1].len - 2]
+        wanted := real_path(path)
+        f: usize = 0
+        while f < comp.files.len and real_path(view(comp.files[f].path)) != wanted:
+            f += 1
+        if f == comp.files.len:
+            eprint(ERR, "-at names ", path, ", which is not one of the files compiled")
+            return 2
+        code := comp.files[f].code
+        first: usize = 0
+        row: i64 = 1
+        while row < line and first < code.len:
+            if items(code)[first] == '\n':
+                row += 1
+            first += 1
+        last := first
+        while last < code.len and items(code)[last] != '\n':
+            last += 1
+        if row < line:
+            eprint(ERR, "-at ", query, " is past the end of the file, its last line is ", row)
+            return 2
+        if first + usize(column) - 1 > last:
+            eprint(ERR, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
+            return 2
+        spot := comp.files[f].start + first + usize(column) - 1
+        for t in 0..comp.tokens.len:
+            k := comp.tokens[t]
+            if k.kind != Line and k.at <= spot and spot < k.at + k.text.len:
+                comp.asked = true
+                comp.target = t
     failed := gen_program(check) is Fail
     if memory and not failed:
         check_memory()
@@ -533,11 +548,11 @@ func has_text(l: &list[&strview], v: &strview) -> bool:
     return false
 
 func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
-    given := get(texts, real_path(path))
-    if given is &strview:
-        out: &str = given
-        return out
-    return read_text_file(path)
+    code := get(texts, real_path(path)) ifnull view(try read_text_file(path))
+    if starts_with(code, "\xef\xbb\xbf"):
+        code = code[3:code.len]
+    out: &str = code
+    return out
 
 func add_file(path: &str, code: &str|FsError) -> Fail?:
     if code is &str:
@@ -545,7 +560,16 @@ func add_file(path: &str, code: &str|FsError) -> Fail?:
         if comp.files.len > 0:
             last := comp.files[comp.files.len - 1]
             start = last.start + last.code.len + 1
-        append(comp.files, File{path, code, start, ""})
+        own: &str
+        for b in items(base_name(view(path))):
+            if is_letter(b) or is_digit(b) or b == '.':
+                add_byte(own, b)
+            else:
+                add_byte(own, '_')
+        for f in comp.files:
+            if f.module == view(own):
+                own += "." + comp.files.len
+        append(comp.files, File{path, code, start, view(own)})
         try lex(comp.files.len - 1)
         return parse()
     eprint(ERR, "cannot read ", path)
@@ -558,19 +582,23 @@ func show(at: usize):
     first := local
     while first > 0 and bytes[first - 1] != '\n':
         first -= 1
-    last := local
-    while last < f.code.len and bytes[last] != '\n':
-        last += 1
-    eprint("  --> ", location(at))
-    eprint("   | ", f.code[first:last])
-    pad: &str = "   | "
-    for i in first..local:
-        if bytes[i] == '\t':
+    line: &str
+    pad: &str
+    i := first
+    while i < f.code.len and bytes[i] != '\n':
+        b := bytes[i]
+        if b < ' ' and b != '\t':
+            b = ' '
+        add_byte(line, b)
+        if i < local and b == '\t':
             pad += "\t"
-        else:
+        elif i < local and (b and 0xc0) != 0x80:
             pad += " "
-    pad += "^"
-    eprint(pad)
+        i += 1
+    eprint("  --> ", location(at))
+    eprint("   | ", line)
+    eprint("   | ", pad, "^")
+    free(line)
     free(pad)
 
 func location(at: usize) -> &str:
@@ -579,8 +607,7 @@ func location(at: usize) -> &str:
     out += f.path + ":" + line_of(at) + ":" + (at - line_start(at) + 1)
     return out
 
-func line_of(at: usize) -> usize:
-    f := comp.files[file_of(at)]
+func token_at(at: usize) -> usize:
     low: usize = 0
     high := comp.tokens.len
     while high - low > 1:
@@ -589,6 +616,11 @@ func line_of(at: usize) -> usize:
             low = middle
         else:
             high = middle
+    return low
+
+func line_of(at: usize) -> usize:
+    f := comp.files[file_of(at)]
+    low := token_at(at)
     line: usize = 1
     from := f.start
     if comp.tokens[low].at >= f.start and comp.tokens[low].at <= at:

@@ -1,0 +1,27 @@
+use os
+
+extern "c" where not @windows():
+    func signal(number: i32, handler: *bytes) -> *bytes
+    func ualarm(first: u32, then: u32) -> u32
+
+export func on_alarm(number: i32):
+    return
+
+func interrupt_soon() where not @windows():
+    signal(14, ptr(on_alarm))
+    ualarm(20000, 0)
+
+func interrupt_soon() where @windows():
+    return
+
+func main():
+    interrupt_soon()
+    start := clock()
+    sleep(0.2)
+    took := clock() - start
+    print(took >= 0.2 and took < 2.0)
+    start = clock()
+    sleep(-1.0)
+    sleep(0.0)
+    sleep(0.0 / (start - start))
+    print(clock() - start < 0.1)

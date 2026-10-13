@@ -1,0 +1,50 @@
+type error Bad
+
+context app:
+    on_tick: func(i32)
+
+func tick(n: i32):
+    print("tick ", n)
+
+func risky(n: i32) -> i32|Bad:
+    if n < 0:
+        return Bad
+    return n * 2
+
+func text(n: i32) -> &strview:
+    return "function " + n
+
+func twice(f: func(i32) -> i32|Bad, n: i32) -> i32|Bad:
+    return try f(try f(n))
+
+func fill(out: *&list[i32], n: i32):
+    append(out, n)
+
+func noop():
+    print("noop")
+
+ON_EXIT = noop
+
+func main():
+    app.on_tick = tick
+    app.on_tick(1)
+    p := ptr(app.on_tick)
+    p.*(2)
+    print(twice(risky, 3), " ", twice(risky, -1) is Bad)
+    text := false
+    print(text(4), " ", text)
+    add: func(*&list[i32], i32) = fill
+    l: &list[i32]
+    defer free(l)
+    add(l, 7)
+    add(ptr(l), 8)
+    print(l)
+    defer (ON_EXIT)()
+    later: func()? = noop
+    if later is func():
+        later()
+    print(app.on_tick == tick, " ", later is null)
+    line: &str
+    defer free(line)
+    line += tick
+    print(line.len > 2)

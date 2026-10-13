@@ -8,11 +8,13 @@ for src in tests/*.flg tests/*/; do
     name=$(basename "$src" .flg)
     files=$src
     [ -d "$src" ] && files=$(ls -d "$src"*)
+    args=
+    [ -f "tests/$name.args" ] && args=$(cat "tests/$name.args")
     if [ -f "tests/$name.err" ]; then
-        if "$compiler" $files -o "$out/$name" > "$out/$name.got" 2>&1; then
+        if "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: compiled, expected an error"
             fail=$((fail + 1))
-        elif grep -qF "$(cat "tests/$name.err")" "$out/$name.got"; then
+        elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
             pass=$((pass + 1))
         else
             echo "FAIL $name: wrong error"
@@ -22,11 +24,11 @@ for src in tests/*.flg tests/*/; do
         continue
     fi
     if [ -f "tests/$name.warn" ]; then
-        if ! "$compiler" $files -o "$out/$name" -memory > "$out/$name.got" 2>&1; then
+        if ! "$compiler" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: does not compile"
             cat "$out/$name.got"
             fail=$((fail + 1))
-        elif [ -s "tests/$name.warn" ] && ! grep -qF "$(cat "tests/$name.warn")" "$out/$name.got"; then
+        elif [ -s "tests/$name.warn" ] && ! grep -qF -e "$(cat "tests/$name.warn")" "$out/$name.got"; then
             echo "FAIL $name: wrong warning"
             cat "$out/$name.got"
             fail=$((fail + 1))
@@ -39,8 +41,14 @@ for src in tests/*.flg tests/*/; do
         fi
         continue
     fi
-    if ! "$compiler" $files -o "$out/$name" > "$out/$name.got" 2>&1; then
+    if ! "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
         echo "FAIL $name: does not compile"
+        cat "$out/$name.got"
+        fail=$((fail + 1))
+        continue
+    fi
+    if [ -s "$out/$name.got" ]; then
+        echo "FAIL $name: compiles, but not in silence"
         cat "$out/$name.got"
         fail=$((fail + 1))
         continue

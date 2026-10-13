@@ -1,0 +1,19 @@
+use json
+
+func accepted(texts: &strview) -> &strview:
+    out: &str
+    defer free(out)
+    for text in split(texts, "|"):
+        d := parse(text)
+        if d is Document:
+            out += "[" + text + "] "
+            free(d)
+    return temp(out)
+
+func main():
+    print("numbers: ", accepted("0|-0|10|-1.5|1e5|1E+5|2.5e-3|0.0"))
+    print("not numbers: ", accepted("-|+1|1-2|1.2.3|01|-01|1e|1e+|1.|.5|1.e5|0x10|- 1"))
+    print("texts: ", accepted("\"\"|\"a\\\"b\"|\"\\\\ \\/ \\b \\f \\n \\r \\t\"|\"\\u00e9\"|\"\x7f\""))
+    print("not texts: ", accepted("\"|\"\\x\"|\"\\a\"|\"\n\"|\"\t\"|\"\x1f\"|\"\\u12\"|\"\\u12g4\"|\"\\"))
+    print("values: ", accepted("true|false|null| [ ] |{}|[1, [2]]|{\"a\": {\"b\": null}}"))
+    print("not values: ", accepted("|tru|nulll|[1,]|[,1]|[1 2]|{\"a\":1,}|{a:1}|{\"a\"}|[1]]|[\x0b1]|1 2"))

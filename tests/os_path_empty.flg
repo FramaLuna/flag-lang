@@ -1,0 +1,25 @@
+use os
+use fs
+
+extern "c" where not @windows():
+    func chmod(path: cstr, mode: u32) -> i32
+
+func found_through_empty_entry() -> i32 where not @windows():
+    _ = make_dir("build/tests/os_path_empty.dir")
+    program := read_text_file(executable())
+    if program is FsError:
+        return 1
+    defer free(program)
+    _ = write_file("build/tests/os_path_empty.dir/ls", program)
+    chmod("build/tests/os_path_empty.dir/ls", 493)
+    return run("cd build/tests/os_path_empty.dir && PATH=:/usr/bin:/bin ls child")
+
+func found_through_empty_entry() -> i32 where @windows():
+    print("true")
+    return 0
+
+func main() -> i32:
+    if args().len > 1:
+        print(ends_with(executable(), "/os_path_empty.dir/ls"))
+        return 0
+    return found_through_empty_entry()

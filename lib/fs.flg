@@ -7,7 +7,7 @@ priv extern "c":
     func fseek(file: *bytes, offset: i64, whence: i32) -> i32
     func fgetpos(file: *bytes, into: *i64) -> i32
     func ferror(file: *bytes) -> i32
-    func fgets(into: *u8, size: i32, file: *bytes) -> *u8
+    func fgetc(file: *bytes) -> i32
     func fclose(file: *bytes) -> i32
     func access(path: cstr, mode: i32) -> i32
     func remove(path: cstr) -> i32
@@ -17,6 +17,7 @@ priv extern "c":
     func opendir(path: cstr) -> *bytes
     func readdir(dir: *bytes) -> *u8
     func closedir(dir: *bytes) -> i32
+    func readlink(path: cstr, into: *u8, size: usize) -> i64
 
 type error enum FsError = CannotOpen|CannotRead|CannotWrite|CannotRemove|CannotCreate|CannotRename
 
@@ -24,13 +25,13 @@ type File:
     handle: *bytes
 
 func open(path: &strview) -> File|CannotOpen:
-    handle := fopen(cstr(path), "rb")
+    handle := fopen(path, "rb")
     if handle as usize == 0:
         return CannotOpen
     return File{handle}
 
 func create(path: &strview) -> File|CannotCreate:
-    handle := fopen(cstr(path), "wb")
+    handle := fopen(path, "wb")
     if handle as usize == 0:
         return CannotCreate
     return File{handle}
@@ -46,20 +47,15 @@ func read(f: File, into: *&str, size: usize) -> usize|CannotRead:
 func read_line(f: File) -> &strview|null:
     line: &str
     defer free(line)
-    buf: array[u8, 4096]
-    while fgets(ptr(buf) as *u8, 4096, f.handle) as usize != 0:
-        part := view(ptr(buf) as *u8)
-        line += part
-        if ends_with(part, "\n"):
-            break
-    if line.len == 0:
+    c := fgetc(f.handle)
+    if c < 0:
         return null
-    text := view(line)
-    if ends_with(text, "\n"):
-        text = text[0:text.len - 1]
-    if ends_with(text, "\r"):
-        text = text[0:text.len - 1]
-    return temp(text)
+    while c >= 0 and c != '\n':
+        add_byte(line, u8(c))
+        c = fgetc(f.handle)
+    if c == '\n' and ends_with(line, "\r"):
+        line.len -= 1
+    return temp(line)
 
 func write(f: File, text: &strview) -> CannotWrite?:
     if fwrite(ptr(text.*), 1, text.len, f.handle) != text.len:
@@ -70,8 +66,7 @@ func close(f: File):
     fclose(f.handle)
 
 func read_text_file(path: &strview) -> &str|FsError:
-    name := cstr(path)
-    file := fopen(name, "rb")
+    file := fopen(path, "rb")
     if file as usize == 0:
         return CannotOpen
     out: &str
@@ -100,8 +95,7 @@ func append_file(path: &strview, text: &strview) -> usize|FsError:
     return put_file(path, items(text), "ab")
 
 priv func put_file(path: &strview, from: &slice[u8], mode: cstr) -> usize|FsError:
-    name := cstr(path)
-    file := fopen(name, mode)
+    file := fopen(path, mode)
     if file as usize == 0:
         return CannotOpen
     done := fwrite(ptr(from.*), 1, from.len, file)
@@ -109,22 +103,26 @@ priv func put_file(path: &strview, from: &slice[u8], mode: cstr) -> usize|FsErro
         return CannotWrite
     return done
 
+priv func fopen(path: &strview, mode: cstr) -> *bytes:
+    with scratch():
+        return fopen(cstr(path), mode)
+
 func exists(path: &strview) -> bool:
-    name := cstr(path)
-    found := access(name, 0) == 0
-    return found
+    with scratch():
+        return access(cstr(path), 0) == 0
 
 func is_dir(path: &strview) -> bool:
-    name := cstr(path)
-    dir := opendir(name)
-    if dir as usize == 0:
-        return false
-    closedir(dir)
-    return true
+    with scratch():
+        dir := opendir(cstr(path))
+        if dir as usize != 0:
+            closedir(dir)
+            return true
+    return false
 
 func file_size(path: &strview) -> usize|FsError:
-    name := cstr(path)
-    file := fopen(name, "rb")
+    if is_dir(path):
+        return CannotRead
+    file := fopen(path, "rb")
     if file as usize == 0:
         return CannotOpen
     at: array[i64, 4]
@@ -135,25 +133,23 @@ func file_size(path: &strview) -> usize|FsError:
     return usize(at[0])
 
 func remove(path: &strview) -> CannotRemove?:
-    name := cstr(path)
-    failed := remove(name) != 0 and rmdir(name) != 0
-    if failed:
-        return CannotRemove
+    with scratch():
+        name := cstr(path)
+        if remove(name) != 0 and rmdir(name) != 0:
+            return CannotRemove
     return null
 
 func rename(from: &strview, to: &strview) -> CannotRename?:
-    old := cstr(from)
-    new := cstr(to)
-    failed := rename(old, new) != 0
-    if failed:
-        return CannotRename
+    with scratch():
+        if rename(cstr(from), cstr(to)) != 0:
+            return CannotRename
     return null
 
 func make_dir(path: &strview) -> CannotCreate?:
-    for i in 1..path.len + 1:
-        if i == path.len or slash(items(path)[i]):
-            part := cstr(path[0:i])
-            mkdir(part, 493)
+    with scratch():
+        for i in 1..path.len + 1:
+            if i == path.len or slash(items(path)[i]):
+                mkdir(cstr(path[0:i]), 493)
     if is_dir(path):
         return null
     return CannotCreate
@@ -189,7 +185,7 @@ func walk(folder: &strview) -> &slice[&strview]|CannotOpen:
         if names is &slice[&strview]:
             for name in names:
                 path := join(folders[i], name)
-                if is_dir(path):
+                if is_dir(path) and not is_link(path):
                     append(folders, path)
                 else:
                     append(files, path)
@@ -198,19 +194,26 @@ func walk(folder: &strview) -> &slice[&strview]|CannotOpen:
     return temp(files)
 
 func join(first: &strview, second: &strview) -> &strview:
-    if first.len > 0 and not slash(items(first)[first.len - 1]) and (second.len == 0 or not slash(items(second)[0])):
-        return first + "/" + second
-    return first + second
+    if first.len == 0:
+        return first + second
+    head := first
+    while head.len > 0 and slash(items(head)[head.len - 1]):
+        head = head[0:head.len - 1]
+    tail := second
+    while tail.len > 0 and slash(items(tail)[0]):
+        tail = tail[1:tail.len]
+    return head + "/" + tail
 
 func base_name(path: &strview) -> &strview:
     return path[name_start(path):path.len]
 
 func extension(path: &strview) -> &strview:
     name := base_name(path)
-    for i in 0..name.len:
-        at := name.len - 1 - i
-        if items(name)[at] == '.' and at > 0:
-            return name[at:name.len]
+    while starts_with(name, "."):
+        name = name[1:name.len]
+    for i in reverse 0..name.len:
+        if items(name)[i] == '.':
+            return name[i:name.len]
     return ""
 
 func dir_of(path: &strview) -> &strview:
@@ -226,6 +229,14 @@ priv func name_in_entry() -> usize where @macos():
 
 priv func name_in_entry() -> usize where @windows():
     return 8
+
+priv func is_link(path: &strview) -> bool where not @windows():
+    buf: array[u8, 1]
+    with scratch():
+        return readlink(cstr(path), ptr(buf) as *u8, 1) >= 0
+
+priv func is_link(path: &strview) -> bool where @windows():
+    return false
 
 priv func slash(c: u8) -> bool where not @windows():
     return c == '/'

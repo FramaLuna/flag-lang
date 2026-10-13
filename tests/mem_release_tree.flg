@@ -1,0 +1,18 @@
+type Tree:
+    value: i32
+    left: *Tree?
+    right: *Tree?
+
+context g:
+    root: *Tree?
+
+func release(t: *Tree?):
+    if t is *Tree:
+        release(t.left)
+        release(t.right)
+        free(t as *bytes)
+
+func main():
+    leaf := heap(Tree{1, null, null})
+    g.root = heap(Tree{2, leaf, null})
+    release(g.root)

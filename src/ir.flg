@@ -71,13 +71,19 @@ func mention(name: &strview, a: Arg):
 
 func listing() -> &str:
     out: &str
+    moved: &list[i64]
+    for l in 0..comp.labels + 1:
+        append(moved, 0)
+    dropped: &list[bool]
+    for i in comp.code:
+        append(dropped, i.op == "absent")
     for t in 0..comp.reached:
         if aggregate(t):
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
     out += comp.data
     for f in comp.procs:
-        out += "dbgfile \"" + comp.files[f.file].path + "\"\n"
+        out += "dbgfile \"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\"\n"
         if f.export:
             out += "export "
         out += "function "
@@ -92,25 +98,43 @@ func listing() -> &str:
             out += " "
             put_arg(out, comp.passes[k].arg, f.temps)
         out += ") {\n@start\n"
-        shown: usize = 0
+        ended := false
         for k in f.code..f.end:
             i := comp.code[k]
-            if i.op == "absent":
+            next := k + 1
+            while next < f.end and dropped[next]:
+                next += 1
+            if i.op == "@" and ended and next < f.end and comp.code[next].op == "jmp" and landing(moved, comp.code[next].a.n) != i.a.n:
+                moved[i.a.n] = comp.code[next].a.n
+                dropped[k] = true
+                dropped[next] = true
+            if not dropped[k]:
+                ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
+        shown: usize = 0
+        line: usize = 0
+        for k in f.code..f.end:
+            i := comp.code[k]
+            next := k + 1
+            while next < f.end and dropped[next]:
+                next += 1
+            if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
                 continue
             if i.pos != 0 and i.pos != shown and i.op != "@" and i.op != "alloc8":
-                out += "\tdbgloc " + line_of(i.pos) + ", " + (i.pos - line_start(i.pos) + 1) + "\n"
                 shown = i.pos
+                if line_of(i.pos) != line:
+                    line = line_of(i.pos)
+                    out += "\tdbgloc " + line + ", " + (i.pos - line_start(i.pos) + 1) + "\n"
             if i.op == "@":
                 out += "@L" + (i.a.n - i64(f.labels)) + "\n"
                 continue
             out += "\t"
             if i.op == "jmp":
-                out += "jmp @L" + (i.a.n - i64(f.labels)) + "\n"
+                out += "jmp @L" + (landing(moved, i.a.n) - i64(f.labels)) + "\n"
                 continue
             if i.op == "jnz":
                 out += "jnz "
                 put_arg(out, i.a, f.temps)
-                out += ", @L" + (i.b.n - i64(f.labels)) + ", @L" + (i.c.n - i64(f.labels)) + "\n"
+                out += ", @L" + (landing(moved, i.b.n) - i64(f.labels)) + ", @L" + (landing(moved, i.c.n) - i64(f.labels)) + "\n"
                 continue
             if i.to != 0:
                 out += "%t" + (i.to - f.temps) + " ="
@@ -145,6 +169,12 @@ func listing() -> &str:
             out += "\n"
         out += "}\n"
     return out
+
+func landing(moved: &list[i64], l: i64) -> i64:
+    to := l
+    while moved[to] != 0:
+        to = moved[to]
+    return to
 
 func put_cls(out: *&str, c: u32):
     if c >= CAGG:

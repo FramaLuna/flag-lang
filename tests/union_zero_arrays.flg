@@ -1,0 +1,45 @@
+type enum Cell = Wall | Floor | Door
+
+type Room:
+    name: &strview
+    cells: array[array[Cell, 50], 40]
+    exit: Cell|i64
+
+type World:
+    rooms: array[Room, 3]
+    spare: array[Cell|i64, 5]
+
+context game:
+    world: World
+    grid: array[Cell, 300]
+
+func walls(w: *World) -> usize:
+    count: usize = 0
+    for r in 0..3:
+        for row in w.rooms[r].cells:
+            for c in row:
+                if c is Wall:
+                    count += 1
+        if w.rooms[r].exit is Wall:
+            count += 1
+    for s in w.spare:
+        if s is Wall:
+            count += 1
+    return count
+
+func main():
+    local: World
+    print(walls(local))
+    made := heap(World{})
+    defer free(made as *bytes)
+    print(walls(made))
+    print(walls(game.world))
+    for round in 0..2:
+        fresh: array[Cell, 4]
+        print(fresh)
+        fresh[round] = Door
+    count := 0
+    for c in game.grid:
+        if c is Wall:
+            count += 1
+    print(count)

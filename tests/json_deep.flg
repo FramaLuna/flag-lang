@@ -1,0 +1,26 @@
+use json
+
+func parses(text: &strview) -> bool:
+    d := parse(text)
+    if d is NotJson:
+        return false
+    free(d)
+    return true
+
+func nested(depth: usize) -> bool:
+    text: &str
+    defer free(text)
+    for i in 0..depth:
+        text += "[{\"k\":"
+    text += "1"
+    for i in 0..depth:
+        text += "}]"
+    return parses(text)
+
+func main():
+    print(nested(1), " ", nested(256), " ", nested(257), " ", nested(30000))
+    open: &str
+    defer free(open)
+    for i in 0..30000:
+        open += "["
+    print(parses(open))

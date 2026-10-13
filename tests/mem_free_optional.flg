@@ -1,0 +1,27 @@
+type Conn:
+    buffer: &str
+    names: &list[i32]
+    port: i32
+
+func drop(c: *Conn?):
+    if c is *Conn:
+        free(c.buffer)
+        free(c.names)
+        free(c as *bytes)
+
+func open(port: i32) -> *Conn?:
+    if port == 0:
+        return null
+    c := heap(Conn{port = port})
+    c.buffer = "hello"
+    append(c.names, 1)
+    return c
+
+func main():
+    c := open(80)
+    if c is *Conn:
+        print(c.buffer)
+    drop(c)
+    d := heap(Conn{port = 1})
+    d.buffer = "x"
+    drop(d)

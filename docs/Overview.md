@@ -66,7 +66,7 @@ d := u8(a)
 - Characters: `'a'` is the number of that character (97), so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number
 - `true`, `false` and `null`
-- Arrays: `[1, 2]` is an `array[i32, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i32|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists))
+- Arrays: `[1, 2]` is an `array[i32, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i32|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
 - Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i32]` and `{}` is an empty map (see [Maps](#maps))
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types))
 
@@ -222,7 +222,7 @@ func main():
 ### Reinterpreting with as
 `as` reads the bytes of a value as another type of the same size, it does not convert
 ```flag
-bits := f32(1.5) as u32 # the bits of the float
+raw := f32(1.5) as u32 # the bits of the float
 ```
 It can also take a type out of a union, but it does not check the tag, so check it with `is` first.
 
@@ -249,7 +249,7 @@ func main():
     h.n += 1
     free(h as *bytes)
 ```
-When a function takes `*T` and you pass a variable of type `T`, and there is no overload that takes `T`, the compiler passes its address for you.
+When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
 
@@ -318,9 +318,9 @@ type enum Color = Red|Green|Blue
 
 color: Color = Red
 if color is Red:
-    # the type of color is Red here
+    pass # the type of color is Red here
 elif color is Blue:
-    # the type of color is Blue here
+    pass # the type of color is Blue here
 else:
     # the type of color is Green here
     color = get_random_color() # color goes back to Red|Green|Blue from here
@@ -328,7 +328,14 @@ else:
 To check several types at once use `is` with a union
 ```flag
 if color is Red|Blue:
-    # the type of color is Red|Blue here
+    pass # the type of color is Red|Blue here
+```
+A block cannot be empty, `pass` is the statement that does nothing
+```flag
+if color is Red:
+    pass # nothing to do yet
+else:
+    print("not red")
 ```
 ### While
 ```flag
@@ -429,7 +436,7 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
@@ -484,7 +491,7 @@ func describe(t: &strview) -> &strview:
     return "a text"
 ```
 ### Operator overloading
-You can overload operators for your types. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `a += b` uses `+`
+You can overload `+ - * / % == < << >> and or xor` for your types, with a function of two parameters. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `a += b` uses `+`
 ```flag
 type V:
     x: i32
@@ -551,6 +558,58 @@ It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x8
 func small(n: $T) -> i32 where sizeof($T) > 4:
     @compile_error("small takes numbers of 4 bytes or less")
 ```
+
+### Function values
+The name of a function is a value. Its type is the declaration without the names, `func(i32) -> i32`, so you can keep a function in a variable, pass it and call it
+```flag
+func double(x: i32) -> i32:
+    return x * 2
+
+func half(x: i32) -> i32:
+    return x / 2
+
+func apply(f: func(i32) -> i32, x: i32) -> i32:
+    return f(x)
+
+func main():
+    f := double
+    print(f(4), " ", apply(half, 10)) # 8 5
+    steps: array[func(i32) -> i32, 2] = [double, half]
+    for step in steps:
+        print(step(6))
+```
+A struct can hold one in a field, and you call it through the field
+```flag
+type Button:
+    name: &strview
+    on_click: func(&strview)
+
+func hello(who: &strview):
+    print("hello ", who)
+
+func main():
+    b := Button{"ok", hello}
+    b.on_click(b.name)
+```
+A generic function takes one with a shape, and `$T` comes from it
+```flag
+func first_by(items: &slice[$T], before: func($T, $T) -> bool) -> $T:
+    best := items[0]
+    for v in items:
+        if before(v, best):
+            best = v
+    return best
+
+func shorter(a: &strview, b: &strview) -> bool:
+    return a.len < b.len
+
+func main():
+    names := ["alice", "bob", "carol"]
+    print(first_by(ptr(names), shorter)) # bob
+```
+When a function has overloads or is generic, give its name to a variable with the type, that's what chooses: `show_int: func(i32) = show`. A function value that can be missing is `(func(i32) -> i32)?`, checked with `is` like any other union.
+
+There are no closures: a function cannot use the variables of the place where you took its name, so pass what it needs as an argument (see [Function values](Reference.md#function-values) for the exact rules).
 
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.
@@ -730,6 +789,7 @@ priv type T:
 priv func foo():
     return
 ```
+In a file without a module, priv hides the name from every other file.
 
 ## The standard library
 The functions of text, lists and maps are always there. The rest comes in modules that you get with `use`, without adding files
@@ -801,6 +861,7 @@ func main():
     values := [3, 1, 2]
     qsort(ptr(values) as *bytes, 3, 4, ptr(ascending))
 ```
+A callback for C is always an `export func` passed with `ptr`. The function values of Flag don't cross to C.
 
 ## Memory safety
 ### The flag

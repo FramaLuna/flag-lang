@@ -41,7 +41,8 @@ The functions that take an index also have a last parameter `place: &strview = @
 - `heap(v: $T) -> *$T` copies the value to the heap, yours, you release it with `free(p as *bytes)`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c))
 - `sizeof(T)` the size of a type in bytes, as an integer literal
-- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memcmp`, `strlen`, `write`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
+- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memcmp`, `strlen`, `write`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
+- `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
 ### Temporary memory
 - `scratch() -> Scratch` marks the scratch memory, and `close` of the mark releases every temporary made after it. `with scratch():` does both
@@ -52,7 +53,7 @@ The functions that take an index also have a last parameter `place: &strview = @
 ### Lists and slices
 A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
 - `s[i]` the element `i`, you can also assign to it. A negative `i` counts from the end, and out of bounds stops the program
-- `s[a:b]` the elements from `a` to `b - 1`, a view
+- `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops
 - `for x in s`, `for i, x in s` and `for x in reverse s`
 - `==` compares element by element, and `print` writes `[1, 2, 3]`
 
@@ -65,9 +66,11 @@ On lists
 
 On slices, so also on lists
 - `find(items: &slice[$T], v: $T) -> usize|null` the index of the first element `== v`
+- `find(items: &slice[$T], fits: func($T) -> bool) -> usize|null` the index of the first element that `fits` says yes to
 - `contains(items: &slice[$T], v: $T) -> bool`
 - `binary_search(items: &slice[$T], v: $T) -> usize|null` the index of `v` in a sorted slice, using `<`
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
+- `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
 - `reverse(items: &slice[$T])` turns the elements around in place
 - `swap(s: &slice[$T], i: usize, j: usize)` swaps two elements
 
@@ -82,7 +85,7 @@ Two arrays of the same type work with the operators element by element, and give
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
 - `s[i] -> u8` the byte `i`, a negative `i` counts from the end
 - `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view
-- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`
+- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A first byte with all the bytes that it announces is one character, and a byte that is not part of one comes alone, so text that is not UTF-8 gives its wrong bytes one by one. Both directions give the same pieces
 - `==` and `<` compare the bytes
 - `"a" + x` joins the text with anything that can be printed, temporary
 
@@ -116,12 +119,12 @@ None of them skip spaces, the whole text must be the number.
 ### Printing and formatting
 `print`, `eprint`, `+` and `+=` on text format each value with `operator +=(s: *&str, x: T)`, and the library has one for
 - integers, in decimal, and `bool`, as `true` or `false`
-- floats, with the fewest digits that read back as the same number (`0.1`, `2.0`), and with an exponent when they are very big or very small (`1e+16`, `1e-05`)
+- floats, with the fewest digits that read back as the same number (`0.1`, `2.0`), and with an exponent when they are very big or very small (`1e+16`, `1e-05`). The ones that are not numbers are `inf`, `-inf` and `nan`
 - pointers, in hexadecimal
 - slices and lists `[1, 2]`, maps and fixed maps `{a: 1, b: 2}`
 
 And two helpers
-- `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`
+- `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. Negative `places` are 0
 - `hex(value: u64) -> Hex` prints `0xff`
 
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
@@ -135,10 +138,12 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty. The keys and values are not released, free them first when they own memory
-- `for e in m` gives each entry, with `e.key` and `e.value`, in the order of the table
+- `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
 - `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key), one for text and one for any other type that reads its bytes
 
 A key needs `==` and `hash`. The hash of the bytes is right for `bool`, enums and pointers. A struct needs your `==`, and then declare its `hash` too, so that two keys that are `==` give the same hash.
+
+A float `nan` is not `==` to itself, so as a key it's never found again, and every `put` of it adds one more entry.
 
 ### Fixed maps
 A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order they were put, so it doesn't allocate and you don't free it. Looking for a key reads the entries one by one, so it's for small maps.
@@ -146,6 +151,21 @@ A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order 
 - `get`, `m[k]`, `contains` and `clear` like a map
 - `remove` like a map, and the entries after it keep their order
 - `for e in m` gives the entries in the order they were put
+
+### Indexes of your own types
+`x[i]` on your type calls your `at` (see [Indexing](Overview.md#indexing)). The library makes its own `at` with these two, so yours can take the same indexes and stop the program the same way
+- `natural(i: $I, len: usize) -> usize` the index counted from the start, so a negative `i` becomes `len + i`. When `i` goes before the start the result is past `len`, so checking `n >= len` catches both ends
+- `out_of_bounds(i: $I, len: usize)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: usize)` with `flag: slice 2:9 is out of bounds, length 3`
+```flag
+type Grid:
+    cells: array[i32, 9]
+
+func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usize:
+    n := natural(i, 9)
+    if n >= 9:
+        out_of_bounds(i, 9, place)
+    return ptr(g.cells[n])
+```
 
 ### C text
 - `cstr` is the type `*u8`, a text that ends with a zero byte
@@ -170,22 +190,22 @@ A `File` is an open file, close it with `close` or with `with file:`.
 - `open(path: &strview) -> File|CannotOpen` opens the file to read
 - `create(path: &strview) -> File|CannotCreate` makes the file, or empties it, to write
 - `read(f: File, into: *&str, size: usize) -> usize|CannotRead` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
-- `read_line(f: File) -> &strview|null` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file
+- `read_line(f: File) -> &strview|null` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too
 - `write(f: File, text: &strview) -> CannotWrite?`
 - `close(f: File)`
 
 ### Folders and paths
 - `exists(path: &strview) -> bool` if there is a file or a folder there
 - `is_dir(path: &strview) -> bool`
-- `file_size(path: &strview) -> usize|FsError` in bytes, or `CannotOpen` or `CannotRead`
+- `file_size(path: &strview) -> usize|FsError` in bytes, or `CannotOpen` or `CannotRead`. A folder has no size, it gives `CannotRead`
 - `list_dir(path: &strview) -> &slice[&strview]|CannotOpen` the names inside the folder, sorted and without `.` and `..`, temporary
-- `walk(folder: &strview) -> &slice[&strview]|CannotOpen` the paths of every file inside the folder and the folders inside it, sorted, temporary
+- `walk(folder: &strview) -> &slice[&strview]|CannotOpen` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it (on Windows it does)
 - `make_dir(path: &strview) -> CannotCreate?` makes the folder and the ones above it, and a folder that already exists is not an error
 - `remove(path: &strview) -> CannotRemove?` removes a file or an empty folder
 - `rename(from: &strview, to: &strview) -> CannotRename?` renames or moves
-- `join(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary
+- `join(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join("a/", "/b")` is `a/b`. An empty `first` gives `second`
 - `base_name(path: &strview) -> &strview` the part after the last `/`, a view: `base_name("docs/a.txt")` is `a.txt`
-- `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and a name that starts with `.` has no extension
+- `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and the `.` that a name starts with don't count, so `.bashrc` and `..` have no extension and `.config.json` has `.json`
 - `dir_of(path: &strview) -> &strview` the part up to the last `/`, with it, a view: `docs/`. It's `./` when there is no folder
 
 ## os
@@ -193,7 +213,7 @@ The program, other programs and the time.
 
 ### The program
 - `args() -> &slice[&strview]` the arguments of the program, the first one is the program itself. The slice is temporary, the texts are views that live all the program
-- `env(name: &strview) -> &strview|null` the value of an environment variable, `null` when it's not set
+- `env(name: &strview) -> &strview|null` the value of an environment variable, a view, `null` when it's not set
 - `executable() -> &strview` the full path of the running program, temporary
 - `current_dir() -> &strview` the current folder, temporary
 - `change_dir(path: &strview) -> bool` `true` when it worked
@@ -205,16 +225,16 @@ On every system the paths that `os` gives use `/`.
 ### Other programs
 - `run(command: &strview) -> i32` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code
 - `run(program: &list[&strview]) -> i32` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`
-- `output(command: &strview) -> &strview` runs the command with the shell and gives what it wrote to the standard output, temporary
+- `output(command: &strview) -> &strview` runs the command with the shell and gives what it wrote to the standard output, with its line ends, temporary
 - `output(program: &list[&strview]) -> &strview` the same without a shell
 
-On Linux and macOS a program killed by a signal gives 128 plus the signal, and one that cannot start gives 127.
+On Linux and macOS a program killed by a signal gives 128 plus the signal, and one that cannot start gives 127. On Windows one that cannot start gives -1. An empty list is a program that cannot start.
 
 ### Time
 - `now() -> f64` the seconds since 1970, with decimals
 - `clock() -> f64` the seconds from some start, it never goes back, so it's the one to measure how long something takes
 - `date() -> Date` the local date and time
-- `sleep(seconds: f64)` stops the program that long
+- `sleep(seconds: f64)` stops the program that long, a signal that arrives doesn't cut it short
 
 `Date` has `year`, `month` (1 to 12), `day` (1 to 31), `hour`, `minute`, `second` and `weekday` (0 is Sunday), all of them `i32`.
 
@@ -234,20 +254,22 @@ func main():
     print(integer(d, get(d, 0, "user.age")) ifnull 0) # 0, there is no age
 ```
 `parse` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `usize|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
-- `parse(text: &strview) -> Document|NotJson`
+- `parse(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid` of `utf8` does that
 - `free(d: Document)` releases the nodes, not the text
-- `get(d: Document, at: usize|null, path: &strview) -> usize|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`
+- `get(d: Document, at: usize|null, path: &strview) -> usize|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
 - `children(d: Document, at: usize|null)` for a `for`: the values of an array or an object, in order, and nothing for anything else
 - `count(d: Document, at: usize|null) -> usize` how many values an array or an object has
 - `item(d: Document, at: usize|null, index: usize) -> usize|null` the value at `index` of an array or an object. It walks from the start, so to go through all of them use `children`
 - `key(d: Document, at: usize|null, index: usize) -> &strview` the key at `index` of an object, temporary
 - `kind(d: Document, at: usize|null) -> Kind` what the value is, one of `Nothing`, `Boolean`, `Number`, `Text`, `Array` and `Object`. `null` and a missing node are `Nothing`
 - `text(d: Document, at: usize|null) -> &strview` a string with its escapes decoded, temporary, and empty when it's not a string
-- `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null` give `null` when the value is not of that kind. `integer` is also `null` for a number with decimals or an exponent
+- `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null` give `null` when the value is not of that kind. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
 - `raw(d: Document, at: usize|null) -> &strview` the JSON text of the value, a view
 - `quoted(out: *&str, text: &strview)` appends the text to `out` as a JSON string, with the quotes and the escapes
 
 To write JSON you build the text with `+=`, and `quoted` for the strings.
+
+A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, and `size`, how many nodes it takes with the ones inside it. An object keeps each key as a `Text` node right before its value.
 
 ## net
 TCP sockets.
@@ -269,7 +291,7 @@ Sending to a socket that the other side closed gives `CannotSend`, it doesn't st
 It links the C math library.
 - `PI`, `TAU` and `E`
 - `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round` and `trunc` take one float, and `atan2(y, x)`, `pow(x, y)`, `hypot(x, y)` and `fmod(x, y)` take two. They are the C functions for `f64`, and each one has an `f32` version that gives an `f32`. The angles are in radians, `log` is the natural one and `round` takes the halves away from zero
-- `abs(x: $T) -> $T` for signed integers and floats
+- `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128
 - `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`
 - `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
 
@@ -277,7 +299,7 @@ It links the C math library.
 They are the same sequence on every run until you call `seed`, and they are not for secrets.
 - `seed(n: u64)` starts the sequence from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
 - `random() -> f64` from 0 to 1, without the 1
-- `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included
+- `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included, in either order
 
 ## utf8
 - `code(s: &strview) -> u32|null` the code of the first character, `null` when the text is empty or doesn't start with valid UTF-8: `code("é")` is 233
@@ -299,7 +321,7 @@ func main():
         print(n)
 ```
 `Bits[$$words]` holds the numbers from 0 to `words * 64 - 1`, in `words` 64 bit words.
-- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. A number past the room stops the program
+- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. A number past the room stops the program. `i` is a `usize`
 - `a or b` the union, `a and b` the intersection, `a - b` the numbers of `a` that are not in `b`, and `a xor b` the ones in only one of them
 - `a == b` and `a != b`
 - `complement(b)` the numbers that are not in `b`
