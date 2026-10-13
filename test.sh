@@ -4,6 +4,21 @@ out=build/tests
 mkdir -p "$out"
 pass=0
 fail=0
+limit=120
+exec 3>&1
+within() {
+    "$@" &
+    job=$!
+    (
+        waited=0
+        while [ $waited -lt $limit ] && kill -0 $job 2> /dev/null; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        kill -9 $job 2> /dev/null && echo "FAIL $name: still running after $limit seconds, killed" >&3
+    ) > /dev/null 2>&1 &
+    wait $job
+}
 for src in tests/*.flg tests/*/; do
     name=$(basename "$src" .flg)
     files=$src
@@ -11,7 +26,7 @@ for src in tests/*.flg tests/*/; do
     args=
     [ -f "tests/$name.args" ] && args=$(cat "tests/$name.args")
     if [ -f "tests/$name.err" ]; then
-        if "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+        if within "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: compiled, expected an error"
             fail=$((fail + 1))
         elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
@@ -24,7 +39,7 @@ for src in tests/*.flg tests/*/; do
         continue
     fi
     if [ -f "tests/$name.warn" ]; then
-        if ! "$compiler" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
+        if ! within "$compiler" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: does not compile"
             cat "$out/$name.got"
             fail=$((fail + 1))
@@ -41,7 +56,7 @@ for src in tests/*.flg tests/*/; do
         fi
         continue
     fi
-    if ! "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+    if ! within "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
         echo "FAIL $name: does not compile"
         cat "$out/$name.got"
         fail=$((fail + 1))
@@ -53,7 +68,7 @@ for src in tests/*.flg tests/*/; do
         fail=$((fail + 1))
         continue
     fi
-    "$out/$name" < /dev/null > "$out/$name.got" 2>&1
+    within "$out/$name" < /dev/null > "$out/$name.got" 2>&1
     if cmp -s "$out/$name.got" "tests/$name.out"; then
         pass=$((pass + 1))
     else
@@ -63,7 +78,8 @@ for src in tests/*.flg tests/*/; do
     fi
 done
 for src in examples/*.flg; do
-    if "$compiler" "$src" -check > "$out/example.got" 2>&1; then
+    name=$src
+    if within "$compiler" "$src" -check > "$out/example.got" 2>&1; then
         pass=$((pass + 1))
     else
         echo "FAIL $src: does not compile"
