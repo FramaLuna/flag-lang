@@ -178,7 +178,7 @@ type Num = i32|f32
 ```flag
 found: usize? = null
 ```
-You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if))
+You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if)), or with the cases of a `switch` (see [Switch](#switch))
 ```flag
 n: Num = 3
 if n is i32:
@@ -403,13 +403,22 @@ case 1..10, 100:
 case:
     print("other")
 ```
-It also works with text and with unions of void types, and a switch over a union must handle every type or have a default
+It also works with text. Over a union the cases name its types, and inside each case the variable has those types, like after an `is`. A switch over a union must handle every type or have a default, and the default gets the types that are left
 ```flag
+type enum Color = Red|Green|Blue
+type Shape = Circle|Square|null
+
 switch color:
 case Red:
     print("red")
 case Green, Blue:
     print("not red")
+
+switch shape:
+case Circle:
+    print("a circle of radius ", shape.r)
+case:
+    print("not a circle") # shape is Square|null here
 ```
 ### break, continue
 `break` leaves the loop and `continue` goes to the next round

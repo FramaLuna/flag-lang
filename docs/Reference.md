@@ -283,6 +283,7 @@ The rules
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
 - `not (x is T)` doesn't narrow anything
 - `while x is T:` narrows the body, not after the loop
+- `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
 
@@ -438,9 +439,28 @@ Over an array, a list or a slice the compiler writes the loop itself: it reads t
 
 ## Control flow
 ### switch
-Each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
+Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
 
-A switch over a union must handle every member or have a default: `this switch never handles i32 and has no default case`. Only void types can be cases, so a union with data needs a default.
+Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`.
+
+Over a tagged union the cases name its member types: one type, several separated by `,`, or a union `A|B`. A case runs when the union holds one of them, and inside it a local variable or a parameter has those types, like inside `if x is A|B:`. The default gets the members that no case names, and after the switch the variable has the types of the cases that don't leave, so `case null: return` leaves it without `null`. A subject that is not a variable is tested the same way, there is just nothing to narrow
+```flag
+func area(s: Circle|Square|null) -> f64:
+    switch s:
+    case Circle:
+        return 3.14 * s.r * s.r
+    case Square:
+        return s.side * s.side
+    case null:
+        return 0.0
+```
+- every type a case names is a member still there: `i32|f64 can never be null, so this case never runs`
+- each member goes in one case: `this switch already handles null above, each type goes in one case`
+- every member is handled or there is a default: `this switch never handles i32 and has no default case`, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
+- a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
+- a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
+
+A case written with something that only a type has (`*`, `&`, `?`, `|`, `->`, `func(...)` or a `,` between `[]`, like `Pair[i32, u8]`) is a type. Any other case is read as a type over a tagged union and as a value over anything else, so `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types there, and `limit`, `p.x` and `t[0]` are values in a switch over a number.
 
 `break` inside a switch leaves the loop around the switch.
 
@@ -471,7 +491,7 @@ An expression statement that leaves an error without handling it doesn't compile
 ```
 error: this statement drops an error: test it with is, pass it up with try or drop it with _ =
 ```
-If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. A `switch` over the value with a `case:` counts as handling its errors, the default takes them.
+If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. A `switch` over the value handles its errors, in the cases that name them or in the default.
 
 `try` gives the value and returns the errors from the function, so each error must be in the return type of the function
 - `try passes Bad up but this function returns i32`

@@ -657,8 +657,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
         subject := try value(n + 1, VOID)
         if not aggregate(subject.type):
             subject = load(subject)
+        whole := comp.types[subject.type]
+        union := whole.kind == Union
+        left := members(subject.type)
         l_end := label()
-        covered: &list[usize]
         fallback: usize = 0
         before := comp.vars.len
         ends: &list[Local]
@@ -676,53 +678,89 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return Fail
             l_body := label()
             l_next := label()
+            handled: &list[usize]
             if labels == 0:
+                if union and left.len == 0:
+                    eprint(ERR, "this default case never runs, the cases above handle every type of ", whole.name)
+                    show(comp.tokens[comp.nodes[c].tok].at)
+                    return Fail
                 fallback = c
+                handled = left
                 jump(l_body)
             l := c + 1
             for i in 0..labels:
-                eq := none
-                if comp.nodes[l].kind == Binary and text(l) == "..":
-                    low := try binary(">=", subject, try value(l + 1, VOID), source(l))
-                    high := try binary("<", subject, try value(node_end(l + 1), VOID), source(l))
-                    eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
-                else:
-                    wanted := try value(l, subject.type)
-                    pair: &list[Value]
-                    append(pair, subject)
-                    append(pair, wanted)
-                    bare := comp.types[wanted.type].kind == Void or comp.types[wanted.type].kind == Union and comp.types[wanted.type].size == 4
-                    if comp.types[subject.type].kind == Union and not bare and not try offers("==", pair, source(l)):
-                        eprint(ERR, "a case over ", comp.types[subject.type].name, " expects a member without data, narrow the value with is to compare what it holds")
+                k := comp.nodes[l].kind
+                typed := k == TName or k == TUnary or k == TUnion or k == TFunc
+                if union:
+                    head := l
+                    while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index and kids(head) == 2:
+                        head += 1
+                    if not typed and comp.nodes[head].kind != Name:
+                        eprint(ERR, "a case over ", whole.name, " names one of its types, and this is a value: name the type and compare the value inside its case")
                         show(source(l))
                         return Fail
-                    if comp.types[wanted.type].kind == Void:
-                        append(covered, wanted.type)
-                    eq = try binary("==", subject, wanted, source(l))
-                if eq.type != BOOL:
-                    eprint(ERR, "a case label compares with ==, and == over these answers ", comp.types[eq.type].name)
-                    show(source(l))
-                    return Fail
-                l_more := l_next
-                if i + 1 < labels:
-                    l_more = label()
-                branch(load(eq).at, l_body, l_more)
-                if i + 1 < labels:
-                    open_block(l_more)
+                    if local_of(head) != 0:
+                        eprint(ERR, text(head), " is a variable, and a case over ", whole.name, " names one of its types: compare the values with == in an if")
+                        show(source(l))
+                        return Fail
+                    t: usize = VOID
+                    if head == l:
+                        t = try resolve(l)
+                    else:
+                        comp.pos = comp.nodes[head].tok - 2 * usize(comp.nodes[head].module.len > 0)
+                        made := comp.nodes.len
+                        try type_expr()
+                        t = try resolve(made)
+                        comp.nodes.len = made
+                    for m in members(t):
+                        if not has(members(subject.type), m):
+                            eprint(ERR, whole.name, " can never be ", comp.types[m].name, ", so this case never runs")
+                            show(source(l))
+                            return Fail
+                        if not has(left, m):
+                            eprint(ERR, "this switch already handles ", comp.types[m].name, " above, each type goes in one case")
+                            show(source(l))
+                            return Fail
+                        append(handled, m)
+                        remove(left, trust find(left, m))
+                else:
+                    if typed:
+                        eprint(ERR, "a case names a type only in a switch over a tagged union, and ", whole.name, " is not one")
+                        show(source(l))
+                        return Fail
+                    eq := none
+                    if k == Binary and text(l) == "..":
+                        low := try binary(">=", subject, try value(l + 1, VOID), source(l))
+                        high := try binary("<", subject, try value(node_end(l + 1), VOID), source(l))
+                        eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
+                    else:
+                        eq = try binary("==", subject, try value(l, subject.type), source(l))
+                    if eq.type != BOOL:
+                        eprint(ERR, "a case label compares with ==, and == over these answers ", comp.types[eq.type].name)
+                        show(source(l))
+                        return Fail
+                    l_more := l_next
+                    if i + 1 < labels:
+                        l_more = label()
+                    branch(load(eq).at, l_body, l_more)
+                    if i + 1 < labels:
+                        open_block(l_more)
                 l = node_end(l)
+            if union and labels > 0:
+                branch(tag_test(subject, handled), l_body, l_next)
             open_block(l_body)
+            if union and local_of(n + 1) != 0:
+                try confine(n + 1, handled, source(c))
             try gen(kid(c, labels), VOID)
             if try keep(before, ends):
                 lives += 1
                 jump(l_end)
             open_block(l_next)
             c = node_end(c)
-        union := comp.types[subject.type].kind == Union
-        for m in members(subject.type):
-            if union and fallback == 0 and not has(covered, m):
-                eprint(ERR, "this switch never handles ", comp.types[m].name, " and has no default case")
-                show(tok.at)
-                return Fail
+        if union and fallback == 0 and left.len > 0:
+            eprint(ERR, "this switch never handles ", comp.types[left[0]].name, " and has no default case")
+            show(tok.at)
+            return Fail
         if fallback != 0 or union:
             terminate("hlt", Arg{})
         else:
@@ -1281,7 +1319,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             l_done := label()
             branch(tag_test(v, removed), l_bad, l_good)
             open_block(l_bad)
-            absent(v.at, v.type)
+            absent(v.at, v.type, removed)
             other := try gen(right, kept)
             reads(right)
             if other.type == VOID:
@@ -1298,6 +1336,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             try assign(slot, result, other, source(right))
             jump(l_done)
             open_block(l_good)
+            absent(v.at, v.type, rest)
             try assign(slot, result, Value{type = kept, at = payload(v.at, kept), mem = true}, tok.at)
             jump(l_done)
             open_block(l_done)
@@ -1393,9 +1432,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
             l_ok := label()
             branch(tag_test(v, removed), l_fail, l_ok)
             open_block(l_fail)
-            absent(v.at, v.type)
+            absent(v.at, v.type, removed)
             try leave(Value{type = failed, at = payload(v.at, failed), mem = true}, tok.at)
             open_block(l_ok)
+            absent(v.at, v.type, rest)
         return Value{type = kept, at = payload(v.at, kept), mem = true, place = v.place}
     case Items, Pairs:
         hint := comp.types[want]
@@ -1742,19 +1782,18 @@ func narrow(cond: usize, matching: bool) -> Fail?:
         return narrow(node_end(subject), matching)
     if comp.nodes[cond].kind != Binary or text(cond) != "is" or local_of(subject) == 0:
         return null
-    current := comp.vars[local_of(subject) - 1]
     wanted := members(try resolve(node_end(subject)))
     kept: &list[usize]
-    for m in members(current.type):
+    for m in members(comp.vars[local_of(subject) - 1].type):
         if has(wanted, m) == matching:
             append(kept, m)
-    t := try union_of(kept, Union, comp.tokens[comp.nodes[cond].tok].at)
+    return confine(subject, kept, comp.tokens[comp.nodes[cond].tok].at)
+
+func confine(subject: usize, kept: &list[usize], at: usize) -> Fail?:
+    current := comp.vars[local_of(subject) - 1]
+    t := try union_of(kept, Union, at)
     whole := comp.vars[declaration(current.name)]
-    bare := true
-    for m in kept:
-        bare = bare and comp.types[m].kind == Void
-    if bare:
-        absent(whole.addr, whole.type)
+    absent(whole.addr, whole.type, kept)
     append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false})
     return null
 
@@ -2036,7 +2075,10 @@ func payload(addr: Arg, t: usize) -> Arg:
         return addr
     return offset(addr, 8)
 
-func absent(addr: Arg, t: usize):
+func absent(addr: Arg, t: usize, held: &list[usize]):
+    for m in held:
+        if pointers(m) != 0:
+            return
     if pointers(t) != 0:
         add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8))})
 

@@ -1,0 +1,97 @@
+type Pair[$T]:
+    a: $T
+    b: $T
+
+type Car:
+    model: &strview
+    motor:
+        hp: u32
+
+type Node:
+    value: i32
+
+type error BadLine:
+    line: usize
+    why: &strview
+
+type enum Color = Red|Green|Blue
+
+type Thing = i32|f64|&strview|null|Pair[i32]|Car.motor|*Node|func(i32) -> i32
+
+func double(x: i32) -> i32:
+    return x * 2
+
+func describe(t: Thing) -> &strview:
+    switch t:
+    case i32:
+        return "i32 " + (t + 1)
+    case f64, null:
+        return "f64 or null " + t
+    case &strview:
+        return "text " + t.len
+    case Pair[i32]:
+        return "pair " + (t.a + t.b)
+    case Car.motor:
+        return "motor " + t.hp
+    case *Node:
+        return "node " + t.value
+    case func(i32) -> i32:
+        return "func " + t(21)
+
+func parse(n: i32) -> i32|BadLine:
+    if n > 3:
+        return BadLine{usize(n), "too far"}
+    return n * 10
+
+func paint(c: Color) -> &strview:
+    switch c:
+    case Red:
+        return "red"
+    case Green|Blue:
+        return "cool"
+
+func first(x: $T|null) -> &strview:
+    switch x:
+    case $T:
+        return "some " + x
+    case null:
+        return "none"
+
+func main():
+    node := Node{7}
+    things: array[Thing, 8] = [3, 2.5, "hola", Pair[i32]{1, 2}, Car.motor{90}, ptr(node), double, null]
+    for t in things:
+        print(describe(t))
+    for n in 2..6:
+        r := parse(n)
+        switch r:
+        case BadLine:
+            print("line ", r.line, ": ", r.why)
+        case i32:
+            print("ok ", r)
+    print(paint(Red), " ", paint(Blue))
+    maybe: i32? = 5
+    switch maybe:
+    case null:
+        print("nothing")
+        return
+    case:
+        print("default narrowed ", maybe + 1)
+    print("after ", maybe * 2)
+    switch parse(9):
+    case BadLine:
+        print("bad call")
+    case:
+        print("good call")
+    print(first(4), " ", first(u8(1)))
+    nothing: &strview? = null
+    print(first(nothing))
+    v: i32|&strview = "x"
+    for i in 0..3:
+        switch v:
+        case &strview:
+            if i == 1:
+                break
+            print("text round ", i)
+        case i32:
+            print("number")
