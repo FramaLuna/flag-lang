@@ -699,7 +699,7 @@ ages["ana"] = 30 # the same as put(ages, "ana", 30)
 age := ages["ana"] # i32|null, the same as get(ages, "ana")
 if age is i32:
     print("ana is ", age)
-ages["bo"] = (ages["bo"] ifnull 0) + 1
+ages["bo"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```

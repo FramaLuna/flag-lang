@@ -364,7 +364,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | You write | It calls |
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
-| `x[i] = v` | when `at` returns a value, `put(x, i, v)` |
+| `x[i] = v` | when `at` returns a value, `put(x, i, v)`, and `x[i] += v` is `put(x, i, at(x, i) + v)` |
 | `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
@@ -419,7 +419,7 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Assignments
-In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`.
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`. `x[i] += v` then reads the copy, adds and puts it back, and a copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map the `MapFull?` of `put` makes it a statement that drops an error, like `x[i] = v`.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -791,7 +791,6 @@ QBE is in `vendor/qbe` with four changes: its `main` returns instead of calling 
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
-- `m[k] += 1` on a map doesn't compile, `m[k]` is a value that can be `null`, write `m[k] = (m[k] ifnull 0) + 1`
 - `m[k] = v` on a fixed map gives the `MapFull?` of `put`, so write `trust put(m, k, v)` when you know there is room, or `try put(m, k, v)`
 - A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length

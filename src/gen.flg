@@ -368,46 +368,15 @@ func gen(n: usize, want: usize) -> Value|Fail:
             eprint(ERR, "cannot assign to this expression, it is not a place that holds a value")
             show(source(left))
             return Fail
-        if lk == Index and tok.text == "=":
-            return indexed(left, right)
+        if lk == Index:
+            return indexed(left, n)
         first := comp.body.len
         spot := try gen(left, VOID)
         if not spot.place:
-            if lk == Index and has(members(spot.type), NULL):
-                eprint(ERR, tok.text, " changes an element in its place, and this index gives a copy that can be null: write the assignment in full, like m[k] = (m[k] ifnull 0) + 1")
-            elif lk == Index:
-                eprint(ERR, "this index gives a copy of the element, ", tok.text, " would only change the copy")
-            else:
-                eprint(ERR, "this is not a variable, it cannot be assigned")
+            eprint(ERR, "this is not a variable, it cannot be assigned")
             show(source(left))
             return Fail
-        middle := comp.body.len
-        if tok.text == "+=" and comp.types[spot.type].name == "&str":
-            try concat(right, spot, first)
-            return none
-        at := source(right)
-        wanted: usize = VOID
-        if tok.text == "=":
-            wanted = spot.type
-        v := settled(try value(right, wanted), first, middle)
-        postpone(first, middle)
-        if tok.text != "=":
-            v = try binary(tok.text[0:1], load(spot), v, tok.at)
-            at = tok.at
-        if local_of(left) != 0:
-            decl := comp.vars[declaration(text(left))]
-            outside := decl
-            for l in comp.vars:
-                if l.name == decl.name and l.depth < comp.loops.len and (comp.loops.len > comp.leaving or l.depth < comp.staying):
-                    outside = l
-            if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
-                eprint(ERR, decl.name, " cannot take ", comp.types[v.type].name, " inside this loop, an is outside the loop narrowed it to ", comp.types[outside.type].name, " and the loop reads it that way every round")
-                show(tok.at)
-                return Fail
-            if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
-                append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false})
-                spot = Value{type = outside.type, at = outside.addr}
-        try assign(spot.at, spot.type, v, at)
+        try update(spot, n, first)
         return none
     case Return:
         if node.size == 1:
@@ -1485,10 +1454,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
         show(tok.at)
     return Fail
 
-func indexed(n: usize, right: usize) -> Value|Fail:
+func indexed(n: usize, assignment: usize) -> Value|Fail:
     tok := comp.tokens[comp.nodes[n].tok]
     none: Value
-    if right != 0 and kids(n) == 3:
+    if assignment != 0 and kids(n) == 3:
         eprint(ERR, "a slice is a view, it cannot be assigned: assign its elements one by one")
         show(tok.at)
         return Fail
@@ -1583,25 +1552,77 @@ func indexed(n: usize, right: usize) -> Value|Fail:
         append(args, index)
         reached := comp.body.len
         p := try invoke("at", args, tok.at)
-        if comp.types[p.type].kind != Ptr and right == 0:
+        if comp.types[p.type].kind != Ptr and assignment == 0:
             return p
-        if comp.types[p.type].kind != Ptr:
+        if comp.types[p.type].kind != Ptr and text(assignment) == "=":
             comp.body.len = reached
-            append(args, settled(try value(right, VOID), first, reached))
+            append(args, settled(try value(node_end(n), VOID), first, reached))
             postpone(first, reached)
             return invoke("put", args, tok.at)
+        if comp.types[p.type].kind != Ptr:
+            rest: &list[usize]
+            for m in members(p.type):
+                if m != NULL:
+                    append(rest, m)
+            kept := try union_of(rest, Union, tok.at)
+            spot = Value{type = kept, at = alloc(kept), mem = true, place = true}
+            zero(kept, spot.at)
+            if rest.len == members(p.type).len:
+                store(kept, p, spot.at)
+            else:
+                l_some := label()
+                l_done := label()
+                branch(op(W, "cnew", tag(p), tag_of(NULL)), l_some, l_done)
+                open_block(l_some)
+                store(kept, Value{type = kept, at = payload(p.at, kept), mem = true}, spot.at)
+                jump(l_done)
+                open_block(l_done)
+            try update(spot, assignment, first)
+            append(args, spot)
+            return invoke("put", args, tok.at)
         spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
-    if right == 0:
+    if assignment == 0:
         return spot
     if not spot.place:
         eprint(ERR, "this element belongs to a value that is not a variable, assigning it would only change a copy")
         show(source(n + 1))
         return Fail
-    middle := comp.body.len
-    given := settled(try value(right, spot.type), first, middle)
-    postpone(first, middle)
-    try assign(spot.at, spot.type, given, source(right))
+    try update(spot, assignment, first)
     return none
+
+func update(spot: Value, n: usize, first: usize) -> Fail?:
+    o := text(n)
+    left := n + 1
+    right := node_end(left)
+    middle := comp.body.len
+    if o == "+=" and comp.types[spot.type].name == "&str":
+        try concat(right, spot, first)
+        return null
+    sign := comp.tokens[comp.nodes[n].tok].at
+    at := source(right)
+    wanted: usize = VOID
+    if o == "=":
+        wanted = spot.type
+    v := settled(try value(right, wanted), first, middle)
+    postpone(first, middle)
+    if o != "=":
+        at = sign
+        v = try binary(o[0:1], load(spot), v, at)
+    place := spot
+    if local_of(left) != 0:
+        decl := comp.vars[declaration(text(left))]
+        outside := decl
+        for l in comp.vars:
+            if l.name == decl.name and l.depth < comp.loops.len and (comp.loops.len > comp.leaving or l.depth < comp.staying):
+                outside = l
+        if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
+            eprint(ERR, decl.name, " cannot take ", comp.types[v.type].name, " inside this loop, an is outside the loop narrowed it to ", comp.types[outside.type].name, " and the loop reads it that way every round")
+            show(sign)
+            return Fail
+        if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
+            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false})
+            place = Value{type = outside.type, at = outside.addr}
+    return assign(place.at, place.type, v, at)
 
 func postpone(first: usize, middle: usize):
     last := comp.body.len
