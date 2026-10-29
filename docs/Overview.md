@@ -795,7 +795,7 @@ In a file without a module, priv hides the name from every other file.
 The functions of text, lists and maps are always there. The rest comes in modules that you get with `use`, without adding files
 - `fs`, files and folders
 - `os`, the arguments, the environment, other programs and the time
-- `json`, reading JSON
+- `json`, reading and writing JSON
 - `net`, TCP sockets
 - `math`, `sqrt`, `sin`, `min`, random numbers...
 - `utf8`, characters of UTF-8 text

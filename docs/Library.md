@@ -6,7 +6,7 @@ Every function of the standard library, module by module.
 - [core](#core)
 - [fs](#fs), files and folders
 - [os](#os), the program, other programs and the time
-- [json](#json)
+- [json](#json), reading and writing JSON
 - [net](#net), TCP sockets
 - [math](#math)
 - [utf8](#utf8)
@@ -246,6 +246,7 @@ use json
 func main():
     d := parse("{\"user\": {\"name\": \"ana\", \"tags\": [\"a\", \"b\"]}}")
     if d is NotJson:
+        eprint(d)
         return
     defer free(d)
     print(text(d, get(d, 0, "user.name"))) # ana
@@ -255,37 +256,65 @@ func main():
 ```
 `parse` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `usize|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
 - `parse(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid` of `utf8` does that
-- `free(d: Document)` releases the nodes, not the text
+- `free(d: *Document)` releases the nodes, not the text, and leaves the document empty
 - `get(d: Document, at: usize|null, path: &strview) -> usize|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
 - `children(d: Document, at: usize|null)` for a `for`: the values of an array or an object, in order, and nothing for anything else
+- `key(d: Document, at: usize|null) -> &strview` the key of the value `at` when it's inside an object, temporary, and empty when it's not
 - `count(d: Document, at: usize|null) -> usize` how many values an array or an object has
 - `item(d: Document, at: usize|null, index: usize) -> usize|null` the value at `index` of an array or an object. It walks from the start, so to go through all of them use `children`
-- `key(d: Document, at: usize|null, index: usize) -> &strview` the key at `index` of an object, temporary
 - `kind(d: Document, at: usize|null) -> Kind` what the value is, one of `Nothing`, `Boolean`, `Number`, `Text`, `Array` and `Object`. `null` and a missing node are `Nothing`
 - `text(d: Document, at: usize|null) -> &strview` a string with its escapes decoded, temporary, and empty when it's not a string
 - `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null` give `null` when the value is not of that kind. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
 - `raw(d: Document, at: usize|null) -> &strview` the JSON text of the value, a view
-- `quoted(out: *&str, text: &strview)` appends the text to `out` as a JSON string, with the quotes and the escapes
+- `quoted(text: &strview)` the text as a JSON string, with the quotes and the escapes, to use with `+`, `+=` and `print`
 
-To write JSON you build the text with `+=`, and `quoted` for the strings.
+The keys of an object go with `key`
+```flag
+for v in children(d, get(d, 0, "user")):
+    print(key(d, v), " is ", raw(d, v))
+```
+To write JSON you build the text with `+=`, and `quoted` for the strings. The numbers that `+=` writes are JSON, except `nan` and `inf`, that JSON doesn't have
+```flag
+out += "{\"name\": " + quoted(name) + ", \"age\": " + age + "}"
+```
+The error says where and what
+```flag
+type error NotJson:
+    line: usize
+    column: usize
+    reason: &strview
+```
+`line` and `column` start at 1 and the column counts bytes, like in the errors of the compiler. It prints as `not JSON at line 3, column 14: expected ':' after the key`.
 
-A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, and `size`, how many nodes it takes with the ones inside it. An object keeps each key as a `Text` node right before its value.
+A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, `size`, how many nodes it takes with the ones inside it, and `escaped`, if it's a `Text` with escapes to decode. An object keeps each key as a `Text` node right before its value.
 
 ## net
 TCP sockets.
 ```flag
-type error enum NetError = CannotResolve|CannotConnect|CannotListen|CannotAccept|CannotSend|CannotReceive
+type error NetError:
+    action: &strview
+    reason: &strview
 ```
+A `NetError` says what failed and why, in the words of the system, and it prints as `cannot connect to example.com:80: Connection refused`. Its texts are temporary.
+
 A `Socket` is a connection or a server, close it with `close` or with `with socket:`.
-- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address. `CannotResolve` when the name has no address, and `CannotConnect` when no address answers
+- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers
 - `listen(port: u16) -> Socket|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
 - `accept(server: Socket) -> Socket|NetError` waits for the next connection
-- `send(s: Socket, text: &strview) -> CannotSend?` sends all the text
-- `receive(s: Socket) -> &str|CannotReceive` what arrived in one read, up to 64 KiB, yours. It's empty when the other side closed. A message can arrive in several reads, so read until you have all of it
+- `send(s: Socket, text: &strview) -> NetError?` sends all the text
+- `receive(s: Socket, into: *&str, size: usize) -> usize|NetError` appends up to `size` bytes of what arrived to `into` and gives how many, 0 when the other side closed. A message can arrive in several parts, so receive until you have all of it
+- `timeout(s: Socket, seconds: f64)` makes `receive` and `send` give a `NetError` when they wait longer than that, its reason is `the timeout ran out`. 0 waits forever, like a new socket
 - `close(s: Socket)`
 - `port(s: Socket) -> u16` the local port of the socket
 
-Sending to a socket that the other side closed gives `CannotSend`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
+This reads everything until the other side closes
+```flag
+reply: &str
+defer free(reply)
+while try receive(s, reply, 65536) > 0:
+    pass
+```
+Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason is the text of the Winsock error with its number.
 
 ## math
 It links the C math library.
@@ -321,7 +350,7 @@ func main():
         print(n)
 ```
 `Bits[$$words]` holds the numbers from 0 to `words * 64 - 1`, in `words` 64 bit words.
-- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. A number past the room stops the program. `i` is a `usize`
+- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. `i` is any integer, and one below 0 or past the room stops the program
 - `a or b` the union, `a and b` the intersection, `a - b` the numbers of `a` that are not in `b`, and `a xor b` the ones in only one of them
 - `a == b` and `a != b`
 - `complement(b)` the numbers that are not in `b`
