@@ -78,6 +78,7 @@ type Target:
     off: i32
     stride: i32
     slot: u32
+    element: bool
 
 type Cell:
     owner: u32
@@ -103,6 +104,7 @@ type Obj:
     many: bool
     strict: bool
     arena: bool
+    element: bool
 
 type Marks:
     live: Set
@@ -150,7 +152,6 @@ type Fn:
     crossing: &list[u32]
     calls: &list[usize]
     swaps: &list[u32]
-    renews: &list[u32]
     slots: &list[u32]
     alive: &list[u64]
     keys: &list[u64]
@@ -829,19 +830,15 @@ func analyze(f: usize) -> bool:
     release(mem.exit)
     mem.exit = none
     mem.fns[f].swaps.len = 0
-    mem.fns[f].renews.len = 0
     for k in 0..mem.objs.len:
         append(mem.fns[f].swaps, u32(0))
     for k in 0..sum.ids.len:
-        append(mem.fns[f].renews, u32(0))
         c := mem.cells[sum.ids[k]]
         owner := usize(c.owner)
         if owner < SLOTS and mem.outer[owner] and mem.objs[owner].depth < DEPTH:
             was := mem.index[child(owner, c.off, c.stride)]
             if was is u32 and sum.marks.killed[usize(was)]:
                 fresh := objects(sum.aims[k].live) and mem.heaps
-                if sum.aims[k].live[usize(was)] or not empty(fresh):
-                    mem.fns[f].renews[k] = was + 1
                 if not empty(fresh):
                     sum.marks.made[usize(was)] = true
                     sum.marks.gone[usize(was)] = false
@@ -1054,6 +1051,7 @@ func visit(block: usize):
                     if marks.killed[x]:
                         for h in freeable(b.live):
                             condemn(h, marks.sure[x] and b.must[h], marks.freed[x])
+                            mem.objs[h].element = mem.objs[h].element or marks.freed[x] and b.element
                     if marks.gone[x]:
                         vanish(freeable(b.must))
                     if marks.used[x]:
@@ -1084,20 +1082,12 @@ func visit(block: usize):
                         exact := p.off != ANY and p.stride == 0
                         targets := t.live - mem.pinned
                         one := t.slot == 0 and single(targets) or empty(targets) and t.slot != 0 and t.slot != ALL
-                        first := mem.writes.len
                         for h in targets:
                             append(mem.writes, Write{v, cell_at(h, p.off, p.stride), (one or t.must[h]) and exact and not mem.many[h]})
                         if t.slot != 0 and t.slot != ALL:
                             append(mem.writes, Write{v, cell_at(SLOTS + usize(t.slot) - 1, p.off, p.stride), one and exact})
                         if t.live[OUTSIDE]:
                             append(mem.writes, Write{v, cell_at(OUTSIDE, ANY, 0), false})
-                        if mem.fns[g].renews[k] != 0:
-                            renew := objects(binding(usize(mem.fns[g].renews[k]) - 1).live)
-                            for w in first..mem.writes.len:
-                                old := current(mem.writes[w].id)
-                                if not empty(old.dead and renew):
-                                    old.dead = old.dead - renew
-                                    place(mem.writes[w].id, old)
                 mem.order.len = 0
                 for k in 0..mem.writes.len:
                     append(mem.order, (u64(mem.writes[k].id) << 32) or u64(k))
@@ -1160,6 +1150,7 @@ func visit(block: usize):
                 refuse("free", name, why, first, false)
             for h in blocks:
                 condemn(h, first.must[h], true)
+                mem.objs[h].element = mem.objs[h].element or first.element
             vanish(blocks and first.must)
             sweep()
         case Copy, Fill:
@@ -1238,7 +1229,7 @@ func visit(block: usize):
                 may := reach(given, false, false, false)
                 for h in (mem.heaps and mem.marks.live) - must - mem.arenas:
                     x := mem.objs[h]
-                    if (x.key and 0xff) == GLOBAL:
+                    if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]):
                         continue
                     text: &str
                     if x.name.len > 0:
@@ -1400,7 +1391,7 @@ func fold(h: u64, x: Set) -> u64:
     return out
 
 operator ==(a: Target, b: Target) -> bool:
-    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot
+    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot and a.element == b.element
 
 func release(st: State):
     free(st.ids)
@@ -1483,6 +1474,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out.live = a.live or b.live
     out.dead = a.dead or b.dead
     out.must = (a.must or complement(la)) and (b.must or complement(lb)) and out.live
+    out.element = a.element and (b.element or plain(b)) or b.element and plain(a)
     if a.slot == 0:
         out.slot = b.slot
     elif b.slot != 0 and b.slot != a.slot:
@@ -1532,6 +1524,8 @@ func fetch(a: Target) -> Target:
         return number(0)
     if count > 1 or not exact:
         out.must = Set{}
+    if not exact and not plain(out):
+        out.element = true
     return out
 
 func gather(given: Target, owner: usize, off: i32, stride: i32, live: Set) -> Target:
@@ -1582,9 +1576,15 @@ func settle(id: usize, given: Target, single: bool):
     live := alive(mem.marks)
     w := unite(old, v, live, live)
     w.must = Set{}
-    if c.off == ANY or c.stride != 0 or c.owner < SLOTS and mem.many[usize(c.owner)]:
+    if many(c):
         w.must = (old.must or v.must) and w.live
+        if v.element:
+            for h in objects(v.live):
+                mem.objs[h].element = true
     place(id, w)
+
+func many(c: Cell) -> bool:
+    return c.off == ANY or c.stride != 0 or c.owner < SLOTS and mem.many[usize(c.owner)]
 
 func value(id: u32) -> Target:
     if mem.fresh[id] == mem.tick:
@@ -1794,8 +1794,11 @@ func sweep():
             first = usize(mem.swept[o] and 0xffff_ffff)
         for k in first..mem.refs[o].len:
             id := mem.refs[o][k]
-            if mem.stamp[id] == mem.tick and not empty(value(id).live and condemned):
-                mem.cur[id] = kill(value(id), condemned, strong)
+            hit := condemned
+            if many(mem.cells[id]):
+                hit = strong
+            if mem.stamp[id] == mem.tick and not empty(value(id).live and hit):
+                mem.cur[id] = kill(value(id), hit, strong)
                 mem.fresh[id] = mem.tick
                 mem.known[id] = 0
         mem.swept[o] = (u64(mem.tick) << 32) or u64(mem.refs[o].len)

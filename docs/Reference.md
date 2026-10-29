@@ -586,14 +586,22 @@ note: it may be freed here
    |     ^
 ```
 
+### Elements
+It sees all the elements of a list, an array or a map as one, so when you free one element it cannot tell which. It takes a free through an element as the free of all of them, and an element stored in another list, array, map or context as all of them stored there. So this is clean
+```flag
+for s in names:
+    free(s)
+free(names)
+```
+and so are `for i in 0..names.len: free(names[i])`, `for e in m: free(e.value)`, an element taken with `pop`, `remove` or `names[0]` and freed, and elements moved to another list that frees them later. Freeing the list and not its elements still warns, `the memory allocated here for s is never freed`, and so does using an element after you freed it through the same variable.
+
+The price is what it doesn't see: freeing only some of the elements, freeing them twice, or reading one through the list after it was freed, give no warning.
+
 ### What it doesn't know
 It doesn't follow the values of the conditions, it looks at every path. It does follow `is`: after `if node is *Node:` it knows that the other path has no node to free.
 
-It sees all the elements of a list, an array or a map as one. And it sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others. So these give warnings that are not real
+It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others. So these give warnings that are not real
 - freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
-- elements freed one by one, in a loop like `for s in names: free(s)` or `for i in 0..names.len: free(names[i])`, or one taken with `pop`, `remove` or `names[0]`. It warns `free cannot release s, it may be freed already` and `the memory allocated here for s may never be freed`
-- the same with the values of a map, in `for e in m: free(e.value)` or after `remove(m, key)`
-- elements moved to another list or to a context warn that they may never be freed
 - linked lists and trees whose nodes are allocated in a loop or by a recursive function
 - a pointer that may point to one of several fields, when you store or free through it
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
@@ -769,5 +777,5 @@ Things that work in a way that may surprise you, so be aware
 - `trust` on a real error gives garbage, and it can crash
 - A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
 - An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
-- The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
+- The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know), and it misses the element mistakes of [Elements](#elements)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

@@ -876,6 +876,7 @@ It is optional because it makes the compilation slower.
 ```sh
 flagc main.flg -o main -memory
 ```
+It sees the elements of a list, an array or a map as one, so freeing them in a loop and then the list is clean, and freeing only some of them is not reported (see [Elements](Reference.md#elements)).
 ### @trust @check
 `@trust` hides the warnings of the code you already checked. At the end of a line it covers that line and the block it opens, and on a line of its own it covers everything after it at that indentation, so at the top of a file it covers all the file
 ```flag
