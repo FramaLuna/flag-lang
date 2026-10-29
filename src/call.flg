@@ -273,7 +273,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     tied := false
     seen := false
     scores: &list[i64]
+    here := comp.files[file_of(at)].module
+    kept := false
     s := first_sym(name)
+    while s != 0:
+        kept = kept or comp.syms[s].priv and callable(s, module, args, at)
+        s = comp.syms[s].next
+    s = first_sym(name)
     while s != 0:
         f := comp.syms[s].node
         if callable(s, module, args, at):
@@ -285,7 +291,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 score := try bind(f, order, args)
                 comp.binds.len = comp.frame
                 comp.frame = saved
-                if score >= 0 and comp.syms[s].priv:
+                if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
                     score += PRIVATE
                 append(scores, score)
                 if score > best_score or score >= 0 and score == best_score and near(s, at) < best_near:
