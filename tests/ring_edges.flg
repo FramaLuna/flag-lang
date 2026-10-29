@@ -1,0 +1,46 @@
+use ring
+
+type Big:
+    a: i64
+    b: i64
+    c: i64
+
+func main():
+    r: &ring[i32]
+    defer free(r)
+    print(r, " ", r.len, " ", pop(r), " ", take(r))
+    for i in 0..8:
+        prepend(r, i)
+    print(r, " ", r.cap)
+    prepend(r, 100)
+    print(r, " ", r.cap, " ", r[0], " ", r[-1], " ", r[8])
+    for i in 0..100:
+        append(r, i)
+        prepend(r, -i)
+        _ = take(r)
+        _ = pop(r)
+    print(r)
+    r[-1] = 7
+    r[0] = 9
+    print(r, " ", r.len)
+    q: &ring[Big]
+    defer free(q)
+    for i in 0..20:
+        append(q, Big{i, i * 2, i * 3})
+        if i % 3 == 0:
+            _ = take(q)
+    total: i64 = 0
+    for v in q:
+        total += v.a + v.b + v.c
+    print(q.len, " ", total, " ", q[0], " ", q[-1])
+    words: &ring[&strview]
+    defer free(words)
+    append(words, "b")
+    prepend(words, "a")
+    append(words, "c")
+    print(words, " ", take(words), " ", pop(words), " ", words)
+    free(r)
+    print(r, " ", r.len, " ", r.cap)
+    append(r, 5)
+    print(r)
+    print(r[1])
