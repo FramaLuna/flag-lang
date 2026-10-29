@@ -303,7 +303,7 @@ A `Socket` is a connection or a server, close it with `close` or with `with sock
 - `accept(server: Socket) -> Socket|NetError` waits for the next connection
 - `send(s: Socket, text: &strview) -> NetError?` sends all the text
 - `receive(s: Socket, into: *&str, size: usize) -> usize|NetError` appends up to `size` bytes of what arrived to `into` and gives how many, 0 when the other side closed. A message can arrive in several parts, so receive until you have all of it
-- `timeout(s: Socket, seconds: f64)` makes `receive` and `send` give the `NetError` `the timeout ran out` when they wait longer than that. 0 waits forever, like a new socket
+- `timeout(s: Socket, seconds: f64)` makes `receive` and `send` give a `NetError` when they wait longer than that, its reason is `the timeout ran out`. 0 waits forever, like a new socket
 - `close(s: Socket)`
 - `port(s: Socket) -> u16` the local port of the socket
 
@@ -314,7 +314,7 @@ defer free(reply)
 while try receive(s, reply, 65536) > 0:
     pass
 ```
-Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason ends with the number of the Winsock error.
+Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason is the text of the Winsock error with its number.
 
 ## math
 It links the C math library.
