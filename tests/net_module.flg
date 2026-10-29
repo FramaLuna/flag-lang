@@ -1,25 +1,46 @@
 use net
+use os
 
 func main() -> i32:
     server := listen(0)
     if server is NetError:
-        print("cannot listen")
+        print(server)
         return 1
     client := connect("127.0.0.1", port(server))
     if client is NetError:
-        print("cannot connect")
+        print(client)
         return 1
     peer := accept(server)
     if peer is NetError:
-        print("cannot accept")
+        print(peer)
         return 1
+    got: &str
+    defer free(got)
     _ = send(client, "hello over tcp")
-    print(receive(peer))
+    print(receive(peer, got, 1024), " ", got)
     _ = send(peer, "and back")
-    print(receive(client))
+    got.len = 0
+    print(receive(client, got, 3), " ", got)
+    print(receive(client, got, 1024), " ", got)
+    timeout(peer, 0.05)
+    start := clock()
+    late := receive(peer, got, 1024)
+    if late is NetError:
+        print(late.action, " ", late.reason.len > 0, " ", clock() - start >= 0.04)
     close(client)
-    print((trust receive(peer)).len)
+    print(receive(peer, got, 1024))
+    lost := send(peer, "nobody")
+    for i in 0..100:
+        if lost is null:
+            lost = send(peer, "nobody listens")
+    if lost is NetError:
+        print(lost.action)
     close(peer)
+    taken := listen(port(server))
+    if taken is NetError:
+        print(starts_with(taken.action, "listen on port "))
     close(server)
-    print(connect("127.0.0.1", 1) is CannotConnect)
+    refused := connect("127.0.0.1", 1)
+    if refused is NetError:
+        print(refused.action, " ", starts_with("" + refused, "cannot connect to 127.0.0.1:1: "))
     return 0

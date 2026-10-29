@@ -291,18 +291,30 @@ A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Nod
 ## net
 TCP sockets.
 ```flag
-type error enum NetError = CannotResolve|CannotConnect|CannotListen|CannotAccept|CannotSend|CannotReceive
+type error NetError:
+    action: &strview
+    reason: &strview
 ```
+A `NetError` says what failed and why, in the words of the system, and it prints as `cannot connect to example.com:80: Connection refused`. Its texts are temporary.
+
 A `Socket` is a connection or a server, close it with `close` or with `with socket:`.
-- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address. `CannotResolve` when the name has no address, and `CannotConnect` when no address answers
+- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers
 - `listen(port: u16) -> Socket|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
 - `accept(server: Socket) -> Socket|NetError` waits for the next connection
-- `send(s: Socket, text: &strview) -> CannotSend?` sends all the text
-- `receive(s: Socket) -> &str|CannotReceive` what arrived in one read, up to 64 KiB, yours. It's empty when the other side closed. A message can arrive in several reads, so read until you have all of it
+- `send(s: Socket, text: &strview) -> NetError?` sends all the text
+- `receive(s: Socket, into: *&str, size: usize) -> usize|NetError` appends up to `size` bytes of what arrived to `into` and gives how many, 0 when the other side closed. A message can arrive in several parts, so receive until you have all of it
+- `timeout(s: Socket, seconds: f64)` makes `receive` and `send` give the `NetError` `the timeout ran out` when they wait longer than that. 0 waits forever, like a new socket
 - `close(s: Socket)`
 - `port(s: Socket) -> u16` the local port of the socket
 
-Sending to a socket that the other side closed gives `CannotSend`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
+This reads everything until the other side closes
+```flag
+reply: &str
+defer free(reply)
+while try receive(s, reply, 65536) > 0:
+    pass
+```
+Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason ends with the number of the Winsock error.
 
 ## math
 It links the C math library.
