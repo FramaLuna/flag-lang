@@ -354,7 +354,7 @@ func main():
 - the parameters must be exactly those, defaults included, and there is no conversion between function types. Overloads are chosen by their parameters, never by what they return
 - a call is `(` after any value: `f(x)`, `button.on_click(x)`, `steps[i](x)`, `pick(true)(x)`. `name(...)` calls the variable `name` only when it holds a function, any other variable leaves the functions of that name reachable. A constant that holds a function is called by its name too, when no function has that name
 - the arguments convert like in any call (an `i32` doesn't go to an `i64` parameter here either), but a function value has no parameter names and no defaults
-- a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`
+- a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
 - C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
@@ -495,6 +495,7 @@ These stop the program, and write the message to the error output
 | `flag: assertion failed`, or the message of `assert(condition, message)` | 134 |
 | `flag: <text>` (from `panic`) | 134 |
 | `flag: call of an empty function value` | 134 |
+| `flag: an argument is an empty function value` | 134 |
 | `flag: out of memory` | 9 |
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.

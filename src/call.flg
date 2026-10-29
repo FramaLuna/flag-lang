@@ -417,6 +417,8 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     if foreign or comp.types[to].kind != Fat and not big(to):
         how = try passing(to, foreign, at)
     x := load(v).at
+    if comp.types[to].kind == Func and x.kind != Global:
+        try panic_if(op(W, "ceql", x, int_arg(0)), "an argument is an empty function value", at)
     return Pass{how, x, is_number(x)}
 
 func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize) -> Value|Fail:
