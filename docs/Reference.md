@@ -283,10 +283,11 @@ The rules
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
 - `not (x is T)` doesn't narrow anything
 - `while x is T:` narrows the body, not after the loop
+- `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
 
-`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union made only of void types compare too, and so do two such unions when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member, narrow first: `x is i32 and x == 3`.
+`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
 
 ## Functions and calls
 ### Which functions a call sees
@@ -363,8 +364,8 @@ The compiler calls some functions by their name, so you make your types work wit
 | You write | It calls |
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
-| `x[i] = v` | when `at` returns a value, `put(x, i, v)` |
-| `x[a:b]` | `slice(x, a, b)` |
+| `x[i] = v` | when `at` returns a value, `put(x, i, v)`, and `x[i] += v` is `put(x, i, at(x, i) + v)` |
+| `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
@@ -411,12 +412,14 @@ An operator has two parameters, its left side and its right side, there are no u
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
-`==` doesn't exist for structs until you declare it, the compiler doesn't compare them field by field. Text compares by content, and `sort` uses `<`.
+A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and slices compare element by element, text by content, and `sort` uses `<`, that is never made for you.
+
+`hash(x) -> u64` is made the same way when no `hash` takes the type, which is what maps need for their keys: `bool`, pointers and function values hash their bits, a struct mixes the hashes of its fields, a tagged union the tag and the member it holds, and an array its elements. A struct or a union with your own `==` doesn't get one, the made one would not agree with your `==`, so asking for it is an error that tells you to declare it: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`. A type that has no way to hash, like a `&list`, says so: `&list[i32] has no hash, declare one for it: func hash(x: &list[i32]) -> u64`.
 
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Assignments
-In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`.
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`. `x[i] += v` then reads the copy, adds and puts it back, and a copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map the `MapFull?` of `put` makes it a statement that drops an error, like `x[i] = v`.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -438,9 +441,28 @@ Over an array, a list or a slice the compiler writes the loop itself: it reads t
 
 ## Control flow
 ### switch
-Each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
+Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
 
-A switch over a union must handle every member or have a default: `this switch never handles i32 and has no default case`. Only void types can be cases, so a union with data needs a default.
+Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`.
+
+Over a tagged union the cases name its member types: one type, several separated by `,`, or a union `A|B`. A case runs when the union holds one of them, and inside it a local variable or a parameter has those types, like inside `if x is A|B:`. The default gets the members that no case names, and after the switch the variable has the types of the cases that don't leave, so `case null: return` leaves it without `null`. A subject that is not a variable is tested the same way, there is just nothing to narrow
+```flag
+func area(s: Circle|Square|null) -> f64:
+    switch s:
+    case Circle:
+        return 3.14 * s.r * s.r
+    case Square:
+        return s.side * s.side
+    case null:
+        return 0.0
+```
+- every type a case names is a member still there: `i32|f64 can never be null, so this case never runs`
+- each member goes in one case: `this switch already handles null above, each type goes in one case`
+- every member is handled or there is a default: `this switch never handles i32 and has no default case`, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
+- a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
+- a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
+
+A case written with something that only a type has (`*`, `&`, `?`, `|`, `->`, `func(...)` or a `,` between `[]`, like `Pair[i32, u8]`) is a type. Any other case is read as a type over a tagged union and as a value over anything else, so `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types there, and `limit`, `p.x` and `t[0]` are values in a switch over a number.
 
 `break` inside a switch leaves the loop around the switch.
 
@@ -453,10 +475,10 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It only sees the variables declared before the `defer`, and the ones it declares itself
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
 - It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
-- If the deferred call returns an error, the error is lost
+- It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
 
 ### with
-`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. What `close` returns is lost. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
+`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of File can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
 
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
@@ -467,11 +489,21 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
+An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FsError = CannotOpen|CannotRead`), or a struct with fields that say what happened
+```flag
+type error BadLine:
+    line: usize
+    why: &strview
+```
+An error with fields is a struct in everything else: it's built with `BadLine{3, "too long"}`, it can be generic, it prints as `BadLine{line = 3, why = too long}`, `==` compares its fields, and after `is BadLine` or in a `case BadLine:` its fields are there, `r.line`. A union can hold several errors with and without data, and `try`, `iferror` and `trust` treat them all alike. An alias cannot be marked as an error, the error is the type it names.
+
+When an error holds memory, like a `&str` field, whoever handles it frees it, and dropping it with `_ =` or `iferror` loses that memory: `-memory` tells you.
+
 An expression statement that leaves an error without handling it doesn't compile
 ```
 error: this statement drops an error: test it with is, pass it up with try or drop it with _ =
 ```
-If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. A `switch` over the value with a `case:` counts as handling its errors, the default takes them.
+If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. A `switch` over the value handles its errors, in the cases that name them or in the default.
 
 `try` gives the value and returns the errors from the function, so each error must be in the return type of the function
 - `try passes Bad up but this function returns i32`
@@ -495,7 +527,7 @@ These stop the program, and write the message to the error output
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice always has its two ends, there is no `s[2:]`. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
@@ -759,13 +791,10 @@ QBE is in `vendor/qbe` with four changes: its `main` returns instead of calling 
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
-- `m[k] += 1` on a map doesn't compile, `m[k]` is a value that can be `null`, write `m[k] = (m[k] ifnull 0) + 1`
 - `m[k] = v` on a fixed map gives the `MapFull?` of `put`, so write `trust put(m, k, v)` when you know there is room, or `try put(m, k, v)`
-- The errors of a deferred call and of `close` are lost
 - A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
-- A map compares its keys with `==` and finds them with `hash`. The `hash` of a type you made reads its bytes, so when your `==` compares something else (the text behind a `&strview` field), declare a `hash` for it too
 - `trust` on a real error gives garbage, and it can crash
 - A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
 - An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful

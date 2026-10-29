@@ -159,7 +159,7 @@ packed type Header:
     kind: u8
     size: u64 # starts at byte 1, and the struct takes 9 bytes instead of 16
 ```
-Structured types are values, assigning them or passing them to a function copies them.
+Structured types are values, assigning them or passing them to a function copies them. `==` compares them field by field, unless you declare your own (see [Operator overloading](#operator-overloading))
 ### Aliases
 An alias is another name for a type, the two names are the same type
 ```flag
@@ -178,7 +178,7 @@ type Num = i32|f32
 ```flag
 found: usize? = null
 ```
-You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if))
+You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if)), or with the cases of a `switch` (see [Switch](#switch))
 ```flag
 n: Num = 3
 if n is i32:
@@ -403,13 +403,22 @@ case 1..10, 100:
 case:
     print("other")
 ```
-It also works with text and with unions of void types, and a switch over a union must handle every type or have a default
+It also works with text. Over a union the cases name its types, and inside each case the variable has those types, like after an `is`. A switch over a union must handle every type or have a default, and the default gets the types that are left
 ```flag
+type enum Color = Red|Green|Blue
+type Shape = Circle|Square|null
+
 switch color:
 case Red:
     print("red")
 case Green, Blue:
     print("not red")
+
+switch shape:
+case Circle:
+    print("a circle of radius ", shape.r)
+case:
+    print("not a circle") # shape is Square|null here
 ```
 ### break, continue
 `break` leaves the loop and `continue` goes to the next round
@@ -436,7 +445,7 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove_file(path)` drops it on purpose.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
@@ -450,6 +459,7 @@ func main():
     with File{7}:
         print("using the file")
 ```
+A `close` that can return an error doesn't go in a `with`, the error would be lost, so call it yourself.
 
 ## Functions
 ```flag
@@ -629,7 +639,7 @@ for i in 0..1000000:
     with scratch():
         print("line " + i)
 ```
-Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it.
+Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
 ### Printing
@@ -689,11 +699,11 @@ ages["ana"] = 30 # the same as put(ages, "ana", 30)
 age := ages["ana"] # i32|null, the same as get(ages, "ana")
 if age is i32:
     print("ana is ", age)
-ages["bo"] = (ages["bo"] ifnull 0) + 1
+ages["bo"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers or anything that has `==` and `hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -716,7 +726,7 @@ func deeper():
 
 ## Error handling
 ### The error type
-An error is a void type declared with `type error`, and a function that can fail returns it in a union
+An error is a type declared with `type error`, and a function that can fail returns it in a union
 ```flag
 type error NotFound
 type error enum FileError = CannotOpen|CannotRead
@@ -727,12 +737,26 @@ func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
             return i
     return NotFound
 ```
-You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `try`, `trust`, or you ignore it on purpose with `_ =`
+An error can also carry data, it's declared with fields like a struct, and narrowing it gives you its fields
+```flag
+type error BadLine:
+    line: usize
+    why: &strview
+
+func check(line: usize, text: &strview) -> BadLine?:
+    if text.len > 80:
+        return BadLine{line, "too long"}
+    return null
+```
+You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `trust`, or you ignore it on purpose with `_ =`
 ```flag
 got := index_of(names, "ana")
 if got is usize:
     print("found at ", got)
 _ = index_of(names, "bo")
+problem := check(3, line)
+if problem is BadLine:
+    print("line ", problem.line, ": ", problem.why)
 ```
 ### try operator
 `try` gives you the value, and if there is an error it returns it from the function, so the function must return that error too
