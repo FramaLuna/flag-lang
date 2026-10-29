@@ -350,7 +350,7 @@ func main():
         print(n)
 ```
 `Bits[$$words]` holds the numbers from 0 to `words * 64 - 1`, in `words` 64 bit words.
-- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. A number past the room stops the program. `i` is a `usize`
+- `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. `i` is any integer, and one below 0 or past the room stops the program
 - `a or b` the union, `a and b` the intersection, `a - b` the numbers of `a` that are not in `b`, and `a xor b` the ones in only one of them
 - `a == b` and `a != b`
 - `complement(b)` the numbers that are not in `b`
