@@ -1551,16 +1551,17 @@ func indexed(n: usize, right: usize) -> Value|Fail:
         else:
             append(args, base)
         if kids(n) == 3:
-            end := literal(false, comp.types[t].count)
+            end := none
             if comp.nodes[kid(n, 2)].kind != Block:
                 end = try value(kid(n, 2), VOID)
-            elif not array:
+            elif array:
+                end = literal(false, comp.types[t].count)
+            else:
                 holder := t
                 place := addr
                 if comp.types[holder].kind == Ptr:
                     place = load(base).at
                     holder = comp.types[holder].elem
-                end = none
                 for i in 0..comp.types[holder].count:
                     f := comp.items[comp.types[holder].first + i]
                     if f.name == "len" and (comp.types[holder].kind == Struct or comp.types[holder].kind == Fat):
@@ -1717,10 +1718,6 @@ func equal(a: Value, b: Value, at: usize) -> Value|Fail:
                     eprint(NOTE, t.name, " has no == of its own, so == compares its fields, and this is field ", f.name)
                     show(comp.tokens[comp.nodes[field_node(a.type, f.name)].tok].at)
                     return Fail
-                if same.type != BOOL:
-                    eprint(ERR, "== of ", t.name, " compares its fields, and == over field ", f.name, " answers ", comp.types[same.type].name)
-                    show(at)
-                    return Fail
                 l_next := label()
                 branch(load(same).at, l_next, l_done)
                 open_block(l_next)
@@ -1736,10 +1733,6 @@ func equal(a: Value, b: Value, at: usize) -> Value|Fail:
             branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
             open_block(l_arm)
             same := try binary("==", Value{type = m, at = payload(a.at, m), mem = true}, Value{type = m, at = payload(b.at, m), mem = true}, at)
-            if same.type != BOOL:
-                eprint(ERR, "== of ", t.name, " compares the member it holds, and == over ", comp.types[m].name, " answers ", comp.types[same.type].name)
-                show(at)
-                return Fail
             add(Ins{op = "storew", a = load(same).at, b = result})
             jump(l_done)
             open_block(l_next)
