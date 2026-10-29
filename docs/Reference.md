@@ -418,7 +418,7 @@ An operator has two parameters, its left side and its right side, there are no u
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Assignments
-In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`.
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`, with `v` taking its type from what `x[i]` gives. So `m["a"] = show` picks the overload of `show` that the map holds.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
