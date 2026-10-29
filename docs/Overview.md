@@ -159,7 +159,7 @@ packed type Header:
     kind: u8
     size: u64 # starts at byte 1, and the struct takes 9 bytes instead of 16
 ```
-Structured types are values, assigning them or passing them to a function copies them.
+Structured types are values, assigning them or passing them to a function copies them. `==` compares them field by field, unless you declare your own (see [Operator overloading](#operator-overloading))
 ### Aliases
 An alias is another name for a type, the two names are the same type
 ```flag
@@ -702,7 +702,7 @@ ages["bo"] = (ages["bo"] ifnull 0) + 1
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers or anything that has `==` and `hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag

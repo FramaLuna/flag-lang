@@ -139,9 +139,9 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty. The keys and values are not released, free them first when they own memory
 - `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
-- `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key), one for text and one for any other type that reads its bytes
+- `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
 
-A key needs `==` and `hash`. The hash of the bytes is right for `bool`, enums and pointers. A struct needs your `==`, and then declare its `hash` too, so that two keys that are `==` give the same hash.
+A key needs `==` and `hash`. Numbers, text, `bool`, enums, pointers, arrays, and structs and unions of them have both. A struct with your own `==` needs your `hash` too, so that two keys that are `==` give the same hash, and using it as a key without one is an error: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`.
 
 A float `nan` is not `==` to itself, so as a key it's never found again, and every `put` of it adds one more entry.
 

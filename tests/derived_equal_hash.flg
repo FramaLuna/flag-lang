@@ -1,0 +1,91 @@
+type Point:
+    x: i32
+    y: i32
+
+type Named:
+    name: &strview
+    at: Point
+    weight: f64
+
+type Record:
+    code: u32
+    id: i32 @code
+
+packed type Header:
+    kind: u8
+    size: u64
+
+type error Bad:
+    line: usize
+
+type enum Color = Red|Green|Blue
+
+type Shape = Point|Named|null
+
+type Node:
+    value: i32
+
+func copy(text: &strview) -> &strview:
+    out: &str = text
+    return out
+
+func main():
+    a := Named{"ana", {1, 2}, 0.5}
+    b := Named{copy("ana"), {1, 2}, 0.5}
+    c := Named{"ana", {1, 3}, 0.5}
+    print(a == b, " ", a != b, " ", a == c, " ", Point{1, 2} == Point{1, 2})
+    print(Record{7} == Record{7}, " ", Header{1, 9} == Header{1, 9}, " ", Header{1, 9} == Header{2, 9})
+    s: Shape = Point{1, 2}
+    t: Shape = Point{1, 2}
+    u: Shape = null
+    v: Shape = a
+    w: Shape = b
+    print(s == t, " ", s == u, " ", u == u, " ", v == w, " ", s == v)
+    e1: i32|Bad = Bad{3}
+    e2: i32|Bad = Bad{3}
+    e3: i32|Bad = 3
+    print(e1 == e2, " ", e1 == e3, " ", Bad{1} == Bad{2})
+    ps := [Point{1, 2}, Point{3, 4}]
+    qs := [Point{1, 2}, Point{3, 4}]
+    print(ps == qs, " ", Red == Red)
+    l: &list[Point]
+    defer free(l)
+    append(l, Point{5, 6})
+    append(l, Point{7, 8})
+    print(find(l, Point{7, 8}), " ", contains(l, Point{9, 9}))
+    n1 := Node{1}
+    n2 := Node{1}
+    print(ptr(n1) == ptr(n1), " ", ptr(n1) == ptr(n2))
+    byname: &map[Named, i32]
+    defer free(byname)
+    byname[a] = 10
+    byname[c] = 20
+    print(byname[b], " ", byname[c], " ", byname.len)
+    shapes: &map[Shape, &strview]
+    defer free(shapes)
+    shapes[s] = "point"
+    shapes[u] = "nothing"
+    shapes[w] = "named"
+    print(shapes[t], " ", shapes[v], " ", shapes[null], " ", shapes.len)
+    colors: &map[Color, i32] = {Red: 1, Blue: 3}
+    defer free(colors)
+    print(colors[Red], " ", colors[Green], " ", colors[Blue])
+    flags := {true: "yes", false: "no"}
+    defer free(flags)
+    print(flags[true], " ", flags[false])
+    nodes: &map[*Node, i32]
+    defer free(nodes)
+    nodes[ptr(n1)] = 1
+    print(nodes[ptr(n1)], " ", nodes[ptr(n2)])
+    grid: &map[array[u8, 4], i32]
+    defer free(grid)
+    home: array[u8, 4] = [127, 0, 0, 1]
+    other: array[u8, 4] = [10, 0, 0, 1]
+    grid[home] = 80
+    print(grid[home], " ", grid[other])
+    errs: &map[i32|Bad, i32]
+    defer free(errs)
+    errs[e1] = 5
+    print(errs[e2], " ", errs[e3])
+    fixed: fixmap[Point, i32, 2] = {Point{1, 1}: 11}
+    print(fixed[Point{1, 1}])

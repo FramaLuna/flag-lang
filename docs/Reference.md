@@ -287,7 +287,7 @@ The rules
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
 
-`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union made only of void types compare too, and so do two such unions when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member, narrow first: `x is i32 and x == 3`.
+`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
 
 ## Functions and calls
 ### Which functions a call sees
@@ -412,7 +412,9 @@ An operator has two parameters, its left side and its right side, there are no u
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
-`==` doesn't exist for structs until you declare it, the compiler doesn't compare them field by field. Text compares by content, and `sort` uses `<`.
+A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and slices compare element by element, text by content, and `sort` uses `<`, that is never made for you.
+
+`hash(x) -> u64` is made the same way when no `hash` takes the type, which is what maps need for their keys: `bool`, pointers and function values hash their bits, a struct mixes the hashes of its fields, a tagged union the tag and the member it holds, and an array its elements. A struct or a union with your own `==` doesn't get one, the made one would not agree with your `==`, so asking for it is an error that tells you to declare it: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`. A type that has no way to hash, like a `&list`, says so: `&list[i32] has no hash, declare one for it: func hash(x: &list[i32]) -> u64`.
 
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
@@ -785,7 +787,6 @@ Things that work in a way that may surprise you, so be aware
 - A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
-- A map compares its keys with `==` and finds them with `hash`. The `hash` of a type you made reads its bytes, so when your `==` compares something else (the text behind a `&strview` field), declare a `hash` for it too
 - `trust` on a real error gives garbage, and it can crash
 - A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
 - An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
