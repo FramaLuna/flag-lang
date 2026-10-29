@@ -4,7 +4,7 @@ Every function of the standard library, module by module.
 
 - [How to read this](#how-to-read-this)
 - [core](#core)
-- [fs](#fs), files and folders
+- [fs](#fs), whole files, folders and paths
 - [os](#os), the program, other programs and the time
 - [json](#json)
 - [net](#net), TCP sockets
@@ -37,8 +37,7 @@ The functions that take an index also have a last parameter `place: &strview = @
 The arguments of the program are `args()` of [os](#os).
 
 ### Files
-A `File` is an open file. The standard ones are always open
-- `stdin`, `stdout` and `stderr`, the standard input, output and error
+A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
 - when 64 KiB are waiting, when you call `flush` or `close`, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
@@ -52,7 +51,7 @@ The functions
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too
 - `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File)` writes now what is waiting
-- `close(f: File) -> FsError?` writes what is waiting and closes the file. The error is the first write that failed since the file was opened, so close yourself the files you write and check it: `with file:` closes it too, but loses that error
+- `close(f: File) -> FsError?` writes what is waiting and closes the file. The error is the first write that failed since the file was opened, so close a file you write yourself and check what it gives: `with file:` closes it too, but loses that error
 - `File{fd}` is the file of a descriptor that you got from C
 
 ```flag
@@ -76,7 +75,7 @@ A function that fails because the system said no gives an `FsError`
 ```flag
 type error FsError:
     action: &strview # what failed: open, create, read, write, list, make, remove...
-    path: &strview # the path you gave, empty for a File
+    path: &strview # the path you gave, empty for the standard files
     reason: &strview # what the system says, temporary
 ```
 and printing it says all of it: `cannot open notes.txt: No such file or directory`.

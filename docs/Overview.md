@@ -793,8 +793,8 @@ priv func foo():
 In a file without a module, priv hides the name from every other file.
 
 ## The standard library
-The functions of text, lists and maps are always there. The rest comes in modules that you get with `use`, without adding files
-- `fs`, files and folders
+The functions of text, lists, maps and files (`open`, `read_line`, `write`...) are always there. The rest comes in modules that you get with `use`, without adding files
+- `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading JSON
 - `net`, TCP sockets
