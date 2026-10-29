@@ -85,7 +85,7 @@ func gen_program(check: bool) -> Fail?:
                 saved := comp.frame
                 comp.frame = comp.binds.len
                 for t in I8..USIZE + 1:
-                    if try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0 and problem.len == 0:
+                    if problem.len == 0 and try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0:
                         problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
                     comp.binds.len = comp.frame
                 comp.frame = saved
@@ -1135,6 +1135,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if node.kind == Brace:
             t = try resolve(n + 1)
             c = node_end(n + 1)
+        elif comp.types[want].kind == Union:
+            structs: &list[usize]
+            for m in members(want):
+                if comp.types[m].kind == Struct:
+                    append(structs, m)
+            if structs.len == 1:
+                t = structs[0]
         ty := comp.types[t]
         if node.kind == Fill and ty.kind != Struct and ty.kind != Array:
             eprint(ERR, "a {...} without a type needs a place that gives it one: p: Point = {1, 2}")
@@ -2175,9 +2182,9 @@ func pointers(t: usize) -> u64:
     ty := comp.types[t]
     if ty.kind == Ptr or ty.kind == Fat or ty.kind == Func:
         return 1
-    mask: u64 = 0
     if ty.size < 8:
-        return mask
+        return 0
+    mask: u64 = 0
     if ty.kind == Array:
         inner := pointers(ty.elem)
         i: usize = 0
