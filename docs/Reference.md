@@ -475,10 +475,10 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It only sees the variables declared before the `defer`, and the ones it declares itself
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
 - It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
-- If the deferred call returns an error, the error is lost
+- It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
 
 ### with
-`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. What `close` returns is lost. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
+`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of File can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
 
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
@@ -783,7 +783,6 @@ QBE is in `vendor/qbe` with four changes: its `main` returns instead of calling 
 Things that work in a way that may surprise you, so be aware
 - `m[k] += 1` on a map doesn't compile, `m[k]` is a value that can be `null`, write `m[k] = (m[k] ifnull 0) + 1`
 - `m[k] = v` on a fixed map gives the `MapFull?` of `put`, so write `trust put(m, k, v)` when you know there is room, or `try put(m, k, v)`
-- The errors of a deferred call and of `close` are lost
 - A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first

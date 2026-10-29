@@ -445,7 +445,7 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove_file(path)` drops it on purpose.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
@@ -459,6 +459,7 @@ func main():
     with File{7}:
         print("using the file")
 ```
+A `close` that can return an error doesn't go in a `with`, the error would be lost, so call it yourself.
 
 ## Functions
 ```flag

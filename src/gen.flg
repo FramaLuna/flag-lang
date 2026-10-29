@@ -315,19 +315,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 show(source(c))
                 return Fail
             comp.at = source(c)
-            v := try gen(c, VOID)
-            o := text(c)
-            if v.type != VOID and comp.nodes[c].kind != Call and comp.nodes[c].kind != Assign and o != "try" and o != "trust":
-                hint: &strview
-                if o == "==":
-                    hint = ", an assignment is written with one ="
-                eprint(ERR, "this statement makes a value and never uses it", hint)
-                show(source(c))
-                return Fail
-            if fails(v.type):
-                eprint(ERR, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
-                show(source(c))
-                return Fail
+            try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
             c = node_end(c)
         if comp.live:
             try run_defers(mark)
@@ -2149,14 +2137,35 @@ func run_defers(from: usize) -> Fail?:
         aside := set_aside(d.visible)
         stays := comp.vars.len
         if d.subject.type != VOID:
+            at := comp.tokens[comp.nodes[d.node].tok].at
             closing: &list[Value]
             append(closing, d.subject)
-            try invoke("close", closing, comp.tokens[comp.nodes[d.node].tok].at)
+            closed := try invoke("close", closing, at)
+            if fails(closed.type):
+                eprint(ERR, "close of ", comp.types[d.subject.type].name, " can fail, and with would drop the error: call close yourself where you can handle it")
+                show(at)
+                return Fail
         else:
-            try gen(d.node, VOID)
+            try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it")
         for k in stays..comp.vars.len:
             append(aside, comp.vars[k])
         put_back(d.visible, aside)
+    return null
+
+func statement(n: usize, dropped: &strview) -> Fail?:
+    v := try gen(n, VOID)
+    o := text(n)
+    if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
+        hint: &strview
+        if o == "==":
+            hint = ", an assignment is written with one ="
+        eprint(ERR, "this statement makes a value and never uses it", hint)
+        show(source(n))
+        return Fail
+    if fails(v.type):
+        eprint(ERR, dropped)
+        show(source(n))
+        return Fail
     return null
 
 func set_aside(visible: usize) -> &list[Local]:
