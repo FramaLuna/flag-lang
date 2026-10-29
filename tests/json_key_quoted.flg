@@ -1,0 +1,21 @@
+use json
+
+func main():
+    d := parse("{\"a\": \"x\", \"list\": [\"p\", \"q\", {\"in\": \"v\"}, 3], \"b\\u00e9\" : 1}")
+    if d is NotJson:
+        return
+    defer free(d)
+    for c in children(d, 0):
+        print("[", key(d, c), "] ", raw(d, c))
+    for c in children(d, get(d, 0, "list")):
+        print("[", key(d, c), "] ", raw(d, c))
+    print("[", key(d, 0), "] [", key(d, null), "] [", key(d, get(d, 0, "list.in")), "]")
+    out: &str
+    defer free(out)
+    out += "{\"say\": " + quoted("\"hi\"\\ \r\n\t\x01\x1fé") + ", \"n\": " + 2 + "}"
+    print(out)
+    back := parse(out)
+    if back is Document:
+        print(text(back, get(back, 0, "say")) == "\"hi\"\\ \r\n\t\x01\x1fé", " ", integer(back, get(back, 0, "n")))
+        free(back)
+    print(quoted(""), " ", quoted("plain"))
