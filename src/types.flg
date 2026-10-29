@@ -167,7 +167,7 @@ func has(l: &list[usize], v: usize) -> bool:
 func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     flat: &list[usize]
     for p in parts:
-        ty := comp.types[p]
+        ty := comp.types[try typed(p, at)]
         spread: &list[usize]
         if ty.kind == kind:
             for i in 0..ty.count:
@@ -201,6 +201,16 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len})
     lay_out(made)
     return made
+
+func typed(t: usize, at: usize) -> usize|Fail:
+    if t == EMPTYARRAY or t == EMPTYMAP:
+        example: &strview = "x: &list[i32] = []"
+        if t == EMPTYMAP:
+            example = "x: &map[&strview, i32] = {}"
+        eprint(ERR, "no type can be made from ", comp.types[t].name, ", an empty literal has no type of its own: give it one first, like ", example)
+        show(at)
+        return Fail
+    return t
 
 func lay_out(t: usize):
     size: usize = 0
@@ -268,9 +278,9 @@ func resolve(n: usize) -> usize|Fail:
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Var:
-                append(parts, try resolve(c + 1))
+                append(parts, try typed(try resolve(c + 1), tok.at))
             else:
-                ret = try resolve(c)
+                ret = try typed(try resolve(c), tok.at)
             c = node_end(c)
         return func_of(parts, ret)
     if tok.kind == Generic:
@@ -315,7 +325,7 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             eprint(ERR, "an array needs elements with a size, bytes is a run of unknown length: array[u8, ", args[1].n, "] holds that many bytes")
             show(tok.at)
             return Fail
-        return array_of(args[0].type, args[1].n)
+        return array_of(try typed(args[0].type, tok.at), args[1].n)
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
@@ -400,6 +410,8 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         eprint(ERR, sym.name, " expects ", generics, " type parameters but got ", args.len)
         show(at)
         return Fail
+    for a in args:
+        try typed(a.type, at)
     if kind == Void:
         return add_type(Type{kind = Void, name = view(key), align = 1, decl = decl, error = sym.error})
     saved := comp.frame

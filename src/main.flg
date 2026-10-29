@@ -22,6 +22,7 @@ type File:
     code: &str
     start: usize
     module: &strview
+    library: bool
 
 type Trust:
     from: usize
@@ -212,6 +213,7 @@ context comp:
     staying: usize
     ret: usize
     dest: Arg
+    blame: usize
     live: bool
     inst: usize
     asked: bool
@@ -402,14 +404,14 @@ func main() -> i32:
     core: &str = join(lib, "core.flg")
     loaded: &list[&strview]
     append(loaded, real_path(view(core)))
-    if add_file(core, source(view(core), texts)) is Fail:
+    if add_file(core, source(view(core), texts), true) is Fail:
         return 1
     for input in inputs:
         real := real_path(input)
         if not has_text(loaded, real):
             append(loaded, real)
             path: &str = input
-            if add_file(path, source(input, texts)) is Fail:
+            if add_file(path, source(input, texts), false) is Fail:
                 return 1
     done: usize = 0
     while done < comp.uses.len:
@@ -420,7 +422,7 @@ func main() -> i32:
             known = known or f.module == u.module
         path: &str = join(lib, u.module + ".flg")
         if not known and not has_text(loaded, real_path(view(path))) and exists(view(path)):
-            if add_file(path, source(view(path), texts)) is Fail:
+            if add_file(path, source(view(path), texts), true) is Fail:
                 return 1
             known = comp.files[comp.files.len - 1].module == u.module
         if not known:
@@ -555,7 +557,7 @@ func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     out: &str = code
     return out
 
-func add_file(path: &str, code: &str|FsError) -> Fail?:
+func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
     if code is &str:
         start: usize = 0
         if comp.files.len > 0:
@@ -570,13 +572,20 @@ func add_file(path: &str, code: &str|FsError) -> Fail?:
         for f in comp.files:
             if f.module == view(own):
                 own += "." + comp.files.len
-        append(comp.files, File{path, code, start, view(own)})
+        append(comp.files, File{path, code, start, view(own), library})
         try lex(comp.files.len - 1)
         return parse()
     eprint(ERR, "cannot read ", path)
     return Fail
 
 func show(at: usize):
+    if comp.blame != 0:
+        call := comp.blame
+        comp.blame = 0
+        if call != at:
+            show(call)
+            inst := comp.insts[comp.inst]
+            eprint(NOTE, "it fails here, inside ", text(inst.node), ", with ", bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]))
     f := comp.files[file_of(at)]
     bytes := items(f.code)
     local := at - f.start

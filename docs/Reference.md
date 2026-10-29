@@ -228,7 +228,7 @@ When you pass an argument, the value is converted only if it's
 - the same type
 - a `&str` going to a `&strview`, or a `&list[T]` going to a `&slice[T]`
 - a `*array[T, N]` going to a fat pointer of `T` (a list, a slice, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
-- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error
+- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
 - a value going to a union that has its type, or a union going to a bigger union
@@ -386,6 +386,8 @@ For arrays, lists, slices and text the compiler writes `x[i]` with an integer it
 `$$n` is a number, it comes from an array size (`array[$T, $$n]`) or from a type with a number parameter, and inside the function it's an integer literal.
 
 Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`), and it cannot have a nested field, its `$T` would not reach the inner type: declare that type on its own. A generic that makes bigger types with every call doesn't compile: `f(x: $T)` calling `f(ptr(x))` gives `instancing f never ends, each call builds a bigger type than the last`, and a type that grows the same way gives `type Pair never ends, each instance builds a bigger one than the last`.
+
+An instance is checked when a call makes it, so an error inside it comes with a note at that call: `the find that fails was made for this call, with $T = Mark`. When the generic is in the library the error points at your call instead, the one that led into the library, and a note shows the line inside it: `it fails here, inside less, with $T = P`.
 
 ### where
 A `where` condition can be
@@ -769,6 +771,5 @@ Things that work in a way that may surprise you, so be aware
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - A map compares its keys with `==` and finds them with `hash`. The `hash` of a type you made reads its bytes, so when your `==` compares something else (the text behind a `&strview` field), declare a `hash` for it too
 - `trust` on a real error gives garbage, and it can crash
-- An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

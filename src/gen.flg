@@ -130,18 +130,26 @@ func gen_from(first: usize) -> usize|Fail:
     i := first
     while i < comp.insts.len:
         inst := comp.insts[i]
-        if gen_func(i) is Fail:
-            if inst.at != 0 and inst.count > 0:
-                given: &str
-                for k in 0..inst.count:
-                    if k > 0:
-                        given += ", "
-                    given += comp.inst_binds[inst.binds + k].name + " = " + brief(arg_name(comp.inst_binds[inst.binds + k]))
-                eprint(NOTE, "the ", text(inst.node), " that fails was made for this call, with ", given)
+        library := inst.at != 0 and inst.count > 0 and comp.files[file_of(comp.tokens[comp.nodes[inst.node].tok].at)].library
+        if library:
+            comp.blame = inst.at
+        failed := gen_func(i) is Fail
+        comp.blame = 0
+        if failed:
+            if inst.at != 0 and inst.count > 0 and not library:
+                eprint(NOTE, "the ", text(inst.node), " that fails was made for this call, with ", bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]))
                 show(inst.at)
             return Fail
         i += 1
     return i
+
+func bindings(binds: &slice[Item]) -> &str:
+    given: &str
+    for b in binds:
+        if given.len > 0:
+            given += ", "
+        given += b.name + " = " + brief(arg_name(b))
+    return given
 
 func brief(name: &strview) -> &strview:
     if name.len > 100:
@@ -194,10 +202,19 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         eprint(ERR, "instancing ", text(f), " never ends, each call builds a bigger type than the last")
         show(comp.tokens[comp.nodes[f].tok].at)
         return Fail
+    site := at
+    if comp.blame != 0:
+        site = comp.blame
     ret: usize = VOID
     c := kid(f, params(f))
     if c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
-        ret = try resolve(c)
+        made := resolve(c)
+        if made is Fail:
+            if site == at and at != 0 and comp.binds.len > comp.frame:
+                eprint(NOTE, "the ", text(f), " that fails was made for this call, with ", bindings(comp.binds[comp.frame:comp.binds.len]))
+                show(at)
+            return Fail
+        ret = made
     export := false
     s := first_sym(text(f))
     while s != 0:
@@ -212,7 +229,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         else:
             name += "op"
         name += "." + comp.insts.len
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, at, export, depth})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site, export, depth})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
