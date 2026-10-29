@@ -638,7 +638,7 @@ for i in 0..1000000:
     with scratch():
         print("line " + i)
 ```
-Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it.
+Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
 ### Printing

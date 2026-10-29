@@ -365,7 +365,7 @@ The compiler calls some functions by their name, so you make your types work wit
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
 | `x[i] = v` | when `at` returns a value, `put(x, i, v)` |
-| `x[a:b]` | `slice(x, a, b)` |
+| `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
@@ -515,7 +515,7 @@ These stop the program, and write the message to the error output
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice always has its two ends, there is no `s[2:]`. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 

@@ -767,10 +767,16 @@ func unary() -> Fail?:
         elif peek("["):
             wrap(start, Index, comp.pos)
             comp.pos += 1
-            try expr(1)
+            if peek(":"):
+                finish(begin(Block, comp.pos))
+            else:
+                try expr(1)
             if peek(":"):
                 comp.pos += 1
-                try expr(1)
+                if peek("]"):
+                    finish(begin(Block, comp.pos))
+                else:
+                    try expr(1)
             try expect("]")
             finish(start)
         else:

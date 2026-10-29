@@ -53,7 +53,7 @@ The functions that take an index also have a last parameter `place: &strview = @
 ### Lists and slices
 A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
 - `s[i]` the element `i`, you can also assign to it. A negative `i` counts from the end, and out of bounds stops the program
-- `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops
+- `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for x in s`, `for i, x in s` and `for x in reverse s`
 - `==` compares element by element, and `print` writes `[1, 2, 3]`
 
@@ -84,7 +84,7 @@ Two arrays of the same type work with the operators element by element, and give
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
 - `s[i] -> u8` the byte `i`, a negative `i` counts from the end
-- `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view
+- `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A first byte with all the bytes that it announces is one character, and a byte that is not part of one comes alone, so text that is not UTF-8 gives its wrong bytes one by one. Both directions give the same pieces
 - `==` and `<` compare the bytes
 - `"a" + x` joins the text with anything that can be printed, temporary

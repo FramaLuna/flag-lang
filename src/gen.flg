@@ -1511,7 +1511,9 @@ func indexed(n: usize, right: usize) -> Value|Fail:
     base := try value(n + 1, VOID)
     if comp.types[base.type].kind == Ptr and comp.types[comp.types[base.type].elem].kind == Fat:
         base = Value{type = comp.types[base.type].elem, at = load(base).at, mem = true, place = true}
-    index := try value(kid(n, 1), VOID)
+    index := literal(false, 0)
+    if comp.nodes[kid(n, 1)].kind != Block:
+        index = try value(kid(n, 1), VOID)
     t := base.type
     addr := base.at
     if comp.types[t].kind == Ptr and comp.types[comp.types[t].elem].kind == Array:
@@ -1563,10 +1565,36 @@ func indexed(n: usize, right: usize) -> Value|Fail:
             append(args, Value{type = pointer(t), at = addr})
         else:
             append(args, base)
-        append(args, index)
         if kids(n) == 3:
-            append(args, try value(kid(n, 2), VOID))
+            end := literal(false, comp.types[t].count)
+            if comp.nodes[kid(n, 2)].kind != Block:
+                end = try value(kid(n, 2), VOID)
+            elif not array:
+                holder := t
+                place := addr
+                if comp.types[holder].kind == Ptr:
+                    place = load(base).at
+                    holder = comp.types[holder].elem
+                end = none
+                for i in 0..comp.types[holder].count:
+                    f := comp.items[comp.types[holder].first + i]
+                    if f.name == "len" and (comp.types[holder].kind == Struct or comp.types[holder].kind == Fat):
+                        end = load(Value{type = f.type, at = offset(place, f.n), mem = true})
+                if end.type == VOID:
+                    eprint(ERR, "this slice has no end, so it ends at the len of ", comp.types[holder].name, ", and it has no field len: write the end")
+                    show(tok.at)
+                    return Fail
+                if integer(index.type):
+                    wide: usize = USIZE
+                    if index.neg or not index.lit and comp.types[index.type].kind == Int:
+                        wide = I64
+                    end = try convert_number(end, wide, tok.at)
+                    if not index.lit:
+                        index = try convert_number(index, wide, tok.at)
+            append(args, index)
+            append(args, end)
             return invoke("slice", args, tok.at)
+        append(args, index)
         reached := comp.body.len
         p := try invoke("at", args, tok.at)
         if comp.types[p.type].kind != Ptr and right == 0:
