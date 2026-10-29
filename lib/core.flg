@@ -1141,8 +1141,9 @@ priv func slots(m: &map[$K, $V]) -> &slice[slot[$K, $V]]:
 priv func kept_hash(key: $K) -> u64:
     return hash(key) or 0x8000_0000_0000_0000 # 0 marks a free slot
 
-priv func locate(m: &map[$K, $V], key: $K, h: u64) -> usize:
+priv func locate(m: &map[$K, $V], key: $K) -> usize:
     table := slots(m)
+    h := kept_hash(key)
     i := usize(h) and m.cap - 1
     while table[i].hash != 0 and (table[i].hash != h or table[i].key != key):
         i = (i + 1) and m.cap - 1
@@ -1165,26 +1166,29 @@ func put(m: *&map[$K, $V], key: $K) -> *$V:
         table := slots(m.*)
         for s in old:
             if s.hash != 0:
-                table[locate(m.*, s.key, s.hash)] = s
+                j := usize(s.hash) and cap - 1
+                while table[j].hash != 0:
+                    j = (j + 1) and cap - 1
+                table[j] = s
         free(ptr(old.*))
-    h := kept_hash(key)
-    i := locate(m.*, key, h)
+    i := locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
-        table[i] = slot[$K, $V]{hash = h, key = key}
+        table[i] = slot[$K, $V]{hash = kept_hash(key), key = key}
         m.len += 1
     return ptr(table[i].value)
 
 func get(m: &map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
         return null
-    s := slots(m)[locate(m, key, kept_hash(key))]
-    if s.hash == 0:
+    table := slots(m)
+    i := locate(m, key)
+    if table[i].hash == 0:
         return null
-    return s.value
+    return table[i].value
 
 func contains(m: &map[$K, $V], key: $K) -> bool:
-    return m.cap > 0 and slots(m)[locate(m, key, kept_hash(key))].hash != 0
+    return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func at(m: &map[$K, $V], key: $K) -> $V|null:
     return get(m, key)
@@ -1193,7 +1197,7 @@ func remove(m: *&map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
         return null
     table := slots(m.*)
-    hole := locate(m.*, key, kept_hash(key))
+    hole := locate(m.*, key)
     if table[hole].hash == 0:
         return null
     value := table[hole].value
