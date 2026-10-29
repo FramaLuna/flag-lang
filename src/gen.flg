@@ -82,9 +82,13 @@ func gen_program(check: bool) -> Fail?:
             if text(f) != "at" and whole:
                 problem += "for over " + shown + " belongs to the language, " + text(f) + " cannot be declared for it"
             elif text(f) == "at" and params(f) == 2 and (whole or text(subject) == "str" or text(subject) == "strview"):
-                id := get(comp.type_ids, text(kid(f, 1) + 1))
-                if id is usize and integer(id):
-                    problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+                saved := comp.frame
+                comp.frame = comp.binds.len
+                for t in I8..USIZE + 1:
+                    if try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0 and problem.len == 0:
+                        problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+                    comp.binds.len = comp.frame
+                comp.frame = saved
             if problem.len > 0:
                 eprint(ERR, problem)
                 show(comp.tokens[comp.nodes[f].tok].at)
@@ -288,6 +292,10 @@ func gen_func(i: usize) -> Fail?:
     target := first
     if comp.types[first].kind == Ptr:
         target = comp.types[first].elem
+    integral := false
+    if name == "at":
+        for t in I8..USIZE + 1:
+            integral = integral or accepts(second, Value{type = usize(t)}) >= 0
     problem: &str
     if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
         if name == "=" and inst.ret != target:
@@ -300,7 +308,7 @@ func gen_func(i: usize) -> Fail?:
             problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
         elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
             problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
-    elif name == "at" and integer(second) and (sequence(target) or textual(target) or comp.types[target].kind == Array):
+    elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array):
         problem += "x[i] with an integer on " + comp.types[first].name + " belongs to the language, at cannot be declared for it"
     elif (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
         problem += "for over " + comp.types[first].name + " belongs to the language, " + name + " cannot be declared for it"
