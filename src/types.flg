@@ -166,22 +166,23 @@ func has(l: &list[usize], v: usize) -> bool:
 
 func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     flat: &list[usize]
+    defer free(flat)
+    spread: &list[usize]
+    defer free(spread)
     for p in parts:
         ty := comp.types[try typed(p, at)]
-        spread: &list[usize]
+        spread.len = 0
         if ty.kind == kind:
             for i in 0..ty.count:
                 append(spread, comp.items[ty.first + i].type)
         else:
             append(spread, p)
         for m in spread:
-            if not has(flat, m):
-                append(flat, m)
-                j := flat.len - 1
-                while j > 0 and flat[j - 1] > m:
-                    flat[j] = flat[j - 1]
-                    flat[j - 1] = m
-                    j -= 1
+            j := flat.len
+            while j > 0 and flat[j - 1] > m:
+                j -= 1
+            if j == 0 or flat[j - 1] != m:
+                insert(flat, j, m)
     if flat.len == 1:
         return flat[0]
     separator: &strview = "|"
@@ -194,6 +195,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
         key += enclosed(m)
     id := get(comp.type_ids, view(key))
     if id is usize:
+        free(key)
         return id
     first := comp.items.len
     for m in flat:

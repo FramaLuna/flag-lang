@@ -1247,8 +1247,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 show(tok.at)
                 return Fail
             tags: &list[usize]
+            asked := members(wanted)
             for m in members(v.type):
-                if has(members(wanted), m):
+                if has(asked, m):
                     append(tags, m)
             if tags.len == 0:
                 eprint(ERR, comp.types[v.type].name, " can never be ", comp.types[wanted].name, ", so this is always false")
@@ -2175,6 +2176,8 @@ func pointers(t: usize) -> u64:
     if ty.kind == Ptr or ty.kind == Fat or ty.kind == Func:
         return 1
     mask: u64 = 0
+    if ty.size < 8:
+        return mask
     if ty.kind == Array:
         inner := pointers(ty.elem)
         i: usize = 0
