@@ -135,6 +135,8 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`.
 
+Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`.
+
 ### Structs
 The fields are in the order you write them, each one aligned to its own size, and the size of the struct is rounded up to its biggest alignment, like C does
 ```flag
@@ -767,7 +769,6 @@ Things that work in a way that may surprise you, so be aware
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - A map compares its keys with `==` and finds them with `hash`. The `hash` of a type you made reads its bytes, so when your `==` compares something else (the text behind a `&strview` field), declare a `hash` for it too
 - `trust` on a real error gives garbage, and it can crash
-- A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
 - An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

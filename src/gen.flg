@@ -243,15 +243,20 @@ func gen_func(i: usize) -> Fail?:
         passed := cls(t)
         if inst.export:
             passed = try passing(t, true, comp.at)
-        elif comp.types[t].kind == Fat:
+        elif comp.types[t].kind == Fat or big(t):
             passed = L
         append(comp.passes, Pass{passed, p, comp.numbers[usize(p.n) - 1]})
-        addr := p
-        if not aggregate(t) or comp.types[t].kind == Fat:
-            addr = alloc(t)
-            store(t, Value{type = t, at = p}, addr)
-        append(comp.vars, Local{text(c), t, addr, 0, comp.nodes[c].tok, 0, false})
-        mention(text(c), addr)
+        append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
+    comp.dest = Arg{}
+    if big(inst.ret) and not inst.export:
+        comp.dest = temp()
+        append(comp.passes, Pass{L, comp.dest, false})
+    for k in 0..params(f):
+        given := comp.vars[k]
+        if comp.passes[made.params + k].cls < AGG:
+            comp.vars[k].addr = alloc(given.type)
+            store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
+        mention(given.name, comp.vars[k].addr)
     name := text(f)
     first: usize = VOID
     second: usize = VOID
@@ -293,9 +298,9 @@ func gen_func(i: usize) -> Fail?:
     back: u32 = 0
     if inst.ret != VOID and inst.export:
         back = try passing(inst.ret, true, comp.at)
-    elif inst.ret != VOID:
+    elif inst.ret != VOID and comp.dest.kind == Empty:
         back = cls(inst.ret)
-    close_proc(made, back, params(f))
+    close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
     comp.binds.len = comp.frame
     return null
 
@@ -1942,11 +1947,15 @@ func tag_test(v: Value, tags: &list[usize]) -> Arg:
     return result
 
 func leave(v: Value, at: usize) -> Fail?:
-    back := try convert(v, comp.ret, Arg{}, at)
-    result := load(back).at
-    if aggregate(comp.ret) and comp.defers.len > 0:
-        result = alloc(comp.ret)
-        store(comp.ret, back, result)
+    result := Arg{}
+    if comp.dest.kind != Empty:
+        try assign(comp.dest, comp.ret, v, at)
+    else:
+        back := try convert(v, comp.ret, Arg{}, at)
+        result = load(back).at
+        if aggregate(comp.ret) and comp.defers.len > 0:
+            result = alloc(comp.ret)
+            store(comp.ret, back, result)
     try unwind(0, 0)
     terminate("ret", result)
     return null
@@ -2030,6 +2039,9 @@ func lookup(name: &strview) -> usize:
 func aggregate(t: usize) -> bool:
     k := comp.types[t].kind
     return k == Struct or k == Fat or k == Union or k == Untagged or k == Array
+
+func big(t: usize) -> bool:
+    return aggregate(t) and comp.types[t].size > 128
 
 func payload(addr: Arg, t: usize) -> Arg:
     if comp.types[t].kind == Union or comp.types[t].size == 0:
@@ -2147,7 +2159,7 @@ func blit(from: Arg, to: Arg, t: usize):
     if from.kind == to.kind and from.n == to.n:
         return
     size := i64(comp.types[t].size)
-    if size <= 128:
+    if not big(t):
         add(Ins{op = "blit", a = from, b = to, c = int_arg(size), mask = pointers(t), copy = true})
         return
     first := comp.passes.len

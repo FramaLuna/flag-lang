@@ -414,23 +414,27 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     else:
         v = try convert(given, to, Arg{}, at)
     how: u32 = L
-    if foreign or comp.types[to].kind != Fat:
+    if foreign or comp.types[to].kind != Fat and not big(to):
         how = try passing(to, foreign, at)
     x := load(v).at
     return Pass{how, x, is_number(x)}
 
 func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize) -> Value|Fail:
-    first := comp.passes.len
+    called := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
     for p in passes:
         append(comp.passes, p)
     result := Arg{}
-    back: u32 = 0
-    if ret != VOID:
+    if big(ret) and not foreign:
+        result = alloc(ret)
+        append(comp.passes, Pass{L, result, false})
+    elif ret != VOID:
+        called.cls = try passing(ret, foreign, at)
         result = temp()
-        back = try passing(ret, foreign, at)
+        called.to = u32(result.n)
+    called.count = u32(comp.passes.len) - called.first
     here := comp.at
     comp.at = at
-    add(Ins{op = "call", cls = back, to = u32(result.n), a = callee, first = u32(first), count = u32(passes.len)})
+    add(called)
     comp.at = here
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)

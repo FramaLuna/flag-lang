@@ -1,0 +1,73 @@
+type error Lost
+
+type Board:
+    cells: array[i64, 4096]
+    moves: i32
+
+type Huge:
+    cells: array[i64, 100000]
+
+func play(b: Board, at: usize) -> Board:
+    next := b
+    next.cells[at] += 1
+    next.moves += 1
+    return next
+
+func changed(b: Board) -> i64:
+    b.cells[0] = 99
+    return b.cells[0]
+
+func undone(b: Board) -> Board:
+    out := b
+    defer out.moves = -1
+    out.moves += 100
+    return out
+
+func found(b: Board, at: usize) -> Board|Lost:
+    if at >= 4096:
+        return Lost
+    return play(b, at)
+
+func tried(b: Board) -> Board|Lost:
+    return try found(b, 7)
+
+func busier(a: $T, b: $T) -> $T:
+    if a.moves > b.moves:
+        return a
+    return b
+
+func played() -> Board:
+    b: Board
+    for i in 0..10:
+        b = play(b, usize(i % 3))
+    return b
+
+func through(b: Board) -> i64:
+    step: func(Board, usize) -> Board = play
+    return step(b, 4095).cells[4095]
+
+func errors(b: Board):
+    r := tried(b)
+    if r is Board:
+        print(r.cells[7], " ", r.moves)
+    print(found(b, 4096) is Lost)
+
+func first(h: Huge) -> Huge:
+    out := h
+    out.cells[1] = h.cells[0]
+    return out
+
+func huge():
+    h: Huge
+    print(first(h).cells[1])
+
+func main():
+    b := played()
+    print(b.moves, " ", b.cells[0], " ", b.cells[1], " ", b.cells[2])
+    print(changed(b), " ", b.cells[0])
+    print(undone(b).moves, " ", b.moves)
+    print(through(b))
+    errors(b)
+    print(busier(b, play(b, 0)).moves)
+    if @argc() > 100:
+        huge()
