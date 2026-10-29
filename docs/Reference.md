@@ -489,6 +489,16 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
+An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FsError = CannotOpen|CannotRead`), or a struct with fields that say what happened
+```flag
+type error BadLine:
+    line: usize
+    why: &strview
+```
+An error with fields is a struct in everything else: it's built with `BadLine{3, "too long"}`, it can be generic, it prints as `BadLine{line = 3, why = too long}`, `==` compares its fields, and after `is BadLine` or in a `case BadLine:` its fields are there, `r.line`. A union can hold several errors with and without data, and `try`, `iferror` and `trust` treat them all alike. An alias cannot be marked as an error, the error is the type it names.
+
+When an error holds memory, like a `&str` field, whoever handles it frees it, and dropping it with `_ =` or `iferror` loses that memory: `-memory` tells you.
+
 An expression statement that leaves an error without handling it doesn't compile
 ```
 error: this statement drops an error: test it with is, pass it up with try or drop it with _ =

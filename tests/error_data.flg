@@ -1,0 +1,94 @@
+type error BadLine:
+    line: usize
+    why: &strview
+
+type error TooBig:
+    limit: i32
+
+type error Empty
+
+type error enum Io = Closed|Busy
+
+func parse(n: i32) -> i32|BadLine|TooBig|Empty:
+    if n < 0:
+        return BadLine{usize(-n), "negative"}
+    if n > 100:
+        return TooBig{100}
+    if n == 0:
+        return Empty
+    return n
+
+func twice(n: i32) -> i32|BadLine|TooBig|Empty:
+    v := try parse(n)
+    return v * 2
+
+func only_bad(n: i32) -> i32|BadLine:
+    if n < 0:
+        return BadLine{3, "only"}
+    return n
+
+func wrap(x: $T, fail: bool) -> $T|BadLine:
+    if fail:
+        return BadLine{7, "generic"}
+    return x
+
+func pass_up(x: $T) -> $T|BadLine:
+    v := try wrap(x, true)
+    return v
+
+func io(n: i32) -> i32|Io|BadLine:
+    if n == 1:
+        return Busy
+    if n == 2:
+        return BadLine{2, "io"}
+    return n
+
+func report(r: i32|BadLine|TooBig|Empty) -> &strview:
+    switch r:
+    case i32:
+        return "ok " + r
+    case BadLine:
+        return "line " + r.line + " " + r.why
+    case TooBig|Empty:
+        return "other " + r
+
+func main():
+    for n in [5, -4, 500, 0]:
+        print(report(twice(n)))
+    print(twice(-2))
+    print(parse(500), " ", parse(0), " ", parse(3))
+    r := twice(-9)
+    if r is BadLine:
+        print("is ", r.line)
+    elif r is TooBig:
+        print("too big ", r.limit)
+    print(twice(-1) iferror 0, " ", twice(7) iferror -1)
+    _ = twice(-3)
+    w := wrap("text", false)
+    if w is &strview:
+        print(w)
+    print(wrap(3.5, true), " ", pass_up(u8(1)))
+    g := pass_up("x")
+    switch g:
+    case BadLine:
+        print("generic ", g.why)
+    case &strview:
+        print(g)
+    for k in 0..4:
+        got := io(k)
+        switch got:
+        case Closed, Busy:
+            print("io ", got)
+        case BadLine:
+            print("io line ", got.line)
+        case i32:
+            print("io ok ", got)
+    b := BadLine{1, "a"}
+    print(b == BadLine{1, "a"}, " ", b)
+    t := trust only_bad(4)
+    print(t)
+    errs: &list[BadLine|TooBig]
+    defer free(errs)
+    append(errs, BadLine{4, "listed"})
+    append(errs, TooBig{9})
+    print(errs)

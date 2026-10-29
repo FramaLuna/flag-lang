@@ -726,7 +726,7 @@ func deeper():
 
 ## Error handling
 ### The error type
-An error is a void type declared with `type error`, and a function that can fail returns it in a union
+An error is a type declared with `type error`, and a function that can fail returns it in a union
 ```flag
 type error NotFound
 type error enum FileError = CannotOpen|CannotRead
@@ -737,12 +737,26 @@ func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
             return i
     return NotFound
 ```
-You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `try`, `trust`, or you ignore it on purpose with `_ =`
+An error can also carry data, it's declared with fields like a struct, and narrowing it gives you its fields
+```flag
+type error BadLine:
+    line: usize
+    why: &strview
+
+func check(line: usize, text: &strview) -> BadLine?:
+    if text.len > 80:
+        return BadLine{line, "too long"}
+    return null
+```
+You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `trust`, or you ignore it on purpose with `_ =`
 ```flag
 got := index_of(names, "ana")
 if got is usize:
     print("found at ", got)
 _ = index_of(names, "bo")
+problem := check(3, line)
+if problem is BadLine:
+    print("line ", problem.line, ": ", problem.why)
 ```
 ### try operator
 `try` gives you the value, and if there is an error it returns it from the function, so the function must return that error too

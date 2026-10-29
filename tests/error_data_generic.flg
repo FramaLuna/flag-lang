@@ -1,0 +1,32 @@
+type error Wrong[$T]:
+    got: $T
+
+type error Missing:
+    name: &strview
+
+func need(name: &strview) -> Missing?:
+    if name.len == 0:
+        return Missing{"empty"}
+    return null
+
+func check(a: &strview, b: &strview) -> Missing?:
+    try need(a)
+    try need(b)
+    return null
+
+func pick(n: i32) -> u8|Wrong[i32]:
+    if n > 255:
+        return Wrong[i32]{n}
+    return u8(n)
+
+func main():
+    print(check("a", ""), " ", check("a", "b"))
+    p := pick(300)
+    switch p:
+    case Wrong[i32]:
+        print("wrong ", p.got)
+    case u8:
+        print(p)
+    e := check("", "")
+    if e is Missing:
+        eprint("missing: ", e.name)
