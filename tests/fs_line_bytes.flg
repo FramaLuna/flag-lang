@@ -4,14 +4,13 @@ func main():
     path := "build/tests/fs_line_bytes.txt"
     _ = write_file(path, "one\x00two\x00\nthree\r\n\n\x00\nlast\r")
     file := open(path)
-    if file is CannotOpen:
+    if file is FsError:
         return
     with file:
-        while true:
-            line := read_line(file)
-            if line is null:
-                break
+        line := read_line(file)
+        while line is &strview:
             print(line.len, " ", items(line))
+            line = read_line(file)
     long: &str
     defer free(long)
     for i in 0..5000:
@@ -19,6 +18,6 @@ func main():
     _ = write_file(path, long + "\nend")
     again := open(path)
     if again is File:
-        print((read_line(again) ifnull "").len, " ", read_line(again), " ", read_line(again))
-        close(again)
+        print((trust read_line(again) ifnull "").len, " ", trust read_line(again), " ", trust read_line(again))
+        _ = close(again)
     _ = remove(path)

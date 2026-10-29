@@ -247,7 +247,7 @@ func main():
     bump(c) # the same, a '*Counter' parameter takes a Counter variable and gets its address
     h := heap(Counter{10}) # heap copies a value to the heap and gives you a '*Counter'
     h.n += 1
-    free(h as *bytes)
+    free(h)
 ```
 When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary.
 
@@ -440,15 +440,15 @@ A defer cannot have return, break, continue or try inside, and it cannot be a de
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
-type File:
-    fd: i32
+type Door:
+    room: i32
 
-func close(f: File):
-    print("closed ", f.fd)
+func close(d: Door):
+    print("closed ", d.room)
 
 func main():
-    with File{7}:
-        print("using the file")
+    with Door{7}:
+        print("inside the room")
 ```
 
 ## Functions
@@ -633,10 +633,11 @@ Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&st
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
 ### Printing
-`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals and `hex` an integer in hexadecimal
+`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals, `hex` an integer in hexadecimal and `pad` fills a width with spaces
 ```flag
-print(fixed(3.14159, 2), " ", hex(255)) # 3.14 0xff
+print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
+`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast, and nothing is lost or out of order when the program ends or fails (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -689,11 +690,11 @@ ages["ana"] = 30 # the same as put(ages, "ana", 30)
 age := ages["ana"] # i32|null, the same as get(ages, "ana")
 if age is i32:
     print("ana is ", age)
-ages["bo"] = (ages["bo"] ifnull 0) + 1
+put(ages, "bo").* += 1 # now bo is 26
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers or anything that has `==` and `hash`.
+`put(ages, key)` adds the key with a zero value when it isn't there, so it's how you count: `put(counts, word).* += 1`. Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers or anything that has `==` and `hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -815,7 +816,7 @@ func main() -> i32:
         return 1
     text := read_text_file(names[1])
     if text is FsError:
-        eprint("cannot read ", names[1], ": ", text)
+        eprint(text) # cannot open notes.txt: No such file or directory
         return 1
     defer free(text)
     lines := 0

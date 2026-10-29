@@ -17,7 +17,7 @@ type Token:
     at: usize
     line: usize
 
-type File:
+type Source:
     path: &str
     code: &str
     start: usize
@@ -166,7 +166,7 @@ type Deferred:
     subject: Value
 
 context comp:
-    files: &list[File]
+    files: &list[Source]
     uses: &list[Use]
     libs: &list[&strview]
     tokens: &list[Token]
@@ -241,28 +241,28 @@ func main() -> i32:
     target := view(flag_target())
     inputs: &list[&strview]
     rest: &list[&strview]
-    running := arg_count() > 1 and arg(1) == "run"
+    arguments := args()
+    running := arguments.len > 1 and arguments[1] == "run"
     program: &list[&strview]
     i := 1 + usize(running)
-    while i < arg_count():
-        a := arg(i)
+    while i < arguments.len:
+        a := arguments[i]
         if running and a == "--":
-            for k in i + 1..arg_count():
-                append(program, arg(k))
+            append(program, arguments[i + 1:arguments.len])
             break
         if a == "-o" or a == "-overlay" or a == "-at" or a == "-target":
             i += 1
-            if i == arg_count():
+            if i == arguments.len:
                 eprint(ERR, a, " expects a value after it")
                 return 2
             if a == "-o":
-                output = arg(i)
+                output = arguments[i]
             elif a == "-overlay":
-                overlay = arg(i)
+                overlay = arguments[i]
             elif a == "-target":
-                target = arg(i)
+                target = arguments[i]
             else:
-                query = arg(i)
+                query = arguments[i]
         elif a == "-keep":
             keep = true
         elif a == "-check":
@@ -301,7 +301,7 @@ func main() -> i32:
     if overlay.len > 0:
         given := read_text_file(overlay)
         if given is FsError:
-            eprint(ERR, "cannot read ", overlay)
+            eprint(ERR, given)
             return 1
         rest_of := view(given)
         while rest_of.len > 0:
@@ -387,10 +387,10 @@ func main() -> i32:
             data := flag_embedded(0, ptr(name), ptr(size))
             k: usize = 0
             while data as usize != 0:
-                bytes: &slice[u8]
-                bytes = data
-                bytes.len = size
-                _ = write_file(join(part, view(name)), bytes)
+                file: &strview
+                file = data
+                file.len = size
+                _ = write_file(join(part, view(name)), file)
                 k += 1
                 data = flag_embedded(k, ptr(name), ptr(size))
             _ = rename(view(part), lib[0:lib.len - 1])
@@ -510,10 +510,11 @@ func main() -> i32:
         append(link, "-l" + l)
     for r in rest:
         append(link, r)
-    code := run(link)
-    if code == 127 or code < 0:
-        eprint(ERR, "cannot run ", link[0], ", flagc links with a C compiler and the CC variable chooses which")
-    if code != 0:
+    linked := run(link)
+    if linked is CannotRun:
+        eprint(ERR, linked, ", flagc links with a C compiler and the CC variable chooses which")
+        return 1
+    if linked != 0:
         return 1
     if not keep:
         _ = remove(view(ssa))
@@ -524,9 +525,12 @@ func main() -> i32:
     if not contains(me, "/"):
         me = "./" + me
     insert(program, 0, me)
-    code = run(program)
+    code := run(program)
     if fleeting:
         _ = remove(view(output))
+    if code is CannotRun:
+        eprint(ERR, code)
+        return 1
     return code
 
 func real_path(path: &strview) -> &strview where not @windows():
@@ -569,10 +573,10 @@ func add_file(path: &str, code: &str|FsError) -> Fail?:
         for f in comp.files:
             if f.module == view(own):
                 own += "." + comp.files.len
-        append(comp.files, File{path, code, start, view(own)})
+        append(comp.files, Source{path, code, start, view(own)})
         try lex(comp.files.len - 1)
         return parse()
-    eprint(ERR, "cannot read ", path)
+    eprint(ERR, code)
     return Fail
 
 func show(at: usize):
