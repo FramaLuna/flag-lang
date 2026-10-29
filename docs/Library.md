@@ -121,7 +121,7 @@ On slices, so also on lists
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
 - `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
 - `reverse(items: &slice[$T])` turns the elements around in place
-- `swap(s: &slice[$T], i: usize, j: usize)` swaps two elements
+- `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements, the indexes can be negative like in `s[i]`
 
 An array goes to these functions by its address: `sort(ptr(values))`.
 
@@ -223,7 +223,7 @@ func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usiz
 ### C text
 - `cstr` is the type `*u8`, a text that ends with a zero byte
 - `cstr(text: &strview) -> cstr` a copy with the zero, temporary
-- `c_text(s: *&str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes
+- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
 
 ## fs
@@ -258,7 +258,7 @@ The program, other programs and the time.
 - `env(name: &strview) -> &strview|null` the value of an environment variable, a view, `null` when it's not set
 - `executable() -> &strview` the full path of the running program, temporary
 - `current_dir() -> &strview` the current folder, temporary
-- `change_dir(path: &strview) -> bool` `true` when it worked
+- `change_dir(path: &strview) -> FsError?` makes `path` the current folder
 - `system_name() -> &strview` `Linux`, `Darwin` or `Windows`
 
 The standard input is `read_line(stdin)` of [core](#files).

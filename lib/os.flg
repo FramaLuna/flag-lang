@@ -83,6 +83,8 @@ func run(command: &strview) -> i32|CannotRun:
     return exit_code(status)
 
 func run(program: &slice[&strview]) -> i32|CannotRun:
+    if program.len == 0:
+        return CannotRun{"[]", "the list has no program"}
     return finish(try spawn(program, -1, -1))
 
 func output(command: &strview, into: *&str) -> i32|CannotRun:
@@ -101,9 +103,11 @@ func output(command: &strview, into: *&str) -> i32|CannotRun:
     return exit_code(pclose(stream))
 
 func output(program: &slice[&strview], into: *&str) -> i32|CannotRun:
+    if program.len == 0:
+        return CannotRun{"[]", "the list has no program"}
     fds: array[i32, 2]
     if not make_pipe(ptr(fds) as *i32):
-        return CannotRun{name(program), system_error()}
+        return CannotRun{program[0], system_error()}
     pid := spawn(program, fds[1], fds[0])
     close(fds[1])
     if pid is CannotRun:
@@ -118,11 +122,6 @@ func output(program: &slice[&strview], into: *&str) -> i32|CannotRun:
     close(fds[0])
     return finish(pid)
 
-priv func name(program: &slice[&strview]) -> &strview:
-    if program.len == 0:
-        return "[]"
-    return program[0]
-
 priv func make_pipe(fds: *i32) -> bool where not @windows():
     return pipe(fds) == 0
 
@@ -130,8 +129,6 @@ priv func make_pipe(fds: *i32) -> bool where @windows():
     return _pipe(fds, 65536, 32768) == 0
 
 priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where not @windows():
-    if program.len == 0:
-        return CannotRun{"[]", "the list has no program"}
     failure: array[i32, 2]
     if pipe(ptr(failure) as *i32) != 0:
         return CannotRun{program[0], system_error()}
@@ -183,8 +180,6 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotR
     return i64(pid)
 
 priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where @windows():
-    if program.len == 0:
-        return CannotRun{"[]", "the list has no program"}
     flush(stdout)
     flush(stderr)
     line: &str
@@ -290,9 +285,13 @@ func current_dir() -> &strview where @windows():
         return ""
     return replace(view(ptr(buf) as *u8), "\\", "/")
 
-func change_dir(path: &strview) -> bool:
+func change_dir(path: &strview) -> FsError?:
+    failed := false
     with scratch():
-        return chdir(cstr(path)) == 0
+        failed = chdir(cstr(path)) != 0
+    if failed:
+        return FsError{"enter", path, system_error()}
+    return null
 
 func now() -> f64 where not @windows():
     c: Clock

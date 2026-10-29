@@ -325,14 +325,16 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
             i += 1
         k += 1
 
-func swap(s: &slice[$T], i: usize, j: usize, place: &strview = @here()):
-    if i >= s.len:
+func swap(s: &slice[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
+    a := natural(i, s.len)
+    b := natural(j, s.len)
+    if a >= s.len:
         out_of_bounds(i, s.len, place)
-    if j >= s.len:
+    if b >= s.len:
         out_of_bounds(j, s.len, place)
-    kept := s[i]
-    s[i] = s[j]
-    s[j] = kept
+    kept := s[a]
+    s[a] = s[b]
+    s[b] = kept
 
 type fatptr strview:
     len: usize
@@ -1007,7 +1009,7 @@ func write(f: File, value: $T):
 
 func flush(f: File):
     if f.fd == 2:
-        flush(stdout)
+        flush(stdout) # what the standard output has goes first
     s := stream(f)
     sent: usize = 0
     while sent < s.unsent.len and s.failed == 0:
