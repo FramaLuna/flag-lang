@@ -225,7 +225,9 @@ func gen_from(from: usize) -> usize|Fail:
                             l_next := label()
                             branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
                             open_block(l_arm)
-                            try mix(h, Value{type = m, at = payload(a.at, m), mem = true}, inst.at)
+                            if mix(h, Value{type = m, at = payload(a.at, m), mem = true}, inst.at) is Fail:
+                                note(ty.name + " has no hash of its own, so hash mixes the tag and the member it holds, and this is " + comp.types[m].name, inst.at)
+                                return Fail
                             jump(l_done)
                             open_block(l_next)
                     jump(l_done)
