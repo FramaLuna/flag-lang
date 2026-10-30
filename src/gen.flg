@@ -173,6 +173,8 @@ func close_proc(p: Proc, cls: u32, count: usize):
     made.mentioned = comp.mentions.len
     append(comp.procs, made)
     comp.slots.len = 0
+    comp.spare.len = 0
+    comp.taken.len = 0
     comp.body.len = 0
 
 func params(f: usize) -> usize:
@@ -1984,7 +1986,11 @@ func run_defers(from: usize) -> Fail?:
     return null
 
 func statement(n: usize, dropped: &strview) -> Fail?:
+    taken := comp.taken.len
     v := try gen(n, VOID)
+    for k in taken..comp.taken.len:
+        append(comp.spare, comp.taken[k])
+    comp.taken.len = taken
     o := text(n)
     if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
         hint: &strview
@@ -2225,8 +2231,17 @@ func zero(t: usize, addr: Arg):
     stamp(t, addr, 0)
 
 func alloc(t: usize) -> Arg:
+    size := i64(room(t))
+    if size > 8 and comp.types[t].kind != Union: # QBE puts the small ones in registers, and a union is written in part but copied whole
+        for i in 0..comp.spare.len:
+            s := comp.spare[i]
+            if comp.slots[s].a.n == size:
+                remove(comp.spare, i)
+                append(comp.taken, s)
+                return Arg{Temp, i64(comp.slots[s].to)}
+        append(comp.taken, comp.slots.len)
     slot := temp()
-    append(comp.slots, Ins{op = "alloc8", cls = L, to = u32(slot.n), a = int_arg(i64(room(t)))})
+    append(comp.slots, Ins{op = "alloc8", cls = L, to = u32(slot.n), a = int_arg(size)})
     return slot
 
 func room(t: usize) -> usize:
