@@ -40,8 +40,6 @@ func gen_program(check: bool) -> Fail?:
                 others = comp.syms[others].next
             if comp.syms[k].name == "main":
                 return fail("main is the entry point of the program, it cannot be exported", at)
-            if body(f) == 0:
-                return fail("an export function needs a body, other languages call into it", at)
             if generic(f):
                 return fail("an export function cannot be generic, other languages need one fixed signature", at)
             if others != 0:
@@ -784,7 +782,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         return indexed(n, 0)
     case Binary, Unary:
         return operation(n, want)
-    case Items, Pairs:
+    case:
         t := struct_in(want)
         hint := comp.types[t]
         fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
@@ -840,8 +838,6 @@ func gen(n: usize, want: usize) -> Value|Fail:
             append(pair, values[i])
             try invoke("put", pair, tok.at)
         return Value{type = t, at = slot, mem = true}
-    case:
-        return fail("gen: this node kind has no generator", tok.at)
 
 func iterate(n: usize) -> Fail?:
     node := comp.nodes[n]
@@ -1390,7 +1386,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         if comp.types[v.type].kind != Union:
             if local_of(left) != 0:
                 if comp.types[comp.vars[declaration(text(left))].type].kind == Union:
-                    return fail(text(left) + " is already " + comp.types[v.type].name + " here, an is above narrowed it and there is nothing left to test", tok.at)
+                    return fail(text(left) + " is already " + comp.types[v.type].name + " here, it was narrowed above and there is nothing left to test", tok.at)
             return fail("is expects a union on its left, " + comp.types[v.type].name + " is a plain type", tok.at)
         tags: &list[usize]
         asked := members(wanted)

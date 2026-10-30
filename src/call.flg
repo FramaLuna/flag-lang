@@ -1034,7 +1034,9 @@ func holds(n: usize) -> bool|Fail:
     left := n + 1
     if node.kind == Unary and o == "not":
         return not try holds(left)
-    if node.kind == Call and o == "can_assign" and kids(n) == 2:
+    if node.kind == Call and o == "can_assign" and kids(n) != 2:
+        return fail("can_assign expects two types: can_assign(&strview, $T)", at_of(n))
+    if node.kind == Call and o == "can_assign":
         return assignable(try resolve(left), try resolve(node_end(left)), at_of(n))
     if node.kind == Binary and (o == "and" or o == "or"):
         chain: &list[usize]
