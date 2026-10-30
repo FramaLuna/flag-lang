@@ -5,7 +5,7 @@ func gen_program(check: bool) -> Fail?:
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
             lib := text(e)[1:text(e).len - 1]
-            if lib != "c" and not has_text(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
+            if lib != "c" and not contains(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
                 append(comp.libs, lib)
     comp.choosing = false
     contexts: &list[usize]
@@ -1001,9 +1001,9 @@ func cases(n: usize) -> Fail?:
                 return expect(":")
             if union:
                 for m in members(try resolve(l)):
-                    if not has(members(subject.type), m):
+                    if not contains(members(subject.type), m):
                         return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", first.at)
-                    if not has(left, m):
+                    if not contains(left, m):
                         return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", first.at)
                     append(handled, m)
                     remove(left, trust find(left, m))
@@ -1251,7 +1251,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         for m in members(v.type):
             if o == "trust" and removed.len == 0 and m == NULL:
                 append(removed, m)
-            elif not has(removed, m):
+            elif not contains(removed, m):
                 append(rest, m)
         if removed.len == 0 and o == "try":
             return fail(t.name + " never fails, there is no error to try for", tok.at)
@@ -1262,7 +1262,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         kept := try union_of(rest, Union, tok.at)
         if o == "try":
             for e in removed:
-                if not has(members(comp.ret), e):
+                if not contains(members(comp.ret), e):
                     return fail("try passes " + comp.types[e].name + " up but this function returns " + comp.types[comp.ret].name, tok.at)
             failed := try union_of(removed, Union, tok.at)
             l_fail := label()
@@ -1290,7 +1290,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         tags: &list[usize]
         asked := members(wanted)
         for m in members(v.type):
-            if has(asked, m):
+            if contains(asked, m):
                 append(tags, m)
         if tags.len == 0:
             return fail(comp.types[v.type].name + " can never be " + comp.types[wanted].name + ", so this is always false", tok.at)
@@ -1820,7 +1820,7 @@ func common(values: &list[Value], at: usize) -> usize|Fail:
             fits := false
             for p in parts:
                 fits = fits or v.lit and accepts(p, v) >= 0
-            if turn(v) == round and not fits and not has(parts, v.type):
+            if turn(v) == round and not fits and not contains(parts, v.type):
                 append(parts, v.type)
     for v in values:
         if v.type == EMPTYARRAY or v.type == EMPTYMAP:
@@ -1860,7 +1860,7 @@ func narrow(cond: usize, matching: bool) -> Fail?:
             wanted := members(try resolve(node_end(subject)))
             kept: &list[usize]
             for m in members(comp.vars[local_of(subject) - 1].type):
-                if has(wanted, m) == matching:
+                if contains(wanted, m) == matching:
                     append(kept, m)
             try confine(subject, kept, comp.tokens[comp.nodes[c].tok].at)
     return null
@@ -1927,7 +1927,7 @@ func join(ends: &list[Local], lives: usize, at: usize) -> Fail?:
 
 func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
-    if has(comp.resolving, d):
+    if contains(comp.resolving, d):
         return fail(comp.syms[s].name + " refers to itself", at)
     append(comp.resolving, d)
     v := value(d + 1, want)
@@ -2191,7 +2191,7 @@ func payload(addr: Arg, t: usize) -> Arg:
 
 func absent(addr: Arg, t: usize, here: &list[usize]):
     for m in members(t):
-        if not has(here, m) and pointers(m) != 0:
+        if not contains(here, m) and pointers(m) != 0:
             add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, member = u32(m)})
 
 func times(count: Arg, size: usize) -> Arg:

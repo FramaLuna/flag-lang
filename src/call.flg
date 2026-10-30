@@ -122,9 +122,9 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
         c: &strview = "ceqw"
         if o == "!=":
             c = "cnew"
-        if lt.kind == Union and rt.kind == Void and has(members(l.type), r.type):
+        if lt.kind == Union and rt.kind == Void and contains(members(l.type), r.type):
             return Value{type = BOOL, at = op(W, c, tag(l), tag_of(r.type))}
-        if rt.kind == Union and lt.kind == Void and has(members(r.type), l.type):
+        if rt.kind == Union and lt.kind == Void and contains(members(r.type), l.type):
             return Value{type = BOOL, at = op(W, c, tag(r), tag_of(l.type))}
         if lt.kind == Union and lt.size == 4 and rt.kind == Union and rt.size == 4 and (within(l.type, r.type) or within(r.type, l.type)):
             return Value{type = BOOL, at = op(W, c, tag(l), tag(r))}
@@ -546,7 +546,7 @@ func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
 
 func c_type(t: usize, at: usize) -> u32|Fail:
     ty := comp.types[t]
-    if has(comp.c_types, t):
+    if contains(comp.c_types, t):
         return CAGG + u32(t)
     if ty.kind != Struct and ty.kind != Untagged:
         return fail(ty.name + " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do", at)
@@ -625,7 +625,7 @@ func match(n: usize, v: Value) -> i64|Fail:
             c = node_end(c)
         rest: &list[usize]
         for m in members(v.type):
-            if not has(concrete, m):
+            if not contains(concrete, m):
                 append(rest, m)
         if rest.len == 0:
             for i in binder..node_end(binder):
@@ -672,7 +672,7 @@ func match(n: usize, v: Value) -> i64|Fail:
     s := try find_type(text(head), comp.nodes[head].module, comp.tokens[comp.nodes[head].tok].at)
     if s != 0 and not fat and kids(head) > 0 and comp.nodes[comp.syms[s].node].kind == Alias:
         alias := comp.syms[s].node
-        if type_params(alias) != kids(head) or has(comp.resolving, alias):
+        if type_params(alias) != kids(head) or contains(comp.resolving, alias):
             return -1
         before := comp.nodes.len
         append(comp.resolving, alias)
@@ -860,7 +860,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         args: &list[Value]
         append(args, v)
         return invoke("c_text", args, at)
-    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged) and not has(members(to), v.type) and not untagged_member(to, v.type):
+    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
         found: usize = VOID
         tied: usize = VOID
         best: i64 = -1

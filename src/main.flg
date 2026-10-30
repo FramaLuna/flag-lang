@@ -414,7 +414,7 @@ func main() -> i32:
         return 1
     for input in inputs:
         real := real_path(input)
-        if not has_text(loaded, real):
+        if not contains(loaded, real):
             append(loaded, real)
             path: &str = input
             if add_file(path, source(input, texts), false) is Fail:
@@ -427,7 +427,7 @@ func main() -> i32:
         for f in comp.files:
             known = known or f.module == u.module
         path: &str = join(lib, u.module + ".flg")
-        if not known and not has_text(loaded, real_path(view(path))) and exists(view(path)):
+        if not known and not contains(loaded, real_path(view(path))) and exists(view(path)):
             if add_file(path, source(view(path), texts), true) is Fail:
                 return 1
             known = comp.files[-1].module == u.module
@@ -552,12 +552,6 @@ func real_path(path: &strview) -> &strview where @windows():
     if found as usize == 0:
         return path
     return view(found)
-
-func has_text(l: &list[&strview], v: &strview) -> bool:
-    for x in l:
-        if x == v:
-            return true
-    return false
 
 func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     code := get(texts, real_path(path)) ifnull view(try read_text_file(path))
