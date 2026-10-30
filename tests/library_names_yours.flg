@@ -1,0 +1,47 @@
+use fs
+
+type File:
+    fd: i32
+
+type Integer:
+    value: i64
+
+type error FsError:
+    why: &strview
+
+type Padded:
+    n: i32
+
+type error MapFull
+
+stdout = 42
+
+func hash(s: &strview) -> u64:
+    return 7
+
+func open(path: &strview) -> File|FsError:
+    if path.len == 0:
+        return FsError{"no path"}
+    return File{3}
+
+func main():
+    f := open("x")
+    if f is File:
+        print("mine ", f.fd)
+    bad := open("")
+    if bad is FsError:
+        print("mine ", bad.why)
+    print(Integer{5}.value, " ", Padded{1}.n, " ", MapFull, " ", stdout, " ", hash("abc"))
+    m: &map[&strview, i32]
+    m["a"] = 1
+    m["b"] = 2
+    print(m["a"], " ", m["b"], " ", m.len)
+    gone := read_file("/no/such/file")
+    if gone is &str:
+        print("read")
+    else:
+        print(gone)
+    print(pad(3, 4), "|", fixed(1.5, 2))
+    full: fixmap[i32, i32, 1] = {1: 1}
+    r := put(full, 2, 2)
+    print(r is null, " ", r)

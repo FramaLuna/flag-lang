@@ -65,7 +65,7 @@ func named(name: &strview, module: &strview, at: usize) -> usize|Fail:
         if comp.nodes[comp.syms[s].node].kind != Func and visible(s, module, at):
             if m == here:
                 return s
-            if m.len == 0:
+            if m.len == 0 and (global == 0 or comp.syms[s].library == comp.files[file_of(at)].library):
                 global = s
             elif found == 0:
                 found = s
@@ -111,7 +111,7 @@ func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
 
 func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
     s := first_sym(name)
-    while s != 0 and (comp.syms[s].module.len > 0 or comp.nodes[comp.syms[s].node].kind != Fat):
+    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat):
         s = comp.syms[s].next
     if s == 0:
         return fail("the language needs the fat pointer " + name + ", and the library does not declare it", at)

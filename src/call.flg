@@ -443,11 +443,12 @@ func listed(args: &list[Value]) -> &str:
     return shown
 
 func near(s: usize, at: usize) -> usize:
-    if comp.syms[s].module == comp.files[file_of(at)].module:
+    sym := comp.syms[s]
+    if sym.module == comp.files[file_of(at)].module:
         return 0
-    if comp.syms[s].module.len == 0:
-        return 1
-    return 2
+    if sym.module.len == 0:
+        return 1 + usize(sym.library != comp.files[file_of(at)].library)
+    return 3
 
 func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     v := given

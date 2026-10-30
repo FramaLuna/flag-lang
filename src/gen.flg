@@ -1,6 +1,9 @@
 @trust
 func gen_program(check: bool) -> Fail?:
     none: &list[Item]
+    for k in 1..comp.syms.len:
+        if comp.nodes[comp.syms[k].node].kind == Void:
+            try make_type(k, none, false, comp.tokens[comp.nodes[comp.syms[k].node].tok].at)
     comp.choosing = true
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
@@ -809,7 +812,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return fail(hint.name + " holds " + comp.items[hint.args + 2].n + " entries but this literal gives " + keys.len, tok.at)
         if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
             map := first_sym("map")
-            while map != 0 and (comp.syms[map].module.len > 0 or comp.nodes[comp.syms[map].node].kind != Fat):
+            while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
                 map = comp.syms[map].next
             args: &list[Item]
             append(args, Item{name = "", type = try common(keys, tok.at)})
@@ -1219,7 +1222,7 @@ func called(n: usize) -> Value|Fail:
             file: &strview = "stdout"
             if name == "eprint":
                 file = "stderr"
-            to := try constant(try named(file, "", tok.at), VOID, tok.at)
+            to := try constant(try named(file, "", 0), VOID, tok.at) # the one core sees
             parts: &list[Value]
             c = n + 1
             while c < node_end(n):

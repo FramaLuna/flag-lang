@@ -43,7 +43,7 @@ func parse() -> Fail?:
                 append(comp.uses, Use{file, given, alias, t.at})
             try end_line()
             continue
-        sym := Sym{module = module}
+        sym := Sym{module = module, library = comp.files[file].library}
         sym.priv = t.text == "priv"
         if sym.priv:
             sym.module = comp.files[file].module
@@ -230,7 +230,9 @@ func declare(n: usize, sym: Sym) -> Fail?:
     while s != 0:
         old := comp.syms[s]
         other := comp.nodes[old.node].kind
-        if old.module == sym.module:
+        if old.module == sym.module and old.library != sym.library and kind != Func and other != Func:
+            comp.syms[s].name = "core." + sym.name
+        elif old.module == sym.module and old.library == sym.library:
             problem: &strview
             if kind == Func and other == Func:
                 new_body := body(n)
@@ -265,9 +267,6 @@ func declare(n: usize, sym: Sym) -> Fail?:
     made.next = first_sym(sym.name)
     append(comp.syms, made)
     put(comp.names, sym.name, comp.syms.len - 1)
-    if kind == Void:
-        none: &list[Item]
-        try make_type(comp.syms.len - 1, none, false, at)
     return null
 
 func func_decl(external: bool) -> Fail?:
