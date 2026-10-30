@@ -810,7 +810,7 @@ func accepts(to: usize, v: Value) -> i64:
         return STEP * i64(to == F64)
     if (v.lit or comp.types[v.type].name == "&str") and comp.types[v.type].kind == Fat and target.kind == Ptr and target.elem == U8:
         return STEP
-    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged):
+    if target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged:
         for i in 0..target.count:
             if accepts(comp.items[target.first + i].type, v) >= 0:
                 return STEP
@@ -883,7 +883,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         args: &list[Value]
         append(args, v)
         return invoke("c_text", args, at)
-    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
+    if (target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
         found: usize = VOID
         tied: usize = VOID
         best: i64 = -1
@@ -896,7 +896,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
                 best = score
             elif score == best and score >= 0:
                 tied = m
-        if tied != VOID:
+        if tied != VOID and v.lit:
             shown: &str
             if v.neg:
                 shown += "-"
@@ -905,7 +905,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
             else:
                 shown += v.n
             return fail(shown + " fits more than one member of " + target.name + " equally, name its type: " + comp.types[found].name + "(" + shown + ")", at)
-        if found != VOID:
+        if found != VOID and tied == VOID:
             return convert(try convert(v, found, Arg{}, at), to, dest, at)
     if target.kind == Untagged and untagged_member(to, v.type):
         slot := alloc(to)

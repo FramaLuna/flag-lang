@@ -132,10 +132,14 @@ func gen_program(check: bool) -> Fail?:
     return null
 
 func gen_from(from: usize) -> usize|Fail:
-    next := from
-    while next < comp.insts.len:
-        i := next
-        next += 1
+    pending: &list[usize]
+    defer free(pending)
+    known := from
+    while known < comp.insts.len or pending.len > 0:
+        for k in reverse known..comp.insts.len:
+            append(pending, k)
+        known = comp.insts.len
+        i := trust pop(pending)
         inst := comp.insts[i]
         f := inst.node
         if f != 0 and body(f) == 0:
@@ -180,7 +184,10 @@ func gen_from(from: usize) -> usize|Fail:
                         l_next := label()
                         branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
                         open_block(l_arm)
-                        same := try binary("==", Value{type = m, at = payload(a.at, m), mem = true}, Value{type = m, at = payload(b.at, m), mem = true}, inst.at)
+                        same := binary("==", Value{type = m, at = payload(a.at, m), mem = true}, Value{type = m, at = payload(b.at, m), mem = true}, inst.at)
+                        if same is Fail:
+                            note(ty.name + " has no == of its own, so == compares the member it holds, and this is " + comp.types[m].name, inst.at)
+                            return Fail
                         terminate("ret", load(same).at)
                         open_block(l_next)
                     terminate("hlt", Arg{})
@@ -295,8 +302,9 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
         try statements(body(f))
         if comp.live:
+            comp.at = comp.tokens[comp.nodes[f].tok].at
             if comp.ret != VOID:
-                return fail("not every path of this function returns a value", comp.tokens[comp.nodes[f].tok].at)
+                return fail("not every path of this function returns a value", comp.at)
             terminate("ret", Arg{})
         try forget(0)
         back: u32 = 0
@@ -307,7 +315,7 @@ func gen_from(from: usize) -> usize|Fail:
         close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
         close_frame(saved)
     comp.blame = 0
-    return next
+    return known
 
 func site(at: usize) -> usize:
     if comp.blame != 0 and comp.insts[comp.inst].library:
@@ -325,6 +333,11 @@ func bindings(binds: &slice[Item]) -> &str:
             given += ", "
         given += b.name + " = " + brief(arg_name(b))
     return given
+
+func counted(n: usize, one: &strview, many: &strview) -> &strview:
+    if n == 1:
+        return "1 " + one
+    return "" + n + " " + many
 
 func brief(name: &strview) -> &strview:
     if name.len > 100:
@@ -690,18 +703,11 @@ func gen(n: usize, want: usize) -> Value|Fail:
     case Call:
         return called(n)
     case Brace, Fill:
-        t := want
+        t := struct_in(want)
         c := n + 1
         if node.kind == Brace:
             t = try resolve(n + 1)
             c = node_end(n + 1)
-        elif comp.types[want].kind == Union:
-            structs: &list[usize]
-            for m in members(want):
-                if comp.types[m].kind == Struct:
-                    append(structs, m)
-            if structs.len == 1:
-                t = structs[0]
         ty := comp.types[t]
         if node.kind == Fill and ty.kind != Struct and ty.kind != Array:
             return fail("a {...} without a type needs a place that gives it one: p: Point = {1, 2}", tok.at)
@@ -725,9 +731,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 elif not comp.items[ty.first + i].shared:
                     append(filled, comp.items[ty.first + i])
             if given != filled.len and ty.kind == Array:
-                return fail(ty.name + " holds " + filled.len + " elements but this literal gives " + given + " values", tok.at)
+                return fail(ty.name + " holds " + counted(filled.len, "element", "elements") + " but this literal gives " + counted(given, "value", "values"), tok.at)
             if given != filled.len:
-                return fail(ty.name + " has " + filled.len + " fields but this literal gives " + given + " values", tok.at)
+                return fail(ty.name + " has " + counted(filled.len, "field", "fields") + " but this literal gives " + counted(given, "value", "values"), tok.at)
         i: usize = 0
         while c < node_end(n):
             if (comp.nodes[c].kind == Named) != named:
@@ -766,18 +772,26 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place}
         if comp.tokens[node.tok + 1].text == "(":
             return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
-        return fail(comp.types[t].name + " has no field " + tok.text, tok.at)
+        how: &strview
+        for m in members(t):
+            for i in 0..comp.types[m].count:
+                if comp.types[t].kind == Union and (comp.types[m].kind == Struct or comp.types[m].kind == Fat) and comp.items[comp.types[m].first + i].name == tok.text:
+                    how = ", narrow it with is or case first"
+                    if local_of(n + 1) == 0:
+                        how = ", and is and case narrow only variables: copy it to one first"
+        return fail(comp.types[t].name + " has no field " + tok.text + how, tok.at)
     case Index:
         return indexed(n, 0)
     case Binary, Unary:
         return operation(n, want)
     case Items, Pairs:
-        hint := comp.types[want]
+        t := struct_in(want)
+        hint := comp.types[t]
         fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
         if node.size == 1 and (hint.kind == Struct or hint.kind == Array):
-            slot := alloc(want)
-            zero(want, slot)
-            return Value{type = want, at = slot, mem = true}
+            slot := alloc(t)
+            zero(t, slot)
+            return Value{type = t, at = slot, mem = true}
         if node.size == 1 and node.kind == Items:
             return Value{type = EMPTYARRAY}
         if node.size == 1:
@@ -801,15 +815,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if want_value == VOID:
             want_value = try common(values, tok.at)
         if node.kind == Items:
-            t := array_of(want_value, values.len)
+            t = array_of(want_value, values.len)
             slot := alloc(t)
             zero(t, slot)
             for i in 0..values.len:
                 try assign(offset(slot, i * comp.types[want_value].size), want_value, values[i], tok.at)
             return Value{type = t, at = slot, mem = true}
-        t := want
         if fixed and keys.len > comp.items[hint.args + 2].n:
-            return fail(hint.name + " holds " + comp.items[hint.args + 2].n + " entries but this literal gives " + keys.len, tok.at)
+            return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
         if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
             map := first_sym("map")
             while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
@@ -1174,7 +1187,7 @@ func called(n: usize) -> Value|Fail:
                 hint = ": narrow it with is first"
             return fail("only a function value can be called, this is " + shape.name + hint, tok.at)
         if count != shape.count:
-            return fail("this " + shape.name + " expects " + shape.count + " arguments but got " + count, tok.at)
+            return fail("this " + shape.name + " expects " + counted(shape.count, "argument", "arguments") + " but got " + count, tok.at)
         code := load(callee).at
         if code.kind != Global:
             try panic_if(op(W, "ceql", code, int_arg(0)), "call of an empty function value", tok.at)
@@ -1642,10 +1655,21 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
     left := n + 1
     right := node_end(left)
     middle := comp.body.len
+    sign := comp.tokens[comp.nodes[n].tok].at
     if o == "+=" and comp.types[spot.type].name == "&str":
         try concat(right, spot, first)
         return null
-    sign := comp.tokens[comp.nodes[n].tok].at
+    if o == "+=" and comp.types[spot.type].name == "&strview":
+        line := Value{type = try fat_type("str", VOID, sign), mem = true, place = true}
+        line.at = alloc(line.type)
+        zero(line.type, line.at)
+        try put_text(line, load(spot), sign)
+        try concat(right, line, first)
+        args: &list[Value]
+        append(args, line)
+        joined := try invoke("temp", args, sign)
+        try invoke("free", args, sign)
+        return assign(spot.at, spot.type, joined, sign)
     at := at_of(right)
     wanted: usize = VOID
     if o == "=":
@@ -1841,7 +1865,14 @@ func common(values: &list[Value], at: usize) -> usize|Fail:
     for v in values:
         if v.type == EMPTYARRAY or v.type == EMPTYMAP:
             return fail("an empty literal inside a literal has no type to take, write the type of the whole literal: z: array[&list[i32], 2] = [[], []]", at)
-    return union_of(parts, Union, at)
+    kept: &list[usize]
+    for p in parts:
+        taken := false
+        for q in parts:
+            taken = taken or q != p and accepts(q, Value{type = p}) >= 0
+        if not taken:
+            append(kept, p)
+    return union_of(kept, Union, at)
 
 func textual(t: usize) -> bool:
     return comp.types[t].name == "&str" or comp.types[t].name == "&strview"
@@ -1913,6 +1944,15 @@ func func_in(t: usize) -> usize:
         if comp.types[m].kind == Func and found != VOID:
             return VOID
         if comp.types[m].kind == Func:
+            found = m
+    return found
+
+func struct_in(t: usize) -> usize:
+    found := t
+    for m in members(t):
+        if comp.types[m].kind == Struct and found != t:
+            return t
+        if comp.types[m].kind == Struct:
             found = m
     return found
 
@@ -2084,6 +2124,9 @@ func run_defers(from: usize) -> Fail?:
                 return fail("close of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: call close yourself where you can handle it", at)
         else:
             try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it")
+        if comp.nodes[d.node].kind == Assign and local_of(d.node + 1) != 0:
+            kept := declaration(text(d.node + 1))
+            comp.vars[kept].unread = fails(comp.vars[kept].type)
         for k in stays..comp.vars.len:
             append(aside, comp.vars[k])
         put_back(d.visible, aside)

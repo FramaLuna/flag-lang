@@ -37,7 +37,7 @@ With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the i
 
 The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
-The compiler stops at the first error.
+The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
 The IL and the assembly are written next to the program, `program.ssa` and `program.s`, and they are removed when the program links, unless you pass `-keep`. If QBE or the link fails they stay there so you can look at them.
 
@@ -231,7 +231,7 @@ When you pass an argument, the value is converted only if it's
 - `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
-- a value going to a union that has its type, or a union going to a bigger union
+- a value going to a union that has its type, or a union going to a bigger union. A value that converts to exactly one member goes in through it: a `&str` into `&strview|i32`, a `&list[i32]` into `&slice[i32]?`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`: the element type of a literal leaves out a type that converts to another one in it
 - a member going in or out of an untagged union
 
 Assignments, declarations and `return` do all of that and also
@@ -274,7 +274,7 @@ print(text) # hola
 ## Unions and narrowing
 `is` checks the tag. It needs a tagged union on its left, and a check that is always true or always false is an error, so you know when a type changed and the check is useless.
 
-Narrowing only works on local variables and parameters, not on fields. Copy the field to a variable first
+Narrowing only works on local variables and parameters, not on fields, and reading a field of a member through the union says so: `Card|null has no field rank, and is and case narrow only variables: copy it to one first`. Copy the field to a variable first
 ```flag
 found := user.best
 if found is Card:
@@ -487,6 +487,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
 - It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
 - It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
+- A deferred `x = f()` into a variable that can hold an error must be read after it runs, the same rule as for a declaration, so `defer x = f()` in the block of `x` doesn't compile: nothing is left to read it
 
 ### with
 `with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of Lock can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
@@ -612,7 +613,7 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 
 A message names your variable when there is one, and says `this memory` when there is none. It names a function only when you wrote the call: `drop cannot release path, it is temporary memory: a with scratch() block releases it`. The calls the compiler writes for you, for `print`, `+`, `for` or a conversion, are never named.
 
-A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the end of the function that loses it
+A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the `return` that loses it, or to the name of the function when it ends without one
 ```flag
 func main():
     names: &list[i32]
