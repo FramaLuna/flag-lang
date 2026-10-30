@@ -1019,11 +1019,19 @@ func holds(n: usize) -> bool|Fail:
     if node.kind == Call and o == "can_assign" and kids(n) == 2:
         return assignable(try resolve(left), try resolve(node_end(left)), source(n))
     if node.kind == Binary and (o == "and" or o == "or"):
-        a := try holds(left)
-        b := try holds(node_end(left))
-        if o == "and":
-            return a and b
-        return a or b
+        chain: &list[usize]
+        c := n
+        while comp.nodes[c].kind == Binary and (text(c) == "and" or text(c) == "or"):
+            append(chain, c)
+            c += 1
+        result := try holds(c)
+        for k in reverse chain:
+            other := try holds(node_end(k + 1))
+            if text(k) == "and":
+                result = result and other
+            else:
+                result = result or other
+        return result
     if node.kind == Binary and o == "is":
         return within(try resolve(left), try resolve(node_end(left)))
     if node.kind == Binary and (o == "==" or o == "!="):

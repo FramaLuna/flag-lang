@@ -94,7 +94,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Expressions and types nest up to 300 levels: `this code nests more than 300 levels deep, move the inner part to a function or a variable`
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif`, or of operators like `a - b - c` or `a and b and c`, has no limit
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -493,7 +493,6 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code
 - `_ = value` throws the value away, also when there is a variable named `_`
 - A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
-- Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
 An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FsError = CannotOpen|CannotRead`), or a struct with fields that say what happened
