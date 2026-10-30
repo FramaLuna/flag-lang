@@ -35,17 +35,14 @@ func gen_program(check: bool) -> Fail?:
             others := first_sym(comp.syms[k].name)
             while others != 0 and (others == k or comp.nodes[comp.syms[others].node].kind != Func):
                 others = comp.syms[others].next
-            problem: &strview
             if comp.syms[k].name == "main":
-                problem = "main is the entry point of the program, it cannot be exported"
-            elif body(f) == 0:
-                problem = "an export function needs a body, other languages call into it"
-            elif generic(f):
-                problem = "an export function cannot be generic, other languages need one fixed signature"
-            elif others != 0:
-                problem = "an export function cannot be overloaded, its name is the symbol other languages call"
-            if problem.len > 0:
-                return fail(problem, at)
+                return fail("main is the entry point of the program, it cannot be exported", at)
+            if body(f) == 0:
+                return fail("an export function needs a body, other languages call into it", at)
+            if generic(f):
+                return fail("an export function cannot be generic, other languages need one fixed signature", at)
+            if others != 0:
+                return fail("an export function cannot be overloaded, its name is the symbol other languages call", at)
             try instantiate(f, 0)
     done := try gen_from(0)
     reached := comp.types.len
@@ -183,22 +180,19 @@ func gen_from(from: usize) -> usize|Fail:
         if name == "at":
             for t in I8..USIZE + 1:
                 integral = integral or accepts(second, Value{type = usize(t)}) >= 0
-        problem: &str
         if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
             if name == "=" and inst.ret != target:
-                problem += "operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name
-            elif name == "+=" and comp.types[first].name != "*&str":
-                problem += "operator += appends to text only, its first parameter is *&str: for another type declare operator +, a += b is a = a + b"
-            elif (name == "==" or name == "<") and inst.ret != BOOL:
-                problem += "operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name
-            elif name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
-                problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
-            elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
-                problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
+                return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
+            if name == "+=" and comp.types[first].name != "*&str":
+                return fail("operator += appends to text only, its first parameter is *&str: for another type declare operator +, a += b is a = a + b", comp.at)
+            if (name == "==" or name == "<") and inst.ret != BOOL:
+                return fail("operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name, comp.at)
+            if name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
+                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it", comp.at)
+            if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
+                return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
         elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or textual(first) or comp.types[target].kind == Array):
-            problem += language(name, comp.types[first].name)
-        if problem.len > 0:
-            return fail(problem, comp.at)
+            return fail(language(name, comp.types[first].name), comp.at)
         try statements(block)
         if comp.live:
             if comp.ret != VOID:
@@ -544,19 +538,16 @@ func gen(n: usize, want: usize) -> Value|Fail:
                         tied = true
                 s = comp.syms[s].next
             if seen:
-                problem: &str
                 if found == 0 and foreign:
-                    problem += tok.text + " is a C function, a function value cannot hold it: wrap it in a func that calls it"
-                elif found == 0 and untyped:
-                    problem += tok.text + " is generic and nothing here gives it its types: give it to a variable that says its function type first"
-                elif found == 0:
-                    problem += "no overload of " + tok.text + " is a " + comp.types[wanted].name + ", a function value takes the one with exactly those parameters"
-                elif tied and wanted == VOID:
-                    problem += tok.text + " names several functions and nothing here says which: give it to a variable that says its function type first"
-                elif tied:
-                    problem += "ambiguous function value " + tok.text + ", several overloads have the parameters of " + comp.types[wanted].name
-                if problem.len > 0:
-                    return fail(problem, tok.at)
+                    return fail(tok.text + " is a C function, a function value cannot hold it: wrap it in a func that calls it", tok.at)
+                if found == 0 and untyped:
+                    return fail(tok.text + " is generic and nothing here gives it its types: give it to a variable that says its function type first", tok.at)
+                if found == 0:
+                    return fail("no overload of " + tok.text + " is a " + comp.types[wanted].name + ", a function value takes the one with exactly those parameters", tok.at)
+                if tied and wanted == VOID:
+                    return fail(tok.text + " names several functions and nothing here says which: give it to a variable that says its function type first", tok.at)
+                if tied:
+                    return fail("ambiguous function value " + tok.text + ", several overloads have the parameters of " + comp.types[wanted].name, tok.at)
                 f := comp.syms[found].node
                 saved := comp.frame
                 comp.frame = comp.binds.len
@@ -751,7 +742,6 @@ func gen(n: usize, want: usize) -> Value|Fail:
 func iterate(n: usize) -> Fail?:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
-    none: Value
     if lookup(tok.text) != 0:
         return fail("variable " + tok.text + " is already declared and still in scope", tok.at)
     subject := n + 1
@@ -776,8 +766,8 @@ func iterate(n: usize) -> Fail?:
     t: usize = VOID
     at := source(subject)
     start := literal(false, 0)
-    end := none
-    walked := none
+    end: Value
+    walked: Value
     elem: usize = VOID
     addr := Arg{}
     bound: usize = 0
@@ -965,9 +955,7 @@ func iterate(n: usize) -> Fail?:
     return null
 
 func cases(n: usize) -> Fail?:
-    node := comp.nodes[n]
-    tok := comp.tokens[node.tok]
-    none: Value
+    tok := comp.tokens[comp.nodes[n].tok]
     subject := try value(n + 1, VOID)
     if not aggregate(subject.type):
         subject = load(subject)
@@ -1026,7 +1014,7 @@ func cases(n: usize) -> Fail?:
             else:
                 if typed:
                     return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", source(l))
-                eq := none
+                eq: Value
                 if k == Binary and text(l) == "..":
                     low := try binary(">=", subject, try value(l + 1, VOID), source(l))
                     high := try binary("<", subject, try value(node_end(l + 1), VOID), source(l))
