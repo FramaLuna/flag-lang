@@ -2266,19 +2266,12 @@ func big(t: usize) -> bool:
 func payload(addr: Arg, t: usize) -> Arg:
     if comp.types[t].kind == Union or comp.types[t].size == 0:
         return addr
-    return offset(addr, 8)
+    return add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = int_arg(8), member = u32(t)})
 
 func absent(addr: Arg, t: usize, here: &list[usize]):
-    gone: u64 = 0
-    kept: u64 = 0
     for m in members(t):
-        if has(here, m):
-            kept = kept or pointers(m)
-        else:
-            gone = gone or pointers(m)
-    mask := gone xor (gone and kept)
-    if mask != 0:
-        add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8)), mask = mask, copy = true})
+        if not has(here, m) and pointers(m) != 0:
+            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, member = u32(m)})
 
 func times(count: Arg, size: usize) -> Arg:
     if size == 1:

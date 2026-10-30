@@ -32,6 +32,7 @@ GLOBAL = 5
 RECURSIVE = 6
 FIXED = 7
 PLACE = 8
+MEMBERS = 1 << 14
 
 UNSETTLED = "its memory use does not settle"
 
@@ -59,6 +60,7 @@ type Op:
     size: u32
     from: u32
     upto: u32
+    member: u32
     code: Code
     blob: bool
     named: bool
@@ -78,6 +80,8 @@ type Target:
     off: i32
     stride: i32
     slot: u32
+    member: u32
+    writer: u32
     element: bool
 
 type Cell:
@@ -85,6 +89,7 @@ type Cell:
     next: u32
     off: i32
     stride: i32
+    member: u32
 
 type Obj:
     key: u64
@@ -96,9 +101,10 @@ type Obj:
     parent: usize
     root: usize
     site: usize
-    depth: usize
+    depth: u32
     off: i32
     stride: i32
+    member: u32
     born: usize
     kind: Kind
     many: bool
@@ -207,6 +213,7 @@ context mem:
     objs: &list[Obj]
     cells: &list[Cell]
     heads: &list[u32]
+    viewed: bool
     heaps: Set
     outer: Set
     roots: Set
@@ -300,7 +307,7 @@ func check_memory():
                 blocks[block_of(labels, blocks, u32(i.a.n))] = u32(f.spans.len)
                 append(f.spans, Span{first = u32(mem.ops.len)})
                 continue
-            o := Op{pos = i.pos, mask = FULL}
+            o := Op{pos = i.pos, mask = FULL, member = i.member}
             if i.copy:
                 o.mask = i.mask
             if i.to != 0:
@@ -658,6 +665,9 @@ func analyze(f: usize) -> bool:
         mem.index[mem.keys[k]] = u32(k)
     mem.objs = mem.fns[f].objs
     mem.cells = mem.fns[f].cells
+    mem.viewed = false
+    for c in mem.cells:
+        mem.viewed = mem.viewed or c.member != 0
     mem.heads = mem.fns[f].heads
     mem.heaps = mem.fns[f].heaps
     mem.outer = mem.fns[f].outer
@@ -789,7 +799,7 @@ func analyze(f: usize) -> bool:
             if owner >= SLOTS or not (owner == RETURNED or owner == OUTSIDE or mem.outer[owner] or escaping[owner]):
                 continue
             v := mem.pool[mem.exit.vals[k]]
-            if mem.outer[owner] and v == initial(owner, c.off, c.stride) and empty(v.live and mem.exit.marks.killed):
+            if mem.outer[owner] and v == initial(owner, c.off, c.stride, c.member) and empty(v.live and mem.exit.marks.killed):
                 continue
             if v.slot != 0:
                 v.slot = 0
@@ -918,6 +928,8 @@ func visit(block: usize):
         case Offset:
             x := target_of(o.a)
             y := target_of(o.b)
+            if o.member != 0:
+                x.member = o.member
             if pointing(x) and pointing(y):
                 define(o.to, blur(x, y))
             elif pointing(y):
@@ -1073,21 +1085,23 @@ func visit(block: usize):
                         c = mem.fns[g].cells[sum.ids[k]]
                     x := usize(c.owner)
                     if x == RETURNED and o.blob:
-                        append(mem.writes, Write{translate(sum.aims[k]), cell_at(SLOTS + usize(o.slot), c.off, c.stride), true})
+                        append(mem.writes, Write{translate(sum.aims[k]), cell_at(SLOTS + usize(o.slot), c.off, c.stride, c.member), true})
                     ob := obj_of(g, x)
                     if x != RETURNED and not (ob.kind == Entry and ob.depth == 0 and ob.root > 0 and mem.fns[g].copies[ob.root - 1]):
                         t := binding(x)
                         v := translate(sum.aims[k])
                         p := plus(t, c.off, c.stride)
+                        if v.writer == 0:
+                            v.writer = p.member
                         exact := p.off != ANY and p.stride == 0
                         targets := t.live - mem.pinned
                         one := t.slot == 0 and single(targets) or empty(targets) and t.slot != 0 and t.slot != ALL
                         for h in targets:
-                            append(mem.writes, Write{v, cell_at(h, p.off, p.stride), (one or t.must[h]) and exact and not mem.many[h]})
+                            append(mem.writes, Write{v, cell_at(h, p.off, p.stride, c.member), (one or t.must[h]) and exact and not mem.many[h]})
                         if t.slot != 0 and t.slot != ALL:
-                            append(mem.writes, Write{v, cell_at(SLOTS + usize(t.slot) - 1, p.off, p.stride), one and exact})
+                            append(mem.writes, Write{v, cell_at(SLOTS + usize(t.slot) - 1, p.off, p.stride, c.member), one and exact})
                         if t.live[OUTSIDE]:
-                            append(mem.writes, Write{v, cell_at(OUTSIDE, ANY, 0), false})
+                            append(mem.writes, Write{v, cell_at(OUTSIDE, ANY, 0, 0), false})
                 mem.order.len = 0
                 for k in 0..mem.writes.len:
                     append(mem.order, (u64(mem.writes[k].id) << 32) or u64(k))
@@ -1174,13 +1188,12 @@ func visit(block: usize):
                 stash(blur(to, nothing), fetch(blur(from, nothing)))
             define(o.to, to)
         case Absent:
-            address := target_of(o.a)
+            address := plus(target_of(o.a), 8, 0)
+            address.member = o.member
             gone: Set
             for k in 0..i64(o.size) / 8:
                 if marked(o.mask, k):
-                    spot := plus(address, i32(k * 8), 0)
-                    gone = gone or fetch(spot).must and (mem.heaps and mem.marks.live or mem.outer - mem.roots)
-                    stash(spot, number(0))
+                    gone = gone or fetch(plus(address, i32(k * 8), 0)).must and (mem.heaps and mem.marks.live or mem.outer - mem.roots)
             if not empty(gone and mem.outer):
                 for x in mem.outer:
                     if mem.objs[x].depth > 0 and gone[mem.objs[x].parent]:
@@ -1252,16 +1265,19 @@ func visit(block: usize):
             mem.seen = false
 
 func pass_back(owner: usize, given: Target):
-    k := mem.heads[owner]
-    while k != 0:
-        c := mem.cells[k - 1]
-        if mem.stamp[k - 1] == mem.tick:
-            v := value(k - 1)
-            if c.off == ANY or given.off == ANY or given.stride != 0 or c.stride != 0:
-                settle(cell_at(RETURNED, ANY, 0), v, false)
-            elif c.off >= given.off:
-                settle(cell_at(RETURNED, c.off - given.off, 0), v, true)
-        k = c.next
+    for views in [false, true]: # settling a word drops its views
+        k := mem.heads[owner]
+        while k != 0:
+            c := mem.cells[k - 1]
+            if mem.stamp[k - 1] == mem.tick and (c.member != 0) == views and not (views and given.member != 0):
+                v := value(k - 1)
+                if given.member != 0:
+                    v = gather(Target{}, owner, c.off, c.stride, given.member, alive(mem.marks))
+                if c.off == ANY or given.off == ANY or given.stride != 0 or c.stride != 0:
+                    settle(cell_at(RETURNED, ANY, 0, c.member), v, false)
+                elif c.off >= given.off:
+                    settle(cell_at(RETURNED, c.off - given.off, 0, c.member), v, true)
+            k = c.next
 
 func snapshot() -> State:
     out := State{marks = mem.marks, seen = true}
@@ -1315,6 +1331,8 @@ func merge(a: State, b: State, s: usize) -> State:
     la := alive(x)
     lb := alive(y)
     dying := complement(la or lb)
+    views: &list[u64]
+    defer free(views)
     i: usize = 0
     j: usize = 0
     while i < a.ids.len or j < b.ids.len:
@@ -1322,23 +1340,53 @@ func merge(a: State, b: State, s: usize) -> State:
             id := a.ids[i]
             c := mem.cells[id]
             append(out.ids, id)
-            append(out.vals, intern(unite(mem.pool[a.vals[i]], initial(usize(c.owner), c.off, c.stride), la, lb)))
+            append(out.vals, intern(unite(mem.pool[a.vals[i]], missing(b, c), la, lb)))
             i += 1
         elif i == a.ids.len or b.ids[j] < a.ids[i]:
             id := b.ids[j]
             c := mem.cells[id]
             if needed(id, s):
                 append(out.ids, id)
-                append(out.vals, intern(unite(initial(usize(c.owner), c.off, c.stride), mem.pool[b.vals[j]], la, lb)))
+                append(out.vals, intern(unite(missing(a, c), mem.pool[b.vals[j]], la, lb)))
             j += 1
         else:
-            append(out.ids, a.ids[i])
+            id := a.ids[i]
+            append(out.ids, id)
             append(out.vals, blend(a.vals[i], b.vals[j], la, lb, dying))
+            if a.vals[i] != b.vals[j]:
+                wa := mem.pool[a.vals[i]].writer
+                wb := mem.pool[b.vals[j]].writer
+                if wa != wb and wa != 0 and wb != 0 and mem.cells[id].member == 0:
+                    c := mem.cells[id]
+                    append(views, (u64(cell_at(usize(c.owner), c.off, c.stride, wa)) << 32) or u64(a.vals[i]))
+                    append(views, (u64(cell_at(usize(c.owner), c.off, c.stride, wb)) << 32) or u64(b.vals[j]))
             i += 1
             j += 1
     for k in 0..a.temps.len:
         append(out.temps, blend(a.temps[k], b.temps[k], la, lb, dying))
+    kept: usize = 0
+    for v in views:
+        if binary_search(out.ids, u32(v >> 32)) is null:
+            views[kept] = v
+            kept += 1
+    if kept > 0:
+        views.len = kept
+        for k in 0..out.ids.len:
+            append(views, (u64(out.ids[k]) << 32) or u64(out.vals[k]))
+        sort(views)
+        out.ids.len = 0
+        out.vals.len = 0
+        for v in views:
+            append(out.ids, u32(v >> 32))
+            append(out.vals, u32(v and 0xffff_ffff))
     return out
+
+func missing(st: State, c: Cell) -> Target:
+    if c.member != 0:
+        found := binary_search(st.ids, u32(cell_at(usize(c.owner), c.off, c.stride, 0)))
+        if found is usize:
+            return through(mem.pool[st.vals[found]], c.member)
+    return initial(usize(c.owner), c.off, c.stride, c.member)
 
 func blend(x: u32, y: u32, la: Set, lb: Set, dying: Set) -> u32:
     if x == y and empty(mem.pool[x].live and dying):
@@ -1392,7 +1440,7 @@ func fold(h: u64, x: Set) -> u64:
     return out
 
 operator ==(a: Target, b: Target) -> bool:
-    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot and a.element == b.element
+    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot and a.member == b.member and a.writer == b.writer and a.element == b.element
 
 func release(st: State):
     free(st.ids)
@@ -1429,6 +1477,7 @@ func define(t: u32, v: Target):
     if t == 0:
         return
     mem.temps[t] = v
+    mem.temps[t].writer = 0
     mem.interned[t] = 0
     if not mem.cross[t] and mem.last[t] > mem.here and not empty(objects(v.live or v.dead)):
         append(mem.active, t)
@@ -1476,6 +1525,10 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out.dead = a.dead or b.dead
     out.must = (a.must or complement(la)) and (b.must or complement(lb)) and out.live
     out.element = a.element and (b.element or plain(b)) or b.element and plain(a)
+    if a.writer != b.writer:
+        out.writer = 0
+    if a.member != b.member and not plain(b):
+        out.member = 0
     if a.slot == 0:
         out.slot = b.slot
     elif b.slot != 0 and b.slot != a.slot:
@@ -1490,6 +1543,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     if plain(a):
         out.off = b.off
         out.stride = b.stride
+        out.member = b.member
     elif plain(b) or a.off == b.off and a.stride == b.stride:
         return out
     elif a.off == ANY or b.off == ANY or a.stride != 0 and b.stride != 0 and a.stride != b.stride or (a.off - b.off) % stride != 0:
@@ -1513,14 +1567,14 @@ func fetch(a: Target) -> Target:
             out = unite(out, Target{live = bit(o), must = bit(o)}, live, live)
         elif o != GONE:
             exact = exact and not mem.many[o]
-            out = gather(out, o, a.off, a.stride, live)
+            out = gather(out, o, a.off, a.stride, a.member, live)
     if a.slot == ALL:
         count += 2
         for s in 0..mem.slots:
-            out = gather(out, SLOTS + s, a.off, a.stride, live)
+            out = gather(out, SLOTS + s, a.off, a.stride, a.member, live)
     elif a.slot != 0:
         count += 1
-        out = gather(out, SLOTS + usize(a.slot) - 1, a.off, a.stride, live)
+        out = gather(out, SLOTS + usize(a.slot) - 1, a.off, a.stride, a.member, live)
     if blank(out):
         return number(0)
     if count > 1 or not exact:
@@ -1529,60 +1583,89 @@ func fetch(a: Target) -> Target:
         out.element = true
     return out
 
-func gather(given: Target, owner: usize, off: i32, stride: i32, live: Set) -> Target:
+func gather(given: Target, owner: usize, off: i32, stride: i32, member: u32, live: Set) -> Target:
     out := given
-    own := false
+    word: u32 = 0
+    view: u32 = 0
     h := mem.heads[owner]
     while h != 0:
         c := mem.cells[h - 1]
-        fits := c.off == ANY or off == ANY
-        if not fits and c.stride == 0 and stride == 0:
-            fits = c.off == off
-        elif not fits and c.stride == 0:
-            fits = c.off >= off and (c.off - off) % stride == 0
-        elif not fits and stride == 0:
-            fits = off >= c.off and (off - c.off) % c.stride == 0
-        elif not fits:
-            fits = c.stride != stride or (c.off - off) % stride == 0
-        if fits:
-            out = unite(out, current(usize(h) - 1), live, live)
-            own = own or c.off == off and c.stride == stride
+        if c.off == off and c.stride == stride:
+            if c.member == 0:
+                word = h
+            elif c.member == member:
+                view = h
+        elif c.member == 0:
+            fits := c.off == ANY or off == ANY
+            if not fits and c.stride == 0 and stride == 0:
+                fits = c.off == off
+            elif not fits and c.stride == 0:
+                fits = c.off >= off and (c.off - off) % stride == 0
+            elif not fits and stride == 0:
+                fits = off >= c.off and (off - c.off) % c.stride == 0
+            elif not fits:
+                fits = c.stride != stride or (c.off - off) % stride == 0
+            if fits:
+                out = unite(out, current(usize(h) - 1), live, live)
         h = c.next
-    if not own:
-        out = unite(out, initial(owner, off, stride), live, live)
-    return out
+    if view != 0:
+        return unite(out, current(usize(view) - 1), live, live)
+    if word == 0 or member != 0 and mem.stamp[word - 1] != mem.tick:
+        return unite(out, initial(owner, off, stride, member), live, live)
+    if member != 0:
+        return unite(out, through(value(word - 1), member), live, live)
+    return unite(out, current(usize(word) - 1), live, live)
 
 func stash(a: Target, v: Target):
+    if a.member != 0:
+        v.writer = a.member
     targets := a.live - mem.pinned
     one := a.slot == 0 and single(targets) or empty(targets) and a.slot != 0 and a.slot != ALL
     for o in targets:
-        settle(cell_at(o, a.off, a.stride), v, (one or a.must[o]) and not mem.many[o])
+        settle(cell_at(o, a.off, a.stride, 0), v, (one or a.must[o]) and not mem.many[o])
     if a.slot == ALL:
         for s in 0..mem.slots:
-            settle(cell_at(SLOTS + s, a.off, a.stride), v, false)
+            settle(cell_at(SLOTS + s, a.off, a.stride, 0), v, false)
     elif a.slot != 0:
-        settle(cell_at(SLOTS + usize(a.slot) - 1, a.off, a.stride), v, one)
+        settle(cell_at(SLOTS + usize(a.slot) - 1, a.off, a.stride, 0), v, one)
     if a.live[OUTSIDE]:
-        settle(cell_at(OUTSIDE, ANY, 0), v, false)
+        settle(cell_at(OUTSIDE, ANY, 0, 0), v, false)
+
+func sole(a: Target) -> usize:
+    targets := a.live - mem.pinned
+    if a.slot == 0 and single(targets):
+        for o in targets:
+            return o
+    if empty(targets) and a.slot != 0 and a.slot != ALL:
+        return SLOTS + usize(a.slot) - 1
+    return NONE
 
 func settle(id: usize, given: Target, single: bool):
     c := mem.cells[id]
     v := given
     if plain(v):
         v = number(0)
+        v.writer = given.writer
     if single and c.off != ANY and c.stride == 0:
         place(id, v)
-        return
-    old := current(id)
-    live := alive(mem.marks)
-    w := unite(old, v, live, live)
-    w.must = Set{}
-    if many(c):
-        w.must = (old.must or v.must) and w.live
-        if v.element:
-            for h in objects(v.live):
-                mem.objs[h].element = true
-    place(id, w)
+    else:
+        old := current(id)
+        live := alive(mem.marks)
+        w := unite(old, v, live, live)
+        w.must = Set{}
+        if many(c):
+            w.must = (old.must or v.must) and w.live
+            if v.element:
+                for h in objects(v.live):
+                    mem.objs[h].element = true
+        place(id, w)
+    if c.member == 0 and mem.viewed:
+        h := mem.heads[c.owner]
+        while h != 0:
+            d := mem.cells[h - 1]
+            if d.member != 0 and d.off == c.off and d.stride == c.stride:
+                drop(usize(h) - 1)
+            h = d.next
 
 func many(c: Cell) -> bool:
     return c.off == ANY or c.stride != 0 or c.owner < SLOTS and mem.many[usize(c.owner)]
@@ -1596,7 +1679,16 @@ func current(id: usize) -> Target:
     if mem.stamp[id] == mem.tick:
         return value(u32(id))
     c := mem.cells[id]
-    return initial(usize(c.owner), c.off, c.stride)
+    if c.member != 0:
+        word := cell_at(usize(c.owner), c.off, c.stride, 0)
+        if mem.stamp[word] == mem.tick:
+            return through(value(u32(word)), c.member)
+    return initial(usize(c.owner), c.off, c.stride, c.member)
+
+func through(word: Target, member: u32) -> Target:
+    if word.writer == 0 or word.writer == member:
+        return word
+    return Target{}
 
 func place(id: usize, v: Target):
     c := mem.cells[id]
@@ -1622,13 +1714,15 @@ func drop(id: usize):
     if mem.stamp[id] == mem.tick:
         mem.stamp[id] = mem.tick xor DROPPED
 
-func initial(owner: usize, off: i32, stride: i32) -> Target:
+func initial(owner: usize, off: i32, stride: i32, member: u32) -> Target:
     if owner >= SLOTS or not mem.outer[owner]:
         return number(0)
+    if member >= MEMBERS:
+        return initial(owner, off, stride, 0)
     x := mem.objs[owner]
     c: usize = OUTSIDE
     if x.depth < DEPTH:
-        c = object(child(owner, off, stride), Obj{kind = Entry, parent = owner, off = off, stride = stride, root = x.root, depth = x.depth + 1, many = mem.many[owner] or off == ANY or stride != 0})
+        c = object(child(owner, off, stride) or (u64(member) << 49), Obj{kind = Entry, parent = owner, off = off, stride = stride, member = member, root = x.root, depth = x.depth + 1, many = mem.many[owner] or off == ANY or stride != 0})
     return Target{live = bit(c), must = bit(c)}
 
 func child(owner: usize, off: i32, stride: i32) -> u64:
@@ -1639,15 +1733,19 @@ func child(owner: usize, off: i32, stride: i32) -> u64:
         code = (u64(stride) << 13) or u64(off)
     return (u64(owner) << 40) or (code << 8) or FIELD
 
-func cell_at(owner: usize, off: i32, stride: i32) -> usize:
+func cell_at(owner: usize, off: i32, stride: i32, member: u32) -> usize:
+    if member != 0:
+        cell_at(owner, off, stride, 0) # a word before its views, settling it drops them
     h := mem.heads[owner]
     while h != 0:
         c := mem.cells[h - 1]
-        if c.off == off and c.stride == stride:
+        if c.off == off and c.stride == stride and c.member == member:
             return usize(h) - 1
         h = c.next
-    append(mem.cells, Cell{owner = u32(owner), next = mem.heads[owner], off = off, stride = stride})
+    append(mem.cells, Cell{owner = u32(owner), next = mem.heads[owner], off = off, stride = stride, member = member})
     mem.heads[owner] = u32(mem.cells.len)
+    if member != 0:
+        mem.viewed = true
     if mem.cur.len < mem.cells.len:
         blank: Target
         append(mem.cur, blank)
@@ -1729,7 +1827,7 @@ func birth(key: u64, given: Obj) -> usize:
                 if mem.stamp[id] == mem.tick:
                     v := value(u32(id))
                     drop(id)
-                    into := cell_at(t, c.off, c.stride)
+                    into := cell_at(t, c.off, c.stride, c.member)
                     old := current(into)
                     w := unite(old, v, live, live)
                     w.must = (old.must or v.must) and w.live
@@ -1785,9 +1883,9 @@ func sweep():
     for o in condemned and mem.outer:
         x := mem.objs[o]
         if x.depth > 0:
-            id := cell_at(x.parent, x.off, x.stride)
+            id := cell_at(x.parent, x.off, x.stride, x.member)
             if mem.stamp[id] != mem.tick:
-                place(id, initial(x.parent, x.off, x.stride))
+                place(id, initial(x.parent, x.off, x.stride, x.member))
     strong := mem.strong
     for o in condemned:
         first: usize = 0
@@ -1876,6 +1974,21 @@ func transfer(to: Target, from: Target, size: i64, mask: u64):
         if marked(mask, k):
             v = fetch(plus(from, i32(k * 8), 0))
         stash(plus(to, i32(k * 8), 0), v)
+    if not mem.viewed or from.off == ANY or from.member != 0:
+        return
+    owner := sole(from)
+    into := sole(to)
+    if owner == NONE or into == NONE:
+        return
+    h := mem.heads[owner]
+    while h != 0:
+        c := mem.cells[h - 1]
+        k := i64(c.off) - i64(from.off)
+        if c.member != 0 and c.stride == from.stride and k >= 0 and k < size and k % 8 == 0 and marked(mask, k / 8) and mem.stamp[h - 1] == mem.tick:
+            spot := plus(to, i32(k), 0)
+            if spot.off != ANY:
+                settle(cell_at(into, spot.off, spot.stride, c.member), value(h - 1), into >= SLOTS or not mem.many[into])
+        h = c.next
 
 func marked(mask: u64, k: i64) -> bool:
     return k < 63 and ((mask >> u64(k)) and 1) != 0 or k >= 63 and (mask >> 63) != 0
@@ -1912,6 +2025,8 @@ func binding(x: usize) -> Target:
             out = target_of(mem.args[usize(o.first) + ob.root - 1])
     elif ob.kind == Entry:
         home = plus(binding(ob.parent), ob.off, ob.stride)
+        if ob.member != 0:
+            home.member = ob.member
         out = fetch(home)
     if ob.kind == Entry and mem.fns[g].sum.marks.made[x]:
         refs := objects(out.live)
@@ -1945,6 +2060,8 @@ func translate(v: Target) -> Target:
     must: Set
     for x in objects(v.live):
         b := plus(binding(x), v.off, v.stride)
+        if v.member != 0:
+            b.member = v.member
         if v.must[x]:
             must = must or b.must
         out = unite(out, b, live, live)
@@ -1953,9 +2070,10 @@ func translate(v: Target) -> Target:
         b := binding(x)
         out.dead = out.dead or objects(b.live or b.dead)
     if blank(out):
-        return number(0)
-    if v.live[NOWHERE]:
+        out = number(0)
+    elif v.live[NOWHERE]:
         out.live = out.live or bit(NOWHERE)
+    out.writer = v.writer
     return out
 
 func escape(v: Target, pos: usize):
