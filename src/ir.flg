@@ -66,13 +66,12 @@ func open_block(l: u32):
     comp.live = true
 
 func mention(name: &strview, a: Arg):
-    if a.kind == Temp:
-        append(comp.mentions, Mention{u32(a.n), name})
-    k := comp.held.len
-    while k > 0:
-        k -= 1
-        if a.kind == Temp and comp.slots[comp.held[k]].to == u32(a.n):
-            remove(comp.held, k)
+    if a.kind != Temp:
+        return
+    append(comp.mentions, Mention{u32(a.n), name})
+    for k in reverse 0..comp.held.len:
+        if comp.slots[comp.held[k]].to == u32(a.n):
+            remove(comp.held, k) # the slot of a variable is never given back
             return
 
 func listing() -> &str:
