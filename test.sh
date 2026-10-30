@@ -62,6 +62,18 @@ for src in tests/*.flg tests/*/; do
         fail=$((fail + 1))
         continue
     fi
+    case " $args " in
+    *" -check "*)
+        if cmp -s "$out/$name.got" "tests/$name.out"; then
+            pass=$((pass + 1))
+        else
+            echo "FAIL $name: the compiler printed something else"
+            diff "tests/$name.out" "$out/$name.got" | head -20
+            fail=$((fail + 1))
+        fi
+        continue
+        ;;
+    esac
     if [ -s "$out/$name.got" ]; then
         echo "FAIL $name: compiles, but not in silence"
         cat "$out/$name.got"

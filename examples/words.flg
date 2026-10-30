@@ -14,7 +14,7 @@ func main() -> i32:
         return 2
     file := read_text_file(args()[1])
     if file is FsError:
-        eprint("cannot read ", args()[1], ": ", file)
+        eprint(file)
         return 1
     defer free(file)
     text := lower(file)
@@ -28,8 +28,7 @@ func main() -> i32:
         if c >= 'a' and c <= 'z' or c == '\'':
             continue
         if i > start:
-            word := text[start:i]
-            counts[word] = (counts[word] ifnull 0) + 1
+            counts[text[start:i]] += 1
         start = i + 1
     ranking: &list[Count]
     defer free(ranking)
@@ -39,5 +38,5 @@ func main() -> i32:
     for i, c in ranking:
         if i == 10:
             break
-        print(c.times, "\t", c.word)
+        print(pad(c.times, 6), "  ", c.word)
     return 0

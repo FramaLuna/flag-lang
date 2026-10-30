@@ -1,18 +1,16 @@
-type error enum ConfigError = MissingEquals|BadNumber|UnknownKey
-
 type Config:
     width: i64
     height: i64
     lives: i64
 
-func apply(config: *Config, line: &strview) -> ConfigError?:
-    cut := find(line, "=")
-    if cut is null:
-        return MissingEquals
-    key := trim(line[0:cut])
-    value := parse_int(trim(line[cut + 1:line.len]))
-    if value is null:
-        return BadNumber
+type error BadLine:
+    line: usize
+    why: &strview
+
+type error UnknownKey:
+    key: &strview
+
+func set(config: *Config, key: &strview, value: i64) -> UnknownKey?:
     switch key:
     case "width":
         config.width = value
@@ -21,24 +19,34 @@ func apply(config: *Config, line: &strview) -> ConfigError?:
     case "lives":
         config.lives = value
     case:
-        return UnknownKey
+        return UnknownKey{key}
     return null
 
-func load(text: &strview) -> Config|ConfigError:
+func load(text: &strview) -> Config|BadLine|UnknownKey:
     config := Config{800, 600, 3}
-    for line in split(text, "\n"):
-        if trim(line).len > 0:
-            try apply(ptr(config), line)
+    for i, line in split(text, "\n"):
+        if trim(line).len == 0:
+            continue
+        cut := find(line, "=")
+        if cut is null:
+            return BadLine{i + 1, "it has no ="}
+        value := parse_int(trim(line[cut + 1:]))
+        if value is null:
+            return BadLine{i + 1, "the value is not a number"}
+        try set(ptr(config), trim(line[:cut]), value)
     return config
 
-func main() -> i32:
-    good := load("width = 1024\nlives = 5\n")
-    if good is Config:
-        print("loaded ", good)
-    for text in ["height: 10", "width = ten", "speed = 3"]:
+func main():
+    for text in ["width = 1024\nlives = 5", "lives = 2\nheight: 10", "width = ten", "speed = 3"]:
         got := load(text)
-        if got is ConfigError:
-            print("\"", text, "\" fails with ", got)
+        switch got:
+        case Config:
+            print("loaded ", got)
+        case BadLine:
+            print("line ", got.line, " is wrong, ", got.why)
+        case UnknownKey:
+            print("there is no setting called ", got.key)
+    small := load("width = 0x10") iferror Config{320, 200, 1}
+    print("width ", small.width)
     sure := trust load("height = 720")
     print("trusted height ", sure.height)
-    return 0

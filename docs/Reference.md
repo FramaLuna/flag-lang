@@ -426,7 +426,9 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Assignments
-In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`, with `v` taking its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` then reads the copy, adds and puts it back, and a copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map the `MapFull?` of `put` makes it a statement that drops an error, like `x[i] = v`.
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
+
+When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map `put` gives `MapFull?`, so there `x[i] = v` and `x[i] += v` are statements that drop an error (see [Rough edges](#rough-edges)).
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -485,7 +487,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
 
 ### with
-`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of File can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
+`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of Lock can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
 
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
@@ -496,7 +498,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
-An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FsError = CannotOpen|CannotRead`), or a struct with fields that say what happened
+An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FileError = CannotOpen|CannotRead`), or a struct with fields that say what happened
 ```flag
 type error BadLine:
     line: usize
@@ -649,6 +651,7 @@ These give warnings that are not real
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
 - a text appended to itself, `t += t`: `+=` copies the text first when it is a view of the same memory, but the checker only sees that it may free what it reads
 - memory that a function frees more than three pointers away from its parameters, like `free(p.a.b.c.d)`: the caller is told that it is never freed
+- a union of an error with data and a value that holds memory, like the `&str|FsError` of `read_text_file` or the `Document|NotJson` of `json.parse`: after `if text is FsError: return` it can warn that the memory is never freed, or that the error points to memory that may be freed already. It doesn't tie the words of a union to its tag
 
 `@trust` at the end of the line hides them (see below).
 
@@ -801,7 +804,8 @@ error: the line ends here, expected ':'
 - `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
-- `name.args` has more arguments for the compiler in that test
+- `name.args` has more arguments for the compiler in that test. With `-check` among them nothing runs, and `name.out` is what the compiler must print, that's how `-at` is tested
+- a file the test needs, like the overlay of `name.overlay`, goes next to it with the same name
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 

@@ -17,8 +17,6 @@ priv extern "c":
     func close(fd: i64) -> i32
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
-    func __errno_location() -> *i32
-    func __error() -> *i32
     func FormatMessageA(flags: u32, source: *bytes, code: u32, language: u32, into: *u8, size: u32, arguments: *bytes) -> u32
 
 priv extern "ws2_32" where @windows():
@@ -137,10 +135,10 @@ priv func prepare() where @windows():
     WSAStartup(514, ptr(data) as *bytes)
 
 priv func failure(action: &strview) -> NetError where @linux():
-    return failure(action, __errno_location().*, 11)
+    return failure(action, errno(), 11)
 
 priv func failure(action: &strview) -> NetError where @macos():
-    return failure(action, __error().*, 35)
+    return failure(action, errno(), 35)
 
 priv func failure(action: &strview) -> NetError where @windows():
     return unresolved(action, WSAGetLastError())
