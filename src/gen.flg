@@ -460,12 +460,15 @@ func gen(n: usize, want: usize) -> Value|Fail:
             jump(l.again)
         return none
     case Defer:
+        last := node.tok
         for i in n + 1..node_end(n):
-            k := comp.nodes[i].kind
+            if comp.nodes[i].tok > last:
+                last = comp.nodes[i].tok
             if comp.nodes[i - 1].kind != Assign:
                 reads(i)
-            if k == Return or k == Jump or k == Unary and text(i) == "try":
-                return fail("a deferred statement runs on the way out, it cannot hold " + text(i), comp.tokens[comp.nodes[i].tok].at)
+        for t in comp.tokens[node.tok + 1:last + 1]:
+            if t.kind == Name and (t.text == "return" or t.text == "break" or t.text == "continue" or t.text == "try"):
+                return fail("a deferred statement runs on the way out, it cannot hold " + t.text, t.at)
         append(comp.defers, Deferred{n + 1, comp.vars.len, none})
         return none
     case With:
@@ -970,73 +973,75 @@ func cases(n: usize) -> Fail?:
     lives: usize = 0
     c := node_end(n + 1)
     while c < node_end(n):
-        labels := kids(c) - 1
-        if fallback != 0 and labels == 0:
-            return fail("a switch has one default case, this is a second one", comp.tokens[comp.nodes[c].tok].at)
+        at := comp.tokens[comp.nodes[c].tok].at
+        comp.pos = comp.nodes[c].tok + 1
+        if fallback != 0 and peek(":"):
+            return fail("a switch has one default case, this is a second one", at)
         if fallback != 0:
             return fail("the default case goes last in a switch", comp.tokens[comp.nodes[fallback].tok].at)
         l_body := label()
         l_next := label()
         handled: &list[usize]
-        if labels == 0:
+        last := peek(":")
+        if last:
             if union and left.len == 0:
-                return fail("this default case never runs, the cases above handle every type of " + whole.name, comp.tokens[comp.nodes[c].tok].at)
+                return fail("this default case never runs, the cases above handle every type of " + whole.name, at)
             fallback = c
             handled = left
             jump(l_body)
-        l := c + 1
-        for i in 0..labels:
-            k := comp.nodes[l].kind
-            typed := k == TName or k == TUnary or k == TUnion or k == TFunc
+        while not last:
+            first := here()
+            local := first.kind == Name and lookup(first.text) != 0
+            module := qualifier()
+            name := comp.tokens[comp.pos + 2 * usize(module.len > 0)]
+            named := name.kind == Name and (get(comp.type_ids, name.text) is usize or try find_type(name.text, module, name.at) != 0)
+            typed := not local and (peek("*") or peek("&") or named or union and (first.kind == Name or first.kind == Generic or peek("(")))
+            if typed and not union:
+                return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", first.at)
+            l := comp.nodes.len
+            if typed:
+                try type_expr()
+            else:
+                try expr(1)
+            last = not peek(",")
+            if union and local:
+                return fail(first.text + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", first.at)
+            if union and (not typed or last and not peek(":")):
+                return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", first.at)
+            if last and not peek(":"):
+                return expect(":")
             if union:
-                head := l
-                while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index and kids(head) == 2:
-                    head += 1
-                if not typed and comp.nodes[head].kind != Name:
-                    return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", source(l))
-                if local_of(head) != 0:
-                    return fail(text(head) + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", source(l))
-                t: usize = VOID
-                if head == l:
-                    t = try resolve(l)
-                else:
-                    comp.pos = comp.nodes[head].tok - 2 * usize(comp.nodes[head].module.len > 0)
-                    made := comp.nodes.len
-                    try type_expr()
-                    t = try resolve(made)
-                    comp.nodes.len = made
-                for m in members(t):
+                for m in members(try resolve(l)):
                     if not has(members(subject.type), m):
-                        return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", source(l))
+                        return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", first.at)
                     if not has(left, m):
-                        return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", source(l))
+                        return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", first.at)
                     append(handled, m)
                     remove(left, trust find(left, m))
             else:
-                if typed:
-                    return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", source(l))
                 eq: Value
-                if k == Binary and text(l) == "..":
-                    low := try binary(">=", subject, try value(l + 1, VOID), source(l))
-                    high := try binary("<", subject, try value(node_end(l + 1), VOID), source(l))
+                if comp.nodes[l].kind == Binary and text(l) == "..":
+                    low := try binary(">=", subject, try value(l + 1, VOID), first.at)
+                    high := try binary("<", subject, try value(node_end(l + 1), VOID), first.at)
                     eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
                 else:
-                    eq = try binary("==", subject, try value(l, subject.type), source(l))
+                    eq = try binary("==", subject, try value(l, subject.type), first.at)
                 if eq.type != BOOL:
-                    return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, source(l))
+                    return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, first.at)
                 l_more := l_next
-                if i + 1 < labels:
+                if not last:
                     l_more = label()
                 branch(load(eq).at, l_body, l_more)
-                if i + 1 < labels:
+                if not last:
                     open_block(l_more)
-            l = node_end(l)
-        if union and labels > 0:
+            comp.nodes.len = l
+            comp.pos += 1
+        if union and fallback != c:
             branch(tag_test(subject, handled), l_body, l_next)
         open_block(l_body)
         if union and local_of(n + 1) != 0:
             try confine(n + 1, handled, source(c))
-        try statements(kid(c, labels))
+        try statements(c + 1)
         if try keep(before, before, ends):
             lives += 1
             jump(l_end)

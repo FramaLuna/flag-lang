@@ -471,7 +471,7 @@ func area(s: Circle|Square|null) -> f64:
 - a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 
-A case written with something that only a type has (`*`, `&`, `?`, `|`, `->`, `func(...)` or a `,` between `[]`, like `Pair[i32, u8]`) is a type. Any other case is read as a type over a tagged union and as a value over anything else, so `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types there, and `limit`, `p.x` and `t[0]` are values in a switch over a number.
+The cases are read when the switch is checked, with the type of the subject known: over a tagged union a case is a type and over anything else a value. So `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types in a switch over a union, and `limit`, `p.x` and `t[0]` are values in a switch over a number. In a generic function every instance reads the cases with its own types, so a mistake in a case shows when a call makes that instance.
 
 `break` inside a switch leaves the loop around the switch.
 

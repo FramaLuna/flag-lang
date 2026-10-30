@@ -442,32 +442,12 @@ func stmt() -> Fail?:
             comp.pos += 1
             c := begin(Case, comp.pos)
             comp.pos += 1
-            while not peek(":"):
-                start := comp.pos
-                depth: usize = 0
-                typed := false
-                while depth > 0 or not peek(",") and not peek(":"):
-                    prior := comp.tokens[comp.pos - 1]
-                    named := comp.pos > start and (prior.kind == Name or prior.kind == Generic)
-                    valued := named or comp.pos > start and (prior.kind == Int or prior.text == ")" or prior.text == "]")
-                    if peek("[") and named or peek("(") and (not valued or prior.text == "func"):
-                        depth += 1
-                        typed = typed or prior.text == "func"
-                    elif peek("]") or peek(")"):
-                        depth -= 1
-                    elif peek("&") or peek("|") or peek("?") or peek("->") or peek(",") or peek("*") and not valued:
-                        typed = true
-                    elif here().kind != Name and here().kind != Generic and here().kind != Int and not peek("."):
-                        typed = false
-                        break
-                    comp.pos += 1
-                comp.pos = start
-                if typed:
-                    try type_expr()
-                else:
-                    try expr(1)
-                if not peek(","):
-                    break
+            depth: usize = 0
+            while depth > 0 or not peek(":") and here().kind != Line:
+                if peek("(") or peek("[") or peek("{"):
+                    depth += 1
+                elif peek(")") or peek("]") or peek("}"):
+                    depth -= 1
                 comp.pos += 1
             try block()
             finish(c)
