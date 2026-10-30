@@ -15,17 +15,25 @@ extern "c":
 priv extern "c":
     func read(fd: i32, at: *bytes, size: usize) -> i32
     func write(fd: i32, at: *bytes, size: usize) -> i32
+    func open(path: cstr, flags: i32, ...) -> i32
     func close(fd: i32) -> i32
-    func dup(fd: i32) -> i32
     func isatty(fd: i32) -> i32
+    func poll(fds: *bytes, count: u64, wait: i32) -> i32
+    func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func atexit(callback: *bytes) -> i32
-    func fopen(path: cstr, mode: cstr) -> *bytes
-    func fileno(file: *bytes) -> i32
-    func fclose(file: *bytes) -> i32
+    func _exit(code: i32)
     func strerror(code: i32) -> cstr
+    func gai_strerror(code: i32) -> cstr
     func __errno_location() -> *i32
     func __error() -> *i32
     func _errno() -> *i32
+    func FormatMessageA(flags: u32, source: *bytes, code: u32, language: u32, into: *u8, size: u32, arguments: *bytes) -> u32
+
+priv extern "ws2_32" where @windows():
+    func WSAGetLastError() -> i32
+    func closesocket(fd: i64) -> i32
 
 type Integer = i8|i16|i32|i64|u8|u16|u32|u64|usize
 
@@ -540,12 +548,16 @@ func find(s: &strview, part: &strview) -> usize|null: @trust
         at += 1
     return null
 
-func find_last(s: &strview, part: &strview) -> usize|null:
+func find_last(s: &strview, part: &strview) -> usize|null: @trust
     if part.len > s.len:
         return null
-    for i in reverse 0..s.len - part.len + 1:
-        if s[i:i + part.len] == part:
-            return i
+    if part.len == 0:
+        return s.len
+    first := part[0]
+    for at in reverse 0..s.len - part.len + 1:
+        hit := (ptr(s.*) as usize + at) as *u8
+        if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
+            return at
     return null
 
 func contains(s: &strview, part: &strview) -> bool:
@@ -615,6 +627,20 @@ func trim_end(s: &strview) -> &strview:
 priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
 
+func words(s: &strview) -> &slice[&strview]:
+    found: &list[&strview]
+    defer free(found)
+    bytes := items(s)
+    at: usize = 0
+    while at < bytes.len:
+        start := at
+        while at < bytes.len and not blank(bytes[at]):
+            at += 1
+        if at > start:
+            append(found, s[start:at])
+        at += 1
+    return temp(found)
+
 func split(s: &strview, separator: &strview) -> &slice[&strview]:
     count: usize = 1
     rest := s
@@ -659,8 +685,15 @@ func parse_int(s: &strview) -> i64|null:
     return i64(n)
 
 func parse_float(s: &strview) -> f64|null:
-    if s.len == 0 or s[0] <= ' ':
+    word := s
+    if starts_with(word, "-") or starts_with(word, "+"):
+        word = word[1:]
+    if word.len == 0:
         return null
+    if word != "inf" and word != "nan":
+        for b in items(word):
+            if (b < '0' or b > '9') and b != '.' and b != 'e' and b != 'E' and b != '-' and b != '+':
+                return null # only decimal, strtod would read 0x10 and infinity too
     with scratch():
         text := cstr(s)
         end := text
@@ -835,13 +868,18 @@ operator +=(s: *&str, f: Fixed):
         if tie and out[-1] % 2 == 1:
             bits.* += 2
             out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
+        if out[0] == '-' and strtod(ptr(out.*) as *u8, usize(0) as *bytes) == 0.0:
+            out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
 
 type Hex:
     value: u64
 
-func hex(value: u64) -> Hex:
-    return Hex{value}
+func hex(value: $I) -> Hex where $I is Integer:
+    bits := u64(value)
+    if sizeof($I) < 8:
+        bits = bits and (u64(1) << u64(sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
+    return Hex{bits}
 
 operator +=(s: *&str, h: Hex):
     digits: &strview = "0123456789abcdef"
@@ -885,6 +923,8 @@ stdin = File{0}
 stdout = File{1}
 stderr = File{2}
 
+TIMED_OUT = -10060 # the Windows code, negative like every code that is not errno
+
 type error FsError:
     code: i32
     action: &strview
@@ -894,81 +934,114 @@ operator +=(s: *&str, e: FsError):
     s.* += "cannot " + e.action
     if e.path.len > 0:
         s.* += " " + e.path
-    s.* += ": " + view(strerror(e.code))
+    if e.code == TIMED_OUT:
+        s.* += ": the timeout ran out"
+    else:
+        s.* += ": " + reason(e.code)
 
 priv type Stream:
+    fd: i32
+    open: bool
+    socket: bool
+    by_lines: bool
+    failed: i32
     path: &str
     unsent: &str
     received: &str
     given: usize
-    by_lines: bool
-    failed: i32
 
 priv context io:
     streams: &list[*Stream]
+    last: i32
 
-priv func stream(f: File) -> *Stream:
+priv func stream(f: File, place: &strview = @here()) -> *Stream:
+    if f.fd < 0:
+        panic("File{" + f.fd + "} is not an open file", place)
     if io.streams.len == 0:
-        atexit(ptr(flag_flush))
+        atexit(ptr(flag_exit))
     while io.streams.len <= usize(f.fd):
         append(io.streams, usize(0) as *Stream)
     if io.streams[usize(f.fd)] as usize == 0:
-        io.streams[usize(f.fd)] = heap(Stream{by_lines = f.fd == 2 or isatty(f.fd) != 0})
-    return io.streams[usize(f.fd)]
+        io.streams[usize(f.fd)] = heap(Stream{fd = f.fd})
+    s := io.streams[usize(f.fd)]
+    if not s.open:
+        s.open = true
+        address: array[u8, 128]
+        size: u32 = 128
+        s.socket = getsockname(i64(f.fd), ptr(address) as *bytes, ptr(size)) == 0
+        s.by_lines = not s.socket and (f.fd == 2 or isatty(f.fd) != 0)
+        if f.fd < 3:
+            names := ["the standard input", "the standard output", "the error output"]
+            s.path = names[f.fd]
+    return s
 
-priv export func flag_flush():
-    for i in 0..io.streams.len:
-        if io.streams[i] as usize != 0:
-            _ = flush(File{i32(i)})
+func flush():
+    for s in io.streams:
+        if s as usize != 0:
+            drain(s)
+
+priv export func flag_exit():
+    flush()
+    lost := flush(stdout)
+    if lost is FsError:
+        eprint("flag: ", lost)
+        _exit(1)
 
 func open(path: &strview) -> File|FsError:
-    return opened(path, "rb", "open")
+    return opened(path, 0, "open")
 
-func create(path: &strview) -> File|FsError:
-    return opened(path, "wb", "create")
+func create(path: &strview, append: bool = false) -> File|FsError:
+    return opened(path, 1 + usize(append), "create")
 
-priv func opened(path: &strview, mode: cstr, action: &strview) -> File|FsError:
-    file := usize(0) as *bytes
+priv func opened(path: &strview, mode: usize, action: &strview) -> File|FsError:
+    flags := open_flags()
+    f := File{-1}
     with scratch():
-        file = fopen(cstr(path), mode)
-    if file as usize == 0:
-        return FsError{errno(), action, path}
-    f := File{dup(fileno(file))}
+        f.fd = open(cstr(path), flags[mode], flags[3])
     if f.fd < 0:
-        failed := FsError{errno(), action, path}
-        fclose(file)
-        return failed
-    fclose(file)
+        return FsError{errno(), action, path}
     stream(f).path = path
     return f
 
-func write(f: File, value: $T):
-    s := stream(f)
-    start := s.unsent.len
+func write(f: File, value: $T, place: &strview = @here()):
+    s := stream(f, place)
+    if (f.fd == 1 or f.fd == 2) and io.last != f.fd:
+        drain(stream(File{3 - f.fd})) # stdout and stderr keep the order of the calls
+        io.last = f.fd
     s.unsent += value
-    if s.unsent.len >= 65536 or s.by_lines and find(s.unsent[start:], "\n") is usize:
-        _ = flush(f)
+    if s.unsent.len >= 65536 or s.by_lines and find(s.unsent, "\n") is usize:
+        drain(s)
+        if s.unsent.cap > 131072:
+            free(s.unsent) # after a big text the stream keeps only its usual room
 
-func flush(f: File) -> FsError?:
-    if f.fd == 2:
-        _ = flush(stdout) # what the standard output has goes first
-    s := stream(f)
+func flush(f: File, place: &strview = @here()) -> FsError?:
+    s := stream(f, place)
+    drain(s)
+    if s.failed == 0:
+        return null
+    failed := FsError{s.failed, "write", temp(s.path)}
+    s.failed = 0
+    return failed
+
+priv func drain(s: *Stream):
     sent: usize = 0
-    while sent < s.unsent.len and s.failed == 0:
-        n := write(f.fd, (ptr(s.unsent.*) as usize + sent) as *bytes, s.unsent.len - sent)
-        if n < 0:
-            s.failed = errno()
-        else:
-            sent += usize(n)
+    while sent < s.unsent.len:
+        n := transfer(s, (ptr(s.unsent.*) as usize + sent) as *bytes, s.unsent.len - sent, true)
+        if n is FsError:
+            if s.failed == 0:
+                s.failed = n.code
+            break
+        sent += n
     s.unsent.len = 0
-    if s.failed != 0:
-        return FsError{s.failed, "write", temp(s.path)}
-    return null
 
-func read(f: File, into: *&str, size: usize) -> usize|FsError:
-    s := stream(f)
+func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize|FsError:
+    s := stream(f, place)
     if s.given == s.received.len:
-        try receive(f, s)
+        s.given = 0
+        s.received.len = 0
+        if size >= 65536:
+            return receive(s, into, size) # straight into yours, without a copy
+        try receive(s, s.received, 65536)
     taken := s.received.len - s.given
     if taken > size:
         taken = size
@@ -976,48 +1049,63 @@ func read(f: File, into: *&str, size: usize) -> usize|FsError:
     s.given += taken
     return taken
 
-func read_line(f: File) -> &strview|null|FsError:
-    s := stream(f)
+func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
+    s := stream(f, place)
+    checked: usize = 0
     while true:
         line: &strview
         line = (ptr(s.received.*) as usize + s.given) as *bytes
         line.len = s.received.len - s.given
-        cut := find(line, "\n")
-        if cut is usize:
-            s.given += cut + 1
-            line.len = cut
-            if cut > 0 and line[cut - 1] == '\r':
+        end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
+        if end as usize != 0:
+            line.len = end as usize - ptr(line.*) as usize @trust
+            s.given += line.len + 1
+            if line.len > 0 and line[-1] == '\r':
                 line.len -= 1
             return temp(line)
-        if try receive(f, s) == 0:
+        checked = line.len
+        if s.given > 0:
+            memmove(ptr(s.received.*), ptr(line.*), line.len)
+            s.received.len = line.len
+            s.given = 0
+        if try receive(s, s.received, 65536) == 0:
             s.given = s.received.len
             if s.received.len == 0:
                 return null
             return temp(view(s.received))
 
-priv func receive(f: File, s: *Stream) -> usize|FsError:
-    if f.fd == 0:
-        _ = flush(stdout)
-    kept := s.received.len - s.given
-    memmove(ptr(s.received.*), (ptr(s.received.*) as usize + s.given) as *bytes, kept)
-    s.received.len = kept
-    s.given = 0
-    reserve(s.received, kept + 65536)
-    got := read(f.fd, (ptr(s.received.*) as usize + kept) as *bytes, 65536)
-    if got < 0:
-        return FsError{errno(), "read", temp(s.path)}
-    s.received.len += usize(got)
-    return usize(got)
+priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
+    flush() # what you wrote goes out before the program waits for an answer
+    reserve(into, into.len + size)
+    got := try transfer(s, (ptr(into.*.*) as usize + into.len) as *bytes, size, false)
+    into.len += got
+    return got
 
-func close(f: File):
-    _ = flush(f)
-    close(f.fd)
-    s := stream(f)
-    free(s.path)
-    free(s.unsent)
-    free(s.received)
-    free(s)
-    io.streams[usize(f.fd)] = usize(0) as *Stream
+priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|FsError:
+    part := size
+    if part > 1 << 30:
+        part = 1 << 30 # macOS refuses 2 GiB in one call, and Windows counts in an i32
+    while true:
+        n := moved(s, at, part, writing)
+        if n >= 0:
+            return usize(n)
+        code := failure(s, writing)
+        if code != 0 and writing:
+            return FsError{code, "write", temp(s.path)}
+        if code != 0:
+            return FsError{code, "read", temp(s.path)}
+
+func close(f: File, place: &strview = @here()):
+    s := stream(f, place)
+    drain(s)
+    release(s)
+    s.open = false
+    s.failed = 0
+    s.path.len = 0
+    s.received.len = 0
+    s.given = 0
+    if s.received.cap > 131072:
+        free(s.received) # after a long line the stream keeps only its usual room
 
 func errno() -> i32 where @linux():
     return __errno_location().*
@@ -1027,6 +1115,86 @@ func errno() -> i32 where @macos():
 
 func errno() -> i32 where @windows():
     return _errno().*
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @linux():
+    if not writing:
+        return read(s.fd, at, size)
+    if s.socket:
+        return send(i64(s.fd), at, size, 0x4000) # MSG_NOSIGNAL, a closed peer is an error and not a signal
+    return write(s.fd, at, size)
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @macos():
+    if writing:
+        return write(s.fd, at, size) # net sets SO_NOSIGPIPE on its sockets
+    return read(s.fd, at, size)
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @windows():
+    if s.socket and writing:
+        return send(i64(s.fd), at, size, 0)
+    if s.socket:
+        return recv(i64(s.fd), at, size, 0)
+    if writing:
+        return write(s.fd, at, size)
+    return read(s.fd, at, size)
+
+priv func failure(s: *Stream, writing: bool) -> i32 where not @windows():
+    code := errno()
+    blocked := code == 11 or code == 35 # EAGAIN, 11 on Linux and 35 on macOS, where the other number is not an error of read or write
+    if blocked and s.socket:
+        return TIMED_OUT
+    if blocked:
+        events: i32 = 1 # POLLIN
+        if writing:
+            events = 4 # POLLOUT
+        wait := array[i32, 2]{s.fd, events} # a struct pollfd
+        poll(ptr(wait) as *bytes, 1, -1)
+        return 0
+    if code == 4: # EINTR
+        return 0
+    return code
+
+priv func failure(s: *Stream, writing: bool) -> i32 where @windows():
+    if s.socket:
+        return 0 - WSAGetLastError()
+    return errno()
+
+priv func release(s: *Stream) where not @windows():
+    close(s.fd)
+
+priv func release(s: *Stream) where @windows():
+    if s.socket:
+        closesocket(i64(s.fd))
+    else:
+        close(s.fd)
+
+priv func open_flags() -> array[i32, 4] where @linux():
+    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
+
+priv func open_flags() -> array[i32, 4] where @macos():
+    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
+
+priv func open_flags() -> array[i32, 4] where @windows():
+    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
+
+priv func reason(code: i32) -> &strview where @linux():
+    if code < 0:
+        return view(gai_strerror(code))
+    return view(strerror(code))
+
+priv func reason(code: i32) -> &strview where @macos():
+    if code < 0:
+        return view(gai_strerror(0 - code))
+    return view(strerror(code))
+
+priv func reason(code: i32) -> &strview where @windows():
+    if code >= 0:
+        return view(strerror(code))
+    text: array[u8, 512]
+    size := FormatMessageA(0x1200, usize(0) as *bytes, u32(0 - code), 0, ptr(text) as *u8, 512, usize(0) as *bytes)
+    out: &strview
+    out = ptr(text) as *bytes
+    out.len = usize(size)
+    return trim_end(out) + " (" + (0 - code) + ")"
 
 type entry[$K, $V]:
     key: $K

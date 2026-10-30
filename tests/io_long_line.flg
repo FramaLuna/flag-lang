@@ -1,0 +1,18 @@
+use fs
+
+func main():
+    path := "build/tests/io_long_line.txt"
+    text: &str
+    defer free(text)
+    for i in 0..200000:
+        add_byte(text, 'a' + u8(i % 26))
+    text += "\r\nshort\n"
+    for i in 0..70000:
+        add_byte(text, 'z')
+    _ = write_file(path, text)
+    f := trust open(path)
+    with f:
+        line := read_line(f)
+        while line is &strview:
+            print(line.len, " ", line[:3], " ", line[-2:])
+            line = read_line(f)

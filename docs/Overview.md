@@ -647,7 +647,7 @@ The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_i
 ```flag
 print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
-`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast, and nothing is lost or out of order when the program ends or fails (see [Files](Library.md#files)).
+`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -821,7 +821,7 @@ The functions of text, lists, maps and files (`open`, `read_line`, `write`...) a
 - `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading and writing JSON
-- `net`, TCP sockets
+- `net`, TCP connections as files
 - `math`, `sqrt`, `sin`, `min`, random numbers...
 - `utf8`, characters of UTF-8 text
 - `bits`, sets of numbers as bits
@@ -838,7 +838,7 @@ func main() -> i32:
     if names.len < 2:
         eprint("usage: lines file")
         return 1
-    text := read_text_file(names[1])
+    text := read_file(names[1])
     if text is FsError:
         eprint(text) # cannot open notes.txt: No such file or directory
         return 1
@@ -848,6 +848,25 @@ func main() -> i32:
         if b == '\n':
             lines += 1
     print(lines, " lines")
+    return 0
+```
+A file can also be read line by line, with `open` and `read_line`. Each line is temporary, so the loop releases it with `with scratch():`, and a file of any size runs in the same memory
+```flag
+use os
+
+func main() -> i32:
+    input := open(args()[1])
+    if input is FsError:
+        eprint(input)
+        return 1
+    with input:
+        while true:
+            with scratch():
+                line := read_line(input)
+                if line is &strview:
+                    print(line.len)
+                else:
+                    break
     return 0
 ```
 Every function is in the [Library](Library.md).

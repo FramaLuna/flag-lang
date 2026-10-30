@@ -7,7 +7,7 @@ Every function of the standard library, module by module.
 - [fs](#fs), whole files, folders and paths
 - [os](#os), the program, other programs and the time
 - [json](#json), reading and writing JSON
-- [net](#net), TCP sockets
+- [net](#net), TCP connections as files
 - [math](#math)
 - [utf8](#utf8)
 - [bits](#bits), sets of numbers as bits
@@ -24,7 +24,7 @@ What a function gives you is
 
 A function that can fail gives its errors in a union, and each module says which error types it has.
 
-The functions that take an index also have a last parameter `place: &strview = @here()` that is left out here, it's how an index error points at your call.
+The functions that take an index or a `File` also have a last parameter `place: &strview = @here()` that is left out here, it's how an index error or a wrong `File` points at your call.
 
 ## core
 ### The program
@@ -37,22 +37,26 @@ The functions that take an index also have a last parameter `place: &strview = @
 The arguments of the program are `args()` of [os](#os).
 
 ### Files
-A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
+A `File` is an open file, or a connection of [net](#net). `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
-- when 64 KiB are waiting, when you call `flush` or `close`, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
+- when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
-- the standard output goes out before anything is written to the error output, before the standard input is read and before other programs run, so everything comes out in the order you wrote it
+
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush`.
 
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read
-- `create(path: &strview) -> File|FsError` makes the file, or empties it, to write
+- `create(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
 - `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`
-- `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too
+- `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
 - `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
-- `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the file was opened. A failed write doesn't stop the next ones, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
+- `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
+- `flush()` writes now what waits in every file
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
-- `File{fd}` is the file of a descriptor that you got from C
+- `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
+
+The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run.
 
 ```flag
 func main():
@@ -67,20 +71,38 @@ func main():
     if failed is FsError:
         eprint(failed) # cannot write squares.txt: No space left on device
     close(out)
+    input := open("squares.txt")
+    if input is FsError:
+        eprint(input)
+        return
+    with input:
+        while true:
+            with scratch(): # each line is temporary, this releases it before the next one
+                line := read_line(input)
+                switch line:
+                case null:
+                    break
+                case FsError:
+                    eprint(line)
+                    break
+                case &strview:
+                    print("read ", line)
     write(stdout, "your name? ")
     name := read_line(stdin)
     if name is &strview:
         print("hello ", name)
 ```
 
-A function that fails because the system said no, in core, `fs` and `os`, gives an `FsError`
+A function that fails because the system said no, in core, `fs`, `os` and `net`, gives an `FsError`
 ```flag
 type error FsError:
     code: i32 # the error number of the system, errno
-    action: &strview # what failed: open, create, read, write, list, make, remove, run...
-    path: &strview # the path or the program you gave, empty for the standard files
+    action: &strview # what failed: open, create, read, write, list, make, remove, run, connect to...
+    path: &strview # the path, the program or the address you gave
 ```
-Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with.
+Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with, and for the standard files it's `the standard input`, `the standard output` or `the error output`.
+
+A negative `code` is an error that has no errno: a name that `connect` cannot find gives the code of `getaddrinfo`, and on Windows the errors of connections and of `rename` are the codes of the system. `TIMED_OUT` is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read example.com:80: the timeout ran out`.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
 
 ### Memory
@@ -155,6 +177,7 @@ Searching and cutting
 - `starts_with(s: &strview, head: &strview) -> bool` and `ends_with(s: &strview, tail: &strview) -> bool`
 - `trim(s: &strview) -> &strview` without the spaces, tabs, `\n` and `\r` at both ends, a view. `trim_start` and `trim_end` do one end
 - `split(s: &strview, separator: &strview) -> &slice[&strview]` the parts between the separators, as views of `s` in a temporary slice. There is always one part at least, and an empty separator gives `s` whole
+- `words(s: &strview) -> &slice[&strview]` the parts between spaces, tabs, `\n` and `\r`, as views of `s` in a temporary slice, never an empty one: `for w in words(text): counts[w] += 1`
 - `replace(s: &strview, old: &strview, new: &strview) -> &strview` every `old` changed to `new`, temporary
 - `join(parts: &slice[$T], separator: &strview) -> &strview` the parts with the separator between them, temporary. The parts can be anything that can be printed
 - `lower(s: &strview) -> &strview` and `upper(s: &strview) -> &strview` change the ASCII letters, temporary
@@ -163,7 +186,7 @@ Searching and cutting
 
 Numbers from text, `null` when the text is not a number
 - `parse_int(s: &strview) -> i64|null` decimal digits with an optional `+` or `-`, and `null` when it doesn't fit in `i64`
-- `parse_float(s: &strview) -> f64|null` what C's `strtod` reads: `1.5`, `-2e3`, `inf`, `nan`
+- `parse_float(s: &strview) -> f64|null` a decimal number with an optional sign, point and exponent, `inf` or `nan`: `1.5`, `-2e3`, `.5`, `-inf`
 - `parse_hex(s: &strview) -> u64|null` 1 to 16 hexadecimal digits, without `0x`
 
 None of them skip spaces, the whole text must be the number.
@@ -176,8 +199,8 @@ None of them skip spaces, the whole text must be the number.
 - slices and lists `[1, 2]`, maps and fixed maps `{a: 1, b: 2}`
 
 And three helpers
-- `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. Negative `places` are 0
-- `hex(value: u64) -> Hex` prints `0xff`
+- `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. A value that rounds to zero has no sign, `fixed(-0.4, 0)` is `0`. Negative `places` are 0
+- `hex(value: $I) -> Hex` prints the bits of the integer in hexadecimal, as many as its type has: `hex(255)` is `0xff`, and `hex(i8(-1))` is `0xff` too
 - `pad(value: $T, width: i32) -> Padded[$T]` prints the value with spaces before it to fill `width` characters, or after it when `width` is negative: `pad(42, 5)` is `   42` and `pad("ab", -4)` is `ab  `. A longer value is not cut. It takes any value, so `pad(fixed(x, 2), 8)` works
 
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
@@ -224,7 +247,7 @@ func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usiz
 ### C text
 - `cstr` is the type `*u8`, a text that ends with a zero byte
 - `cstr(text: &strview) -> cstr` a copy with the zero, temporary
-- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy
+- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy. It's what the compiler calls when a `&str` goes as a `cstr`
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
 
 ## fs
@@ -233,19 +256,19 @@ Whole files, folders and paths. The files read by parts, `File` and `open`, are 
 The files are read and written in binary, the bytes are the same on every system. On Windows the paths can use `/` or `\`.
 
 ### Whole files
-- `read_text_file(path: &strview) -> &str|FsError` all the file, yours
+- `read_file(path: &strview) -> &str|FsError` all the file, yours
 - `write_file(path: &strview, text: &strview) -> FsError?` makes the file, or empties it, and writes the text. Bytes go as text, `write_file(path, view(bytes))`
 - `append_file(path: &strview, text: &strview) -> FsError?` the same, but it writes at the end of the file and makes it when it doesn't exist
 
 ### Folders and paths
 - `exists(path: &strview) -> bool` if there is a file or a folder there
-- `is_dir(path: &strview) -> bool`
-- `file_size(path: &strview) -> usize|FsError` in bytes. A folder has no size, it's an error
+- `is_dir(path: &strview) -> bool`, also for a folder that you cannot read
+- `file_size(path: &strview) -> usize|FsError` in bytes, without opening the file, so it works on one that you cannot read. A folder has no size, it's an error
 - `list_dir(path: &strview) -> &slice[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
-- `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it (on Windows it does). Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
+- `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
 - `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
-- `remove(path: &strview) -> FsError?` removes a file or an empty folder
-- `rename(from: &strview, to: &strview) -> FsError?` renames or moves
+- `remove(path: &strview) -> FsError?` removes a file or an empty folder, and of a link the link
+- `rename(from: &strview, to: &strview) -> FsError?` renames or moves, and replaces `to` when it's a file, on every system
 - `join(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join("a/", "/b")` is `a/b`. An empty `first` gives `second`
 - `base_name(path: &strview) -> &strview` the part after the last `/`, a view: `base_name("docs/a.txt")` is `a.txt`
 - `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and the `.` that a name starts with don't count, so `.bashrc` and `..` have no extension and `.config.json` has `.json`
@@ -257,8 +280,8 @@ The program, other programs and the time.
 ### The program
 - `args() -> &slice[&strview]` the arguments of the program, the first one is the program itself. They live all the program
 - `env(name: &strview) -> &strview|null` the value of an environment variable, a view, `null` when it's not set
-- `executable() -> &strview` the full path of the running program, temporary
-- `current_dir() -> &strview` the current folder, temporary
+- `executable() -> &strview` the full path of the running program, temporary, empty when the system cannot tell
+- `current_dir() -> &strview` the current folder, temporary, empty when the system cannot tell
 - `change_dir(path: &strview) -> FsError?` makes `path` the current folder
 - `system_name() -> &strview` `Linux`, `Darwin` or `Windows`
 
@@ -269,7 +292,7 @@ On every system the paths that `os` gives use `/`.
 ### Other programs
 A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
 - `run(command: &strview) -> i32|FsError` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
-- `run(program: &slice[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run
+- `run(program: &slice[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
 - `output(command: &strview, into: *&str) -> i32|FsError` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
 - `output(program: &slice[&strview], into: *&str) -> i32|FsError` the same without a shell
 
@@ -285,7 +308,7 @@ func main():
     elif code == 0:
         print(text)
 ```
-On Linux and macOS a program killed by a signal gives 128 plus the signal.
+Everything that waits in your files goes out before another program runs. On Linux and macOS a program killed by a signal gives 128 plus the signal.
 
 ### Time
 - `now() -> f64` the seconds since 1970, with decimals
@@ -320,8 +343,9 @@ func main():
 - `count(d: Document, at: usize|null) -> usize` how many values an array or an object has
 - `item(d: Document, at: usize|null, index: usize) -> usize|null` the value at `index` of an array or an object. It walks from the start, so to go through all of them use `children`
 - `kind(d: Document, at: usize|null) -> Kind` what the value is, one of `Nothing`, `Boolean`, `Number`, `Text`, `Array` and `Object`. `null` and a missing node are `Nothing`
-- `text(d: Document, at: usize|null) -> &strview` a string with its escapes decoded, temporary, and empty when it's not a string
-- `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null` give `null` when the value is not of that kind. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
+- `text(d: Document, at: usize|null) -> &strview|null` a string with its escapes decoded, temporary
+- `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null`
+- `text`, `number`, `integer` and `boolean` give `null` when the value is not of that kind, so `text(d, get(d, 0, "name")) ifnull "anonymous"` works. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
 - `raw(d: Document, at: usize|null) -> &strview` the JSON text of the value, a view
 - `quoted(text: &strview) -> Quoted` the text as a JSON string, with the quotes and the escapes, to use with `+`, `+=` and `print`
 
@@ -346,32 +370,27 @@ type error NotJson:
 A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, `size`, how many nodes it takes with the ones inside it, and `escaped`, if it's a `Text` with escapes to decode. An object keeps each key as a `Text` node right before its value.
 
 ## net
-TCP sockets.
-```flag
-type error NetError:
-    action: &strview
-    reason: &strview
-```
-A `NetError` says what failed and why, in the words of the system, and it prints as `cannot connect to example.com:80: Connection refused`. Its texts are temporary.
+TCP connections, as files: `connect`, `listen` and `accept` give a `File`, so `read`, `read_line`, `write`, `flush` and `close` work on them, and the errors are the `FsError` of [core](#files).
+- `connect(host: &strview, port: u16) -> File|FsError` connects to a name or an address, it tries each address of the name until one answers: `cannot connect to example.com:80: Connection refused`
+- `listen(port: u16) -> File|FsError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
+- `accept(server: File) -> File|FsError` waits for the next connection
+- `timeout(f: File, seconds: f64)` makes a read or a write that waits longer than that give an `FsError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
+- `port(f: File) -> u16` the local port of a connection or a server, 0 when it's not one
 
-A `Socket` is a connection or a server, close it with `close` or with `with socket:`.
-- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers
-- `listen(port: u16) -> Socket|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
-- `accept(server: Socket) -> Socket|NetError` waits for the next connection
-- `send(s: Socket, text: &strview) -> NetError?` sends all the text
-- `receive(s: Socket, into: *&str, size: usize) -> usize|NetError` appends up to `size` bytes of what arrived to `into` and gives how many, 0 when the other side closed. A message can arrive in several parts, so receive until you have all of it
-- `timeout(s: Socket, seconds: f64)` makes `receive` and `send` give a `NetError` when they wait longer than that, its reason is `the timeout ran out`. 0 waits forever, like a new socket
-- `close(s: Socket)`
-- `port(s: Socket) -> u16` the local port of the socket
-
-This reads everything until the other side closes
+What you write waits in the connection like in any file, and it goes out with `flush`, or by itself before the program waits to read, so a request always goes before you wait for its answer
 ```flag
-func read_all(s: Socket, reply: *&str) -> NetError?:
-    while try receive(s, reply, 65536) > 0:
-        pass
-    return null
+use net
+
+func main():
+    c := connect("example.com", 80)
+    if c is FsError:
+        eprint(c)
+        return
+    with c:
+        write(c, "HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+        print(read_line(c)) # HTTP/1.0 200 OK
 ```
-Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason is the text of the Winsock error with its number.
+Writing to a connection that the other side closed gives an `FsError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
 
 ## math
 It links the C math library.
@@ -429,6 +448,7 @@ func main():
 ```
 - `append(r, v)` adds at the end, and `prepend(r, v)` at the start
 - `pop(r) -> $T|null` takes out the last element, and `take(r) -> $T|null` the first
+- `clear(r)` removes every element and keeps the memory
 - `r[i]` the element `i` from the start, a negative `i` counts from the end
 - `for v in r` from the start, `print` writes `[1, 2]`, and `free(r)`
 

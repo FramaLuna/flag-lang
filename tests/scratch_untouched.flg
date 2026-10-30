@@ -24,7 +24,7 @@ func main():
     _ = file_size("build/tests/scratch_untouched.dir/b.txt")
     _ = exists("build/tests/scratch_untouched.dir/b.txt")
     _ = is_dir("build/tests/scratch_untouched.dir")
-    read := read_text_file("build/tests/scratch_untouched.dir/b.txt")
+    read := read_file("build/tests/scratch_untouched.dir/b.txt")
     if read is &str:
         free(read)
     file := open("build/tests/scratch_untouched.dir/b.txt")
@@ -56,15 +56,16 @@ func main():
         free(d)
     print("json ", untouched(mark))
     server := listen(0)
-    if server is Socket:
+    if server is File:
         client := connect("127.0.0.1", port(server))
-        if client is Socket:
+        if client is File:
             peer := accept(server)
-            if peer is Socket:
+            if peer is File:
                 timeout(peer, 1.0)
-                _ = send(client, "ping")
+                write(client, "ping")
+                _ = flush(client)
                 got: &str
-                _ = receive(peer, got, 16)
+                _ = read(peer, got, 16)
                 free(got)
                 close(peer)
             close(client)
