@@ -63,8 +63,9 @@ func main():
     for i in 1..4:
         write(out, i * i)
         write(out, "\n")
-    if flush(out) is FsError:
-        eprint("the disk is full")
+    failed := flush(out)
+    if failed is FsError:
+        eprint(failed) # cannot write squares.txt: No space left on device
     close(out)
     write(stdout, "your name? ")
     name := read_line(stdin)
@@ -79,7 +80,7 @@ type error FsError:
     action: &strview # what failed: open, create, read, write, list, make, remove, run...
     path: &strview # the path or the program you gave, empty for the standard files
 ```
-Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`.
+Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
 
 ### Memory
@@ -365,10 +366,10 @@ A `Socket` is a connection or a server, close it with `close` or with `with sock
 
 This reads everything until the other side closes
 ```flag
-reply: &str
-defer free(reply)
-while try receive(s, reply, 65536) > 0:
-    pass
+func read_all(s: Socket, reply: *&str) -> NetError?:
+    while try receive(s, reply, 65536) > 0:
+        pass
+    return null
 ```
 Sending to a socket that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you, and the reason is the text of the Winsock error with its number.
 

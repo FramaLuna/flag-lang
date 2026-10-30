@@ -445,7 +445,7 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove_file(path)` drops it on purpose.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove(path)` drops it on purpose.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
@@ -700,7 +700,7 @@ ages["ana"] = 30 # the same as put(ages, "ana", 30)
 age := ages["ana"] # i32|null, the same as get(ages, "ana")
 if age is i32:
     print("ana is ", age)
-ages["bo"] += 1 # a key that is not there counts as zero, so this counts
+ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
