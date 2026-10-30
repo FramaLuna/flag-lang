@@ -1494,24 +1494,33 @@ func operation(n: usize, want: usize) -> Value|Fail:
             append(chain, c)
             c += 1
     l := try value(c, VOID)
-    for k in reverse chain:
+    i := chain.len
+    while i > 0:
+        i -= 1
+        k := chain[i]
         o = text(k)
         if (o == "and" or o == "or") and l.type == BOOL:
             slot := alloc(BOOL)
-            l_right := label()
             l_done := label()
-            if o == "and":
-                add(Ins{op = "storew", a = int_arg(0), b = slot})
-                branch(load(l).at, l_right, l_done)
-            else:
-                add(Ins{op = "storew", a = int_arg(1), b = slot})
-                branch(load(l).at, l_done, l_right)
-            open_block(l_right)
+            add(Ins{op = "storew", a = int_arg(i64(o == "or")), b = slot})
             before := comp.vars.len
-            try narrow(k + 1, o == "and")
-            r := try condition(node_end(k + 1))
+            known := k + 1
+            while true:
+                l_right := label()
+                if o == "and":
+                    branch(load(l).at, l_right, l_done)
+                else:
+                    branch(load(l).at, l_done, l_right)
+                open_block(l_right)
+                try narrow(known, o == "and")
+                known = node_end(k + 1)
+                l = try condition(known)
+                if i == 0 or text(chain[i - 1]) != o:
+                    break
+                i -= 1
+                k = chain[i]
             comp.vars.len = before
-            add(Ins{op = "storew", a = r.at, b = slot})
+            add(Ins{op = "storew", a = l.at, b = slot})
             jump(l_done)
             open_block(l_done)
             l = Value{type = BOOL, at = op1(W, "loadw", slot)}

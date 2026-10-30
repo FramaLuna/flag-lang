@@ -29,6 +29,7 @@ Faster
 - The `==` and `hash` that the compiler makes are one function per type, so big and nested structs compile at once
 - A `context` takes no room in the program file, the tags of its unions are written when the program starts
 - QBE is linear on big functions: a loop over an enum of 1500 variants compiles in 0.2 s, it took 37 s. Long chains are faster too: 20000 `elif` compile in 8 s, they took 38 s
+- A run of `and` or of `or` is tested in one block after another, so what the left side narrowed is known once: 10000 terms compile in 3.5 s, they took 42 s and 1.8 GB
 - The compiler uses less stack: blocks, expressions and types nest up to 500 levels (blocks were about 150), and chains of `elif`, `ifnull`, `iferror` or of one operator are not nesting
 - A connection sends at once (`TCP_NODELAY`)
 
