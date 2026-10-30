@@ -771,8 +771,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
         how: &strview
         for m in members(t):
-            for i in 0..comp.types[m].count:
-                if comp.types[t].kind == Union and (comp.types[m].kind == Struct or comp.types[m].kind == Fat) and comp.items[comp.types[m].first + i].name == tok.text:
+            member := comp.types[m]
+            for i in 0..member.count:
+                if m != t and (member.kind == Struct or member.kind == Fat) and comp.items[member.first + i].name == tok.text:
                     how = ", narrow it with is or case first"
                     if local_of(n + 1) == 0:
                         how = ", and is and case narrow only variables: copy it to one first"
@@ -1007,9 +1008,10 @@ func iterate(n: usize) -> Fail?:
             if not backward:
                 trail = continued(op(L, "add", here, int_arg(1)), 1, op(L, "sub", w, int_arg(1)), op(L, "sub", op(L, "sub", end.at, i), int_arg(1)))
             second := op1(W, "loadub", op(L, "add", lead, op1(L, "extuw", op(W, "cnel", trail, int_arg(0)))))
-            low := op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xe0)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf0)), int_arg(0x10)))
-            high := op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xed)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf4)), int_arg(0x30)))
-            inside := op(W, "and", op(W, "cugew", second, op(W, "add", low, int_arg(0x80))), op(W, "culew", second, op(W, "sub", int_arg(0xbf), high)))
+            # the second byte goes from 80 to bf, E0 and F0 raise the floor, ED and F4 lower the top
+            low := op(W, "add", int_arg(0x80), op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xe0)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf0)), int_arg(0x10))))
+            high := op(W, "sub", int_arg(0xbf), op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xed)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf4)), int_arg(0x30))))
+            inside := op(W, "and", op(W, "cugew", second, low), op(W, "culew", second, high))
             whole := op1(L, "extuw", op(W, "and", op(W, "ceql", w, op(L, "add", trail, int_arg(1))), inside))
             store(USIZE, Value{type = USIZE, at = op(L, "add", int_arg(1), op(L, "mul", whole, trail))}, sized)
             jump(l_piece)
