@@ -249,7 +249,7 @@ func main():
     h.n += 1
     free(h)
 ```
-When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary.
+When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &slice[i32] = ptr([1, 2, 3])` is a slice you can keep using.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
 

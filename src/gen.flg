@@ -1185,12 +1185,7 @@ func called(n: usize) -> Value|Fail:
                     return fail("ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := " + text(a), tok.at)
                 if found != 0:
                     return Value{type = pointer(BYTES), at = global("$" + text(a))}
-            v := try value(a, VOID)
-            if not v.place:
-                slot := alloc(v.type)
-                store(v.type, v, slot)
-                v.at = slot
-            return Value{type = pointer(v.type), at = v.at}
+            return address(try value(a, VOID))
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
@@ -1449,10 +1444,11 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
         spot = Value{type = elem, at = op(L, "add", addr, times(i, comp.types[elem].size)), mem = true, place = base.place or not array}
     else:
         args: &list[Value]
-        if comp.types[t].kind == Array and kids(n) == 3:
-            append(args, try convert(Value{type = pointer(t), at = addr}, try fat_type("slice", comp.types[t].elem, tok.at), Arg{}, tok.at))
-        elif comp.types[t].kind == Array:
-            append(args, Value{type = pointer(t), at = addr})
+        if array:
+            whole := address(Value{type = t, at = addr, mem = true, place = base.place})
+            if kids(n) == 3:
+                whole = try convert(whole, try fat_type("slice", comp.types[t].elem, tok.at), Arg{}, tok.at)
+            append(args, whole)
         else:
             append(args, base)
         if kids(n) == 3:
@@ -1787,7 +1783,7 @@ func concat(n: usize, into: Value, first: usize) -> Value|Fail:
     line := v
     joined := k < parts.len or head.type != VOID
     if joined:
-        line = Value{type = try fat_type("str", VOID, at), mem = true}
+        line = Value{type = try fat_type("str", VOID, at), mem = true, place = true}
         line.at = alloc(line.type)
         zero(line.type, line.at)
         if head.type != VOID:
@@ -2112,9 +2108,8 @@ func statements(n: usize) -> Fail?:
 func statement(n: usize, dropped: &strview) -> Fail?:
     start := comp.held.len
     v := try gen(n, VOID)
-    for k in start..comp.held.len:
-        append(comp.spare, comp.held[k])
-    comp.held.len = start
+    while comp.held.len > start:
+        append(comp.spare, trust pop(comp.held))
     o := text(n)
     if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
         hint: &strview
@@ -2351,6 +2346,15 @@ func zero(t: usize, addr: Arg):
         for at in 0..size / 8:
             add(Ins{op = "storel", a = int_arg(0), b = offset(addr, at * 8)})
     stamp(t, addr, 0)
+
+func address(v: Value) -> Value:
+    at := v.at
+    if not v.place and (v.lit or not aggregate(v.type)):
+        at = alloc(v.type)
+        store(v.type, v, at)
+    if not v.place and aggregate(v.type):
+        comp.held.len = 0 # a pointer to a temporary keeps every slot held now
+    return Value{type = pointer(v.type), at = at}
 
 func alloc(t: usize) -> Arg:
     size := i64(room(t))

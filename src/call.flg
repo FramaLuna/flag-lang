@@ -433,10 +433,7 @@ func near(s: usize, at: usize) -> usize:
 func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     v := given
     if comp.types[to].kind == Ptr and comp.types[to].elem == given.type:
-        if not given.place and not aggregate(given.type):
-            v.at = alloc(given.type)
-            store(given.type, given, v.at)
-        v = Value{type = to, at = v.at}
+        v = address(given)
     else:
         v = try convert(given, to, Arg{}, at)
     how: u32 = L
@@ -906,7 +903,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
             store(v.type, v, payload(slot, v.type))
         return Value{type = to, at = slot, mem = true}
     args: &list[Value]
-    append(args, Value{type = to, at = dest, mem = true})
+    append(args, Value{type = to, at = dest, mem = true, place = true})
     append(args, v)
     if try offers("=", args, at):
         if dest.kind == Empty:
