@@ -94,7 +94,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Expressions and types nest up to 300 levels: `this code nests more than 300 levels deep, move the inner part to a function or a variable`
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif`, or of operators like `a - b - c` or `a and b and c`, has no limit
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -368,7 +368,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | You write | It calls |
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
-| `x[i] = v` | when `at` returns a value, `put(x, i, v)`, and `x[i] += v` is `put(x, i, at(x, i) + v)` |
+| `x[i] = v` | when `at` returns a value, `put(x, i, v)`, and `x[i] += v` is `put(x, i).* += v` when a `put(x, i)` gives a pointer to the value, `put(x, i, at(x, i) + v)` when not |
 | `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
@@ -379,7 +379,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and for arrays, lists and slices also the `for`. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list or a slice. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -428,7 +428,7 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 ### Assignments
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
 
-When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map `put` gives `MapFull?`, so there `x[i] = v` and `x[i] += v` are statements that drop an error (see [Rough edges](#rough-edges)).
+When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has a `put(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once. On a fixed map `put` gives `MapFull?`, so there `x[i] = v` and `x[i] += v` are statements that drop an error (see [Rough edges](#rough-edges)).
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -439,7 +439,7 @@ There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
 
 ### Everything else
-Over an array, a list or a slice the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
+Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
 
 - Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a whole character comes alone, and `reverse` gives the same pieces. `items(text)` gives the bytes
 - A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed. A fixed map gives them in the order they were put
@@ -495,7 +495,6 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code
 - `_ = value` throws the value away, also when there is a variable named `_`
 - A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
-- Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
 An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FileError = CannotOpen|CannotRead`), or a struct with fields that say what happened

@@ -8,20 +8,14 @@ func parse() -> Fail?:
         t := here()
         if t.kind == Line:
             if t.text.len != 0:
-                eprint(ERR, "a declaration starts at the first column")
-                show(t.at)
-                return Fail
+                return fail("a declaration starts at the first column", t.at)
             comp.pos += 1
             continue
         if t.text == "module" or t.text == "use":
             if t.text == "module" and comp.pos != first + 1:
-                eprint(ERR, "module goes on the first line of its file")
-                show(t.at)
-                return Fail
+                return fail("module goes on the first line of its file", t.at)
             if comp.nodes.len != start:
-                eprint(ERR, t.text, " goes in the header of the file, before the first declaration")
-                show(t.at)
-                return Fail
+                return fail(t.text + " goes in the header of the file, before the first declaration", t.at)
             comp.pos += 1
             if here().kind != Name:
                 return unexpected(t.text + " expects the name of a module after it")
@@ -43,13 +37,9 @@ func parse() -> Fail?:
                     name = alias
                     comp.pos += 1
                 if given == module:
-                    eprint(ERR, "this file is part of module ", given, ", it sees its names without use")
-                    show(t.at)
-                    return Fail
+                    return fail("this file is part of module " + given + ", it sees its names without use", t.at)
                 if module_of(name, file).len > 0:
-                    eprint(ERR, name, " already names a module in this file")
-                    show(t.at)
-                    return Fail
+                    return fail(name + " already names a module in this file", t.at)
                 append(comp.uses, Use{file, given, alias, t.at})
             try end_line()
             continue
@@ -64,9 +54,7 @@ func parse() -> Fail?:
             what: &strview = "packed goes before a type with fields: packed type Name:"
             if sym.export:
                 what = "export goes before a func declaration: export func name():"
-            eprint(ERR, what)
-            show(here().at)
-            return Fail
+            return fail(what, here().at)
         if sym.packed or sym.export:
             comp.pos += 1
         t = here()
@@ -90,9 +78,7 @@ func parse() -> Fail?:
                 why: &strview = "its variants carry no data to shape"
                 if form == "context":
                     why = "it is one value and not a family of types"
-                eprint(ERR, form, " ", text(n), " cannot have type parameters, ", why)
-                show(here().at)
-                return Fail
+                return fail(form + " " + text(n) + " cannot have type parameters, " + why, here().at)
             if peek("["):
                 comp.pos += 1
                 while true:
@@ -115,9 +101,7 @@ func parse() -> Fail?:
                     separator = ","
                     width = here().text.len
                     if here().kind != Line or width == 0:
-                        eprint(ERR, "enum ", text(n), " expects its variants in an indented block after ':'")
-                        show(comp.tokens[comp.pos - 1].at)
-                        return Fail
+                        return fail("enum " + text(n) + " expects its variants in an indented block after ':'", comp.tokens[comp.pos - 1].at)
                 while true:
                     if indented and here().kind == Line and not try next_line(0, width):
                         break
@@ -133,9 +117,7 @@ func parse() -> Fail?:
                 finish(union)
             elif peek("=") and form == "type":
                 if sym.error:
-                    eprint(ERR, "an alias cannot be marked error, ", text(n), " is just the type it names: declare type error ", text(n), " on its own or with fields")
-                    show(here().at)
-                    return Fail
+                    return fail("an alias cannot be marked error, " + text(n) + " is just the type it names: declare type error " + text(n) + " on its own or with fields", here().at)
                 comp.nodes[n].kind = Alias
                 comp.pos += 1
                 try type_expr()
@@ -147,9 +129,7 @@ func parse() -> Fail?:
                     comp.nodes[n].kind = Context
                 comp.pos += 1
                 if here().kind != Line or here().text.len == 0:
-                    eprint(ERR, form, " ", text(n), " expects its fields in an indented block after ':'")
-                    show(comp.tokens[comp.pos - 1].at)
-                    return Fail
+                    return fail(form + " " + text(n) + " expects its fields in an indented block after ':'", comp.tokens[comp.pos - 1].at)
                 try fields(0)
             elif form != "type":
                 what: &strview = "fields in an indented block after ':'"
@@ -157,9 +137,7 @@ func parse() -> Fail?:
                     what = "variants after '=' or in an indented block after ':'"
                 return unexpected(form + " " + text(n) + " expects its " + what)
             if sym.packed and comp.nodes[n].kind != Struct:
-                eprint(ERR, "packed goes before a type with fields: packed type Name:")
-                show(comp.tokens[comp.nodes[n].tok].at)
-                return Fail
+                return fail("packed goes before a type with fields: packed type Name:", comp.tokens[comp.nodes[n].tok].at)
             finish(n)
             if form == "enum":
                 for c in n + 2..node_end(n):
@@ -168,9 +146,7 @@ func parse() -> Fail?:
             try func_decl(true)
         elif t.text == "extern":
             if after.kind != Str:
-                eprint(ERR, "extern expects the library name as text: extern \"c\":")
-                show(t.at)
-                return Fail
+                return fail("extern expects the library name as text: extern \"c\":", t.at)
             begin(Extern, comp.pos + 1)
             comp.pos += 2
             try condition()
@@ -180,9 +156,7 @@ func parse() -> Fail?:
             width := here().text.len
             while try next_line(0, width):
                 if not peek("func"):
-                    eprint(ERR, "an extern block declares functions only")
-                    show(here().at)
-                    return Fail
+                    return fail("an extern block declares functions only", here().at)
                 try func_decl(false)
             finish(n)
         elif t.kind == Name and after.text == "=":
@@ -232,9 +206,7 @@ func nested(n: usize, outer: Sym) -> Fail?:
     while c < node_end(n):
         if comp.nodes[c].kind == Field and comp.nodes[c + 1].kind == Struct:
             if type_params(n) > 0:
-                eprint(ERR, "a type with parameters cannot hold a block of fields inside, the inner type would not see ", text(n + 1), ": declare it on its own, with its own parameters")
-                show(comp.tokens[comp.nodes[c].tok].at)
-                return Fail
+                return fail("a type with parameters cannot hold a block of fields inside, the inner type would not see " + text(n + 1) + ": declare it on its own, with its own parameters", comp.tokens[comp.nodes[c].tok].at)
             inner := outer
             inner.name = outer.name + "." + text(c)
             try declare(c + 1, inner)
@@ -256,9 +228,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
     at := comp.tokens[comp.nodes[n].tok].at
     id := get(comp.type_ids, sym.name)
     if id is usize and id <= ITERATIONEND and kind != Func:
-        eprint(ERR, sym.name, " is a built-in type, it cannot be declared again")
-        show(at)
-        return Fail
+        return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     s := first_sym(sym.name)
     while s != 0:
         old := comp.syms[s]
@@ -289,11 +259,9 @@ func declare(n: usize, sym: Sym) -> Fail?:
             else:
                 return null
             if problem.len > 0:
-                eprint(ERR, sym.name, problem)
-                show(at)
-                eprint(NOTE, "the other ", sym.name, " is declared here")
-                show(comp.tokens[comp.nodes[old.node].tok].at)
-                return Fail
+                failed := fail(sym.name + problem, at)
+                note("the other " + sym.name + " is declared here", comp.tokens[comp.nodes[old.node].tok].at)
+                return failed
         s = old.next
     made := sym
     made.node = n
@@ -323,11 +291,9 @@ func func_decl(body: bool) -> Fail?:
         case ">", "<=", ">=":
             problem = " follows from <, declare operator < instead"
         case "-=", "*=", "/=", "%=":
-            problem = " follows from " + name.text[0:1] + ", declare operator " + name.text[0:1] + " instead"
+            problem = " follows from " + name.text[:1] + ", declare operator " + name.text[:1] + " instead"
         if problem.len > 0:
-            eprint(ERR, "operator ", name.text, problem)
-            show(name.at)
-            return Fail
+            return fail("operator " + name.text + problem, name.at)
     n := begin(Func, comp.pos)
     comp.pos += 1
     try expect("(")
@@ -335,9 +301,7 @@ func func_decl(body: bool) -> Fail?:
     while not peek(")"):
         if peek("..") and comp.tokens[comp.pos + 1].text == ".":
             if body or comp.tokens[comp.pos + 2].text != ")":
-                eprint(ERR, "... stands for the extra arguments of a C function, it goes last in an extern func")
-                show(here().at)
-                return Fail
+                return fail("... stands for the extra arguments of a C function, it goes last in an extern func", here().at)
             finish(begin(Var, comp.pos))
             comp.pos += 2
             break
@@ -348,21 +312,15 @@ func func_decl(body: bool) -> Fail?:
         count += 1
         for i in param..comp.nodes.len:
             if comp.nodes[i].kind == Unary and text(i) == "try":
-                eprint(ERR, "a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust")
-                show(comp.tokens[comp.nodes[i].tok].at)
-                return Fail
+                return fail("a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust", comp.tokens[comp.nodes[i].tok].at)
         if keyword == "operator" and count > 2 and kids(param) == 1:
-            eprint(ERR, "operator ", name.text, " takes its left side and its right side, a parameter after them needs a default value")
-            show(comp.tokens[comp.nodes[param].tok].at)
-            return Fail
+            return fail("operator " + name.text + " takes its left side and its right side, a parameter after them needs a default value", comp.tokens[comp.nodes[param].tok].at)
         if not peek(","):
             break
         comp.pos += 1
     try expect(")")
     if keyword == "operator" and count < 2:
-        eprint(ERR, "operator ", name.text, " expects two parameters, its left side and its right side")
-        show(name.at)
-        return Fail
+        return fail("operator " + name.text + " expects two parameters, its left side and its right side", name.at)
     if peek("->"):
         comp.pos += 1
         try type_expr()
@@ -370,9 +328,7 @@ func func_decl(body: bool) -> Fail?:
     if body:
         try block()
     elif peek(":"):
-        eprint(ERR, "an extern func has no body, its library holds it")
-        show(here().at)
-        return Fail
+        return fail("an extern func has no body, its library holds it", here().at)
     finish(n)
     return null
 
@@ -391,9 +347,7 @@ func block() -> Fail?:
     outer := comp.width
     inner := here().text.len
     if here().kind != Line or inner <= outer:
-        eprint(ERR, "':' expects an indented block after it, write pass when the block does nothing")
-        show(comp.tokens[comp.pos - 1].at)
-        return Fail
+        return fail("':' expects an indented block after it, write pass when the block does nothing", comp.tokens[comp.pos - 1].at)
     n := begin(Block, comp.pos)
     comp.width = inner
     while try next_line(outer, inner):
@@ -411,9 +365,7 @@ func next_line(outer: usize, inner: usize) -> bool|Fail:
         what: &strview = "is deeper than the block it belongs to"
         if t.text.len < inner:
             what = "matches no block open above it"
-        eprint(ERR, "unexpected indentation, this line ", what)
-        show(t.at)
-        return Fail
+        return fail("unexpected indentation, this line " + what, t.at)
     comp.pos += 1
     return true
 
@@ -438,21 +390,17 @@ func stmt() -> Fail?:
                 try block()
                 if same_line_next("elif") or same_line_next("else"):
                     late := comp.tokens[comp.pos + 1]
-                    eprint(ERR, late.text, " cannot follow an else, the else above already ended this if")
-                    show(late.at)
-                    return Fail
+                    return fail(late.text + " cannot follow an else, the else above already ended this if", late.at)
                 break
             append(opened, begin(If, comp.pos))
             comp.pos += 1
             try expr(1)
             try block()
         while opened.len > 0:
-            finish(opened[opened.len - 1])
+            finish(opened[-1])
             opened.len -= 1
     elif t.text == "elif" or t.text == "else":
-        eprint(ERR, t.text, " expects an if above it at the same column")
-        show(t.at)
-        return Fail
+        return fail(t.text + " expects an if above it at the same column", t.at)
     elif t.text == "while" or t.text == "with":
         n := begin(While, comp.pos)
         if t.text == "with":
@@ -465,9 +413,7 @@ func stmt() -> Fail?:
         counted := comp.tokens[comp.pos + 2].text == ","
         name := comp.pos + 1 + 2 * usize(counted)
         if comp.tokens[comp.pos + 1].kind != Name or comp.tokens[name].kind != Name or comp.tokens[name + 1].text != "in":
-            eprint(ERR, "for expects a name and 'in' after it: for x in items: or for i, x in items:")
-            show(t.at)
-            return Fail
+            return fail("for expects a name and 'in' after it: for x in items: or for i, x in items:", t.at)
         comp.pos += 1
         try new_name(true)
         comp.pos = name
@@ -491,9 +437,7 @@ func stmt() -> Fail?:
         try expr(1)
         try expect(":")
         if not same_line_next("case"):
-            eprint(ERR, "switch expects its cases on the lines below it, at the same column")
-            show(t.at)
-            return Fail
+            return fail("switch expects its cases on the lines below it, at the same column", t.at)
         while same_line_next("case"):
             comp.pos += 1
             c := begin(Case, comp.pos)
@@ -529,9 +473,7 @@ func stmt() -> Fail?:
             finish(c)
         finish(n)
     elif t.text == "case":
-        eprint(ERR, "case expects a switch above it at the same column")
-        show(t.at)
-        return Fail
+        return fail("case expects a switch above it at the same column", t.at)
     elif t.text == "return":
         n := begin(Return, comp.pos)
         comp.pos += 1
@@ -546,9 +488,7 @@ func stmt() -> Fail?:
             comp.pos += 1
         finish(n)
     elif t.text == "func" and comp.tokens[comp.pos + 1].kind == Name and comp.tokens[comp.pos + 2].text == "(":
-        eprint(ERR, "a function is declared at the first column, not inside another one: it could not use the variables around it, pass them as arguments")
-        show(t.at)
-        return Fail
+        return fail("a function is declared at the first column, not inside another one: it could not use the variables around it, pass them as arguments", t.at)
     elif t.text == "defer":
         n := begin(Defer, comp.pos)
         comp.pos += 1
@@ -556,17 +496,13 @@ func stmt() -> Fail?:
             return unexpected("defer expects a statement after it")
         try stmt()
         if comp.nodes[n + 1].kind == Var or comp.nodes[n + 1].kind == Defer:
-            eprint(ERR, "defer runs a statement when its block ends, a declaration or another defer leaves it nothing to run")
-            show(comp.tokens[comp.nodes[n].tok + 1].at)
-            return Fail
+            return fail("defer runs a statement when its block ends, a declaration or another defer leaves it nothing to run", comp.tokens[comp.nodes[n].tok + 1].at)
         finish(n)
     elif t.text == "pass":
         finish(begin(Block, comp.pos))
         comp.pos += 1
     elif (t.text == "use" or t.text == "module") and comp.tokens[comp.pos + 1].kind == Name:
-        eprint(ERR, t.text, " goes in the header of the file, before the first declaration")
-        show(t.at)
-        return Fail
+        return fail(t.text + " goes in the header of the file, before the first declaration", t.at)
     else:
         try assignment()
     return null
@@ -629,9 +565,7 @@ func expr(min: usize) -> Fail?:
             case "as":
                 prec = 10
             case "||":
-                eprint(ERR, "'||' is not an operator, write: or")
-                show(t.at)
-                return Fail
+                return fail("'||' is not an operator, write: or", t.at)
         if prec == 0 or prec < min:
             break
         append(operators, comp.pos)
@@ -789,9 +723,7 @@ func unary() -> Fail?:
 func deeper(at: usize) -> Fail?:
     comp.depth += 1
     if comp.depth > DEEP:
-        eprint(ERR, "this code nests more than ", DEEP, " levels deep, move the inner part to a function or a variable")
-        show(at)
-        return Fail
+        return fail("this code nests more than " + DEEP + " levels deep, move the inner part to a function or a variable", at)
     return null
 
 func arguments(last: &strview) -> Fail?:
@@ -907,13 +839,9 @@ func qualified(kind: NodeKind) -> usize:
 func new_name(of_value: bool) -> Fail?:
     t := here()
     if reserved(t.text) or of_value and t.text == "reverse":
-        eprint(ERR, "'", t.text, "' is a keyword of the language, it cannot be used as a name")
-        show(t.at)
-        return Fail
+        return fail("'" + t.text + "' is a keyword of the language, it cannot be used as a name", t.at)
     if of_value and module_of(t.text, comp.files.len - 1).len > 0:
-        eprint(ERR, t.text, " names a module in this file, a variable or a constant cannot take it")
-        show(t.at)
-        return Fail
+        return fail(t.text + " names a module in this file, a variable or a constant cannot take it", t.at)
     return null
 
 func reserved(word: &strview) -> bool:
@@ -945,12 +873,8 @@ func unexpected(message: &strview) -> Fail?:
     t := here()
     if t.kind == Line:
         last := comp.tokens[comp.pos - 1]
-        eprint(ERR, "the line ends here, ", message)
-        show(last.at + last.text.len)
-        return Fail
-    eprint(ERR, "unexpected '", t.text, "', ", message)
-    show(t.at)
-    return Fail
+        return fail("the line ends here, " + message, last.at + last.text.len)
+    return fail("unexpected '" + t.text + "', " + message, t.at)
 
 func here() -> Token:
     return comp.tokens[comp.pos]
