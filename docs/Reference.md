@@ -314,7 +314,7 @@ Every overload that can take the arguments gets a score, and the highest one win
 - an integer literal to `f32` gives 0, so `f64` wins
 - a `$T` that is still free gives 0 and takes the type of the argument
 - a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives only what its inside gives
-- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. It doesn't work with a bare `*$T`, that one takes any pointer. The counter of a `for` over a range with literal ends is the exception, the loop trusts it to index without checks: `i counts this loop, so a pointer to it is not taken on its own: write ptr(i)`
+- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. It doesn't work with a bare `*$T`, that one takes any pointer.
 
 When two overloads have the same score, the one that takes more arguments through a shape like `&slice[$T]`, instead of a bare `$T`, wins.
 
@@ -379,7 +379,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -402,7 +402,7 @@ A `where` condition can be
 - `not`, `and`, `or` and parentheses
 - anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `sizeof($T) >= 8`, `$$n <= 16`
 
-The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `x is not known when the call is chosen: a where reads types, numbers and constants, not the parameters`.
+The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `a where reads types, numbers and constants known when the call is chosen, and x is not one`.
 
 The platform builtins and `can_assign` only work inside a `where`.
 
@@ -435,6 +435,8 @@ There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 ## Iteration
 ### Ranges
 `a..b` goes from `a` to `b - 1`, and `reverse a..b` from `b - 1` down to `a`. If `b <= a` it doesn't run. The variable has the type of the end that is not a literal, or `i32` if both are literals, and both ends must have the same type. The ends are computed once, before the loop.
+
+The variable counts the loop, so it cannot be assigned: `i counts this loop, so it cannot be assigned: copy it to a variable to change it`. `ptr(i)` and a `*T` parameter get a copy of it, like for any value that is not a variable. That's why `a[i]` needs no bounds check when `a` is an array and the range has literal ends that fit in it, as in `for i in 0..4` over an `array[i32, 4]`.
 
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
 
@@ -471,7 +473,7 @@ func area(s: Circle|Square|null) -> f64:
 - a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 
-A case written with something that only a type has (`*`, `&`, `?`, `|`, `->`, `func(...)` or a `,` between `[]`, like `Pair[i32, u8]`) is a type. Any other case is read as a type over a tagged union and as a value over anything else, so `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types there, and `limit`, `p.x` and `t[0]` are values in a switch over a number.
+The cases are read when the switch is checked, with the type of the subject known: over a tagged union a case is a type and over anything else a value. So `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types in a switch over a union, and `limit`, `p.x` and `t[0]` are values in a switch over a number. In a generic function every instance reads the cases with its own types, so a mistake in a case shows when a call makes that instance.
 
 `break` inside a switch leaves the loop around the switch.
 
@@ -565,7 +567,7 @@ A context is one global value with its fields at zero. A union without `null` in
 - `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`. Without the `use`, `a.name` is an error. A nested type of a module is `a.Car.motor`
 - `priv` hides a name from the files outside the module
 - a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
-- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg`
+- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg, only the files of a.flg see it`
 - a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files
 - a module that has a `priv` function keeps its name: a call to that name from inside the module chooses among the functions declared in the module first (in the file, for a file without a `module` line), `priv` or not, and the best fit of them wins over any function from outside, even one with closer types. So a function of yours never replaces a helper of the library
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
@@ -807,7 +809,7 @@ The place is `file:line:column`, both start at 1 and the column counts bytes, so
 
 When a line ends before it should, the error points after its last word
 ```
-error: the line ends here, expected ':'
+error: the line ends here, ':' goes here
   --> main.flg:2:13
    |     if ready
    |             ^

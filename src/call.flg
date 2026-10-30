@@ -122,9 +122,9 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
         c: &strview = "ceqw"
         if o == "!=":
             c = "cnew"
-        if lt.kind == Union and rt.kind == Void and has(members(l.type), r.type):
+        if lt.kind == Union and rt.kind == Void and contains(members(l.type), r.type):
             return Value{type = BOOL, at = op(W, c, tag(l), tag_of(r.type))}
-        if rt.kind == Union and lt.kind == Void and has(members(r.type), l.type):
+        if rt.kind == Union and lt.kind == Void and contains(members(r.type), l.type):
             return Value{type = BOOL, at = op(W, c, tag(r), tag_of(l.type))}
         if lt.kind == Union and lt.size == 4 and rt.kind == Union and rt.size == 4 and (within(l.type, r.type) or within(r.type, l.type)):
             return Value{type = BOOL, at = op(W, c, tag(l), tag(r))}
@@ -260,12 +260,10 @@ func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
     if best == 0:
         return VOID
     f := comp.syms[best].node
-    saved := comp.frame
-    comp.frame = comp.binds.len
+    saved := open_frame()
     try bind(f, trust arrange(f, args.len, names), args)
     ret := result(f)
-    comp.binds.len = comp.frame
-    comp.frame = saved
+    close_frame(saved)
     return ret
 
 func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
@@ -309,15 +307,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     if noted(at) and comp.tokens[comp.target].text == name:
         mark(comp.nodes[f].tok, header(comp.nodes[f].tok))
     order := trust arrange(f, args.len, names)
-    saved := comp.frame
-    comp.frame = comp.binds.len
-    try bind(f, order, args)
     taken: &list[usize]
-    for k in 0..order.len:
-        append(taken, try resolve(kid(f, k) + 1))
-    id := try instantiate(f, at)
-    comp.binds.len = comp.frame
-    comp.frame = saved
+    id := try instantiate_for(f, order, args, ptr(taken), at)
     foreign := body(f) == 0 or comp.insts[id].export
     passes: &list[Pass]
     for k in 0..order.len:
@@ -328,7 +319,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             aside := set_aside(0)
             site := comp.site
             comp.site = at
-            append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, source(given)))
+            append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, at_of(given)))
             put_back(0, aside)
             comp.site = site
     if order.len < params(f):
@@ -344,6 +335,16 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             else:
                 append(passes, Pass{cls(v.type), x, is_number(x)})
     return emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
+
+func instantiate_for(f: usize, order: &list[usize], args: &list[Value], taken: *&list[usize], at: usize) -> usize|Fail:
+    saved := open_frame()
+    try bind(f, order, args)
+    for k in 0..params(f):
+        if text(kid(f, k)) != "..":
+            append(taken, try resolve(kid(f, k) + 1))
+    id := try instantiate(f, at)
+    close_frame(saved)
+    return id
 
 func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> usize|Fail:
     key: &str
@@ -377,11 +378,9 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
             seen = true
             order := arrange(f, args.len, names)
             if order is &list[usize]:
-                saved := comp.frame
-                comp.frame = comp.binds.len
+                saved := open_frame()
                 score := try bind(f, order, args)
-                comp.binds.len = comp.frame
-                comp.frame = saved
+                close_frame(saved)
                 if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
                     score += PRIVATE
                 append(scores, score)
@@ -434,10 +433,7 @@ func near(s: usize, at: usize) -> usize:
 func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     v := given
     if comp.types[to].kind == Ptr and comp.types[to].elem == given.type:
-        for l in comp.vars:
-            if l.bound != 0 and given.mem and l.addr.kind == given.at.kind and l.addr.n == given.at.n:
-                return fail(l.name + " counts this loop, so a pointer to it is not taken on its own: write ptr(" + l.name + ")", at)
-        if not given.mem and not aggregate(given.type):
+        if not given.place and not aggregate(given.type):
             v.at = alloc(given.type)
             store(given.type, given, v.at)
         v = Value{type = to, at = v.at}
@@ -452,7 +448,7 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     return Pass{how, x, is_number(x)}
 
 func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize) -> Value|Fail:
-    called := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
+    i := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
     for p in passes:
         append(comp.passes, p)
     result := Arg{}
@@ -460,13 +456,13 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
         result = alloc(ret)
         append(comp.passes, Pass{L, result, false})
     elif ret != VOID:
-        called.cls = try passing(ret, foreign, at)
+        i.cls = try passing(ret, foreign, at)
         result = temp()
-        called.to = u32(result.n)
-    called.count = u32(comp.passes.len) - called.first
+        i.to = u32(result.n)
+    i.count = u32(comp.passes.len) - i.first
     here := comp.at
     comp.at = at
-    add(called)
+    add(i)
     comp.at = here
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)
@@ -549,7 +545,7 @@ func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
 
 func c_type(t: usize, at: usize) -> u32|Fail:
     ty := comp.types[t]
-    if has(comp.c_types, t):
+    if contains(comp.c_types, t):
         return CAGG + u32(t)
     if ty.kind != Struct and ty.kind != Untagged:
         return fail(ty.name + " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do", at)
@@ -628,7 +624,7 @@ func match(n: usize, v: Value) -> i64|Fail:
             c = node_end(c)
         rest: &list[usize]
         for m in members(v.type):
-            if not has(concrete, m):
+            if not contains(concrete, m):
                 append(rest, m)
         if rest.len == 0:
             for i in binder..node_end(binder):
@@ -675,7 +671,7 @@ func match(n: usize, v: Value) -> i64|Fail:
     s := try find_type(text(head), comp.nodes[head].module, comp.tokens[comp.nodes[head].tok].at)
     if s != 0 and not fat and kids(head) > 0 and comp.nodes[comp.syms[s].node].kind == Alias:
         alias := comp.syms[s].node
-        if type_params(alias) != kids(head) or has(comp.resolving, alias):
+        if type_params(alias) != kids(head) or contains(comp.resolving, alias):
             return -1
         before := comp.nodes.len
         append(comp.resolving, alias)
@@ -852,7 +848,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
     if v.lit and numeric(v.type) and target.kind == Float:
         x := real(v)
         if to == F32 and f32(x) - f32(x) != 0.0:
-            return fail(x + " does not fit in f32", at)
+            return fail(x + " does not fit in f32, the largest f32 is 3.4028234663852886e+38", at)
         f := try float_literal(x, at)
         if to == F32:
             f.at.kind = Single
@@ -863,7 +859,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         args: &list[Value]
         append(args, v)
         return invoke("c_text", args, at)
-    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged) and not has(members(to), v.type) and not untagged_member(to, v.type):
+    if v.lit and numeric(v.type) and (target.kind == Union or target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
         found: usize = VOID
         tied: usize = VOID
         best: i64 = -1
@@ -932,7 +928,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         terminate("hlt", Arg{})
         open_block(l_done)
         return Value{type = to, at = slot, mem = true}
-    return fail("cannot assign " + from.name + " to " + target.name, at)
+    return fail("cannot assign " + from.name + " to " + target.name + ", and no operator = makes a " + target.name + " from it", at)
 
 func spread(from: usize, to: usize) -> bool:
     target := comp.types[to]
@@ -943,10 +939,10 @@ func spread(from: usize, to: usize) -> bool:
         return text(target.decl) == "map"
     if from == EMPTYARRAY:
         return elem != VOID
-    source := comp.types[from]
-    if source.kind != Ptr or elem == VOID:
+    p := comp.types[from]
+    if p.kind != Ptr or elem == VOID:
         return false
-    return source.elem == EMPTYARRAY or comp.types[source.elem].kind == Array and comp.types[source.elem].elem == elem
+    return p.elem == EMPTYARRAY or comp.types[p.elem].kind == Array and comp.types[p.elem].elem == elem
 
 func element(fat: usize) -> usize:
     params := type_params(comp.types[fat].decl)
@@ -1009,7 +1005,7 @@ func callable(s: usize, module: &strview, args: &list[Value], at: usize) -> bool
     return false
 
 func holds(n: usize) -> bool|Fail:
-    try deeper(source(n))
+    try deeper(at_of(n))
     defer comp.depth -= 1
     node := comp.nodes[n]
     o := text(n)
@@ -1017,7 +1013,7 @@ func holds(n: usize) -> bool|Fail:
     if node.kind == Unary and o == "not":
         return not try holds(left)
     if node.kind == Call and o == "can_assign" and kids(n) == 2:
-        return assignable(try resolve(left), try resolve(node_end(left)), source(n))
+        return assignable(try resolve(left), try resolve(node_end(left)), at_of(n))
     if node.kind == Binary and (o == "and" or o == "or"):
         chain: &list[usize]
         c := n
@@ -1042,7 +1038,7 @@ func holds(n: usize) -> bool|Fail:
             return (try resolve(left) == try resolve(node_end(left))) == (o == "==")
     v := try gen(n, VOID)
     if v.type != BOOL or not v.lit:
-        return fail("a where compares types and numbers known when the call is chosen, this one is not", source(n))
+        return fail("a where reads types, numbers and constants known when the call is chosen, and this is not one", at_of(n))
     return v.n == 1
 
 func assignable(to: usize, from: usize, at: usize) -> bool|Fail:

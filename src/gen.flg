@@ -5,7 +5,7 @@ func gen_program(check: bool) -> Fail?:
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
             lib := text(e)[1:text(e).len - 1]
-            if lib != "c" and not has_text(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
+            if lib != "c" and not contains(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
                 append(comp.libs, lib)
     comp.choosing = false
     contexts: &list[usize]
@@ -63,24 +63,34 @@ func gen_program(check: bool) -> Fail?:
                 elif text(c) != "..":
                     try passing(try resolve(c + 1), true, comp.tokens[comp.nodes[c].tok].at)
                 c = node_end(c)
-        elif comp.nodes[f].kind == Func and params(f) > 0 and (text(f) == "at" or text(f) == "iter" or text(f) == "reverse_iter"):
-            subject := kid(f, 0) + 1
-            shown: &str
-            while comp.nodes[subject].kind == TUnary:
-                shown += text(subject)
-                subject += 1
-            shown += text(subject)
-            whole := text(subject) == "list" or text(subject) == "slice" or text(subject) == "array" or text(subject) == "str" or text(subject) == "strview"
-            owned := text(f) != "at" and whole
-            if text(f) == "at" and params(f) == 2 and whole:
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                for t in I8..USIZE + 1:
-                    owned = owned or try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0
-                    comp.binds.len = comp.frame
-                comp.frame = saved
+        name := text(f)
+        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter"):
+            saved := open_frame()
+            for i in kid(f, 0)..kid(f, params(f)):
+                t := comp.tokens[comp.nodes[i].tok]
+                if t.kind == Generic and bound(t.text) == 0:
+                    placeholder := Item{t.text, U8, 1, false}
+                    if starts_with(t.text, "$$"):
+                        placeholder.type = VOID
+                    append(comp.binds, placeholder)
+            first := try resolve(kid(f, 0) + 1)
+            target := first
+            if comp.types[first].kind == Ptr:
+                target = comp.types[first].elem
+            owned := sequence(first) or textual(first) or comp.types[target].kind == Array
+            if name == "at":
+                owned = false
+                if params(f) > 1 and (sequence(target) or textual(target) or comp.types[target].kind == Array):
+                    second := try resolve(kid(f, 1) + 1)
+                    for t in I8..USIZE + 1:
+                        owned = owned or accepts(second, Value{type = usize(t)}) >= 0
+            close_frame(saved)
+            shown := comp.types[target].name
+            shown = shown[:find(shown, "[") ifnull shown.len]
+            if owned and name == "at":
+                return fail("x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
             if owned:
-                return fail(language(text(f), shown), comp.tokens[comp.nodes[f].tok].at)
+                return fail("for over " + shown + " belongs to the language, " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
     comp.procs.len = funcs
     comp.code.len = code
@@ -136,7 +146,7 @@ func gen_from(from: usize) -> usize|Fail:
         comp.loops.len = 0
         comp.live = true
         comp.inst = i
-        comp.frame = comp.binds.len
+        saved := open_frame()
         for k in 0..inst.count:
             append(comp.binds, comp.inst_binds[inst.binds + k])
         comp.ret = inst.ret
@@ -155,7 +165,7 @@ func gen_from(from: usize) -> usize|Fail:
             elif comp.types[t].kind == Fat or big(t):
                 how = L
             append(comp.passes, Pass{how, p, comp.numbers[usize(p.n) - 1]})
-            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
+            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false, false})
         comp.dest = Arg{}
         if big(inst.ret) and not inst.export:
             comp.dest = temp()
@@ -176,10 +186,6 @@ func gen_from(from: usize) -> usize|Fail:
         target := first
         if comp.types[first].kind == Ptr:
             target = comp.types[first].elem
-        integral := false
-        if name == "at":
-            for t in I8..USIZE + 1:
-                integral = integral or accepts(second, Value{type = usize(t)}) >= 0
         if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
             if name == "=" and inst.ret != target:
                 return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
@@ -191,8 +197,6 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
-        elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or textual(first) or comp.types[target].kind == Array):
-            return fail(language(name, comp.types[first].name), comp.at)
         try statements(block)
         if comp.live:
             if comp.ret != VOID:
@@ -205,14 +209,9 @@ func gen_from(from: usize) -> usize|Fail:
         elif inst.ret != VOID and comp.dest.kind == Empty:
             back = cls(inst.ret)
         close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
-        comp.binds.len = comp.frame
+        close_frame(saved)
     comp.blame = 0
     return next
-
-func language(name: &strview, shown: &strview) -> &strview:
-    if name == "at":
-        return "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
-    return "for over " + shown + " belongs to the language, " + name + " cannot be declared for it"
 
 func made(inst: usize) -> &str:
     i := comp.insts[inst]
@@ -312,6 +311,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
 
+# split by kind: QBE gives each call that returns a struct its own stack slot
 func gen(n: usize, want: usize) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
@@ -347,8 +347,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if c == node_end(n) or v.type != t:
             zero(t, slot)
         if c < node_end(n):
-            try assign(slot, t, v, source(c))
-        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, fails(t)})
+            try assign(slot, t, v, at_of(c))
+        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, fails(t)})
         if noted(tok.at):
             mark(node.tok, described(tok.text, t))
         return none
@@ -359,14 +359,16 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if lk == Name and text(left) == "_":
             try value(right, VOID)
             return none
-        if not (lk == Name or lk == Field or lk == Index or lk == Unary and text(left) == ".*"):
-            return fail("cannot assign to this expression, it is not a place that holds a value", source(left))
         if lk == Index:
             return indexed(left, n)
         first := comp.body.len
-        spot := try gen(left, VOID)
+        spot := none
+        if lk == Name or lk == Field or lk == Unary and text(left) == ".*":
+            spot = try gen(left, VOID)
+        if not spot.place and local_of(left) != 0:
+            return fail(text(left) + " counts this loop, so it cannot be assigned: copy it to a variable to change it", at_of(left))
         if not spot.place:
-            return fail("this is not a variable, it cannot be assigned", source(left))
+            return fail("this cannot be assigned, only a variable, a field of one, an element or what a pointer points to can", at_of(left))
         try update(spot, n, first)
         return none
     case Return:
@@ -378,7 +380,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return none
         if comp.ret == VOID:
             return fail("this function returns nothing, return expects no value", tok.at)
-        try leave(try value(n + 1, comp.ret), source(n + 1))
+        try leave(try value(n + 1, comp.ret), at_of(n + 1))
         return none
     case If:
         before := comp.vars.len
@@ -460,12 +462,15 @@ func gen(n: usize, want: usize) -> Value|Fail:
             jump(l.again)
         return none
     case Defer:
+        last := node.tok
         for i in n + 1..node_end(n):
-            k := comp.nodes[i].kind
+            if comp.nodes[i].tok > last:
+                last = comp.nodes[i].tok
             if comp.nodes[i - 1].kind != Assign:
                 reads(i)
-            if k == Return or k == Jump or k == Unary and text(i) == "try":
-                return fail("a deferred statement runs on the way out, it cannot hold " + text(i), comp.tokens[comp.nodes[i].tok].at)
+        for t in comp.tokens[node.tok + 1:last + 1]:
+            if t.kind == Name and (t.text == "return" or t.text == "break" or t.text == "continue" or t.text == "try"):
+                return fail("a deferred statement runs on the way out, it cannot hold " + t.text, t.at)
         append(comp.defers, Deferred{n + 1, comp.vars.len, none})
         return none
     case With:
@@ -474,14 +479,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
             slot := alloc(subject.type)
             store(subject.type, subject, slot)
             subject = Value{type = subject.type, at = slot, mem = true}
-        mark := comp.defers.len
+        defers := comp.defers.len
         before := comp.vars.len
         ends: &list[Local]
         append(comp.defers, Deferred{n, before, subject})
         try statements(node_end(n + 1))
         if comp.live:
-            try run_defers(mark)
-        comp.defers.len = mark
+            try run_defers(defers)
+        comp.defers.len = defers
         if try keep(before, before, ends):
             try join(ends, 1, tok.at)
         return none
@@ -522,15 +527,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     elif wanted == VOID and generic(f):
                         untyped = true
                     elif wanted == VOID or params(f) == order.len:
-                        saved := comp.frame
-                        comp.frame = comp.binds.len
+                        saved := open_frame()
                         fits = try bind(f, order, typed) >= 0
                         k: usize = 0
                         while fits and k < order.len:
                             fits = try resolve(kid(f, k) + 1) == typed[k].type
                             k += 1
-                        comp.binds.len = comp.frame
-                        comp.frame = saved
+                        close_frame(saved)
                     if fits and (found == 0 or near(s, tok.at) < near(found, tok.at)):
                         found = s
                         tied = false
@@ -549,15 +552,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if tied:
                     return fail("ambiguous function value " + tok.text + ", several overloads have the parameters of " + comp.types[wanted].name, tok.at)
                 f := comp.syms[found].node
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                try bind(f, order, typed)
                 taken: &list[usize]
-                for k in 0..params(f):
-                    append(taken, try resolve(kid(f, k) + 1))
-                id := try instantiate(f, tok.at)
-                comp.binds.len = comp.frame
-                comp.frame = saved
+                id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
@@ -572,7 +568,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if reserved(tok.text):
                 return fail("'" + tok.text + "' is a keyword of the language, it is not a value", tok.at)
             if comp.choosing:
-                return fail(tok.text + " is not known when the call is chosen: a where reads types, numbers and constants, not the parameters", tok.at)
+                return fail("a where reads types, numbers and constants known when the call is chosen, and " + tok.text + " is not one", tok.at)
             if comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
                 return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
             return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
@@ -620,7 +616,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         zero(t, slot)
         named := c < node_end(n) and comp.nodes[c].kind == Named
         if named and ty.kind == Array:
-            return fail(ty.name + " fills its elements in order, they have no names", source(c))
+            return fail(ty.name + " fills its elements in order, they have no names", at_of(c))
         filled: &list[Item]
         given: usize = 0
         k := c
@@ -640,21 +636,21 @@ func gen(n: usize, want: usize) -> Value|Fail:
         i: usize = 0
         while c < node_end(n):
             if (comp.nodes[c].kind == Named) != named:
-                return fail("a literal names every field it fills or none, the two forms do not mix", source(c))
+                return fail("a literal names every field it fills or none, the two forms do not mix", at_of(c))
             if named:
                 f: usize = 0
                 while f < ty.count and comp.items[ty.first + f].name != text(c):
                     f += 1
                 if f == ty.count:
-                    return fail(ty.name + " has no field " + text(c), source(c))
+                    return fail(ty.name + " has no field " + text(c), at_of(c))
                 field := comp.items[ty.first + f]
                 for g in filled:
                     if g.name == field.name:
-                        return fail("field " + field.name + " is filled twice", source(c))
+                        return fail("field " + field.name + " is filled twice", at_of(c))
                     if field.n < g.n + comp.types[g.type].size and g.n < field.n + comp.types[field.type].size:
-                        return fail("field " + field.name + " cannot be filled, " + g.name + " already fills the storage they share", source(c))
+                        return fail("field " + field.name + " cannot be filled, " + g.name + " already fills the storage they share", at_of(c))
                 append(filled, field)
-            try assign(offset(slot, filled[i].n), filled[i].type, try value(c, filled[i].type), source(c))
+            try assign(offset(slot, filled[i].n), filled[i].type, try value(c, filled[i].type), at_of(c))
             i += 1
             c = node_end(c)
         return Value{type = t, at = slot, mem = true}
@@ -764,13 +760,13 @@ func iterate(n: usize) -> Fail?:
     l_exit := label()
     slot := Arg{}
     t: usize = VOID
-    at := source(subject)
+    at := at_of(subject)
     start := literal(false, 0)
     end: Value
     walked: Value
     elem: usize = VOID
     addr := Arg{}
-    bound: usize = 0
+    limit: usize = 0
     if range:
         start = try value(subject + 1, VOID)
         end = try value(node_end(subject + 1), VOID)
@@ -782,20 +778,7 @@ func iterate(n: usize) -> Fail?:
         if not start.lit and not end.lit and start.type != end.type:
             return fail("a range expects both ends of one type, got " + comp.types[start.type].name + " and " + comp.types[end.type].name, at)
         if start.lit and not start.neg and end.lit and not end.neg:
-            bound = end.n
-        body := node_end(subject)
-        for p in body..node_end(body):
-            c := p + 1
-            k: usize = 0
-            while c < node_end(p):
-                if comp.nodes[c].kind == Name and comp.nodes[c].module.len == 0 and text(c) == tok.text:
-                    kind := comp.nodes[p].kind
-                    id := get(comp.type_ids, text(p))
-                    read := text(p) == "print" or text(p) == "eprint" or id is usize and id <= BYTES
-                    if kind == Assign and k == 0 or kind == Call and not read or kind == Named or kind == With:
-                        bound = 0
-                c = node_end(c)
-                k += 1
+            limit = end.n
     else:
         walked = try value(subject, VOID)
         seq := walked.type
@@ -819,28 +802,28 @@ func iterate(n: usize) -> Fail?:
         if backward:
             from = end
             to = start
-        limit := load(to).at
+        stop := load(to).at
         slot = alloc(t)
         store(t, from, slot)
         jump(l_head)
         open_block(l_head)
         current := load(Value{type = t, at = slot, mem = true}).at
         if backward:
-            branch(op(W, cmp_name("cslt", t), limit, current), l_body, l_exit)
+            branch(op(W, cmp_name("cslt", t), stop, current), l_body, l_exit)
             open_block(l_body)
             current = op(cls(t), "sub", current, int_arg(1))
             store(t, Value{type = t, at = current}, slot)
         else:
-            branch(op(W, cmp_name("cslt", t), current, limit), l_body, l_exit)
+            branch(op(W, cmp_name("cslt", t), current, stop), l_body, l_exit)
             open_block(l_body)
         if range:
             mention(tok.text, slot)
-            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, bound, false})
+            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
         else:
             place := alloc(elem)
             store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
             mention(tok.text, place)
-            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false})
+            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
             round := current
             if backward:
@@ -848,7 +831,7 @@ func iterate(n: usize) -> Fail?:
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
         if backward:
             append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
         else:
@@ -882,7 +865,7 @@ func iterate(n: usize) -> Fail?:
         if counter != 0:
             store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
         item: usize = VOID
         place := Arg{}
         if chars:
@@ -942,7 +925,7 @@ func iterate(n: usize) -> Fail?:
             open_block(l_body)
             place = payload(got.at, item)
         mention(tok.text, place)
-        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false})
+        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
     try statements(node_end(subject))
     if (range or elem != VOID) and not backward:
@@ -970,73 +953,80 @@ func cases(n: usize) -> Fail?:
     lives: usize = 0
     c := node_end(n + 1)
     while c < node_end(n):
-        labels := kids(c) - 1
-        if fallback != 0 and labels == 0:
-            return fail("a switch has one default case, this is a second one", comp.tokens[comp.nodes[c].tok].at)
+        at := comp.tokens[comp.nodes[c].tok].at
+        comp.pos = comp.nodes[c].tok + 1
+        if fallback != 0 and peek(":"):
+            return fail("a switch has one default case, this is a second one", at)
         if fallback != 0:
             return fail("the default case goes last in a switch", comp.tokens[comp.nodes[fallback].tok].at)
         l_body := label()
         l_next := label()
         handled: &list[usize]
-        if labels == 0:
+        last := peek(":")
+        if last:
             if union and left.len == 0:
-                return fail("this default case never runs, the cases above handle every type of " + whole.name, comp.tokens[comp.nodes[c].tok].at)
+                return fail("this default case never runs, the cases above handle every type of " + whole.name, at)
             fallback = c
             handled = left
             jump(l_body)
-        l := c + 1
-        for i in 0..labels:
-            k := comp.nodes[l].kind
-            typed := k == TName or k == TUnary or k == TUnion or k == TFunc
+        while not last:
+            first := here()
+            l := comp.nodes.len
             if union:
-                head := l
-                while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index and kids(head) == 2:
-                    head += 1
-                if not typed and comp.nodes[head].kind != Name:
-                    return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", source(l))
-                if local_of(head) != 0:
-                    return fail(text(head) + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", source(l))
-                t: usize = VOID
-                if head == l:
-                    t = try resolve(l)
-                else:
-                    comp.pos = comp.nodes[head].tok - 2 * usize(comp.nodes[head].module.len > 0)
-                    made := comp.nodes.len
+                local := first.kind == Name and lookup(first.text) != 0
+                typed := not local and (first.kind == Name or first.kind == Generic or peek("*") or peek("&") or peek("("))
+                if typed:
                     try type_expr()
-                    t = try resolve(made)
-                    comp.nodes.len = made
-                for m in members(t):
-                    if not has(members(subject.type), m):
-                        return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", source(l))
-                    if not has(left, m):
-                        return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", source(l))
+                else:
+                    try expr(1)
+                last = not peek(",")
+                if local:
+                    return fail(first.text + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", first.at)
+                if not typed or last and not peek(":"):
+                    return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", first.at)
+                for m in members(try resolve(l)):
+                    if not contains(members(subject.type), m):
+                        return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", first.at)
+                    if not contains(left, m):
+                        return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", first.at)
                     append(handled, m)
                     remove(left, trust find(left, m))
             else:
+                typed := peek("*") or peek("&")
+                if not typed:
+                    try expr(1)
+                    head := l
+                    while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index:
+                        head += 1
+                    typed = comp.nodes[head].kind == Name and local_of(head) == 0 and (get(comp.type_ids, text(head)) is usize or try find_type(text(head), comp.nodes[head].module, first.at) != 0)
                 if typed:
-                    return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", source(l))
+                    return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", first.at)
+                last = not peek(",")
+                if last and not peek(":"):
+                    return expect(":")
                 eq: Value
-                if k == Binary and text(l) == "..":
-                    low := try binary(">=", subject, try value(l + 1, VOID), source(l))
-                    high := try binary("<", subject, try value(node_end(l + 1), VOID), source(l))
+                if comp.nodes[l].kind == Binary and text(l) == "..":
+                    low := try binary(">=", subject, try value(l + 1, VOID), first.at)
+                    high := try binary("<", subject, try value(node_end(l + 1), VOID), first.at)
                     eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
                 else:
-                    eq = try binary("==", subject, try value(l, subject.type), source(l))
+                    eq = try binary("==", subject, try value(l, subject.type), first.at)
                 if eq.type != BOOL:
-                    return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, source(l))
+                    return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, first.at)
                 l_more := l_next
-                if i + 1 < labels:
+                if not last:
                     l_more = label()
                 branch(load(eq).at, l_body, l_more)
-                if i + 1 < labels:
+                if not last:
                     open_block(l_more)
-            l = node_end(l)
-        if union and labels > 0:
+            comp.nodes.len = l
+            comp.pos += 1
+        if union and fallback != c:
             branch(tag_test(subject, handled), l_body, l_next)
         open_block(l_body)
         if union and local_of(n + 1) != 0:
-            try confine(n + 1, handled, source(c))
-        try statements(kid(c, labels))
+            try confine(n + 1, handled, at_of(c))
+        try statements(c + 1)
         if try keep(before, before, ends):
             lives += 1
             jump(l_end)
@@ -1058,14 +1048,14 @@ func called(n: usize) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     none: Value
-    called := none
+    callee := none
     first := n + 1
     if tok.text == "(":
-        called = try value(n + 1, VOID)
+        callee = try value(n + 1, VOID)
         first = node_end(n + 1)
     elif node.module.len == 0 and lookup(tok.text) != 0:
         if func_in(comp.vars[lookup(tok.text) - 1].type) != VOID:
-            called = held(lookup(tok.text), tok.at)
+            callee = held(lookup(tok.text), tok.at)
     else:
         s := try named(tok.text, node.module, tok.at)
         if s != 0 and comp.nodes[comp.syms[s].node].kind == Named:
@@ -1073,30 +1063,30 @@ func called(n: usize) -> Value|Fail:
             while f != 0 and not (comp.nodes[comp.syms[f].node].kind == Func and visible(f, node.module, tok.at)):
                 f = comp.syms[f].next
             if f == 0:
-                called = try constant(s, VOID, tok.at)
-    if called.type != VOID:
-        shape := comp.types[called.type]
+                callee = try constant(s, VOID, tok.at)
+    if callee.type != VOID:
+        shape := comp.types[callee.type]
         count := kids(n) - usize(tok.text == "(")
         if shape.kind != Func:
             hint: &strview
-            if func_in(called.type) != VOID and called.place:
+            if func_in(callee.type) != VOID and callee.place:
                 hint = ": narrow it with is first"
             return fail("only a function value can be called, this is " + shape.name + hint, tok.at)
         if count != shape.count:
             return fail("this " + shape.name + " expects " + shape.count + " arguments but got " + count, tok.at)
-        code := load(called).at
+        code := load(callee).at
         if code.kind != Global:
             try panic_if(op(W, "ceql", code, int_arg(0)), "call of an empty function value", tok.at)
         passes: &list[Pass]
         c := first
         while c < node_end(n):
             if comp.nodes[c].kind == Named:
-                return fail("a function value has no parameter names, pass the arguments in order", source(c))
+                return fail("a function value has no parameter names, pass the arguments in order", at_of(c))
             to := comp.items[shape.first + passes.len].type
             given := try value(c, to)
             if accepts(to, given) < 0 and not (comp.types[to].kind == Ptr and comp.types[to].elem == given.type):
-                return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, source(c))
-            append(passes, try hand(given, to, false, source(c)))
+                return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
+            append(passes, try hand(given, to, false, at_of(c)))
             c = node_end(c)
         return emit(code, passes, shape.elem, false, tok.at)
     name := tok.text
@@ -1119,7 +1109,7 @@ func called(n: usize) -> Value|Fail:
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Named:
-                return fail(name + " is a builtin, its arguments cannot be named", source(c))
+                return fail(name + " is a builtin, its arguments cannot be named", at_of(c))
             c = node_end(c)
         if name == "can_assign":
             return fail("can_assign() cannot appear outside a where, it chooses between overloads", tok.at)
@@ -1131,7 +1121,7 @@ func called(n: usize) -> Value|Fail:
                 return fail("bool() does not convert, a number becomes a bool with a comparison: x != 0", tok.at)
             slot := alloc(target)
             zero(target, slot)
-            try assign(slot, target, given, source(n + 1))
+            try assign(slot, target, given, at_of(n + 1))
             return Value{type = target, at = slot, mem = true}
         if name == "print" or name == "eprint":
             file: &strview = "stdout"
@@ -1153,7 +1143,7 @@ func called(n: usize) -> Value|Fail:
                 values.len = 0
                 append(values, to)
                 append(values, part)
-                try invoke("write", values, source(c))
+                try invoke("write", values, at_of(c))
                 c = node_end(c)
             values.len = 0
             append(values, to)
@@ -1179,21 +1169,21 @@ func called(n: usize) -> Value|Fail:
         if platform:
             return truth(name[1:] == comp.system or name[1:] == comp.machine)
         if name == "@here":
-            spot := tok.at
+            site := tok.at
             if comp.site != 0:
-                spot = comp.site
-            return Value{type = try fat_type("strview", VOID, tok.at), at = text_data(replace(view(location(spot)), "\\", "\\\\")), mem = true, lit = true}
+                site = comp.site
+            return Value{type = try fat_type("strview", VOID, tok.at), at = text_data(replace(view(location(site)), "\\", "\\\\")), mem = true, lit = true}
         if name == "sizeof":
             return literal(false, comp.types[try resolve(n + 1)].size)
         if name == "ptr":
             a := n + 1
-            callee := first_sym(text(a))
+            found := first_sym(text(a))
             if comp.nodes[a].kind == Name and lookup(text(a)) == 0 and try named(text(a), comp.nodes[a].module, tok.at) == 0:
-                while callee != 0 and not (comp.nodes[comp.syms[callee].node].kind == Func and visible(callee, comp.nodes[a].module, tok.at)):
-                    callee = comp.syms[callee].next
-                if callee != 0 and not comp.syms[callee].export:
+                while found != 0 and not (comp.nodes[comp.syms[found].node].kind == Func and visible(found, comp.nodes[a].module, tok.at)):
+                    found = comp.syms[found].next
+                if found != 0 and not comp.syms[found].export:
                     return fail("ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := " + text(a), tok.at)
-                if callee != 0:
+                if found != 0:
                     return Value{type = pointer(BYTES), at = global("$" + text(a))}
             v := try value(a, VOID)
             if not v.place:
@@ -1211,9 +1201,9 @@ func called(n: usize) -> Value|Fail:
             label = text(c)
             for other in names:
                 if other == label:
-                    return fail(name + " names " + label + " twice", source(c))
+                    return fail(name + " names " + label + " twice", at_of(c))
         elif names.len > 0 and names[-1].len > 0:
-            return fail(name + " expects every argument after a named one to be named too", source(c))
+            return fail(name + " expects every argument after a named one to be named too", at_of(c))
         append(names, label)
         append(values, try value(c, VOID))
         c = node_end(c)
@@ -1257,7 +1247,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         for m in members(v.type):
             if o == "trust" and removed.len == 0 and m == NULL:
                 append(removed, m)
-            elif not has(removed, m):
+            elif not contains(removed, m):
                 append(rest, m)
         if removed.len == 0 and o == "try":
             return fail(t.name + " never fails, there is no error to try for", tok.at)
@@ -1268,7 +1258,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         kept := try union_of(rest, Union, tok.at)
         if o == "try":
             for e in removed:
-                if not has(members(comp.ret), e):
+                if not contains(members(comp.ret), e):
                     return fail("try passes " + comp.types[e].name + " up but this function returns " + comp.types[comp.ret].name, tok.at)
             failed := try union_of(removed, Union, tok.at)
             l_fail := label()
@@ -1296,7 +1286,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         tags: &list[usize]
         asked := members(wanted)
         for m in members(v.type):
-            if has(asked, m):
+            if contains(asked, m):
                 append(tags, m)
         if tags.len == 0:
             return fail(comp.types[v.type].name + " can never be " + comp.types[wanted].name + ", so this is always false", tok.at)
@@ -1361,7 +1351,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
             append(both_sides, other.type)
             result = try union_of(both_sides, Union, tok.at)
         slot := alloc(result)
-        try assign(slot, result, other, source(right))
+        try assign(slot, result, other, at_of(right))
         jump(l_done)
         open_block(l_good)
         absent(v.at, v.type, rest)
@@ -1426,13 +1416,13 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     array := comp.types[t].kind == Array
     if (array or (sequence(t) or textual(t)) and integer(index.type)) and kids(n) == 2:
         if not integer(index.type):
-            return fail("an array index expects an integer, this one is " + comp.types[index.type].name, source(kid(n, 1)))
+            return fail("an array index expects an integer, this one is " + comp.types[index.type].name, at_of(kid(n, 1)))
         elem := comp.types[t].elem
         length := int_arg(i64(comp.types[t].count))
         known := array and index.lit and not index.neg and index.n < comp.types[t].count
         if array and local_of(kid(n, 1)) != 0:
-            bound := comp.vars[local_of(kid(n, 1)) - 1].bound
-            known = bound != 0 and bound <= comp.types[t].count
+            limit := comp.vars[local_of(kid(n, 1)) - 1].limit
+            known = limit != 0 and limit <= comp.types[t].count
         if not array:
             elem = element(t)
             length = load(Value{type = USIZE, at = offset(addr, 8), mem = true}).at
@@ -1534,7 +1524,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     if assignment == 0:
         return spot
     if not spot.place:
-        return fail("this element belongs to a value that is not a variable, assigning it would only change a copy", source(n + 1))
+        return fail("this element belongs to a value that is not a variable, assigning it would only change a copy", at_of(n + 1))
     try update(spot, assignment, first)
     return none
 
@@ -1547,7 +1537,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
         try concat(right, spot, first)
         return null
     sign := comp.tokens[comp.nodes[n].tok].at
-    at := source(right)
+    at := at_of(right)
     wanted: usize = VOID
     if o == "=":
         wanted = spot.type
@@ -1566,7 +1556,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
         if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
             return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, an is outside the loop narrowed it to " + comp.types[outside.type].name + " and the loop reads it that way every round", sign)
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
-            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false})
+            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false, false})
             place = Value{type = outside.type, at = outside.addr}
     return assign(place.at, place.type, v, at)
 
@@ -1591,7 +1581,7 @@ func settled(v: Value, first: usize, middle: usize) -> Value:
 func value(n: usize, want: usize) -> Value|Fail:
     v := try gen(n, want)
     if v.type == VOID:
-        return fail("a function that returns nothing is a statement, not a value", source(n))
+        return fail("a function that returns nothing is a statement, not a value", at_of(n))
     reads(n)
     return v
 
@@ -1804,7 +1794,7 @@ func concat(n: usize, into: Value, first: usize) -> Value|Fail:
             try put_text(line, head, at)
         try put_text(line, v, at)
         for i in k..parts.len:
-            try put_text(line, try value(parts[i], VOID), source(parts[i]))
+            try put_text(line, try value(parts[i], VOID), at_of(parts[i]))
     else:
         line = settled(v, first, middle)
     args: &list[Value]
@@ -1826,7 +1816,7 @@ func common(values: &list[Value], at: usize) -> usize|Fail:
             fits := false
             for p in parts:
                 fits = fits or v.lit and accepts(p, v) >= 0
-            if turn(v) == round and not fits and not has(parts, v.type):
+            if turn(v) == round and not fits and not contains(parts, v.type):
                 append(parts, v.type)
     for v in values:
         if v.type == EMPTYARRAY or v.type == EMPTYMAP:
@@ -1839,7 +1829,7 @@ func textual(t: usize) -> bool:
 func sequence(t: usize) -> bool:
     return comp.types[t].kind == Fat and (starts_with(comp.types[t].name, "&list[") or starts_with(comp.types[t].name, "&slice["))
 
-func source(n: usize) -> usize:
+func at_of(n: usize) -> usize:
     first := comp.nodes[n].tok
     for i in n..node_end(n):
         if comp.nodes[i].tok < first:
@@ -1849,7 +1839,7 @@ func source(n: usize) -> usize:
 func condition(n: usize) -> Value|Fail:
     c := try gen(n, VOID)
     if c.type != BOOL:
-        return fail("a condition must be bool, this one is " + comp.types[c.type].name, source(n))
+        return fail("a condition must be bool, this one is " + comp.types[c.type].name, at_of(n))
     return load(c)
 
 func narrow(cond: usize, matching: bool) -> Fail?:
@@ -1866,7 +1856,7 @@ func narrow(cond: usize, matching: bool) -> Fail?:
             wanted := members(try resolve(node_end(subject)))
             kept: &list[usize]
             for m in members(comp.vars[local_of(subject) - 1].type):
-                if has(wanted, m) == matching:
+                if contains(wanted, m) == matching:
                     append(kept, m)
             try confine(subject, kept, comp.tokens[comp.nodes[c].tok].at)
     return null
@@ -1876,7 +1866,7 @@ func confine(subject: usize, kept: &list[usize], at: usize) -> Fail?:
     t := try union_of(kept, Union, at)
     whole := comp.vars[declaration(current.name)]
     absent(whole.addr, whole.type, kept)
-    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false})
+    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false, false})
     return null
 
 func keep(before: usize, back: usize, ends: *&list[Local]) -> bool|Fail:
@@ -1928,13 +1918,13 @@ func join(ends: &list[Local], lives: usize, at: usize) -> Fail?:
                 append(parts, current.type)
             merged := try union_of(parts, Union, at)
             if merged != current.type:
-                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, false})
+                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, false, false})
     return null
 
 func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
-    if has(comp.resolving, d):
-        return fail(comp.syms[s].name + " refers to itself", at)
+    if contains(comp.resolving, d):
+        return fail(comp.syms[s].name + " refers to itself, a constant cannot be computed from itself", at)
     append(comp.resolving, d)
     v := value(d + 1, want)
     comp.resolving.len -= 1
@@ -2085,7 +2075,7 @@ func width(lead: Arg) -> Arg:
         w = op(W, "add", w, op(W, "cugew", lead, int_arg(i64(edge))))
     return op1(L, "extuw", op(W, "sub", w, op(W, "mul", op(W, "cugew", lead, int_arg(0xf8)), int_arg(3))))
 
-func continued(first: Arg, step: i64, most: Arg, room: Arg) -> Arg:
+func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
     count := alloc(USIZE)
     store(USIZE, Value{type = USIZE, at = int_arg(0)}, count)
     l_scan := label()
@@ -2095,7 +2085,7 @@ func continued(first: Arg, step: i64, most: Arg, room: Arg) -> Arg:
     jump(l_scan)
     open_block(l_scan)
     k := load(Value{type = USIZE, at = count, mem = true}).at
-    branch(op(W, "and", op(W, "cultl", k, most), op(W, "cultl", k, room)), l_byte, l_done)
+    branch(op(W, "and", op(W, "cultl", k, most), op(W, "cultl", k, left)), l_byte, l_done)
     open_block(l_byte)
     b := op1(W, "loadub", op(L, "add", first, op(L, "mul", k, int_arg(step))))
     branch(op(W, "ceqw", op(W, "and", b, int_arg(0xc0)), int_arg(0x80)), l_next, l_done)
@@ -2106,33 +2096,33 @@ func continued(first: Arg, step: i64, most: Arg, room: Arg) -> Arg:
     return load(Value{type = USIZE, at = count, mem = true}).at
 
 func statements(n: usize) -> Fail?:
-    mark := comp.defers.len
+    defers := comp.defers.len
     c := n + 1
     while c < node_end(n):
         if not comp.live:
-            return fail("this code can never run, the block already left", source(c))
-        comp.at = source(c)
+            return fail("this code can never run, the block already left", at_of(c))
+        comp.at = at_of(c)
         try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
         c = node_end(c)
     if comp.live:
-        try run_defers(mark)
-    comp.defers.len = mark
+        try run_defers(defers)
+    comp.defers.len = defers
     return null
 
 func statement(n: usize, dropped: &strview) -> Fail?:
-    held := comp.held.len
+    start := comp.held.len
     v := try gen(n, VOID)
-    for k in held..comp.held.len:
+    for k in start..comp.held.len:
         append(comp.spare, comp.held[k])
-    comp.held.len = held
+    comp.held.len = start
     o := text(n)
     if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
         hint: &strview
         if o == "==":
             hint = ", an assignment is written with one ="
-        return fail("this statement makes a value and never uses it" + hint, source(n))
+        return fail("this statement makes a value and never uses it" + hint, at_of(n))
     if fails(v.type):
-        return fail(dropped, source(n))
+        return fail(dropped, at_of(n))
     return null
 
 func set_aside(visible: usize) -> &list[Local]:
@@ -2168,7 +2158,7 @@ func held(found: usize, at: usize) -> Value:
     local := comp.vars[found - 1]
     if noted(at):
         mark(local.tok, described(local.name, local.type))
-    return Value{type = local.type, at = local.addr, mem = true, place = true}
+    return Value{type = local.type, at = local.addr, mem = true, place = not local.counts}
 
 func local_of(n: usize) -> usize:
     if comp.nodes[n].kind != Name or comp.nodes[n].module.len > 0:
@@ -2197,7 +2187,7 @@ func payload(addr: Arg, t: usize) -> Arg:
 
 func absent(addr: Arg, t: usize, here: &list[usize]):
     for m in members(t):
-        if not has(here, m) and pointers(m) != 0:
+        if not contains(here, m) and pointers(m) != 0:
             add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, member = u32(m)})
 
 func times(count: Arg, size: usize) -> Arg:

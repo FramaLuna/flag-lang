@@ -50,11 +50,8 @@ func parse() -> Fail?:
             comp.pos += 1
         sym.packed = peek("packed")
         sym.export = peek("export")
-        if sym.packed and comp.tokens[comp.pos + 1].text != "type" or sym.export and comp.tokens[comp.pos + 1].text != "func":
-            what: &strview = "packed goes before a type with fields: packed type Name:"
-            if sym.export:
-                what = "export goes before a func declaration: export func name():"
-            return fail(what, here().at)
+        if sym.export and comp.tokens[comp.pos + 1].text != "func":
+            return fail("export goes before a func declaration: export func name():", here().at)
         if sym.packed or sym.export:
             comp.pos += 1
         t = here()
@@ -136,20 +133,18 @@ func parse() -> Fail?:
                 if form == "enum":
                     what = "variants after '=' or in an indented block after ':'"
                 return unexpected(form + " " + text(n) + " expects its " + what)
-            if sym.packed and comp.nodes[n].kind != Struct:
-                return fail("packed goes before a type with fields: packed type Name:", comp.tokens[comp.nodes[n].tok].at)
             finish(n)
             if form == "enum":
                 for c in n + 2..node_end(n):
                     finish(begin(Void, comp.nodes[c].tok))
         elif t.text == "func" or t.text == "operator":
-            try func_decl(true)
+            try func_decl(false)
         elif t.text == "extern":
             if after.kind != Str:
                 return fail("extern expects the library name as text: extern \"c\":", t.at)
             begin(Extern, comp.pos + 1)
             comp.pos += 2
-            try condition()
+            try where_clause()
             try expect(":")
             if here().kind != Line:
                 return unexpected("an extern block holds its functions on the lines below it")
@@ -157,7 +152,7 @@ func parse() -> Fail?:
             while try next_line(0, width):
                 if not peek("func"):
                     return fail("an extern block declares functions only", here().at)
-                try func_decl(false)
+                try func_decl(true)
             finish(n)
         elif t.kind == Name and after.text == "=":
             try new_name(true)
@@ -166,6 +161,8 @@ func parse() -> Fail?:
             return unexpected("priv expects a declaration after it")
         else:
             return unexpected("only declarations go here and code belongs inside a function")
+        if sym.packed and comp.nodes[n].kind != Struct:
+            return fail("packed goes before a type with fields: packed type Name:", comp.tokens[comp.nodes[n].tok].at)
         c := n
         while c < comp.nodes.len:
             sym.name = text(c)
@@ -273,7 +270,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
         try make_type(comp.syms.len - 1, none, false, at)
     return null
 
-func func_decl(body: bool) -> Fail?:
+func func_decl(external: bool) -> Fail?:
     keyword := here().text
     comp.pos += 1
     name := here()
@@ -300,7 +297,7 @@ func func_decl(body: bool) -> Fail?:
     count: usize = 0
     while not peek(")"):
         if peek("..") and comp.tokens[comp.pos + 1].text == ".":
-            if body or comp.tokens[comp.pos + 2].text != ")":
+            if not external or comp.tokens[comp.pos + 2].text != ")":
                 return fail("... stands for the extra arguments of a C function, it goes last in an extern func", here().at)
             finish(begin(Var, comp.pos))
             comp.pos += 2
@@ -324,15 +321,15 @@ func func_decl(body: bool) -> Fail?:
     if peek("->"):
         comp.pos += 1
         try type_expr()
-    try condition()
-    if body:
+    try where_clause()
+    if not external:
         try block()
     elif peek(":"):
         return fail("an extern func has no body, its library holds it", here().at)
     finish(n)
     return null
 
-func condition() -> Fail?:
+func where_clause() -> Fail?:
     if peek("where"):
         w := begin(Where, comp.pos)
         comp.pos += 1
@@ -442,32 +439,12 @@ func stmt() -> Fail?:
             comp.pos += 1
             c := begin(Case, comp.pos)
             comp.pos += 1
-            while not peek(":"):
-                start := comp.pos
-                depth: usize = 0
-                typed := false
-                while depth > 0 or not peek(",") and not peek(":"):
-                    prior := comp.tokens[comp.pos - 1]
-                    named := comp.pos > start and (prior.kind == Name or prior.kind == Generic)
-                    valued := named or comp.pos > start and (prior.kind == Int or prior.text == ")" or prior.text == "]")
-                    if peek("[") and named or peek("(") and (not valued or prior.text == "func"):
-                        depth += 1
-                        typed = typed or prior.text == "func"
-                    elif peek("]") or peek(")"):
-                        depth -= 1
-                    elif peek("&") or peek("|") or peek("?") or peek("->") or peek(",") or peek("*") and not valued:
-                        typed = true
-                    elif here().kind != Name and here().kind != Generic and here().kind != Int and not peek("."):
-                        typed = false
-                        break
-                    comp.pos += 1
-                comp.pos = start
-                if typed:
-                    try type_expr()
-                else:
-                    try expr(1)
-                if not peek(","):
-                    break
+            depth: usize = 0
+            while depth > 0 or not peek(":") and here().kind != Line:
+                if peek("(") or peek("[") or peek("{"):
+                    depth += 1
+                elif peek(")") or peek("]") or peek("}"):
+                    depth -= 1
                 comp.pos += 1
             try block()
             finish(c)
@@ -681,7 +658,7 @@ func unary() -> Fail?:
         try expect("}")
         finish(n)
     else:
-        return unexpected("expected a value")
+        return unexpected("a value goes here")
     links: usize = 0
     while true:
         comp.depth -= links
@@ -802,7 +779,7 @@ func type_expr() -> Fail?:
             try type_expr()
             try expect(")")
         else:
-            return unexpected("expected a type")
+            return unexpected("a type goes here")
         while prefixes > 0:
             prefixes -= 1
             comp.depth -= 1
@@ -865,7 +842,7 @@ func peek(s: &strview) -> bool:
 
 func expect(s: &strview) -> Fail?:
     if not peek(s):
-        return unexpected("expected '" + s + "'")
+        return unexpected("'" + s + "' goes here")
     comp.pos += 1
     return null
 
