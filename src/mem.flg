@@ -659,12 +659,7 @@ func analyze(f: usize) -> bool:
         for k in 0..SLOTS + mem.fn.slots.len:
             append(mem.fn.heads, u32(0))
     blank: Target
-    while mem.cur.len < mem.fn.cells.len:
-        append(mem.cur, blank)
-        append(mem.fresh, u32(0))
-        append(mem.ticked, u32(0))
-        append(mem.renamed, u32(0))
-        append(mem.known, u32(0))
+    grow_cells()
     mem.pool.len = 0
     clear(mem.pooled)
     while mem.refs.len < SLOTS:
@@ -1654,6 +1649,9 @@ func place(id: usize, v: Target):
         mem.ticked[id] = mem.tick
         append(mem.present, u32(id))
     refer(u32(id), fresh)
+    rewrite(id, v)
+
+func rewrite(id: usize, v: Target):
     mem.cur[id] = v
     mem.fresh[id] = mem.tick
     mem.known[id] = 0
@@ -1698,14 +1696,16 @@ func cell_at(owner: usize, off: i32, stride: i32, member: u32) -> usize:
     mem.fn.heads[owner] = u32(mem.fn.cells.len)
     if member != 0:
         mem.viewed = true
-    if mem.cur.len < mem.fn.cells.len:
-        blank: Target
-        append(mem.cur, blank)
+    grow_cells()
+    return mem.fn.cells.len - 1
+
+func grow_cells():
+    while mem.cur.len < mem.fn.cells.len:
+        append(mem.cur, Target{})
         append(mem.fresh, u32(0))
         append(mem.ticked, u32(0))
         append(mem.renamed, u32(0))
         append(mem.known, u32(0))
-    return mem.fn.cells.len - 1
 
 func object(key: u64, x: Obj) -> usize:
     found := mem.index[key]
@@ -1753,9 +1753,7 @@ func birth(key: u64, given: Obj) -> usize:
                     id := mem.refs[o][k]
                     if mem.ticked[id] == mem.tick and mem.renamed[id] != mem.ages:
                         mem.renamed[id] = mem.ages
-                        mem.cur[id] = rename(cell_value(id), r, t, lr, lt)
-                        mem.fresh[id] = mem.tick
-                        mem.known[id] = 0
+                        rewrite(usize(id), rename(cell_value(id), r, t, lr, lt))
                         if side == 0:
                             append(mem.refs[t], id)
             kept: usize = 0
@@ -1849,9 +1847,7 @@ func sweep():
             if many(mem.fn.cells[id]):
                 hit = strong
             if mem.ticked[id] == mem.tick and not empty(cell_value(id).live and hit):
-                mem.cur[id] = kill(cell_value(id), hit, strong)
-                mem.fresh[id] = mem.tick
-                mem.known[id] = 0
+                rewrite(usize(id), kill(cell_value(id), hit, strong))
         mem.swept[o] = (u64(mem.tick) << 32) or u64(mem.refs[o].len)
     kept: usize = 0
     for t in mem.active:
@@ -1987,13 +1983,8 @@ func binding(x: usize) -> Target:
             if ob.root > 0 and ob.root <= usize(o.count):
                 name = mem.fn.names[mem.args[usize(o.first) + ob.root - 1].temp]
             key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
-            holders := home.live - mem.pinned
-            exact := home.off != ANY and home.stride == 0
-            if exact and home.slot == 0 and single(holders):
-                for h in holders:
-                    key = (child(h, home.off, 0) xor FIELD) or PLACE
-            elif exact and empty(holders) and home.slot != 0 and home.slot != ALL:
-                key = (child(SLOTS + usize(home.slot) - 1, home.off, 0) xor FIELD) or PLACE
+            if home.off != ANY and home.stride == 0 and sole(home) != NONE:
+                key = (child(sole(home), home.off, 0) xor FIELD) or PLACE
             h := birth(key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.who, name = name})
             mem.fn.objs[h].strict = mem.fn.objs[h].strict or mem.fns[g].strict
             out.live = out.live or bit(h)
