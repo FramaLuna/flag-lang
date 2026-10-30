@@ -43,7 +43,7 @@ What you write waits in the file and goes to the system in big pieces, so many s
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
 
-`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash `eprint` or `flush`.
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush`.
 
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read
