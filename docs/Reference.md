@@ -402,7 +402,7 @@ A `where` condition can be
 - `not`, `and`, `or` and parentheses
 - anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `sizeof($T) >= 8`, `$$n <= 16`
 
-The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `x is not known when the call is chosen: a where reads types, numbers and constants, not the parameters`.
+The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `a where reads types, numbers and constants known when the call is chosen, and x is not one`.
 
 The platform builtins and `can_assign` only work inside a `where`.
 
@@ -565,7 +565,7 @@ A context is one global value with its fields at zero. A union without `null` in
 - `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`. Without the `use`, `a.name` is an error. A nested type of a module is `a.Car.motor`
 - `priv` hides a name from the files outside the module
 - a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
-- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg`
+- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg, only the files of a.flg see it`
 - a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files
 - a module that has a `priv` function keeps its name: a call to that name from inside the module chooses among the functions declared in the module first (in the file, for a file without a `module` line), `priv` or not, and the best fit of them wins over any function from outside, even one with closer types. So a function of yours never replaces a helper of the library
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
@@ -804,7 +804,7 @@ The place is `file:line:column`, both start at 1 and the column counts bytes, so
 
 When a line ends before it should, the error points after its last word
 ```
-error: the line ends here, expected ':'
+error: the line ends here, ':' goes here
   --> main.flg:2:13
    |     if ready
    |             ^

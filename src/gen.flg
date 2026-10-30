@@ -359,16 +359,16 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if lk == Name and text(left) == "_":
             try value(right, VOID)
             return none
-        if not (lk == Name or lk == Field or lk == Index or lk == Unary and text(left) == ".*"):
-            return fail("cannot assign to this expression, it is not a place that holds a value", at_of(left))
         if lk == Index:
             return indexed(left, n)
         first := comp.body.len
-        spot := try gen(left, VOID)
+        spot := none
+        if lk == Name or lk == Field or lk == Unary and text(left) == ".*":
+            spot = try gen(left, VOID)
         if not spot.place and local_of(left) != 0:
             return fail(text(left) + " counts this loop, so it cannot be assigned: copy it to a variable to change it", at_of(left))
         if not spot.place:
-            return fail("this is not a variable, it cannot be assigned", at_of(left))
+            return fail("this cannot be assigned, only a variable, a field of one, an element or what a pointer points to can", at_of(left))
         try update(spot, n, first)
         return none
     case Return:
@@ -568,7 +568,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if reserved(tok.text):
                 return fail("'" + tok.text + "' is a keyword of the language, it is not a value", tok.at)
             if comp.choosing:
-                return fail(tok.text + " is not known when the call is chosen: a where reads types, numbers and constants, not the parameters", tok.at)
+                return fail("a where reads types, numbers and constants known when the call is chosen, and " + tok.text + " is not one", tok.at)
             if comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
                 return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
             return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
@@ -1919,7 +1919,7 @@ func join(ends: &list[Local], lives: usize, at: usize) -> Fail?:
 func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
     if contains(comp.resolving, d):
-        return fail(comp.syms[s].name + " refers to itself", at)
+        return fail(comp.syms[s].name + " refers to itself, a constant cannot be computed from itself", at)
     append(comp.resolving, d)
     v := value(d + 1, want)
     comp.resolving.len -= 1

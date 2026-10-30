@@ -89,7 +89,7 @@ func hidden(name: &strview, function: bool, at: usize) -> Fail?:
                 if u.file == file and u.module == sym.module:
                     alias = u.alias
             if sym.priv:
-                return fail(name + " is priv to module " + sym.module, at)
+                return fail(name + " is priv to module " + sym.module + ", only the files of " + sym.module + " see it", at)
             if alias.len > 0:
                 return fail(name + " is declared in module " + sym.module + ", reach it as " + alias + "." + name, at)
             return fail(name + " is declared in module " + sym.module + ", add 'use " + sym.module + "'", at)
@@ -316,7 +316,7 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         other := try named(tok.text, node.module, tok.at)
         if other != 0 and comp.nodes[comp.syms[other].node].kind == Named:
             return fail(tok.text + " is a constant, not a type", tok.at)
-        return fail("type " + tok.text + " is not defined", tok.at)
+        return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok, header(comp.nodes[comp.syms[s].node].tok))
     return make_type(s, args, fat, tok.at)

@@ -848,7 +848,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
     if v.lit and numeric(v.type) and target.kind == Float:
         x := real(v)
         if to == F32 and f32(x) - f32(x) != 0.0:
-            return fail(x + " does not fit in f32", at)
+            return fail(x + " does not fit in f32, the largest f32 is 3.4028234663852886e+38", at)
         f := try float_literal(x, at)
         if to == F32:
             f.at.kind = Single
@@ -928,7 +928,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         terminate("hlt", Arg{})
         open_block(l_done)
         return Value{type = to, at = slot, mem = true}
-    return fail("cannot assign " + from.name + " to " + target.name, at)
+    return fail("cannot assign " + from.name + " to " + target.name + ", and no operator = makes a " + target.name + " from it", at)
 
 func spread(from: usize, to: usize) -> bool:
     target := comp.types[to]
@@ -1038,7 +1038,7 @@ func holds(n: usize) -> bool|Fail:
             return (try resolve(left) == try resolve(node_end(left))) == (o == "==")
     v := try gen(n, VOID)
     if v.type != BOOL or not v.lit:
-        return fail("a where compares types and numbers known when the call is chosen, this one is not", at_of(n))
+        return fail("a where reads types, numbers and constants known when the call is chosen, and this is not one", at_of(n))
     return v.n == 1
 
 func assignable(to: usize, from: usize, at: usize) -> bool|Fail:
