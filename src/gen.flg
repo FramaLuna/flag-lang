@@ -63,24 +63,36 @@ func gen_program(check: bool) -> Fail?:
                 elif text(c) != "..":
                     try passing(try resolve(c + 1), true, comp.tokens[comp.nodes[c].tok].at)
                 c = node_end(c)
-        elif comp.nodes[f].kind == Func and params(f) > 0 and (text(f) == "at" or text(f) == "iter" or text(f) == "reverse_iter"):
-            subject := kid(f, 0) + 1
-            shown: &str
-            while comp.nodes[subject].kind == TUnary:
-                shown += text(subject)
-                subject += 1
-            shown += text(subject)
-            whole := text(subject) == "list" or text(subject) == "slice" or text(subject) == "array" or text(subject) == "str" or text(subject) == "strview"
-            owned := text(f) != "at" and whole
-            if text(f) == "at" and params(f) == 2 and whole:
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                for t in I8..USIZE + 1:
-                    owned = owned or try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0
-                    comp.binds.len = comp.frame
-                comp.frame = saved
+        name := text(f)
+        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter"):
+            saved := comp.frame
+            comp.frame = comp.binds.len
+            for i in kid(f, 0)..kid(f, params(f)):
+                t := comp.tokens[comp.nodes[i].tok]
+                if t.kind == Generic and bound(t.text) == 0:
+                    placeholder := Item{t.text, U8, 1, false}
+                    if starts_with(t.text, "$$"):
+                        placeholder.type = VOID
+                    append(comp.binds, placeholder)
+            first := try resolve(kid(f, 0) + 1)
+            target := first
+            if comp.types[first].kind == Ptr:
+                target = comp.types[first].elem
+            owned := sequence(first) or textual(first) or comp.types[target].kind == Array
+            if name == "at":
+                owned = false
+                if params(f) > 1 and (sequence(target) or textual(target) or comp.types[target].kind == Array):
+                    second := try resolve(kid(f, 1) + 1)
+                    for t in I8..USIZE + 1:
+                        owned = owned or accepts(second, Value{type = usize(t)}) >= 0
+            comp.binds.len = comp.frame
+            comp.frame = saved
+            shown := comp.types[target].name
+            shown = shown[:find(shown, "[") ifnull shown.len]
+            if owned and name == "at":
+                return fail("x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
             if owned:
-                return fail(language(text(f), shown), comp.tokens[comp.nodes[f].tok].at)
+                return fail("for over " + shown + " belongs to the language, " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
     comp.procs.len = funcs
     comp.code.len = code
@@ -176,10 +188,6 @@ func gen_from(from: usize) -> usize|Fail:
         target := first
         if comp.types[first].kind == Ptr:
             target = comp.types[first].elem
-        integral := false
-        if name == "at":
-            for t in I8..USIZE + 1:
-                integral = integral or accepts(second, Value{type = usize(t)}) >= 0
         if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
             if name == "=" and inst.ret != target:
                 return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
@@ -191,8 +199,6 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
-        elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or textual(first) or comp.types[target].kind == Array):
-            return fail(language(name, comp.types[first].name), comp.at)
         try statements(block)
         if comp.live:
             if comp.ret != VOID:
@@ -208,11 +214,6 @@ func gen_from(from: usize) -> usize|Fail:
         comp.binds.len = comp.frame
     comp.blame = 0
     return next
-
-func language(name: &strview, shown: &strview) -> &strview:
-    if name == "at":
-        return "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
-    return "for over " + shown + " belongs to the language, " + name + " cannot be declared for it"
 
 func made(inst: usize) -> &str:
     i := comp.insts[inst]
