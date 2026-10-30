@@ -1040,7 +1040,7 @@ func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize
         s.given = 0
         s.received.len = 0
         if size >= 65536:
-            return receive(s, into, size)
+            return receive(s, into, size) # straight into yours, without a copy
         try receive(s, s.received, 65536)
     taken := s.received.len - s.given
     if taken > size:
@@ -1139,7 +1139,7 @@ priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where
 
 priv func failure(s: *Stream, writing: bool) -> i32 where not @windows():
     code := errno()
-    blocked := code == 11 or code == 35 # EAGAIN on Linux and on macOS, the other number never comes from a read
+    blocked := code == 11 or code == 35 # EAGAIN, 11 on Linux and 35 on macOS, where the other number is not an error of read or write
     if blocked and s.socket:
         return TIMED_OUT
     if blocked:

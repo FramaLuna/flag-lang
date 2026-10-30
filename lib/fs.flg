@@ -68,13 +68,9 @@ func file_size(path: &strview) -> usize|FsError:
     return usize(found.size)
 
 func remove(path: &strview) -> FsError?:
-    found := status(path, follow_links = false)
     failed := false
     with scratch():
-        if found is Status and found.folder:
-            failed = rmdir(cstr(path)) != 0
-        else:
-            failed = remove(cstr(path)) != 0
+        failed = remove(cstr(path)) != 0 and (not is_dir(path) or rmdir(cstr(path)) != 0) # the remove of Windows takes no folder
     if failed:
         return FsError{errno(), "remove", path}
     return null
