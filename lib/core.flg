@@ -705,12 +705,11 @@ func parse_float(s: &strview) -> f64|null:
 operator +=(s: *&str, n: usize):
     digits: array[u8, 20]
     i: usize = 20
-    v := n
     while true:
         i -= 1
-        digits[i] = u8(v % 10) + '0'
-        v = v / 10
-        if v == 0:
+        digits[i] = u8(n % 10) + '0'
+        n = n / 10
+        if n == 0:
             break
     out: &strview
     out = (ptr(digits) as usize + i) as *bytes
@@ -774,7 +773,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
         smallest = 1.1754943508222875e-38
     if f < smallest and f > 0.0 - smallest:
         digits = 1 # a subnormal number holds fewer digits
-    # up to 15 digits (6 for f32) the shortest that reads back is the rounding with the zeros at the end cut
+    # shortest digits that read back: round, then cut the zeros
     buf: array[u8, 32]
     at := ptr(buf) as *u8
     out: &strview
