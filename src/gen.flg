@@ -204,8 +204,6 @@ func gen_from(from: usize) -> usize|Fail:
                 open_block(l_differ)
                 terminate("ret", int_arg(0))
             else:
-                if (ty.kind == Struct or ty.kind == Union) and try offers("==", ptr([a, a]), inst.at):
-                    return fail(ty.name + " declares == but not hash, and equal values need equal hashes: declare hash for " + ty.name + " too", inst.at)
                 h := alloc(U64)
                 add(Ins{op = "storel", a = int_arg(0), b = h})
                 if ty.kind == Bool:
@@ -247,8 +245,6 @@ func gen_from(from: usize) -> usize|Fail:
                     add(Ins{op = "storel", a = op(L, "add", k, int_arg(1)), b = index})
                     jump(l_head)
                     open_block(l_done)
-                elif ty.kind != Void:
-                    return fail(ty.name + " has no hash, declare one for it: func hash(x: " + ty.name + ") -> u64", inst.at)
                 terminate("ret", op1(L, "loadl", h))
             close_proc(made, cls(inst.ret), sides.len)
             close_frame(saved)
