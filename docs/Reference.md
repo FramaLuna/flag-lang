@@ -443,7 +443,7 @@ A range with an index (`for i, x in 0..3`) is an error, and a range only goes in
 ### Everything else
 Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`. The counter counts the loop like the variable of a range, so it cannot be assigned either.
 
-- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a whole character comes alone, and `reverse` gives the same pieces. `items(text)` gives the bytes
+- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a valid character comes alone, also each byte of an overlong form, a surrogate or a code above U+10FFFF, and `reverse` gives the same pieces. `items(text)` gives the bytes. The messages of the compiler read the code the same way, a byte that comes alone is shown as `\xc0`
 - A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed: `&map[&strview, i32] has no reverse_iter, so reverse cannot walk it`. A fixed map gives them in the order they were put
 - An array gives its elements, the loop takes its address so it doesn't copy it, and it can be reversed
 - A pointer to an array, a list, a slice or text walks what it points to

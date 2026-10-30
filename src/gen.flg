@@ -996,14 +996,22 @@ func iterate(n: usize) -> Fail?:
             jump(l_piece)
             open_block(l_wide)
             trail := Arg{}
-            w := Arg{}
+            lead := here
             if backward:
                 trail = continued(near, -1, int_arg(3), op(L, "sub", i, int_arg(1)))
-                w = width(op1(W, "loadub", op(L, "sub", near, trail)))
-            else:
-                w = width(op1(W, "loadub", here))
+                lead = op(L, "sub", near, trail)
+            first := op1(W, "loadub", lead)
+            w := int_arg(1)
+            for edge in [0xc2, 0xe0, 0xf0]:
+                w = op(W, "add", w, op(W, "cugew", first, int_arg(i64(edge))))
+            w = op1(L, "extuw", op(W, "sub", w, op(W, "mul", op(W, "cugew", first, int_arg(0xf5)), int_arg(3))))
+            if not backward:
                 trail = continued(op(L, "add", here, int_arg(1)), 1, op(L, "sub", w, int_arg(1)), op(L, "sub", op(L, "sub", end.at, i), int_arg(1)))
-            whole := op1(L, "extuw", op(W, "ceql", w, op(L, "add", trail, int_arg(1))))
+            second := op1(W, "loadub", op(L, "add", lead, op1(L, "extuw", op(W, "cnel", trail, int_arg(0)))))
+            low := op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xe0)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf0)), int_arg(0x10)))
+            high := op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xed)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf4)), int_arg(0x30)))
+            inside := op(W, "and", op(W, "cugew", second, op(W, "add", low, int_arg(0x80))), op(W, "culew", second, op(W, "sub", int_arg(0xbf), high)))
+            whole := op1(L, "extuw", op(W, "and", op(W, "ceql", w, op(L, "add", trail, int_arg(1))), inside))
             store(USIZE, Value{type = USIZE, at = op(L, "add", int_arg(1), op(L, "mul", whole, trail))}, sized)
             jump(l_piece)
             open_block(l_piece)
@@ -2127,12 +2135,6 @@ func run_defers(from: usize) -> Fail?:
             append(aside, comp.vars[k])
         put_back(d.visible, aside)
     return null
-
-func width(lead: Arg) -> Arg:
-    w := int_arg(1)
-    for edge in [0xc0, 0xe0, 0xf0]:
-        w = op(W, "add", w, op(W, "cugew", lead, int_arg(i64(edge))))
-    return op1(L, "extuw", op(W, "sub", w, op(W, "mul", op(W, "cugew", lead, int_arg(0xf8)), int_arg(3))))
 
 func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
     count := alloc(USIZE)
