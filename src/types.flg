@@ -185,7 +185,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     first := comp.items.len
     for m in flat:
         append(comp.items, Item{name = "", type = m})
-    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len})
+    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0]})
     lay_out(made)
     return made
 
@@ -394,6 +394,14 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         target := try resolve(c)
         comp.resolving.len -= 1
         close_frame(saved)
+        union := comp.types[target]
+        if comp.tokens[comp.nodes[decl].tok - 1].text == "enum" and union.kind == Union:
+            if union.decl != 0:
+                failed := fail("enum " + sym.name + " has the same variants as " + text(union.decl) + ", so the two would be one type: to give it a second name write type " + sym.name + " = " + text(union.decl), comp.tokens[comp.nodes[decl].tok].at)
+                note(text(union.decl) + " is declared here", comp.tokens[comp.nodes[union.decl].tok].at)
+                return failed
+            comp.types[target].decl = decl
+            comp.types[target].start = try resolve(c + 1)
         put(comp.type_ids, view(key), target)
         return target
     arg_start := comp.items.len

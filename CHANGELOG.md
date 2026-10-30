@@ -33,6 +33,7 @@ Faster
 - A connection sends at once (`TCP_NODELAY`)
 
 Changed
+- An enum without a value starts as the first variant you wrote, also when another enum declared some of its variants before, and two enums with all the same variants are an error: `type Paint = Color` gives one a second name
 - A case of a switch over a union is a type, never a value or a variable, and a default that can never run is an error
 - A deferred call that can fail doesn't compile, `defer _ = f()` drops the error on purpose, and a `with` whose `close` can fail is an error
 - A type with its own `==` and no `hash` can't be the key of a map, declare its `hash` too

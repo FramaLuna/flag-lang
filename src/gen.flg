@@ -2046,7 +2046,7 @@ func tag_of(member: usize) -> Arg:
 
 func tagged(t: usize) -> bool:
     ty := comp.types[t]
-    found := ty.kind == Union and comp.items[ty.first].type != NULL or ty.kind == Array and tagged(ty.elem)
+    found := ty.kind == Union and ty.start != NULL or ty.kind == Array and tagged(ty.elem)
     if ty.kind == Struct or ty.kind == Fat:
         for i in 0..ty.count:
             found = found or not comp.items[ty.first + i].shared and tagged(comp.items[ty.first + i].type)
@@ -2054,9 +2054,9 @@ func tagged(t: usize) -> bool:
 
 func stamp(t: usize, addr: Arg, at: usize):
     ty := comp.types[t]
-    if ty.kind == Union and comp.items[ty.first].type != NULL:
-        set_tag(t, comp.items[ty.first].type, offset(addr, at))
-        stamp(comp.items[ty.first].type, addr, at + 8)
+    if ty.kind == Union and ty.start != NULL:
+        set_tag(t, ty.start, offset(addr, at))
+        stamp(ty.start, addr, at + 8)
     elif ty.kind == Struct or ty.kind == Fat:
         for i in 0..ty.count:
             if not comp.items[ty.first + i].shared:
