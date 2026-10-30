@@ -319,7 +319,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             aside := set_aside(0)
             site := comp.site
             comp.site = at
-            append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, source(given)))
+            append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, at_of(given)))
             put_back(0, aside)
             comp.site = site
     if order.len < params(f):
@@ -448,7 +448,7 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     return Pass{how, x, is_number(x)}
 
 func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize) -> Value|Fail:
-    called := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
+    i := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
     for p in passes:
         append(comp.passes, p)
     result := Arg{}
@@ -456,13 +456,13 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
         result = alloc(ret)
         append(comp.passes, Pass{L, result, false})
     elif ret != VOID:
-        called.cls = try passing(ret, foreign, at)
+        i.cls = try passing(ret, foreign, at)
         result = temp()
-        called.to = u32(result.n)
-    called.count = u32(comp.passes.len) - called.first
+        i.to = u32(result.n)
+    i.count = u32(comp.passes.len) - i.first
     here := comp.at
     comp.at = at
-    add(called)
+    add(i)
     comp.at = here
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)
@@ -939,10 +939,10 @@ func spread(from: usize, to: usize) -> bool:
         return text(target.decl) == "map"
     if from == EMPTYARRAY:
         return elem != VOID
-    source := comp.types[from]
-    if source.kind != Ptr or elem == VOID:
+    p := comp.types[from]
+    if p.kind != Ptr or elem == VOID:
         return false
-    return source.elem == EMPTYARRAY or comp.types[source.elem].kind == Array and comp.types[source.elem].elem == elem
+    return p.elem == EMPTYARRAY or comp.types[p.elem].kind == Array and comp.types[p.elem].elem == elem
 
 func element(fat: usize) -> usize:
     params := type_params(comp.types[fat].decl)
@@ -1005,7 +1005,7 @@ func callable(s: usize, module: &strview, args: &list[Value], at: usize) -> bool
     return false
 
 func holds(n: usize) -> bool|Fail:
-    try deeper(source(n))
+    try deeper(at_of(n))
     defer comp.depth -= 1
     node := comp.nodes[n]
     o := text(n)
@@ -1013,7 +1013,7 @@ func holds(n: usize) -> bool|Fail:
     if node.kind == Unary and o == "not":
         return not try holds(left)
     if node.kind == Call and o == "can_assign" and kids(n) == 2:
-        return assignable(try resolve(left), try resolve(node_end(left)), source(n))
+        return assignable(try resolve(left), try resolve(node_end(left)), at_of(n))
     if node.kind == Binary and (o == "and" or o == "or"):
         chain: &list[usize]
         c := n
@@ -1038,7 +1038,7 @@ func holds(n: usize) -> bool|Fail:
             return (try resolve(left) == try resolve(node_end(left))) == (o == "==")
     v := try gen(n, VOID)
     if v.type != BOOL or not v.lit:
-        return fail("a where compares types and numbers known when the call is chosen, this one is not", source(n))
+        return fail("a where compares types and numbers known when the call is chosen, this one is not", at_of(n))
     return v.n == 1
 
 func assignable(to: usize, from: usize, at: usize) -> bool|Fail:

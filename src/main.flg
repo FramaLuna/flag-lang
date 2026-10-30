@@ -410,14 +410,14 @@ func main() -> i32:
     core: &str = join(lib, "core.flg")
     loaded: &list[&strview]
     append(loaded, real_path(view(core)))
-    if add_file(core, source(view(core), texts), true) is Fail:
+    if add_file(core, read_source(view(core), texts), true) is Fail:
         return 1
     for input in inputs:
         real := real_path(input)
         if not contains(loaded, real):
             append(loaded, real)
             path: &str = input
-            if add_file(path, source(input, texts), false) is Fail:
+            if add_file(path, read_source(input, texts), false) is Fail:
                 return 1
     done: usize = 0
     while done < comp.uses.len:
@@ -428,7 +428,7 @@ func main() -> i32:
             known = known or f.module == u.module
         path: &str = join(lib, u.module + ".flg")
         if not known and not contains(loaded, real_path(view(path))) and exists(view(path)):
-            if add_file(path, source(view(path), texts), true) is Fail:
+            if add_file(path, read_source(view(path), texts), true) is Fail:
                 return 1
             known = comp.files[-1].module == u.module
         if not known:
@@ -468,10 +468,10 @@ func main() -> i32:
         if first + usize(column) - 1 > last:
             eprint(ERR, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
             return 2
-        spot := comp.files[f].start + first + usize(column) - 1
+        at := comp.files[f].start + first + usize(column) - 1
         for t in 0..comp.tokens.len:
             k := comp.tokens[t]
-            if k.kind != Line and k.at <= spot and spot < k.at + k.text.len:
+            if k.kind != Line and k.at <= at and at < k.at + k.text.len:
                 comp.asked = true
                 comp.target = t
     failed := gen_program(check) is Fail
@@ -553,7 +553,7 @@ func real_path(path: &strview) -> &strview where @windows():
         return path
     return view(found)
 
-func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
+func read_source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     code := get(texts, real_path(path)) ifnull view(try read_text_file(path))
     if starts_with(code, "\xef\xbb\xbf"):
         code = code[3:]

@@ -208,7 +208,7 @@ context mem:
     active: &list[u32]
     cur: &list[Target]
     fresh: &list[u32]
-    stamp: &list[u32]
+    ticked: &list[u32]
     present: &list[u32]
     known: &list[u32]
     pool: &list[Target]
@@ -660,7 +660,7 @@ func analyze(f: usize) -> bool:
     while mem.cur.len < mem.fn.cells.len:
         append(mem.cur, blank)
         append(mem.fresh, u32(0))
-        append(mem.stamp, u32(0))
+        append(mem.ticked, u32(0))
         append(mem.renamed, u32(0))
         append(mem.known, u32(0))
     mem.pool.len = 0
@@ -723,7 +723,7 @@ func analyze(f: usize) -> bool:
                 if s != 0:
                     old := mem.ins[s - 1]
                     joined := merge(old, out, usize(s - 1))
-                    if old.seen and equal(joined, old):
+                    if old.seen and joined == old:
                         release(joined)
                     else:
                         release(old)
@@ -797,7 +797,7 @@ func analyze(f: usize) -> bool:
         ret = unite(old.ret, ret, alive(old.sum.marks), alive(sum.marks))
         relevant = relevant or old.relevant
         global = global or old.global
-        changed = not equal(joined, past) or ret != old.ret or relevant != old.relevant or global != old.global
+        changed = joined != past or ret != old.ret or relevant != old.relevant or global != old.global
         release(sum)
         sum = Summary{marks = joined.marks, seen = joined.seen}
         for k in 0..joined.ids.len:
@@ -846,7 +846,7 @@ func restore(st: State):
     mem.present.len = 0
     for k in 0..st.ids.len:
         id := st.ids[k]
-        mem.stamp[id] = mem.tick
+        mem.ticked[id] = mem.tick
         mem.known[id] = st.vals[k] + 1
         append(mem.present, id)
     for k in 0..st.temps.len:
@@ -1085,7 +1085,7 @@ func visit(block: usize):
                 elif o.to != 0:
                     define(o.to, translate(mem.fns[g].ret))
         case Fresh, Arena:
-            reads(o)
+            touch_args(o)
             from := mem.callees[o.callee]
             h := birth((u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), born = usize(i), pos = o.pos, from = from[1:from.len], arena = o.code == Arena})
             define(o.to, Target{live = bit(h), must = bit(h)})
@@ -1096,7 +1096,7 @@ func visit(block: usize):
                     vanish(bit(h))
             sweep()
         case Grow:
-            reads(o)
+            touch_args(o)
             first := target_of(mem.args[o.first])
             blocks := freeable(first.live)
             for h in blocks:
@@ -1130,7 +1130,7 @@ func visit(block: usize):
             vanish(blocks and first.must)
             sweep()
         case Copy, Fill:
-            reads(o)
+            touch_args(o)
             to := target_of(mem.args[o.first])
             from := to
             mask: u64 = 0
@@ -1162,12 +1162,12 @@ func visit(block: usize):
                         gone[x] = true
             vanish(gone)
         case Parse:
-            reads(o)
+            touch_args(o)
             nothing: Target
             stash(target_of(mem.args[o.first + 1]), blur(target_of(mem.args[o.first]), nothing))
             define(o.to, number(ANY))
         case Extern:
-            reads(o)
+            touch_args(o)
             define(o.to, Target{live = bit(OUTSIDE), must = bit(OUTSIDE)})
         case Stop, Halt:
             mem.seen = false
@@ -1222,8 +1222,8 @@ func visit(block: usize):
                 escape(given, o.pos)
                 for id in mem.present:
                     owner := usize(mem.fn.cells[id].owner)
-                    if mem.stamp[id] == mem.tick and (owner == RETURNED or owner < SLOTS and mem.fn.outer[owner]):
-                        escape(value(id), o.pos)
+                    if mem.ticked[id] == mem.tick and (owner == RETURNED or owner < SLOTS and mem.fn.outer[owner]):
+                        escape(cell_value(id), o.pos)
             mem.seen = false
 
 func pass_back(owner: usize, given: Target):
@@ -1231,8 +1231,8 @@ func pass_back(owner: usize, given: Target):
         k := mem.fn.heads[owner]
         while k != 0:
             c := mem.fn.cells[k - 1]
-            if mem.stamp[k - 1] == mem.tick and (c.member != 0) == views and not (views and given.member != 0):
-                v := value(k - 1)
+            if mem.ticked[k - 1] == mem.tick and (c.member != 0) == views and not (views and given.member != 0):
+                v := cell_value(k - 1)
                 if given.member != 0:
                     v = gather(Target{}, owner, c.off, c.stride, given.member, alive(mem.marks))
                 if c.off == ANY or given.off == ANY or given.stride != 0 or c.stride != 0:
@@ -1245,7 +1245,7 @@ func snapshot() -> State:
     out := State{marks = mem.marks, seen = true}
     ordered := true
     for id in mem.present:
-        if mem.stamp[id] == mem.tick:
+        if mem.ticked[id] == mem.tick:
             ordered = ordered and (out.ids.len == 0 or out.ids[out.ids.len - 1] < id)
             append(out.ids, id)
     if not ordered:
@@ -1363,21 +1363,6 @@ func blend(x: u32, y: u32, la: Set, lb: Set, dying: Set) -> u32:
         return x
     return intern(unite(mem.pool[x], mem.pool[y], la, lb))
 
-func equal(a: State, b: State) -> bool:
-    x := a.marks
-    y := b.marks
-    if a.seen != b.seen or a.ids.len != b.ids.len or a.temps.len != b.temps.len:
-        return false
-    if x.live != y.live or x.freed != y.freed or x.killed != y.killed or x.sure != y.sure or x.gone != y.gone or x.used != y.used or x.made != y.made:
-        return false
-    for k in 0..a.ids.len:
-        if a.ids[k] != b.ids[k] or a.vals[k] != b.vals[k]:
-            return false
-    for k in 0..a.temps.len:
-        if a.temps[k] != b.temps[k]:
-            return false
-    return true
-
 func pack(s: Summary) -> State:
     out := State{marks = s.marks, seen = s.seen}
     for k in 0..s.ids.len:
@@ -1408,9 +1393,6 @@ func fold(h: u64, x: Set) -> u64:
     for i in 0..8:
         out = (out xor x.words[i]) * FNVPRIME
     return out
-
-operator ==(a: Target, b: Target) -> bool:
-    return a.live == b.live and a.dead == b.dead and a.must == b.must and a.off == b.off and a.stride == b.stride and a.slot == b.slot and a.member == b.member and a.writer == b.writer and a.element == b.element
 
 func release(st: State):
     free(st.ids)
@@ -1580,10 +1562,10 @@ func gather(given: Target, owner: usize, off: i32, stride: i32, member: u32, liv
         h = c.next
     if view != 0:
         return unite(out, current(usize(view) - 1), live, live)
-    if word == 0 or member != 0 and mem.stamp[word - 1] != mem.tick:
+    if word == 0 or member != 0 and mem.ticked[word - 1] != mem.tick:
         return unite(out, initial(owner, off, stride, member), live, live)
     if member != 0:
-        return unite(out, through(value(word - 1), member), live, live)
+        return unite(out, through(cell_value(word - 1), member), live, live)
     return unite(out, current(usize(word) - 1), live, live)
 
 func stash(a: Target, v: Target):
@@ -1640,19 +1622,19 @@ func settle(id: usize, given: Target, single: bool):
 func many(c: Cell) -> bool:
     return c.off == ANY or c.stride != 0 or c.owner < SLOTS and mem.fn.many[usize(c.owner)]
 
-func value(id: u32) -> Target:
+func cell_value(id: u32) -> Target:
     if mem.fresh[id] == mem.tick:
         return mem.cur[id]
     return mem.pool[mem.known[id] - 1]
 
 func current(id: usize) -> Target:
-    if mem.stamp[id] == mem.tick:
-        return value(u32(id))
+    if mem.ticked[id] == mem.tick:
+        return cell_value(u32(id))
     c := mem.fn.cells[id]
     if c.member != 0:
         word := cell_at(usize(c.owner), c.off, c.stride, 0)
-        if mem.stamp[word] == mem.tick:
-            return through(value(u32(word)), c.member)
+        if mem.ticked[word] == mem.tick:
+            return through(cell_value(u32(word)), c.member)
     return initial(usize(c.owner), c.off, c.stride, c.member)
 
 func through(word: Target, member: u32) -> Target:
@@ -1666,13 +1648,13 @@ func place(id: usize, v: Target):
         drop(id)
         return
     fresh := v.live or v.dead
-    if mem.stamp[id] == mem.tick:
-        old := value(u32(id))
+    if mem.ticked[id] == mem.tick:
+        old := cell_value(u32(id))
         fresh = fresh - (old.live or old.dead) or v.live - v.dead - (old.live - old.dead)
-    elif mem.stamp[id] == (mem.tick xor DROPPED):
-        mem.stamp[id] = mem.tick
+    elif mem.ticked[id] == (mem.tick xor DROPPED):
+        mem.ticked[id] = mem.tick
     else:
-        mem.stamp[id] = mem.tick
+        mem.ticked[id] = mem.tick
         append(mem.present, u32(id))
     refer(u32(id), fresh)
     mem.cur[id] = v
@@ -1684,8 +1666,8 @@ func refer(id: u32, blocks: Set):
         append(mem.refs[o], id)
 
 func drop(id: usize):
-    if mem.stamp[id] == mem.tick:
-        mem.stamp[id] = mem.tick xor DROPPED
+    if mem.ticked[id] == mem.tick:
+        mem.ticked[id] = mem.tick xor DROPPED
 
 func initial(owner: usize, off: i32, stride: i32, member: u32) -> Target:
     if owner >= SLOTS or not mem.fn.outer[owner]:
@@ -1723,7 +1705,7 @@ func cell_at(owner: usize, off: i32, stride: i32, member: u32) -> usize:
         blank: Target
         append(mem.cur, blank)
         append(mem.fresh, u32(0))
-        append(mem.stamp, u32(0))
+        append(mem.ticked, u32(0))
         append(mem.renamed, u32(0))
         append(mem.known, u32(0))
     return mem.fn.cells.len - 1
@@ -1772,9 +1754,9 @@ func birth(key: u64, given: Obj) -> usize:
                 n := mem.refs[o].len
                 for k in 0..n:
                     id := mem.refs[o][k]
-                    if mem.stamp[id] == mem.tick and mem.renamed[id] != mem.ages:
+                    if mem.ticked[id] == mem.tick and mem.renamed[id] != mem.ages:
                         mem.renamed[id] = mem.ages
-                        mem.cur[id] = rename(value(id), r, t, lr, lt)
+                        mem.cur[id] = rename(cell_value(id), r, t, lr, lt)
                         mem.fresh[id] = mem.tick
                         mem.known[id] = 0
                         if side == 0:
@@ -1797,8 +1779,8 @@ func birth(key: u64, given: Obj) -> usize:
             while h != 0:
                 id := usize(h) - 1
                 c := mem.fn.cells[id]
-                if mem.stamp[id] == mem.tick:
-                    v := value(u32(id))
+                if mem.ticked[id] == mem.tick:
+                    v := cell_value(u32(id))
                     drop(id)
                     into := cell_at(t, c.off, c.stride, c.member)
                     old := current(into)
@@ -1857,7 +1839,7 @@ func sweep():
         x := mem.fn.objs[o]
         if x.depth > 0:
             id := cell_at(x.parent, x.off, x.stride, x.member)
-            if mem.stamp[id] != mem.tick:
+            if mem.ticked[id] != mem.tick:
                 place(id, initial(x.parent, x.off, x.stride, x.member))
     strong := mem.strong
     for o in condemned:
@@ -1869,8 +1851,8 @@ func sweep():
             hit := condemned
             if many(mem.fn.cells[id]):
                 hit = strong
-            if mem.stamp[id] == mem.tick and not empty(value(id).live and hit):
-                mem.cur[id] = kill(value(id), hit, strong)
+            if mem.ticked[id] == mem.tick and not empty(cell_value(id).live and hit):
+                mem.cur[id] = kill(cell_value(id), hit, strong)
                 mem.fresh[id] = mem.tick
                 mem.known[id] = 0
         mem.swept[o] = (u64(mem.tick) << 32) or u64(mem.refs[o].len)
@@ -1937,7 +1919,7 @@ func refuse(who: &strview, name: &strview, why: &strview, v: Target, strict: boo
         text += who + " cannot release this memory" + why
     warn(view(text), mem.ops[mem.here].pos, "it may be freed here", killed_at(v.dead), strict)
 
-func reads(o: Op):
+func touch_args(o: Op):
     for k in o.first..o.first + o.count:
         touch(target_of(mem.args[k]), mem.fn.names[mem.args[k].temp])
 
@@ -1957,10 +1939,10 @@ func transfer(to: Target, from: Target, size: i64, mask: u64):
     while h != 0:
         c := mem.fn.cells[h - 1]
         k := i64(c.off) - i64(from.off)
-        if c.member != 0 and c.stride == from.stride and k >= 0 and k < size and k % 8 == 0 and marked(mask, k / 8) and mem.stamp[h - 1] == mem.tick:
+        if c.member != 0 and c.stride == from.stride and k >= 0 and k < size and k % 8 == 0 and marked(mask, k / 8) and mem.ticked[h - 1] == mem.tick:
             spot := plus(to, i32(k), 0)
             if spot.off != ANY:
-                settle(cell_at(into, spot.off, spot.stride, c.member), value(h - 1), into >= SLOTS or not mem.fn.many[into])
+                settle(cell_at(into, spot.off, spot.stride, c.member), cell_value(h - 1), into >= SLOTS or not mem.fn.many[into])
         h = c.next
 
 func marked(mask: u64, k: i64) -> bool:
@@ -2073,29 +2055,29 @@ func reach(given: Target, strict: bool, common: bool, dead: bool) -> Set:
     if not common and dead:
         seen = seen or given.dead
     for id in mem.present:
-        if mem.stamp[id] == mem.tick:
+        if mem.ticked[id] == mem.tick:
             owner := usize(mem.fn.cells[id].owner)
             root := owner == RETURNED or owner == OUTSIDE or owner < SLOTS and mem.fn.outer[owner]
             if common:
                 root = owner == OUTSIDE or owner < SLOTS and mem.fn.outer[owner] and mem.fn.objs[owner].root == 0
             if root and strict:
-                seen = seen or value(id).must
+                seen = seen or cell_value(id).must
             elif root and dead:
-                seen = seen or value(id).live or value(id).dead
+                seen = seen or cell_value(id).live or cell_value(id).dead
             elif root:
-                seen = seen or value(id).live
+                seen = seen or cell_value(id).live
     seen = seen and mem.fn.heaps
     grew := not empty(seen)
     while grew:
         grew = false
         for id in mem.present:
             owner := usize(mem.fn.cells[id].owner)
-            if mem.stamp[id] == mem.tick and owner < SLOTS and seen[owner]:
-                more := value(id).live
+            if mem.ticked[id] == mem.tick and owner < SLOTS and seen[owner]:
+                more := cell_value(id).live
                 if strict:
-                    more = value(id).must
+                    more = cell_value(id).must
                 elif dead:
-                    more = more or value(id).dead
+                    more = more or cell_value(id).dead
                 more = (more and mem.fn.heaps) - seen
                 if not empty(more):
                     seen = seen or more
