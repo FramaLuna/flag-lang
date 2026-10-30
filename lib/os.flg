@@ -52,13 +52,6 @@ priv extern "c":
 priv context startup:
     args: &list[&strview]
 
-type error CannotRun:
-    program: &strview
-    reason: &strview
-
-operator +=(s: *&str, e: CannotRun):
-    s.* += "cannot run " + e.program + ": " + e.reason
-
 func env(name: &strview) -> &strview|null:
     with scratch():
         found := getenv(cstr(name))
@@ -72,29 +65,29 @@ func args() -> &slice[&strview]:
             append(startup.args, view(((@argv() as usize + i * 8) as **u8).*))
     return startup.args
 
-func run(command: &strview) -> i32|CannotRun:
+func run(command: &strview) -> i32|FsError:
     flush(stdout)
     flush(stderr)
     status: i32 = -1
     with scratch():
         status = system(cstr(command))
     if status == -1:
-        return CannotRun{command, system_error()}
+        return FsError{errno(), "run", command}
     return exit_code(status)
 
-func run(program: &slice[&strview]) -> i32|CannotRun:
+func run(program: &slice[&strview]) -> i32|FsError:
     if program.len == 0:
-        return CannotRun{"[]", "the list has no program"}
+        return FsError{22, "run", "[]"} # EINVAL, 22 on every system
     return finish(try spawn(program, -1, -1))
 
-func output(command: &strview, into: *&str) -> i32|CannotRun:
+func output(command: &strview, into: *&str) -> i32|FsError:
     flush(stdout)
     flush(stderr)
     stream := usize(0) as *bytes
     with scratch():
         stream = popen(cstr(command), "r")
     if stream as usize == 0:
-        return CannotRun{command, system_error()}
+        return FsError{errno(), "run", command}
     got: usize = 1
     while got > 0:
         reserve(into, into.len + 65536)
@@ -102,15 +95,15 @@ func output(command: &strview, into: *&str) -> i32|CannotRun:
         into.len += got
     return exit_code(pclose(stream))
 
-func output(program: &slice[&strview], into: *&str) -> i32|CannotRun:
+func output(program: &slice[&strview], into: *&str) -> i32|FsError:
     if program.len == 0:
-        return CannotRun{"[]", "the list has no program"}
+        return FsError{22, "run", "[]"} # EINVAL, 22 on every system
     fds: array[i32, 2]
     if not make_pipe(ptr(fds) as *i32):
-        return CannotRun{program[0], system_error()}
+        return FsError{errno(), "run", program[0]}
     pid := spawn(program, fds[1], fds[0])
     close(fds[1])
-    if pid is CannotRun:
+    if pid is FsError:
         close(fds[0])
         return pid
     got: i32 = 1
@@ -128,10 +121,10 @@ priv func make_pipe(fds: *i32) -> bool where not @windows():
 priv func make_pipe(fds: *i32) -> bool where @windows():
     return _pipe(fds, 65536, 32768) == 0
 
-priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where not @windows():
+priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError where not @windows():
     failure: array[i32, 2]
     if pipe(ptr(failure) as *i32) != 0:
-        return CannotRun{program[0], system_error()}
+        return FsError{errno(), "run", program[0]}
     fcntl(failure[1], 2, 1) # close on exec, so the pipe ends when the program starts
     flush(stdout)
     flush(stderr)
@@ -158,28 +151,21 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotR
             close(into)
             close(other)
         execvp(args.*, args)
-        reason := system_error()
-        write(failure[1], ptr(reason.*), reason.len)
+        failed := errno()
+        write(failure[1], ptr(failed) as *bytes, 4)
         _exit(127)
-    failed: &strview = ""
-    if pid < 0:
-        failed = system_error()
+    code := errno()
     free(args)
     close(failure[1])
-    told: array[u8, 256]
-    got := read(failure[0], ptr(told) as *bytes, 256)
+    told := read(failure[0], ptr(code) as *bytes, 4)
     close(failure[0])
-    if pid < 0:
-        return CannotRun{program[0], failed}
-    if got > 0:
+    if told == 4:
         finish(i64(pid))
-        reason: &strview
-        reason = ptr(told) as *bytes
-        reason.len = usize(got)
-        return CannotRun{program[0], temp(reason)}
+    if pid < 0 or told == 4:
+        return FsError{code, "run", program[0]}
     return i64(pid)
 
-priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where @windows():
+priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError where @windows():
     flush(stdout)
     flush(stderr)
     line: &str
@@ -212,14 +198,12 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotR
     process: i64 = -1
     with scratch():
         process = _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
-    failed: &strview = ""
-    if process < 0:
-        failed = system_error()
+    failed := FsError{errno(), "run", program[0]}
     if into >= 0:
         dup2(saved, 1)
         close(saved)
     if process < 0:
-        return CannotRun{program[0], failed}
+        return failed
     return process
 
 priv func finish(pid: i64) -> i32 where not @windows():
@@ -290,7 +274,7 @@ func change_dir(path: &strview) -> FsError?:
     with scratch():
         failed = chdir(cstr(path)) != 0
     if failed:
-        return FsError{"enter", path, system_error()}
+        return FsError{errno(), "enter", path}
     return null
 
 func now() -> f64 where not @windows():

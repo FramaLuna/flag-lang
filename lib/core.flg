@@ -944,15 +944,15 @@ stdout = File{1}
 stderr = File{2}
 
 type error FsError:
+    code: i32
     action: &strview
     path: &strview
-    reason: &strview
 
 operator +=(s: *&str, e: FsError):
     s.* += "cannot " + e.action
     if e.path.len > 0:
         s.* += " " + e.path
-    s.* += ": " + e.reason
+    s.* += ": " + view(strerror(e.code))
 
 priv type Stream:
     path: &str
@@ -990,12 +990,12 @@ priv func opened(path: &strview, mode: cstr, action: &strview) -> File|FsError:
     with scratch():
         file = fopen(cstr(path), mode)
     if file as usize == 0:
-        return FsError{action, path, system_error()}
+        return FsError{errno(), action, path}
     f := File{dup(fileno(file))}
     if f.fd < 0:
-        failed := system_error()
+        failed := FsError{errno(), action, path}
         fclose(file)
-        return FsError{action, path, failed}
+        return failed
     fclose(file)
     stream(f).path = path
     return f
@@ -1060,7 +1060,7 @@ priv func receive(f: File, s: *Stream) -> usize|FsError:
     reserve(s.received, kept + 65536)
     got := read(f.fd, (ptr(s.received.*) as usize + kept) as *bytes, 65536)
     if got < 0:
-        return FsError{"read", temp(s.path), system_error()}
+        return FsError{errno(), "read", temp(s.path)}
     s.received.len += usize(got)
     return usize(got)
 
@@ -1071,7 +1071,7 @@ func close(f: File) -> FsError?:
         s.failed = errno()
     out: FsError? = null
     if s.failed != 0:
-        out = FsError{"write", temp(s.path), reason(s.failed)}
+        out = FsError{s.failed, "write", temp(s.path)}
     free(s.path)
     free(s.unsent)
     free(s.received)
@@ -1079,19 +1079,13 @@ func close(f: File) -> FsError?:
     io.streams[usize(f.fd)] = usize(0) as *Stream
     return out
 
-func system_error() -> &strview:
-    return reason(errno())
-
-priv func reason(code: i32) -> &strview:
-    return temp(view(strerror(code)))
-
-priv func errno() -> i32 where @linux():
+func errno() -> i32 where @linux():
     return __errno_location().*
 
-priv func errno() -> i32 where @macos():
+func errno() -> i32 where @macos():
     return __error().*
 
-priv func errno() -> i32 where @windows():
+func errno() -> i32 where @windows():
     return _errno().*
 
 type entry[$K, $V]:
