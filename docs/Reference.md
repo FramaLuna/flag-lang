@@ -135,6 +135,8 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`.
 
+Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`.
+
 ### Structs
 The fields are in the order you write them, each one aligned to its own size, and the size of the struct is rounded up to its biggest alignment, like C does
 ```flag
@@ -149,7 +151,7 @@ A field with `@other` uses the same bytes as a field declared above it, it canno
 
 A `packed type` has no padding, each field starts where the one before ends and its alignment is 1, so `packed type T:` with `a: u8` and `b: i64` takes 9 bytes. Fields can share storage with `@` there too. A packed struct cannot be passed to C by value, pass a pointer.
 
-A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
+A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
 
 ### Arrays
 `array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it.
@@ -162,7 +164,7 @@ A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` t
 
 The tag says which member the union holds. It comes from the id the type has inside that compilation, so it can change when you change the program, don't save it to a file. The tag of `null` is always 0.
 
-A union that gets no value starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`, and an enum starts as its first variant, unless one of its variants was declared before the enum. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, and inside a `context` it's part of the program file, 4 bytes for each element or more. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
+A union that gets no value starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`, and an enum starts as its first variant, unless one of its variants was declared before the enum. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, and a `context` is filled when the program starts, before `main`. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
@@ -226,7 +228,7 @@ When you pass an argument, the value is converted only if it's
 - the same type
 - a `&str` going to a `&strview`, or a `&list[T]` going to a `&slice[T]`
 - a `*array[T, N]` going to a fat pointer of `T` (a list, a slice, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
-- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error
+- `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
 - a value going to a union that has its type, or a union going to a bigger union
@@ -320,6 +322,8 @@ The arguments that are not literals are matched first, so `$T` comes from your v
 
 Then `where` removes the overloads whose condition is false.
 
+A module that has a `priv` function with the name of the call chooses among its own functions before the others (see [Modules](#modules)).
+
 If they are still tied the nearest one wins: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one
 ```
 error: ambiguous call to show, several overloads match (i32) equally
@@ -353,7 +357,7 @@ func main():
 - the parameters must be exactly those, defaults included, and there is no conversion between function types. Overloads are chosen by their parameters, never by what they return
 - a call is `(` after any value: `f(x)`, `button.on_click(x)`, `steps[i](x)`, `pick(true)(x)`. `name(...)` calls the variable `name` only when it holds a function, any other variable leaves the functions of that name reachable. A constant that holds a function is called by its name too, when no function has that name
 - the arguments convert like in any call (an `i32` doesn't go to an `i64` parameter here either), but a function value has no parameter names and no defaults
-- a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`
+- a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
 - C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
@@ -374,7 +378,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and for arrays, lists and slices also the `for`. They don't go through `at`, `iter` or `next`. So declaring `at` with an integer index for an array, a list, a slice or text is an error (`x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`), and so is `iter` or `reverse_iter` for an array, a list or a slice. A generic one, like `at(l: &list[$T], i: $I)`, is accepted and never called for an integer. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and for arrays, lists and slices also the `for`. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list[Cell] belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list or a slice. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -385,6 +389,8 @@ For arrays, lists, slices and text the compiler writes `x[i]` with an integer it
 `$$n` is a number, it comes from an array size (`array[$T, $$n]`) or from a type with a number parameter, and inside the function it's an integer literal.
 
 Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`), and it cannot have a nested field, its `$T` would not reach the inner type: declare that type on its own. A generic that makes bigger types with every call doesn't compile: `f(x: $T)` calling `f(ptr(x))` gives `instancing f never ends, each call builds a bigger type than the last`, and a type that grows the same way gives `type Pair never ends, each instance builds a bigger one than the last`.
+
+An instance is checked when a call makes it, so an error inside it comes with a note at that call: `the find that fails was made for this call, with $T = Mark`. When the generic is in the library the error points at your call instead, the one that led into the library, and a note shows the line inside it: `it fails here, inside less, with $T = P`.
 
 ### where
 A `where` condition can be
@@ -419,7 +425,7 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Assignments
-In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`. `x[i] += v` then reads the copy, adds and puts it back, and a copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map the `MapFull?` of `put` makes it a statement that drops an error, like `x[i] = v`.
+In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned, and when `x[i]` gives a copy (a map) `x[i] = v` is `put(x, i, v)`, with `v` taking its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` then reads the copy, adds and puts it back, and a copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. On a fixed map the `MapFull?` of `put` makes it a statement that drops an error, like `x[i] = v`.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -523,6 +529,7 @@ These stop the program, and write the message to the error output
 | `flag: assertion failed`, or the message of `assert(condition, message)` | 134 |
 | `flag: <text>` (from `panic`) | 134 |
 | `flag: call of an empty function value` | 134 |
+| `flag: an argument is an empty function value` | 134 |
 | `flag: out of memory` | 9 |
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.
@@ -547,7 +554,7 @@ Any other expression is written again where you use the constant, like a macro, 
 A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`.
 
 ### Contexts
-A context is one global value with its fields at zero. It has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Who can see it follows the module rules, like a type.
+A context is one global value with its fields at zero. A union without `null` inside it gets its tag when the program starts, before `main` (see [Unions](#unions)), so a context takes no room in the program file however big it is. C code that runs before `main`, like a constructor in a C file you link, would see those unions without their tag. A context has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Who can see it follows the module rules, like a type.
 
 ## Modules
 - `module name` goes in the first line and `use` goes before the first declaration. A file doesn't `use` its own module, it already sees it
@@ -555,7 +562,8 @@ A context is one global value with its fields at zero. It has only fields, no va
 - `priv` hides a name from the files outside the module
 - a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
 - in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg`
-- a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files. A `priv` function that fits a call wins over every function that is not `priv`, even one with closer types
+- a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files
+- a module that has a `priv` function keeps its name: a call to that name from inside the module chooses among the functions declared in the module first (in the file, for a file without a `module` line), `priv` or not, and the best fit of them wins over any function from outside, even one with closer types. So a function of yours never replaces a helper of the library
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
 - when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
@@ -796,7 +804,5 @@ Things that work in a way that may surprise you, so be aware
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
-- A struct of hundreds of kilobytes passed or returned by value makes the compiler slow, QBE copies it field by field. Pass a pointer
-- An empty literal can go through a generic, `heap([])` is a pointer to an empty array, and it only gets a real type where it lands. Printing one shows nothing useful
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

@@ -273,7 +273,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     tied := false
     seen := false
     scores: &list[i64]
+    here := comp.files[file_of(at)].module
+    kept := false
     s := first_sym(name)
+    while s != 0:
+        kept = kept or comp.syms[s].priv and callable(s, module, args, at)
+        s = comp.syms[s].next
+    s = first_sym(name)
     while s != 0:
         f := comp.syms[s].node
         if callable(s, module, args, at):
@@ -285,7 +291,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 score := try bind(f, order, args)
                 comp.binds.len = comp.frame
                 comp.frame = saved
-                if score >= 0 and comp.syms[s].priv:
+                if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
                     score += PRIVATE
                 append(scores, score)
                 if score > best_score or score >= 0 and score == best_score and near(s, at) < best_near:
@@ -420,23 +426,29 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     else:
         v = try convert(given, to, Arg{}, at)
     how: u32 = L
-    if foreign or comp.types[to].kind != Fat:
+    if foreign or comp.types[to].kind != Fat and not big(to):
         how = try passing(to, foreign, at)
     x := load(v).at
+    if comp.types[to].kind == Func and x.kind != Global:
+        try panic_if(op(W, "ceql", x, int_arg(0)), "an argument is an empty function value", at)
     return Pass{how, x, is_number(x)}
 
 func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize) -> Value|Fail:
-    first := comp.passes.len
+    called := Ins{op = "call", a = callee, first = u32(comp.passes.len)}
     for p in passes:
         append(comp.passes, p)
     result := Arg{}
-    back: u32 = 0
-    if ret != VOID:
+    if big(ret) and not foreign:
+        result = alloc(ret)
+        append(comp.passes, Pass{L, result, false})
+    elif ret != VOID:
+        called.cls = try passing(ret, foreign, at)
         result = temp()
-        back = try passing(ret, foreign, at)
+        called.to = u32(result.n)
+    called.count = u32(comp.passes.len) - called.first
     here := comp.at
     comp.at = at
-    add(Ins{op = "call", cls = back, to = u32(result.n), a = callee, first = u32(first), count = u32(passes.len)})
+    add(called)
     comp.at = here
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)
@@ -946,8 +958,12 @@ func element(fat: usize) -> usize:
     return VOID
 
 func within(part: usize, whole: usize) -> bool:
+    all := members(whole)
+    i: usize = 0
     for m in members(part):
-        if not has(members(whole), m):
+        while i < all.len and all[i] < m:
+            i += 1
+        if i == all.len or all[i] != m:
             return false
     return true
 

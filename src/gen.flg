@@ -8,13 +8,15 @@ func gen_program(check: bool) -> Fail?:
             if lib != "c" and not has_text(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
                 append(comp.libs, lib)
     comp.choosing = false
+    contexts: &list[usize]
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         kind := comp.nodes[d].kind
         if (kind == Struct or kind == Fat or kind == Context or kind == Alias) and not generic(d):
             t := try make_type(k, none, kind == Fat, comp.tokens[comp.nodes[d].tok].at)
             if kind == Context:
-                comp.data += "data $ctx." + comp.types[t].name + " = align 8 { " + image(t) + "z " + (room(t) - comp.types[t].size) + " }\n"
+                comp.data += "data $ctx." + comp.types[t].name + " = align 8 { z " + room(t) + " }\n"
+                append(contexts, t)
     s := first_sym("main")
     while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0):
         s = comp.syms[s].next
@@ -80,9 +82,13 @@ func gen_program(check: bool) -> Fail?:
             if text(f) != "at" and whole:
                 problem += "for over " + shown + " belongs to the language, " + text(f) + " cannot be declared for it"
             elif text(f) == "at" and params(f) == 2 and (whole or text(subject) == "str" or text(subject) == "strview"):
-                id := get(comp.type_ids, text(kid(f, 1) + 1))
-                if id is usize and integer(id):
-                    problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+                saved := comp.frame
+                comp.frame = comp.binds.len
+                for t in I8..USIZE + 1:
+                    if problem.len == 0 and try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0:
+                        problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+                    comp.binds.len = comp.frame
+                comp.frame = saved
             if problem.len > 0:
                 eprint(ERR, problem)
                 show(comp.tokens[comp.nodes[f].tok].at)
@@ -106,6 +112,8 @@ func gen_program(check: bool) -> Fail?:
     append(comp.passes, Pass{L, argv, false})
     add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
     add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
+    for t in contexts:
+        stamp(t, global("$ctx." + comp.types[t].name), 0)
     if comp.system == "windows":
         for fd in 0..3:
             modes := comp.passes.len
@@ -126,18 +134,26 @@ func gen_from(first: usize) -> usize|Fail:
     i := first
     while i < comp.insts.len:
         inst := comp.insts[i]
-        if gen_func(i) is Fail:
-            if inst.at != 0 and inst.count > 0:
-                given: &str
-                for k in 0..inst.count:
-                    if k > 0:
-                        given += ", "
-                    given += comp.inst_binds[inst.binds + k].name + " = " + brief(arg_name(comp.inst_binds[inst.binds + k]))
-                eprint(NOTE, "the ", text(inst.node), " that fails was made for this call, with ", given)
+        library := inst.at != 0 and inst.count > 0 and comp.files[file_of(comp.tokens[comp.nodes[inst.node].tok].at)].library
+        if library:
+            comp.blame = inst.at
+        failed := gen_func(i) is Fail
+        comp.blame = 0
+        if failed:
+            if inst.at != 0 and inst.count > 0 and not library:
+                eprint(NOTE, "the ", text(inst.node), " that fails was made for this call, with ", bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]))
                 show(inst.at)
             return Fail
         i += 1
     return i
+
+func bindings(binds: &slice[Item]) -> &str:
+    given: &str
+    for b in binds:
+        if given.len > 0:
+            given += ", "
+        given += b.name + " = " + brief(arg_name(b))
+    return given
 
 func brief(name: &strview) -> &strview:
     if name.len > 100:
@@ -190,10 +206,19 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         eprint(ERR, "instancing ", text(f), " never ends, each call builds a bigger type than the last")
         show(comp.tokens[comp.nodes[f].tok].at)
         return Fail
+    site := at
+    if comp.blame != 0:
+        site = comp.blame
     ret: usize = VOID
     c := kid(f, params(f))
     if c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
-        ret = try resolve(c)
+        made := resolve(c)
+        if made is Fail:
+            if site == at and at != 0 and comp.binds.len > comp.frame:
+                eprint(NOTE, "the ", text(f), " that fails was made for this call, with ", bindings(comp.binds[comp.frame:comp.binds.len]))
+                show(at)
+            return Fail
+        ret = made
     export := false
     s := first_sym(text(f))
     while s != 0:
@@ -208,7 +233,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         else:
             name += "op"
         name += "." + comp.insts.len
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, at, export, depth})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site, export, depth})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
@@ -243,15 +268,20 @@ func gen_func(i: usize) -> Fail?:
         passed := cls(t)
         if inst.export:
             passed = try passing(t, true, comp.at)
-        elif comp.types[t].kind == Fat:
+        elif comp.types[t].kind == Fat or big(t):
             passed = L
         append(comp.passes, Pass{passed, p, comp.numbers[usize(p.n) - 1]})
-        addr := p
-        if not aggregate(t) or comp.types[t].kind == Fat:
-            addr = alloc(t)
-            store(t, Value{type = t, at = p}, addr)
-        append(comp.vars, Local{text(c), t, addr, 0, comp.nodes[c].tok, 0, false})
-        mention(text(c), addr)
+        append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
+    comp.dest = Arg{}
+    if big(inst.ret) and not inst.export:
+        comp.dest = temp()
+        append(comp.passes, Pass{L, comp.dest, false})
+    for k in 0..params(f):
+        given := comp.vars[k]
+        if comp.passes[made.params + k].cls < AGG:
+            comp.vars[k].addr = alloc(given.type)
+            store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
+        mention(given.name, comp.vars[k].addr)
     name := text(f)
     first: usize = VOID
     second: usize = VOID
@@ -262,6 +292,10 @@ func gen_func(i: usize) -> Fail?:
     target := first
     if comp.types[first].kind == Ptr:
         target = comp.types[first].elem
+    integral := false
+    if name == "at":
+        for t in I8..USIZE + 1:
+            integral = integral or accepts(second, Value{type = usize(t)}) >= 0
     problem: &str
     if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
         if name == "=" and inst.ret != target:
@@ -274,7 +308,7 @@ func gen_func(i: usize) -> Fail?:
             problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
         elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
             problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
-    elif name == "at" and integer(second) and (sequence(target) or textual(target) or comp.types[target].kind == Array):
+    elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array):
         problem += "x[i] with an integer on " + comp.types[first].name + " belongs to the language, at cannot be declared for it"
     elif (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
         problem += "for over " + comp.types[first].name + " belongs to the language, " + name + " cannot be declared for it"
@@ -293,9 +327,9 @@ func gen_func(i: usize) -> Fail?:
     back: u32 = 0
     if inst.ret != VOID and inst.export:
         back = try passing(inst.ret, true, comp.at)
-    elif inst.ret != VOID:
+    elif inst.ret != VOID and comp.dest.kind == Empty:
         back = cls(inst.ret)
-    close_proc(made, back, params(f))
+    close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
     comp.binds.len = comp.frame
     return null
 
@@ -936,7 +970,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 show(tok.at)
                 return Fail
             code := load(called).at
-            if code.kind == Temp:
+            if code.kind != Global:
                 try panic_if(op(W, "ceql", code, int_arg(0)), "call of an empty function value", tok.at)
             passes: &list[Pass]
             c := first
@@ -1096,6 +1130,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if node.kind == Brace:
             t = try resolve(n + 1)
             c = node_end(n + 1)
+        elif comp.types[want].kind == Union:
+            structs: &list[usize]
+            for m in members(want):
+                if comp.types[m].kind == Struct:
+                    append(structs, m)
+            if structs.len == 1:
+                t = structs[0]
         ty := comp.types[t]
         if node.kind == Fill and ty.kind != Struct and ty.kind != Array:
             eprint(ERR, "a {...} without a type needs a place that gives it one: p: Point = {1, 2}")
@@ -1205,8 +1246,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 show(tok.at)
                 return Fail
             tags: &list[usize]
+            asked := members(wanted)
             for m in members(v.type):
-                if has(members(wanted), m):
+                if has(asked, m):
                     append(tags, m)
             if tags.len == 0:
                 eprint(ERR, comp.types[v.type].name, " can never be ", comp.types[wanted].name, ", so this is always false")
@@ -1556,7 +1598,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             return p
         if comp.types[p.type].kind != Ptr and text(assignment) == "=":
             comp.body.len = reached
-            append(args, settled(try value(node_end(n), VOID), first, reached))
+            append(args, settled(try value(node_end(n), p.type), first, reached))
             postpone(first, reached)
             return invoke("put", args, tok.at)
         if comp.types[p.type].kind != Ptr:
@@ -2085,33 +2127,6 @@ func stamp(t: usize, addr: Arg, at: usize):
         jump(l_head)
         open_block(l_done)
 
-func image(t: usize) -> &str:
-    ty := comp.types[t]
-    out: &str
-    at: usize = 0
-    if ty.kind == Union and comp.items[ty.first].type != NULL:
-        out += "w " + tag_of(comp.items[ty.first].type).n + ", "
-        at = 4
-        if tagged(comp.items[ty.first].type):
-            out += "z 4, " + image(comp.items[ty.first].type)
-            at = 8 + comp.types[comp.items[ty.first].type].size
-    elif ty.kind == Struct or ty.kind == Fat:
-        for i in 0..ty.count:
-            item := comp.items[ty.first + i]
-            if not item.shared and tagged(item.type):
-                if item.n > at:
-                    out += "z " + (item.n - at) + ", "
-                out += image(item.type)
-                at = item.n + comp.types[item.type].size
-    elif ty.kind == Array and tagged(ty.elem):
-        one := image(ty.elem)
-        for i in 0..ty.count:
-            out += one
-        at = ty.size
-    if ty.size > at:
-        out += "z " + (ty.size - at) + ", "
-    return out
-
 func tag_test(v: Value, tags: &list[usize]) -> Arg:
     current := tag(v)
     result := Arg{}
@@ -2124,11 +2139,15 @@ func tag_test(v: Value, tags: &list[usize]) -> Arg:
     return result
 
 func leave(v: Value, at: usize) -> Fail?:
-    back := try convert(v, comp.ret, Arg{}, at)
-    result := load(back).at
-    if aggregate(comp.ret) and comp.defers.len > 0:
-        result = alloc(comp.ret)
-        store(comp.ret, back, result)
+    result := Arg{}
+    if comp.dest.kind != Empty:
+        try assign(comp.dest, comp.ret, v, at)
+    else:
+        back := try convert(v, comp.ret, Arg{}, at)
+        result = load(back).at
+        if aggregate(comp.ret) and comp.defers.len > 0:
+            result = alloc(comp.ret)
+            store(comp.ret, back, result)
     try unwind(0, 0)
     terminate("ret", result)
     return null
@@ -2233,6 +2252,9 @@ func lookup(name: &strview) -> usize:
 func aggregate(t: usize) -> bool:
     k := comp.types[t].kind
     return k == Struct or k == Fat or k == Union or k == Untagged or k == Array
+
+func big(t: usize) -> bool:
+    return aggregate(t) and comp.types[t].size > 128
 
 func payload(addr: Arg, t: usize) -> Arg:
     if comp.types[t].kind == Union or comp.types[t].size == 0:
@@ -2353,7 +2375,7 @@ func blit(from: Arg, to: Arg, t: usize):
     if from.kind == to.kind and from.n == to.n:
         return
     size := i64(comp.types[t].size)
-    if size <= 128:
+    if not big(t):
         add(Ins{op = "blit", a = from, b = to, c = int_arg(size), mask = pointers(t), copy = true})
         return
     first := comp.passes.len
@@ -2366,6 +2388,8 @@ func pointers(t: usize) -> u64:
     ty := comp.types[t]
     if ty.kind == Ptr or ty.kind == Fat or ty.kind == Func:
         return 1
+    if ty.size < 8:
+        return 0
     mask: u64 = 0
     if ty.kind == Array:
         inner := pointers(ty.elem)
