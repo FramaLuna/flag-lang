@@ -532,9 +532,11 @@ These stop the program, and write the message to the error output
 | `flag: <text>` (from `panic`) | 134 |
 | `flag: call of an empty function value` | 134 |
 | `flag: an argument is an empty function value` | 134 |
+| `flag: File{-1} is not an open file` | 134 |
 | `flag: out of memory` | 9 |
+| `flag: cannot write the standard output: No space left on device`, at the end | 1 |
 
-The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails.
+The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails. The last one comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
 
 A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
@@ -744,6 +746,8 @@ A C function can end with `...`. The extra arguments must be integers, floats, `
 - any other `&strview` needs `cstr(text)`, that makes a temporary copy
 - `view(c)` turns a `cstr` back into a `&strview`
 
+C's `printf` keeps what it prints in a buffer of its own, so into a pipe or a file its lines and the ones of `print` come out of order. Call `flush()` before C prints, and C's `fflush(NULL)` after it.
+
 ## Platforms
 Flag builds programs for Linux, macOS and Windows
 | Target | QBE backend |
@@ -767,10 +771,11 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Programs get `.exe`: `a.exe` by default, and `flagc run` writes its program in `%TEMP%`
 - The standard input and output are binary, so `print` writes `\n` like on Linux, and `read_line` removes the `\r` of `\r\n` (it does it on every system)
 - The paths that `os` gives you use `/`, and `fs` takes `/` and `\`
-- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` passes each argument quoted so the program gets it exactly
+- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` passes each argument quoted so the program gets it exactly. That's why it runs a name without an extension as a `.exe` and refuses a `.bat` or `.cmd`, which `cmd.exe` would read again
 - `net` uses Winsock, and the first time a program listens the Windows firewall may ask you
 - The `raylib` module only has the Linux build of raylib, for Windows and macOS put your own `libraylib.a` in the `lib` folder
 - The console shows text with its code page, so accents may look wrong unless the console is in UTF-8 (`chcp 65001`)
+- Paths, arguments and environment variables go through the ANSI code page of the system, so a name with letters outside ASCII works only when that code page is UTF-8: the setting "Use Unicode UTF-8 for worldwide language support" of Windows 10 and later
 
 ## Editor support
 These are for editors and tools, they don't build the program.
