@@ -496,7 +496,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - Blocks nest up to about 150 levels, and a chain of `elif`, or of one operator like `a - b - c`, can have about 300 parts. Past that it's the same error as an expression that nests too deep. A chain of `+` has no limit
 
 ## Errors
-An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FsError = CannotOpen|CannotRead`), or a struct with fields that say what happened
+An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FileError = CannotOpen|CannotRead`), or a struct with fields that say what happened
 ```flag
 type error BadLine:
     line: usize
