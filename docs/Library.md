@@ -4,7 +4,7 @@ Every function of the standard library, module by module.
 
 - [How to read this](#how-to-read-this)
 - [core](#core)
-- [fs](#fs), files and folders
+- [fs](#fs), whole files, folders and paths
 - [os](#os), the program, other programs and the time
 - [json](#json), reading and writing JSON
 - [net](#net), TCP sockets
@@ -15,7 +15,7 @@ Every function of the standard library, module by module.
 - [raylib](#raylib), graphics, input and audio
 
 ## How to read this
-Each function is written with its parameters and what it returns, and `$I` is any integer type. Functions with the same name and different parameters are overloads, the call takes the one that fits.
+Each function is written with its parameters and what it returns, and `$I` is any integer type, the alias `Integer` of core that your own `where` can use too: `where $I is Integer`. Functions with the same name and different parameters are overloads, the call takes the one that fits.
 
 What a function gives you is
 - **yours** when you own it and release it with `free`
@@ -28,20 +28,66 @@ The functions that take an index also have a last parameter `place: &strview = @
 
 ## core
 ### The program
-- `print(values...)` writes the values one after the other to the standard output, and then a new line
+- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, and then it's `write(stdout, value)` for each one and `write(stdout, "\n")`
 - `eprint(values...)` the same to the error output
-- `write(fd: i32, text: &strview)` writes the text to a file descriptor, 1 is the standard output and 2 the error output
 - `panic(message: &strview)` writes `flag: <message>` and the place of the call to the error output, and ends the program with exit code 134
 - `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
-- `exit(code: i32)` ends the program with that exit code, the deferred statements don't run
-- `arg_count() -> usize` how many arguments the program got, the first one is the program
-- `arg(i: usize) -> &strview` the argument `i`, a view. It's not checked, keep `i` below `arg_count()`
+- `exit(code: i32)` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
+
+The arguments of the program are `args()` of [os](#os).
+
+### Files
+A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
+
+What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
+- when 64 KiB are waiting, when you call `flush` or `close`, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
+- at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
+- the standard output goes out before anything is written to the error output, before the standard input is read and before other programs run, so everything comes out in the order you wrote it
+
+The functions
+- `open(path: &strview) -> File|FsError` opens the file to read
+- `create(path: &strview) -> File|FsError` makes the file, or empties it, to write
+- `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`
+- `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too
+- `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
+- `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the file was opened. A failed write doesn't stop the next ones, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
+- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
+- `File{fd}` is the file of a descriptor that you got from C
+
+```flag
+func main():
+    out := create("squares.txt")
+    if out is FsError:
+        eprint(out)
+        return
+    for i in 1..4:
+        write(out, i * i)
+        write(out, "\n")
+    if flush(out) is FsError:
+        eprint("the disk is full")
+    close(out)
+    write(stdout, "your name? ")
+    name := read_line(stdin)
+    if name is &strview:
+        print("hello ", name)
+```
+
+A function that fails because the system said no gives an `FsError`
+```flag
+type error FsError:
+    action: &strview # what failed: open, create, read, write, list, make, remove...
+    path: &strview # the path you gave, empty for the standard files
+    reason: &strview # what the system says, temporary
+```
+and printing it says all of it: `cannot open notes.txt: No such file or directory`.
+- `system_error() -> &strview` what the system says about the last C call that failed, like `No such file or directory`, temporary. It's the `reason` of the errors, and you can use it after your own `extern` calls
 
 ### Memory
-- `heap(v: $T) -> *$T` copies the value to the heap, yours, you release it with `free(p as *bytes)`
+- `heap(v: $T) -> *$T` copies the value to the heap, yours
+- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list or a map frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c))
 - `sizeof(T)` the size of a type in bytes, as an integer literal
-- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memcmp`, `strlen`, `write`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
+- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
 - `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
 ### Temporary memory
@@ -59,9 +105,12 @@ A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own a
 
 On lists
 - `append(l: *&list[$T], v: $T)` adds `v` at the end. The first time it makes room for 8 elements, and then it doubles
+- `append(l: *&list[$T], items: &slice[$T])` adds all the elements at the end, also from the list itself
+- `reserve(l: *&list[$T], want: usize)` makes room for `want` elements, so the appends until then don't allocate
 - `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
+- `clear(l: *&list[$T])` removes every element and keeps the memory
 - `free(l: *&list[$T])` releases the list and leaves it empty. The elements are not released, free them first when they own memory
 
 On slices, so also on lists
@@ -72,7 +121,7 @@ On slices, so also on lists
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
 - `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
 - `reverse(items: &slice[$T])` turns the elements around in place
-- `swap(s: &slice[$T], i: usize, j: usize)` swaps two elements
+- `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements, the indexes can be negative like in `s[i]`
 
 An array goes to these functions by its address: `sort(ptr(values))`.
 
@@ -100,6 +149,7 @@ Building a `&str`
 
 Searching and cutting
 - `find(s: &strview, part: &strview) -> usize|null` the byte index of the first `part`
+- `find_last(s: &strview, part: &strview) -> usize|null` the byte index of the last `part`
 - `contains(s: &strview, part: &strview) -> bool`
 - `starts_with(s: &strview, head: &strview) -> bool` and `ends_with(s: &strview, tail: &strview) -> bool`
 - `trim(s: &strview) -> &strview` without the spaces, tabs, `\n` and `\r` at both ends, a view. `trim_start` and `trim_end` do one end
@@ -108,6 +158,7 @@ Searching and cutting
 - `join(parts: &slice[$T], separator: &strview) -> &strview` the parts with the separator between them, temporary. The parts can be anything that can be printed
 - `lower(s: &strview) -> &strview` and `upper(s: &strview) -> &strview` change the ASCII letters, temporary
 - `items(s: &strview) -> &slice[u8]` the bytes, a view
+- `view(bytes: &slice[u8]) -> &strview` the bytes as text, a view
 
 Numbers from text, `null` when the text is not a number
 - `parse_int(s: &strview) -> i64|null` decimal digits with an optional `+` or `-`, and `null` when it doesn't fit in `i64`
@@ -123,9 +174,10 @@ None of them skip spaces, the whole text must be the number.
 - pointers, in hexadecimal
 - slices and lists `[1, 2]`, maps and fixed maps `{a: 1, b: 2}`
 
-And two helpers
+And three helpers
 - `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. Negative `places` are 0
 - `hex(value: u64) -> Hex` prints `0xff`
+- `pad(value: $T, width: i32) -> Padded[$T]` prints the value with spaces before it to fill `width` characters, or after it when `width` is negative: `pad(42, 5)` is `   42` and `pad("ab", -4)` is `ab  `. A longer value is not cut. It takes any value, so `pad(fixed(x, 2), 8)` works
 
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
 
@@ -133,6 +185,7 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2
 A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
 - `m[k] -> $V|null` is `get`, and `m[k] = v` is `put`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
+- `put(m: *&map[$K, $V], key: $K) -> *$V` the place of the value of the key, and a key that wasn't there is added with a zero value. It finds the key once, so it changes a value in place: `put(players, name).score += 10`. To count, `counts[word] += 1` is enough. The place is good until the next `put`
 - `get(m: &map[$K, $V], key: $K) -> $V|null`
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
@@ -170,39 +223,28 @@ func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usiz
 ### C text
 - `cstr` is the type `*u8`, a text that ends with a zero byte
 - `cstr(text: &strview) -> cstr` a copy with the zero, temporary
-- `c_text(s: *&str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes
+- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
 
 ## fs
-Files and folders.
-```flag
-type error enum FsError = CannotOpen|CannotRead|CannotWrite|CannotRemove|CannotCreate|CannotRename
-```
+Whole files, folders and paths. The files read by parts, `File` and `open`, are in [core](#files), and the errors are the `FsError` of core.
+
 The files are read and written in binary, the bytes are the same on every system. On Windows the paths can use `/` or `\`.
 
 ### Whole files
-- `read_text_file(path: &strview) -> &str|FsError` all the file, yours, or `CannotOpen` or `CannotRead`
-- `write_file(path: &strview, text: &strview) -> usize|FsError` makes the file, or empties it, writes the text and gives how many bytes it wrote, or `CannotOpen` or `CannotWrite`. With `from: &slice[u8]` it writes bytes
-- `append_file(path: &strview, text: &strview) -> usize|FsError` the same, but it writes at the end of the file and makes it when it doesn't exist
-
-### Files by parts
-A `File` is an open file, close it with `close` or with `with file:`.
-- `open(path: &strview) -> File|CannotOpen` opens the file to read
-- `create(path: &strview) -> File|CannotCreate` makes the file, or empties it, to write
-- `read(f: File, into: *&str, size: usize) -> usize|CannotRead` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
-- `read_line(f: File) -> &strview|null` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too
-- `write(f: File, text: &strview) -> CannotWrite?`
-- `close(f: File)`
+- `read_text_file(path: &strview) -> &str|FsError` all the file, yours
+- `write_file(path: &strview, text: &strview) -> FsError?` makes the file, or empties it, and writes the text. Bytes go as text, `write_file(path, view(bytes))`
+- `append_file(path: &strview, text: &strview) -> FsError?` the same, but it writes at the end of the file and makes it when it doesn't exist
 
 ### Folders and paths
 - `exists(path: &strview) -> bool` if there is a file or a folder there
 - `is_dir(path: &strview) -> bool`
-- `file_size(path: &strview) -> usize|FsError` in bytes, or `CannotOpen` or `CannotRead`. A folder has no size, it gives `CannotRead`
-- `list_dir(path: &strview) -> &slice[&strview]|CannotOpen` the names inside the folder, sorted and without `.` and `..`, temporary
-- `walk(folder: &strview) -> &slice[&strview]|CannotOpen` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it (on Windows it does)
-- `make_dir(path: &strview) -> CannotCreate?` makes the folder and the ones above it, and a folder that already exists is not an error
-- `remove(path: &strview) -> CannotRemove?` removes a file or an empty folder
-- `rename(from: &strview, to: &strview) -> CannotRename?` renames or moves
+- `file_size(path: &strview) -> usize|FsError` in bytes. A folder has no size, it's an error
+- `list_dir(path: &strview) -> &slice[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
+- `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it (on Windows it does). Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
+- `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
+- `remove(path: &strview) -> FsError?` removes a file or an empty folder
+- `rename(from: &strview, to: &strview) -> FsError?` renames or moves
 - `join(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join("a/", "/b")` is `a/b`. An empty `first` gives `second`
 - `base_name(path: &strview) -> &strview` the part after the last `/`, a view: `base_name("docs/a.txt")` is `a.txt`
 - `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and the `.` that a name starts with don't count, so `.bashrc` and `..` have no extension and `.config.json` has `.json`
@@ -212,23 +254,42 @@ A `File` is an open file, close it with `close` or with `with file:`.
 The program, other programs and the time.
 
 ### The program
-- `args() -> &slice[&strview]` the arguments of the program, the first one is the program itself. The slice is temporary, the texts are views that live all the program
+- `args() -> &slice[&strview]` the arguments of the program, the first one is the program itself. They live all the program
 - `env(name: &strview) -> &strview|null` the value of an environment variable, a view, `null` when it's not set
 - `executable() -> &strview` the full path of the running program, temporary
 - `current_dir() -> &strview` the current folder, temporary
-- `change_dir(path: &strview) -> bool` `true` when it worked
+- `change_dir(path: &strview) -> FsError?` makes `path` the current folder
 - `system_name() -> &strview` `Linux`, `Darwin` or `Windows`
-- `read_line() -> &strview|null` the next line of the standard input without the `\n` or `\r\n`, temporary, `null` at the end
+
+The standard input is `read_line(stdin)` of [core](#files).
 
 On every system the paths that `os` gives use `/`.
 
 ### Other programs
-- `run(command: &strview) -> i32` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code
-- `run(program: &list[&strview]) -> i32` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`
-- `output(command: &strview) -> &strview` runs the command with the shell and gives what it wrote to the standard output, with its line ends, temporary
-- `output(program: &list[&strview]) -> &strview` the same without a shell
+```flag
+type error CannotRun:
+    program: &strview # the program as you gave it
+    reason: &strview # what the system says, temporary
+```
+Printing it says `cannot run gcc: No such file or directory`.
+- `run(command: &strview) -> i32|CannotRun` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
+- `run(program: &slice[&strview]) -> i32|CannotRun` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run
+- `output(command: &strview, into: *&str) -> i32|CannotRun` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
+- `output(program: &slice[&strview], into: *&str) -> i32|CannotRun` the same without a shell
 
-On Linux and macOS a program killed by a signal gives 128 plus the signal, and one that cannot start gives 127. On Windows one that cannot start gives -1. An empty list is a program that cannot start.
+```flag
+use os
+
+func main():
+    text: &str
+    defer free(text)
+    code := output(ptr(["git", "status", "--short"]), text)
+    if code is CannotRun:
+        eprint(code)
+    elif code == 0:
+        print(text)
+```
+On Linux and macOS a program killed by a signal gives 128 plus the signal.
 
 ### Time
 - `now() -> f64` the seconds since 1970, with decimals

@@ -1,0 +1,24 @@
+func main():
+    counts: &map[&strview, i32]
+    defer free(counts)
+    for word in split("a b a c b a", " "):
+        put(counts, word).* += 1
+    print(counts["a"], " ", counts["b"], " ", counts["c"], " ", counts.len)
+    totals: &map[i32, &list[i32]]
+    for i in 0..10:
+        append(put(totals, i % 3), i)
+    for k in 0..3:
+        print(k, " ", totals[k])
+    for e in totals:
+        free(e.value)
+    free(totals)
+    many: &map[i64, i64]
+    defer free(many)
+    for i in 0..1000:
+        put(many, i64(i)).* = i64(i) * 2
+    sum: i64 = 0
+    for e in many:
+        sum += e.value - e.key
+    for i in 0..500:
+        _ = remove(many, i64(i) * 2)
+    print(sum, " ", many.len, " ", many[3], " ", many[4])

@@ -71,7 +71,7 @@ The `-L` of the folders of your files means that you can put a `libsomething.a` 
 
 If the C compiler cannot run you get
 ```
-error: cannot run cc, flagc links with a C compiler and the CC variable chooses which
+error: cannot run cc: No such file or directory, flagc links with a C compiler and the CC variable chooses which
 ```
 
 ## Files, folders and the library
@@ -157,7 +157,7 @@ A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from wh
 `array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it.
 
 ### Fixed maps
-`fixmap[K, V, N]` is a struct with `len` and room for N entries, each one with a `used` flag, the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `sizeof(fixmap[i32, i32, 2])` is 32.
+`fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `sizeof(fixmap[i32, i32, 2])` is 24.
 
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A union of void types is only the tag, 4 bytes, that's why enums are small.
@@ -178,7 +178,7 @@ A fat pointer is the address of the data and then its fields
 | `&str`, `&list[T]` | address, len, cap | 24 |
 | `&map[K, V]` | address, len, cap | 24 |
 
-A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` entries (`used`, `key`, `value`) with open addressing, `cap` is a power of two and at least 16.
+A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
 
 `x.*` is the data of a fat pointer, so `ptr(x.*)` is its address as a `*bytes`.
 
@@ -374,7 +374,8 @@ The compiler calls some functions by their name, so you make your types work wit
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
 | `{k: v}` | `put` |
-| `print(x)`, `"a" + x` | `operator +=(s: *&str, x: T)` |
+| `print(x)` | `write(stdout, x)`, that formats with `+=` |
+| `"a" + x`, `s += x` | `operator +=(s: *&str, x: T)` |
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
@@ -576,7 +577,7 @@ Flag doesn't have a garbage collector, you free what you allocate.
 ### Who owns what
 - `&str`, `&list` and `&map` own their memory, you free them with `free`
 - `&strview` and `&slice` are views, they don't own anything
-- `heap(value)` copies a value to the heap and gives you a pointer, you free it with `free(p as *bytes)`
+- `heap(value)` copies a value to the heap and gives you a pointer, you free it with `free(p)`
 - a list of `&str` owns each text, freeing the list doesn't free them, free them first
 
 ### Temporary memory
@@ -735,7 +736,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Programs get `.exe`: `a.exe` by default, and `flagc run` writes its program in `%TEMP%`
 - The standard input and output are binary, so `print` writes `\n` like on Linux, and `read_line` removes the `\r` of `\r\n` (it does it on every system)
 - The paths that `os` gives you use `/`, and `fs` takes `/` and `\`
-- `run(command)` and `output(command)` go through `cmd.exe`, and `run(list)` passes each argument quoted so the program gets it exactly
+- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` passes each argument quoted so the program gets it exactly
 - `net` uses Winsock, and the first time a program listens the Windows firewall may ask you
 - The `raylib` module only has the Linux build of raylib, for Windows and macOS put your own `libraylib.a` in the `lib` folder
 - The console shows text with its code page, so accents may look wrong unless the console is in UTF-8 (`chcp 65001`)

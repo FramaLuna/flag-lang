@@ -1029,24 +1029,31 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 try assign(slot, target, given, source(n + 1))
                 return Value{type = target, at = slot, mem = true}
             if name == "print" or name == "eprint":
-                line := Value{type = try fat_type("str", VOID, tok.at), mem = true}
-                line.at = alloc(line.type)
-                zero(line.type, line.at)
+                file: &strview = "stdout"
+                if name == "eprint":
+                    file = "stderr"
+                to := try constant(try named(file, "", tok.at), VOID, tok.at)
+                parts: &list[Value]
                 c = n + 1
                 while c < node_end(n):
-                    try put_text(line, try value(c, VOID), source(c))
+                    v := load(try value(c, VOID))
+                    if v.mem and aggregate(v.type) and not v.lit:
+                        slot := alloc(v.type)
+                        store(v.type, v, slot)
+                        v = Value{type = v.type, at = slot, mem = true}
+                    append(parts, v)
                     c = node_end(c)
-                try put_words(line, "\\n", tok.at)
-                fd: usize = 1
-                if name == "eprint":
-                    fd = 2
+                c = n + 1
+                for part in parts:
+                    values.len = 0
+                    append(values, to)
+                    append(values, part)
+                    try invoke("write", values, source(c))
+                    c = node_end(c)
                 values.len = 0
-                append(values, literal(false, fd))
-                append(values, line)
+                append(values, to)
+                append(values, Value{type = try fat_type("strview", VOID, tok.at), at = text_data("\\n"), mem = true})
                 try invoke("write", values, tok.at)
-                values.len = 0
-                append(values, line)
-                try invoke("free", values, tok.at)
                 return none
             platform := name == "@linux" or name == "@macos" or name == "@windows" or name == "@x86_64" or name == "@arm64" or name == "@riscv64"
             if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@compile_error" and not platform:

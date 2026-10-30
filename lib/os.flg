@@ -19,8 +19,10 @@ priv extern "c":
     func clock_gettime(id: i32, into: *Clock) -> i32
     func nanosleep(want: *Clock, left: *Clock) -> i32
     func read(fd: i32, at: *bytes, size: usize) -> i32
+    func write(fd: i32, at: *bytes, size: usize) -> i32
     func close(fd: i32) -> i32
     func pipe(fds: *i32) -> i32
+    func fcntl(fd: i32, command: i32, ...) -> i32
     func _pipe(fds: *i32, size: u32, mode: i32) -> i32
     func dup(fd: i32) -> i32
     func dup2(from: i32, to: i32) -> i32
@@ -47,9 +49,15 @@ priv extern "c":
     func fread(into: *bytes, size: usize, count: usize, stream: *bytes) -> usize
     func pclose(stream: *bytes) -> i32
 
-priv context input:
-    text: &str
-    start: usize
+priv context startup:
+    args: &list[&strview]
+
+type error CannotRun:
+    program: &strview
+    reason: &strview
+
+operator +=(s: *&str, e: CannotRun):
+    s.* += "cannot run " + e.program + ": " + e.reason
 
 func env(name: &strview) -> &strview|null:
     with scratch():
@@ -59,57 +67,60 @@ func env(name: &strview) -> &strview|null:
     return null
 
 func args() -> &slice[&strview]:
-    out: &slice[&strview]
-    out = temp(arg_count() * sizeof(&strview))
-    out.len = arg_count()
-    for i in 0..out.len:
-        out[i] = arg(i)
-    return out
+    if startup.args.len == 0:
+        for i in 0..usize(@argc()):
+            append(startup.args, view(((@argv() as usize + i * 8) as **u8).*))
+    return startup.args
 
-func run(command: &strview) -> i32 where not @windows():
+func run(command: &strview) -> i32|CannotRun:
+    _ = flush(stdout)
+    _ = flush(stderr)
+    status: i32 = -1
     with scratch():
-        return exit_code(system(cstr(command)))
+        status = system(cstr(command))
+    if status == -1:
+        return CannotRun{command, system_error()}
+    return exit_code(status)
 
-func run(command: &strview) -> i32 where @windows():
+func run(program: &slice[&strview]) -> i32|CannotRun:
+    if program.len == 0:
+        return CannotRun{"[]", "the list has no program"}
+    return finish(try spawn(program, -1, -1))
+
+func output(command: &strview, into: *&str) -> i32|CannotRun:
+    _ = flush(stdout)
+    _ = flush(stderr)
+    stream := usize(0) as *bytes
     with scratch():
-        return system(cstr(command))
-
-func run(program: &list[&strview]) -> i32:
-    return finish(spawn(program, -1, -1))
-
-func output(command: &strview) -> &strview:
-    stream := popen(cstr(command), "r")
+        stream = popen(cstr(command), "r")
     if stream as usize == 0:
-        return ""
-    out: &str
+        return CannotRun{command, system_error()}
     got: usize = 1
     while got > 0:
-        reserve(out, out.len + 65536)
-        got = fread((ptr(out.*) as usize + out.len) as *bytes, 1, out.cap - out.len, stream)
-        out.len += got
-    pclose(stream)
-    result := temp(out)
-    free(out)
-    return result
+        reserve(into, into.len + 65536)
+        got = fread((ptr(into.*.*) as usize + into.len) as *bytes, 1, 65536, stream)
+        into.len += got
+    return exit_code(pclose(stream))
 
-func output(program: &list[&strview]) -> &strview:
+func output(program: &slice[&strview], into: *&str) -> i32|CannotRun:
+    if program.len == 0:
+        return CannotRun{"[]", "the list has no program"}
     fds: array[i32, 2]
     if not make_pipe(ptr(fds) as *i32):
-        return ""
-    out: &str
+        return CannotRun{program[0], system_error()}
     pid := spawn(program, fds[1], fds[0])
     close(fds[1])
+    if pid is CannotRun:
+        close(fds[0])
+        return pid
     got: i32 = 1
     while got > 0:
-        reserve(out, out.len + 65536)
-        got = read(fds[0], (ptr(out.*) as usize + out.len) as *bytes, out.cap - out.len)
+        reserve(into, into.len + 65536)
+        got = read(fds[0], (ptr(into.*.*) as usize + into.len) as *bytes, 65536)
         if got > 0:
-            out.len += usize(got)
+            into.len += usize(got)
     close(fds[0])
-    finish(pid)
-    result := temp(out)
-    free(out)
-    return result
+    return finish(pid)
 
 priv func make_pipe(fds: *i32) -> bool where not @windows():
     return pipe(fds) == 0
@@ -117,7 +128,13 @@ priv func make_pipe(fds: *i32) -> bool where not @windows():
 priv func make_pipe(fds: *i32) -> bool where @windows():
     return _pipe(fds, 65536, 32768) == 0
 
-priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where not @windows():
+priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where not @windows():
+    failure: array[i32, 2]
+    if pipe(ptr(failure) as *i32) != 0:
+        return CannotRun{program[0], system_error()}
+    fcntl(failure[1], 2, 1) # close on exec, so the pipe ends when the program starts
+    _ = flush(stdout)
+    _ = flush(stderr)
     table := (program.len + 1) * 8
     size := table
     for part in program:
@@ -135,20 +152,38 @@ priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where no
             at += program[i].len + 1
     pid := fork()
     if pid == 0:
+        close(failure[0])
         if into >= 0:
             dup2(into, 1)
             close(into)
             close(other)
-        if program.len > 0:
-            execvp(args.*, args)
+        execvp(args.*, args)
+        reason := system_error()
+        write(failure[1], ptr(reason.*), reason.len)
         _exit(127)
-    free(args as *bytes)
+    failed: &strview = ""
+    if pid < 0:
+        failed = system_error()
+    free(args)
+    close(failure[1])
+    told: array[u8, 256]
+    got := read(failure[0], ptr(told) as *bytes, 256)
+    close(failure[0])
+    if pid < 0:
+        return CannotRun{program[0], failed}
+    if got > 0:
+        finish(i64(pid))
+        reason: &strview
+        reason = ptr(told) as *bytes
+        reason.len = usize(got)
+        return CannotRun{program[0], temp(reason)}
     return i64(pid)
 
-priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where @windows():
-    if program.len == 0:
-        return -1
+priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|CannotRun where @windows():
+    _ = flush(stdout)
+    _ = flush(stderr)
     line: &str
+    defer free(line)
     for part in program:
         if line.len > 0:
             line += " "
@@ -177,27 +212,32 @@ priv func spawn(program: &list[&strview], into: i32, other: i32) -> i64 where @w
     process: i64 = -1
     with scratch():
         process = _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
+    failed: &strview = ""
+    if process < 0:
+        failed = system_error()
     if into >= 0:
         dup2(saved, 1)
         close(saved)
-    free(line)
+    if process < 0:
+        return CannotRun{program[0], failed}
     return process
 
 priv func finish(pid: i64) -> i32 where not @windows():
     status: i32 = 0
-    if pid < 0 or waitpid(i32(pid), ptr(status), 0) < 0:
-        return -1
+    waitpid(i32(pid), ptr(status), 0)
     return exit_code(status)
 
-priv func exit_code(status: i32) -> i32:
+priv func finish(process: i64) -> i32 where @windows():
+    status: i32 = 0
+    _cwait(ptr(status), process, 0)
+    return status
+
+priv func exit_code(status: i32) -> i32 where not @windows():
     if (status and 127) != 0:
         return 128 + (status and 127)
     return (status >> 8) and 255
 
-priv func finish(process: i64) -> i32 where @windows():
-    status: i32 = 0
-    if process < 0 or _cwait(ptr(status), process, 0) < 0:
-        return -1
+priv func exit_code(status: i32) -> i32 where @windows():
     return status
 
 func executable() -> &strview where @windows():
@@ -206,7 +246,7 @@ func executable() -> &strview where @windows():
     return replace(view(ptr(buf) as *u8), "\\", "/")
 
 func executable() -> &strview where not @windows():
-    name := arg(0)
+    name := args()[0]
     found := name
     if find(name, "/") is null:
         dirs := env("PATH")
@@ -221,7 +261,7 @@ func executable() -> &strview where not @windows():
     real := realpath(cstr(found), usize(0) as *u8)
     if real as usize != 0:
         found = temp(view(real))
-    free(real as *bytes)
+    free(real)
     return found
 
 func system_name() -> &strview where @linux():
@@ -245,9 +285,13 @@ func current_dir() -> &strview where @windows():
         return ""
     return replace(view(ptr(buf) as *u8), "\\", "/")
 
-func change_dir(path: &strview) -> bool:
+func change_dir(path: &strview) -> FsError?:
+    failed := false
     with scratch():
-        return chdir(cstr(path)) == 0
+        failed = chdir(cstr(path)) != 0
+    if failed:
+        return FsError{"enter", path, system_error()}
+    return null
 
 func now() -> f64 where not @windows():
     c: Clock
@@ -297,27 +341,3 @@ func sleep(seconds: f64) where not @windows():
 func sleep(seconds: f64) where @windows():
     if seconds > 0.0:
         Sleep(u32(seconds * 1000.0))
-
-func read_line() -> &strview|null:
-    while true:
-        rest := input.text[input.start:input.text.len]
-        cut := find(rest, "\n")
-        if cut is usize:
-            input.start += cut + 1
-            line := rest[0:cut]
-            if ends_with(line, "\r"):
-                line = line[0:line.len - 1]
-            return temp(line)
-        kept: &str = rest
-        free(input.text)
-        input.text = kept
-        input.start = 0
-        reserve(input.text, input.text.len + 4096)
-        got := read(0, (ptr(input.text.*) as usize + input.text.len) as *bytes, 4096)
-        if got <= 0 and input.text.len == 0:
-            return null
-        if got <= 0:
-            last := temp(view(input.text))
-            input.text.len = 0
-            return last
-        input.text.len += usize(got)
