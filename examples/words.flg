@@ -18,18 +18,14 @@ func main() -> i32:
         return 1
     defer free(file)
     text := lower(file)
+    letters := items(text)
+    for i, c in letters:
+        if (c < 'a' or c > 'z') and c != '\'':
+            letters[i] = ' '
     counts: &map[&strview, u32]
     defer free(counts)
-    start: usize = 0
-    for i in 0..text.len + 1:
-        c: u8 = ' '
-        if i < text.len:
-            c = text[i]
-        if c >= 'a' and c <= 'z' or c == '\'':
-            continue
-        if i > start:
-            counts[text[start:i]] += 1
-        start = i + 1
+    for word in words(text):
+        counts[word] += 1
     ranking: &list[Count]
     defer free(ranking)
     for e in counts:

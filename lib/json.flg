@@ -48,7 +48,7 @@ func get(d: Document, at: usize|null, path: &strview) -> usize|null:
             while c < object + d.nodes[object].size and found is null:
                 key := d.text[d.nodes[c].from + 1:d.nodes[c].to - 1]
                 if d.nodes[c].escaped:
-                    key = text(d, c)
+                    key = trust text(d, c)
                 if key == name:
                     found = c + 1
                 c += 1
@@ -99,7 +99,7 @@ func key(d: Document, at: usize|null) -> &strview:
     b := items(d.text)
     if b[skip(b, d.nodes[at - 1].to)] != ':':
         return ""
-    return text(d, at - 1)
+    return trust text(d, at - 1)
 
 func kind(d: Document, at: usize|null) -> Kind:
     if at is null:
@@ -126,9 +126,9 @@ func boolean(d: Document, at: usize|null) -> bool|null:
         return null
     return raw(d, at) == "true"
 
-func text(d: Document, at: usize|null) -> &strview:
+func text(d: Document, at: usize|null) -> &strview|null:
     if at is null or d.nodes[at].kind != Text:
-        return ""
+        return null
     from := d.nodes[at].from + 1
     to := d.nodes[at].to - 1
     if not d.nodes[at].escaped:

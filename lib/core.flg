@@ -548,12 +548,16 @@ func find(s: &strview, part: &strview) -> usize|null: @trust
         at += 1
     return null
 
-func find_last(s: &strview, part: &strview) -> usize|null:
+func find_last(s: &strview, part: &strview) -> usize|null: @trust
     if part.len > s.len:
         return null
-    for i in reverse 0..s.len - part.len + 1:
-        if s[i:i + part.len] == part:
-            return i
+    if part.len == 0:
+        return s.len
+    first := part[0]
+    for at in reverse 0..s.len - part.len + 1:
+        hit := (ptr(s.*) as usize + at) as *u8
+        if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
+            return at
     return null
 
 func contains(s: &strview, part: &strview) -> bool:
@@ -623,6 +627,20 @@ func trim_end(s: &strview) -> &strview:
 priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
 
+func words(s: &strview) -> &slice[&strview]:
+    found: &list[&strview]
+    defer free(found)
+    bytes := items(s)
+    at: usize = 0
+    while at < bytes.len:
+        start := at
+        while at < bytes.len and not blank(bytes[at]):
+            at += 1
+        if at > start:
+            append(found, s[start:at])
+        at += 1
+    return temp(found)
+
 func split(s: &strview, separator: &strview) -> &slice[&strview]:
     count: usize = 1
     rest := s
@@ -667,8 +685,15 @@ func parse_int(s: &strview) -> i64|null:
     return i64(n)
 
 func parse_float(s: &strview) -> f64|null:
-    if s.len == 0 or s[0] <= ' ':
+    word := s
+    if starts_with(word, "-") or starts_with(word, "+"):
+        word = word[1:]
+    if word.len == 0:
         return null
+    if word != "inf" and word != "nan":
+        for b in items(word):
+            if (b < '0' or b > '9') and b != '.' and b != 'e' and b != 'E' and b != '-' and b != '+':
+                return null # only decimal, strtod would read 0x10 and infinity too
     with scratch():
         text := cstr(s)
         end := text
@@ -843,13 +868,18 @@ operator +=(s: *&str, f: Fixed):
         if tie and out[-1] % 2 == 1:
             bits.* += 2
             out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
+        if out[0] == '-' and strtod(ptr(out.*) as *u8, usize(0) as *bytes) == 0.0:
+            out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
 
 type Hex:
     value: u64
 
-func hex(value: u64) -> Hex:
-    return Hex{value}
+func hex(value: $I) -> Hex where $I is Integer:
+    bits := u64(value)
+    if sizeof($I) < 8:
+        bits = bits and (u64(1) << u64(sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
+    return Hex{bits}
 
 operator +=(s: *&str, h: Hex):
     digits: &strview = "0123456789abcdef"
