@@ -15,9 +15,9 @@ type Document:
     nodes: &list[Node]
 
 type error NotJson:
+    reason: &strview
     line: usize
     column: usize
-    reason: &strview
 
 operator +=(s: *&str, e: NotJson):
     s.* += "not JSON at line " + e.line + ", column " + e.column + ": " + e.reason
@@ -307,7 +307,7 @@ priv func wrong(s: &strview, at: usize, reason: &strview) -> NotJson:
         if c == '\n':
             line += 1
             start = i + 1
-    return NotJson{line, at - start + 1, reason}
+    return NotJson{reason, line, at - start + 1}
 
 priv func skip(b: &slice[u8], start: usize) -> usize:
     for at in start..b.len:

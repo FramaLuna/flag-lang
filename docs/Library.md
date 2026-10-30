@@ -336,11 +336,11 @@ out += "{\"name\": " + quoted(name) + ", \"age\": " + age + "}"
 The error says where and what
 ```flag
 type error NotJson:
+    reason: &strview
     line: usize
     column: usize
-    reason: &strview
 ```
-`line` and `column` start at 1 and the column counts bytes, like in the errors of the compiler. It prints as `not JSON at line 3, column 14: expected ':' after the key`.
+`reason` says what is wrong, `line` and `column` start at 1 and the column counts bytes, like in the errors of the compiler. It prints as `not JSON at line 3, column 14: expected ':' after the key`.
 
 A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, `size`, how many nodes it takes with the ones inside it, and `escaped`, if it's a `Text` with escapes to decode. An object keeps each key as a `Text` node right before its value.
 
