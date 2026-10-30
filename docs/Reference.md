@@ -671,7 +671,6 @@ These give warnings that are not real
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
 - a text appended to itself, `t += t`: `+=` copies the text first when it is a view of the same memory, but the checker only sees that it may free what it reads
 - memory that a function frees more than three pointers away from its parameters, like `free(p.a.b.c.d)`: the caller is told that it is never freed
-- a union of an error with data and a value that holds memory, like the `&str|FsError` of `read_text_file` or the `Document|NotJson` of `json.parse`: after `if text is FsError: return` it can warn that the memory is never freed, or that the error points to memory that may be freed already. It doesn't tie the words of a union to its tag
 
 `@trust` at the end of the line hides them (see below).
 
