@@ -135,8 +135,7 @@ func gen_from(from: usize) -> usize|Fail:
         next += 1
         inst := comp.insts[i]
         f := inst.node
-        block := body(f)
-        if block == 0:
+        if f != 0 and body(f) == 0:
             continue
         comp.blame = 0
         if inst.count > 0:
@@ -150,8 +149,102 @@ func gen_from(from: usize) -> usize|Fail:
         for k in 0..inst.count:
             append(comp.binds, comp.inst_binds[inst.binds + k])
         comp.ret = inst.ret
-        comp.at = comp.tokens[comp.nodes[f].tok].at
+        comp.at = inst.at
+        if f != 0:
+            comp.at = comp.tokens[comp.nodes[f].tok].at
         made := open_proc(inst.name, f, i, inst.export)
+        if f == 0:
+            t := comp.binds[-1].type
+            ty := comp.types[t]
+            sides: &list[Value]
+            for k in 0..1 + usize(inst.ret == BOOL):
+                p := temp()
+                how := cls(t)
+                if aggregate(t):
+                    how = L
+                append(comp.passes, Pass{how, p, false})
+                append(sides, Value{type = t, at = p, mem = aggregate(t)})
+            a := sides[0]
+            if inst.ret == BOOL:
+                b := sides[1]
+                l_differ := label()
+                if ty.kind == Union:
+                    l_same := label()
+                    branch(op(W, "ceqw", tag(a), tag(b)), l_same, l_differ)
+                    open_block(l_same)
+                    for m in members(t):
+                        l_arm := label()
+                        l_next := label()
+                        branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
+                        open_block(l_arm)
+                        same := try binary("==", Value{type = m, at = payload(a.at, m), mem = true}, Value{type = m, at = payload(b.at, m), mem = true}, inst.at)
+                        terminate("ret", load(same).at)
+                        open_block(l_next)
+                    terminate("hlt", Arg{})
+                else:
+                    for k in 0..ty.count:
+                        field := comp.items[ty.first + k]
+                        if not field.shared:
+                            same := binary("==", Value{type = field.type, at = offset(a.at, field.n), mem = true}, Value{type = field.type, at = offset(b.at, field.n), mem = true}, inst.at)
+                            if same is Fail:
+                                note(ty.name + " has no == of its own, so == compares its fields, and this is field " + field.name, comp.tokens[comp.nodes[field_node(t, field.name)].tok].at)
+                                return Fail
+                            l_next := label()
+                            branch(load(same).at, l_next, l_differ)
+                            open_block(l_next)
+                    terminate("ret", int_arg(1))
+                open_block(l_differ)
+                terminate("ret", int_arg(0))
+            else:
+                if (ty.kind == Struct or ty.kind == Union) and try offers("==", ptr([a, a]), inst.at):
+                    return fail(ty.name + " declares == but not hash, and equal values need equal hashes: declare hash for " + ty.name + " too", inst.at)
+                h := alloc(U64)
+                add(Ins{op = "storel", a = int_arg(0), b = h})
+                if ty.kind == Bool:
+                    try mix(h, Value{type = USIZE, at = op1(L, "extuw", a.at)}, inst.at)
+                elif ty.kind == Ptr or ty.kind == Func:
+                    try mix(h, Value{type = USIZE, at = a.at}, inst.at)
+                elif ty.kind == Struct:
+                    for k in 0..ty.count:
+                        field := comp.items[ty.first + k]
+                        if not field.shared and mix(h, Value{type = field.type, at = offset(a.at, field.n), mem = true}, inst.at) is Fail:
+                            note(ty.name + " has no hash of its own, so hash mixes the hashes of its fields, and this is field " + field.name, comp.tokens[comp.nodes[field_node(t, field.name)].tok].at)
+                            return Fail
+                elif ty.kind == Union:
+                    try mix(h, Value{type = USIZE, at = op1(L, "extuw", tag(a))}, inst.at)
+                    l_done := label()
+                    for m in members(t):
+                        if comp.types[m].size > 0:
+                            l_arm := label()
+                            l_next := label()
+                            branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
+                            open_block(l_arm)
+                            try mix(h, Value{type = m, at = payload(a.at, m), mem = true}, inst.at)
+                            jump(l_done)
+                            open_block(l_next)
+                    jump(l_done)
+                    open_block(l_done)
+                elif ty.kind == Array:
+                    index := alloc(USIZE)
+                    add(Ins{op = "storel", a = int_arg(0), b = index})
+                    l_head := label()
+                    l_body := label()
+                    l_done := label()
+                    jump(l_head)
+                    open_block(l_head)
+                    k := op1(L, "loadl", index)
+                    branch(op(W, "cultl", k, int_arg(i64(ty.count))), l_body, l_done)
+                    open_block(l_body)
+                    try mix(h, Value{type = ty.elem, at = op(L, "add", a.at, times(k, comp.types[ty.elem].size)), mem = true}, inst.at)
+                    add(Ins{op = "storel", a = op(L, "add", k, int_arg(1)), b = index})
+                    jump(l_head)
+                    open_block(l_done)
+                elif ty.kind != Void:
+                    return fail(ty.name + " has no hash, declare one for it: func hash(x: " + ty.name + ") -> u64", inst.at)
+                terminate("ret", op1(L, "loadl", h))
+            close_proc(made, cls(inst.ret), sides.len)
+            close_frame(saved)
+            continue
         for k in 0..params(f):
             c := kid(f, k)
             t := try resolve(c + 1)
@@ -197,7 +290,7 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
-        try statements(block)
+        try statements(body(f))
         if comp.live:
             if comp.ret != VOID:
                 return fail("not every path of this function returns a value", comp.tokens[comp.nodes[f].tok].at)
@@ -212,6 +305,11 @@ func gen_from(from: usize) -> usize|Fail:
         close_frame(saved)
     comp.blame = 0
     return next
+
+func site(at: usize) -> usize:
+    if comp.blame != 0 and comp.insts[comp.inst].library:
+        return comp.blame
+    return at
 
 func made(inst: usize) -> &str:
     i := comp.insts[inst]
@@ -231,10 +329,7 @@ func brief(name: &strview) -> &strview:
     return name
 
 func open_proc(name: &strview, node: usize, inst: usize, export: bool) -> Proc:
-    file: usize = 0
-    if node != 0:
-        file = file_of(comp.tokens[comp.nodes[node].tok].at)
-    return Proc{name = name, file = file, params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, node = node, inst = inst, export = export}
+    return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, node = node, inst = inst, export = export}
 
 func close_proc(p: Proc, cls: u32, count: usize):
     made := p
@@ -282,12 +377,9 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     comp.spelled += key.len
     if comp.insts.len > 100000 or depth > DEEP or comp.spelled > LONG:
         return fail("instancing " + text(f) + " never ends, each call builds a bigger type than the last", comp.tokens[comp.nodes[f].tok].at)
-    site := at
-    if comp.blame != 0 and comp.insts[comp.inst].library:
-        site = comp.blame
     ret := result(f)
     if ret is Fail:
-        if site == at and at != 0 and comp.binds.len > comp.frame:
+        if site(at) == at and at != 0 and comp.binds.len > comp.frame:
             note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:]), at)
         return Fail
     export := false
@@ -305,7 +397,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
             name += "op"
         name += "." + comp.insts.len
     library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site, export, library, depth})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
@@ -1652,95 +1744,6 @@ func put_text(place: Value, v: Value, at: usize) -> Fail?:
     jump(l_head)
     open_block(l_done)
     return put_words(place, "]", at)
-
-func equal(a: Value, b: Value, at: usize) -> Value|Fail:
-    t := comp.types[a.type]
-    if t.kind == Void:
-        return truth(true)
-    result := alloc(BOOL)
-    add(Ins{op = "storew", a = int_arg(0), b = result})
-    l_done := label()
-    if t.kind == Struct:
-        for i in 0..t.count:
-            f := comp.items[t.first + i]
-            if not f.shared:
-                same := binary("==", Value{type = f.type, at = offset(a.at, f.n), mem = true}, Value{type = f.type, at = offset(b.at, f.n), mem = true}, at)
-                if same is Fail:
-                    note(t.name + " has no == of its own, so == compares its fields, and this is field " + f.name, comp.tokens[comp.nodes[field_node(a.type, f.name)].tok].at)
-                    return Fail
-                l_next := label()
-                branch(load(same).at, l_next, l_done)
-                open_block(l_next)
-        add(Ins{op = "storew", a = int_arg(1), b = result})
-        jump(l_done)
-    else:
-        l_same := label()
-        branch(op(W, "ceqw", tag(a), tag(b)), l_same, l_done)
-        open_block(l_same)
-        for m in members(a.type):
-            l_arm := label()
-            l_next := label()
-            branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
-            open_block(l_arm)
-            same := try binary("==", Value{type = m, at = payload(a.at, m), mem = true}, Value{type = m, at = payload(b.at, m), mem = true}, at)
-            add(Ins{op = "storew", a = load(same).at, b = result})
-            jump(l_done)
-            open_block(l_next)
-        terminate("hlt", Arg{})
-    open_block(l_done)
-    return Value{type = BOOL, at = op1(W, "loadw", result)}
-
-func hashed(v: Value, at: usize) -> Value|Fail:
-    t := comp.types[v.type]
-    both: &list[Value]
-    append(both, v)
-    append(both, v)
-    if (t.kind == Struct or t.kind == Union) and try offers("==", both, at):
-        return fail(t.name + " declares == but not hash, and equal values need equal hashes: declare hash for " + t.name + " too", at)
-    h := alloc(U64)
-    add(Ins{op = "storel", a = int_arg(0), b = h})
-    if t.kind == Bool:
-        try mix(h, Value{type = USIZE, at = op1(L, "extuw", load(v).at)}, at)
-    elif t.kind == Ptr or t.kind == Func:
-        try mix(h, Value{type = USIZE, at = load(v).at}, at)
-    elif t.kind == Struct:
-        for i in 0..t.count:
-            f := comp.items[t.first + i]
-            if not f.shared and mix(h, Value{type = f.type, at = offset(v.at, f.n), mem = true}, at) is Fail:
-                note(t.name + " has no hash of its own, so hash mixes the hashes of its fields, and this is field " + f.name, comp.tokens[comp.nodes[field_node(v.type, f.name)].tok].at)
-                return Fail
-    elif t.kind == Union:
-        try mix(h, Value{type = USIZE, at = op1(L, "extuw", tag(v))}, at)
-        l_done := label()
-        for m in members(v.type):
-            if comp.types[m].size > 0:
-                l_arm := label()
-                l_next := label()
-                branch(op(W, "ceqw", tag(v), tag_of(m)), l_arm, l_next)
-                open_block(l_arm)
-                try mix(h, Value{type = m, at = payload(v.at, m), mem = true}, at)
-                jump(l_done)
-                open_block(l_next)
-        jump(l_done)
-        open_block(l_done)
-    elif t.kind == Array:
-        index := alloc(USIZE)
-        add(Ins{op = "storel", a = int_arg(0), b = index})
-        l_head := label()
-        l_body := label()
-        l_done := label()
-        jump(l_head)
-        open_block(l_head)
-        i := op1(L, "loadl", index)
-        branch(op(W, "cultl", i, int_arg(i64(t.count))), l_body, l_done)
-        open_block(l_body)
-        try mix(h, Value{type = t.elem, at = op(L, "add", v.at, times(i, comp.types[t.elem].size)), mem = true}, at)
-        add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = index})
-        jump(l_head)
-        open_block(l_done)
-    elif t.kind != Void:
-        return fail(t.name + " has no hash, declare one for it: func hash(x: " + t.name + ") -> u64", at)
-    return load(Value{type = U64, at = h, mem = true})
 
 func mix(h: Arg, part: Value, at: usize) -> Fail?:
     one: &list[Value]

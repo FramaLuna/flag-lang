@@ -268,12 +268,31 @@ func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
 
 func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
     best := try choose(name, module, args, names, at)
-    if best == 0 and name == "==" and args.len == 2 and args[0].type == args[1].type:
-        k := comp.types[args[0].type].kind
-        if k == Struct or k == Union or k == Void:
-            return equal(args[0], args[1], at)
-    if best == 0 and name == "hash" and args.len == 1:
-        return hashed(args[0], at)
+    if best == 0 and args.len > 0:
+        t := args[0].type
+        k := comp.types[t].kind
+        if name == "==" and args.len == 2 and args[1].type == t and k == Void:
+            return truth(true)
+        if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:
+            ret: usize = BOOL
+            key: &str = "$eq."
+            if name == "hash":
+                ret = U64
+                key = "$hash."
+            key += t
+            id := get(comp.inst_ids, view(key)) ifnull comp.insts.len
+            if id == comp.insts.len:
+                append(comp.insts, Inst{0, view(key), comp.inst_binds.len, 1, ret, site(at), false, true, 0})
+                append(comp.inst_binds, Item{"$T", t, 0, false})
+                put(comp.inst_ids, view(key), id)
+            passes: &list[Pass]
+            for a in args:
+                x := load(a).at
+                how := cls(t)
+                if aggregate(t):
+                    how = L
+                append(passes, Pass{how, x, is_number(x)})
+            return emit(global(view(key)), passes, ret, false, at)
     if best == 0:
         for label in names:
             declared := label.len == 0
