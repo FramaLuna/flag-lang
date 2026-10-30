@@ -971,26 +971,19 @@ func cases(n: usize) -> Fail?:
             jump(l_body)
         while not last:
             first := here()
-            local := first.kind == Name and lookup(first.text) != 0
-            module := qualifier()
-            name := comp.tokens[comp.pos + 2 * usize(module.len > 0)]
-            named := name.kind == Name and (get(comp.type_ids, name.text) is usize or try find_type(name.text, module, name.at) != 0)
-            typed := not local and (peek("*") or peek("&") or named or union and (first.kind == Name or first.kind == Generic or peek("(")))
-            if typed and not union:
-                return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", first.at)
             l := comp.nodes.len
-            if typed:
-                try type_expr()
-            else:
-                try expr(1)
-            last = not peek(",")
-            if union and local:
-                return fail(first.text + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", first.at)
-            if union and (not typed or last and not peek(":")):
-                return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", first.at)
-            if last and not peek(":"):
-                return expect(":")
             if union:
+                local := first.kind == Name and lookup(first.text) != 0
+                typed := not local and (first.kind == Name or first.kind == Generic or peek("*") or peek("&") or peek("("))
+                if typed:
+                    try type_expr()
+                else:
+                    try expr(1)
+                last = not peek(",")
+                if local:
+                    return fail(first.text + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", first.at)
+                if not typed or last and not peek(":"):
+                    return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", first.at)
                 for m in members(try resolve(l)):
                     if not contains(members(subject.type), m):
                         return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", first.at)
@@ -999,6 +992,18 @@ func cases(n: usize) -> Fail?:
                     append(handled, m)
                     remove(left, trust find(left, m))
             else:
+                typed := peek("*") or peek("&")
+                if not typed:
+                    try expr(1)
+                    head := l
+                    while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index:
+                        head += 1
+                    typed = comp.nodes[head].kind == Name and local_of(head) == 0 and (get(comp.type_ids, text(head)) is usize or try find_type(text(head), comp.nodes[head].module, first.at) != 0)
+                if typed:
+                    return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", first.at)
+                last = not peek(",")
+                if last and not peek(":"):
+                    return expect(":")
                 eq: Value
                 if comp.nodes[l].kind == Binary and text(l) == "..":
                     low := try binary(">=", subject, try value(l + 1, VOID), first.at)
