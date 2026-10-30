@@ -41,7 +41,7 @@ func get(d: Document, at: usize|null, path: &strview) -> usize|null:
     with scratch():
         while found is usize and d.nodes[found].kind == Object:
             cut := find(items(rest), '.') ifnull rest.len
-            name := rest[0:cut]
+            name := rest[:cut]
             object := found
             found = null
             c := object + 1
@@ -55,7 +55,7 @@ func get(d: Document, at: usize|null, path: &strview) -> usize|null:
                 c += d.nodes[c].size
             if cut == rest.len:
                 return found
-            rest = rest[cut + 1:rest.len]
+            rest = rest[cut + 1:]
     return null
 
 priv type Children:
@@ -135,6 +135,7 @@ func text(d: Document, at: usize|null) -> &strview:
         return temp(d.text[from:to])
     b := items(d.text)
     out: &str
+    defer free(out)
     i := from
     while i < to:
         if b[i] == '\\':
@@ -146,11 +147,9 @@ func text(d: Document, at: usize|null) -> &strview:
         else:
             i += 1
     out += d.text[from:to]
-    result := temp(out)
-    free(out)
-    return result
+    return temp(out)
 
-priv type Quoted:
+type Quoted:
     text: &strview
 
 func quoted(text: &strview) -> Quoted:
@@ -174,7 +173,7 @@ operator +=(s: *&str, q: Quoted):
                 s.* += "\\u00" + digits[c >> 4:(c >> 4) + 1] + digits[c and 15:(c and 15) + 1]
             else:
                 s.* += "\\" + q.text[i:i + 1]
-    s.* += q.text[from:q.text.len] + "\""
+    s.* += q.text[from:] + "\""
 
 priv type Escape:
     code: u32
@@ -194,7 +193,7 @@ priv func escape(s: &strview, at: usize) -> Escape|NotJson:
     if code < 0xD800 or code >= 0xE000:
         return Escape{code, 6}
     pair := "a surrogate goes in a pair, \\ud800 to \\udbff and then \\udc00 to \\udfff"
-    if code >= 0xDC00 or not starts_with(s[at + 6:s.len], "\\u"):
+    if code >= 0xDC00 or not starts_with(s[at + 6:], "\\u"):
         return wrong(s, at, pair)
     low := try unicode(s, at + 6)
     if low < 0xDC00 or low >= 0xE000:
@@ -293,7 +292,7 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) ->
         elif c == 'f':
             word = "false"
             nodes[n].kind = Boolean
-        if not starts_with(s[at:s.len], word):
+        if not starts_with(s[at:], word):
             return wrong(s, at, "expected a value")
         at += word.len
     nodes[n].to = at
@@ -303,7 +302,7 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) ->
 priv func wrong(s: &strview, at: usize, reason: &strview) -> NotJson:
     line: usize = 1
     start: usize = 0
-    for i, c in items(s[0:at]):
+    for i, c in items(s[:at]):
         if c == '\n':
             line += 1
             start = i + 1

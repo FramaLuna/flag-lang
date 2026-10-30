@@ -96,7 +96,7 @@ func make_dir(path: &strview) -> FsError?:
     with scratch():
         for i in 1..path.len:
             if slash(items(path)[i]):
-                mkdir(cstr(path[0:i]), 493)
+                mkdir(cstr(path[:i]), 493)
     if is_dir(path):
         return null
     failed := false
@@ -111,6 +111,7 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError:
     if dir as usize == 0:
         return FsError{errno(), "list", path}
     names: &list[&strview]
+    defer free(names)
     entry := readdir(dir)
     while entry as usize != 0:
         part := view((entry as usize + name_in_entry()) as *u8)
@@ -119,9 +120,7 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError:
         entry = readdir(dir)
     closedir(dir)
     sort(names)
-    out := temp(names)
-    free(names)
-    return out
+    return temp(names)
 
 func walk(folder: &strview) -> &slice[&strview]|FsError:
     files: &list[&strview]
@@ -150,28 +149,28 @@ func join(first: &strview, second: &strview) -> &strview:
         return first + second
     head := first
     while head.len > 0 and slash(items(head)[head.len - 1]):
-        head = head[0:head.len - 1]
+        head = head[:-1]
     tail := second
     while tail.len > 0 and slash(items(tail)[0]):
-        tail = tail[1:tail.len]
+        tail = tail[1:]
     return head + "/" + tail
 
 func base_name(path: &strview) -> &strview:
-    return path[name_start(path):path.len]
+    return path[name_start(path):]
 
 func extension(path: &strview) -> &strview:
     name := base_name(path)
     while starts_with(name, "."):
-        name = name[1:name.len]
+        name = name[1:]
     dot := find_last(name, ".")
     if dot is usize:
-        return name[dot:name.len]
+        return name[dot:]
     return ""
 
 func dir_of(path: &strview) -> &strview:
     if name_start(path) == 0:
         return "./"
-    return path[0:name_start(path)]
+    return path[:name_start(path)]
 
 priv func name_in_entry() -> usize where @linux():
     return 19

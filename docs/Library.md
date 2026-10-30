@@ -322,7 +322,7 @@ func main():
 - `text(d: Document, at: usize|null) -> &strview` a string with its escapes decoded, temporary, and empty when it's not a string
 - `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null` give `null` when the value is not of that kind. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
 - `raw(d: Document, at: usize|null) -> &strview` the JSON text of the value, a view
-- `quoted(text: &strview)` the text as a JSON string, with the quotes and the escapes, to use with `+`, `+=` and `print`
+- `quoted(text: &strview) -> Quoted` the text as a JSON string, with the quotes and the escapes, to use with `+`, `+=` and `print`
 
 The keys of an object go with `key`
 ```flag
