@@ -792,7 +792,8 @@ error: the line ends here, expected ':'
 - `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
-- `name.args` has more arguments for the compiler in that test
+- `name.args` has more arguments for the compiler in that test. With `-check` among them nothing runs, and `name.out` is what the compiler must print, that's how `-at` is tested
+- a file the test needs, like the overlay of `name.overlay`, goes next to it with the same name
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
