@@ -372,7 +372,7 @@ func main() -> i32:
     here := current_dir() + "/"
     if starts_with(view(lib), here):
         lib = lib[here.len:]
-    if not exists(join(lib, "core.flg")):
+    if not exists(join_path(lib, "core.flg")):
         root: &str = "/tmp"
         cache := env("XDG_CACHE_HOME")
         local := env("LOCALAPPDATA")
@@ -384,9 +384,9 @@ func main() -> i32:
         elif home is &strview and home.len > 0:
             root = home
             root += "/.cache"
-        lib = join(root, "flag/")
+        lib = join_path(root, "flag/")
         lib += view(flag_stamp()) + "/"
-        if not exists(join(lib, "core.flg")):
+        if not exists(join_path(lib, "core.flg")):
             part: &str = lib[:-1]
             part += ".part" + getpid()
             _ = make_dir(view(part))
@@ -398,15 +398,15 @@ func main() -> i32:
                 file: &strview
                 file = data
                 file.len = size
-                _ = write_file(join(part, view(name)), file)
+                _ = write_file(join_path(part, view(name)), file)
                 k += 1
                 data = flag_embedded(k, ptr(name), ptr(size))
             _ = rename(view(part), lib[:-1])
             _ = remove(view(part))
-        if not exists(join(lib, "core.flg")):
+        if not exists(join_path(lib, "core.flg")):
             eprint(ERR, "cannot unpack the library into ", lib)
             return 1
-    core: &str = join(lib, "core.flg")
+    core: &str = join_path(lib, "core.flg")
     loaded: &list[&strview]
     append(loaded, real_path(view(core)))
     if add_file(core, source(view(core), texts), true) is Fail:
@@ -425,7 +425,7 @@ func main() -> i32:
         known := false
         for f in comp.files:
             known = known or f.module == u.module
-        path: &str = join(lib, u.module + ".flg")
+        path: &str = join_path(lib, u.module + ".flg")
         if not known and not has_text(loaded, real_path(view(path))) and exists(view(path)):
             if add_file(path, source(view(path), texts), true) is Fail:
                 return 1

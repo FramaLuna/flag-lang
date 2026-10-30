@@ -1394,6 +1394,21 @@ func clear(m: *fixmap[$K, $V, $$max]):
 func iter(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
     return Walk[entry[$K, $V]]{ptr(m.entries) as *bytes, m.len, 0}
 
+operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
+    if a.len != b.len:
+        return false
+    for i in 0..a.len:
+        k := place(b, a.entries[i].key)
+        if k == b.len or b.entries[k].value != a.entries[i].value:
+            return false
+    return true
+
+func hash(m: *fixmap[$K, $V, $$max]) -> u64:
+    h: u64 = 0
+    for i in 0..m.len:
+        h += hash(m.entries[i].key) * 31 + hash(m.entries[i].value) # a sum, so the order of the entries doesn't count
+    return h
+
 operator +=(s: *&str, m: *fixmap[$K, $V, $$max]):
     s.* += "{"
     for i in 0..m.len:

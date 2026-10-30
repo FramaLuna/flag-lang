@@ -269,7 +269,7 @@ The files are read and written in binary, the bytes are the same on every system
 - `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
 - `remove(path: &strview) -> FsError?` removes a file or an empty folder, and of a link the link
 - `rename(from: &strview, to: &strview) -> FsError?` renames or moves, and replaces `to` when it's a file, on every system
-- `join(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join("a/", "/b")` is `a/b`. An empty `first` gives `second`
+- `join_path(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join_path("a/", "/b")` is `a/b`. An empty `first` gives `second`
 - `base_name(path: &strview) -> &strview` the part after the last `/`, a view: `base_name("docs/a.txt")` is `a.txt`
 - `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and the `.` that a name starts with don't count, so `.bashrc` and `..` have no extension and `.config.json` has `.json`
 - `dir_of(path: &strview) -> &strview` the part up to the last `/`, with it, a view: `docs/`. It's `./` when there is no folder

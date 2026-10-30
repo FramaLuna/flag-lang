@@ -297,10 +297,13 @@ func change_dir(path: &strview) -> FsError?:
         return FsError{errno(), "enter", path}
     return null
 
+priv func seconds(c: Clock) -> f64:
+    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+
 func now() -> f64 where not @windows():
     c: Clock
     clock_gettime(0, ptr(c))
-    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+    return seconds(c)
 
 func now() -> f64 where @windows():
     ticks: u64 = 0
@@ -310,12 +313,12 @@ func now() -> f64 where @windows():
 func clock() -> f64 where @linux():
     c: Clock
     clock_gettime(1, ptr(c))
-    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+    return seconds(c)
 
 func clock() -> f64 where @macos():
     c: Clock
     clock_gettime(6, ptr(c))
-    return f64(c.seconds) + f64(c.nanos) / 1000000000.0
+    return seconds(c)
 
 func clock() -> f64 where @windows():
     ticks: i64 = 0
