@@ -95,7 +95,7 @@ func rename(from: &strview, to: &strview) -> FsError?:
 func make_dir(path: &strview) -> FsError?:
     with scratch():
         for i in 1..path.len:
-            if slash(items(path)[i]):
+            if slash(path[i]):
                 mkdir(cstr(path[:i]), 493)
     if is_dir(path):
         return null
@@ -148,10 +148,10 @@ func join(first: &strview, second: &strview) -> &strview:
     if first.len == 0:
         return first + second
     head := first
-    while head.len > 0 and slash(items(head)[head.len - 1]):
+    while head.len > 0 and slash(head[-1]):
         head = head[:-1]
     tail := second
-    while tail.len > 0 and slash(items(tail)[0]):
+    while tail.len > 0 and slash(tail[0]):
         tail = tail[1:]
     return head + "/" + tail
 
@@ -197,6 +197,6 @@ priv func slash(c: u8) -> bool where @windows():
 
 priv func name_start(path: &strview) -> usize:
     for k in reverse 0..path.len:
-        if slash(items(path)[k]):
+        if slash(path[k]):
             return k + 1
     return 0

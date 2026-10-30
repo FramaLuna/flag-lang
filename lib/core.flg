@@ -580,7 +580,7 @@ func parse_hex(s: &strview) -> u64|null:
 func find(s: &strview, part: &strview) -> usize|null: @trust
     if part.len == 0:
         return 0
-    first := i32(items(part)[0])
+    first := i32(part[0])
     at: usize = 0
     while at + part.len <= s.len:
         hit := memchr((ptr(s.*) as usize + at) as *bytes, first, s.len - part.len + 1 - at)
@@ -711,7 +711,7 @@ func parse_int(s: &strview) -> i64|null:
     return i64(n)
 
 func parse_float(s: &strview) -> f64|null:
-    if s.len == 0 or items(s)[0] <= ' ':
+    if s.len == 0 or s[0] <= ' ':
         return null
     with scratch():
         text := cstr(s)
@@ -884,7 +884,7 @@ operator +=(s: *&str, f: Fixed):
         out: &strview
         out = temp(room)
         out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
-        if tie and items(out)[out.len - 1] % 2 == 1:
+        if tie and out[-1] % 2 == 1:
             bits.* += 2
             out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
         s.* += out
@@ -902,7 +902,7 @@ operator +=(s: *&str, h: Hex):
     v := h.value
     while true:
         i -= 1
-        buf[i] = items(digits)[usize(v and 15)]
+        buf[i] = digits[v and 15]
         v = v >> 4
         if v == 0:
             break
@@ -1038,7 +1038,7 @@ func read_line(f: File) -> &strview|null|FsError:
         if cut is usize:
             s.given += cut + 1
             line.len = cut
-            if cut > 0 and items(line)[cut - 1] == '\r':
+            if cut > 0 and line[cut - 1] == '\r':
                 line.len -= 1
             return temp(line)
         if try receive(f, s) == 0:

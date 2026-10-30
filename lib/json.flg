@@ -163,16 +163,17 @@ operator +=(s: *&str, q: Quoted):
         if c < ' ' or c == '"' or c == '\\':
             s.* += q.text[from:i]
             from = i + 1
-            if c == '\n':
+            switch c:
+            case '\n':
                 s.* += "\\n"
-            elif c == '\r':
+            case '\r':
                 s.* += "\\r"
-            elif c == '\t':
+            case '\t':
                 s.* += "\\t"
-            elif c < ' ':
-                s.* += "\\u00" + digits[c >> 4:(c >> 4) + 1] + digits[c and 15:(c and 15) + 1]
-            else:
+            case '"', '\\':
                 s.* += "\\" + q.text[i:i + 1]
+            case:
+                s.* += "\\u00" + digits[c >> 4:(c >> 4) + 1] + digits[c and 15:(c and 15) + 1]
     s.* += q.text[from:] + "\""
 
 priv type Escape:
@@ -184,10 +185,10 @@ priv func escape(s: &strview, at: usize) -> Escape|NotJson:
         return wrong(s, at, "this string never closes")
     names: &strview = "\"\\/bfnrt"
     codes: &strview = "\"\\/\x08\x0c\n\r\t"
-    simple := find(items(names), items(s)[at + 1])
+    simple := find(items(names), s[at + 1])
     if simple is usize:
-        return Escape{u32(items(codes)[simple]), 2}
-    if items(s)[at + 1] != 'u':
+        return Escape{u32(codes[simple]), 2}
+    if s[at + 1] != 'u':
         return wrong(s, at, "unknown escape, the escapes are \\\" \\\\ \\/ \\b \\f \\n \\r \\t and \\u00e9")
     code := try unicode(s, at)
     if code < 0xD800 or code >= 0xE000:
