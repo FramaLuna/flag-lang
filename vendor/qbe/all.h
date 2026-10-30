@@ -264,6 +264,7 @@ struct Blk {
 
 	Blk *idom;
 	Blk *dom, *dlink;
+	uint dpre, dend;
 	Blk **fron;
 	uint nfron;
 	int depth;

@@ -32,9 +32,10 @@ esac
 echo "#define Deftgt $target" > build/objects/config.new
 cmp -s build/objects/config.new build/objects/config.h || mv build/objects/config.new build/objects/config.h
 objects=""
+header=$(ls -t vendor/qbe/*.h vendor/qbe/*/*.h | head -1)
 for src in vendor/qbe/*.c vendor/qbe/*/*.c; do
     obj=build/objects/$(echo "${src#vendor/qbe/}" | tr / _ | sed 's/\.c$/.o/')
-    [ "$obj" -nt "$src" ] && [ "$obj" -nt build/objects/config.h ] || $cc -std=c99 -O2 -w -Ibuild/objects -Dmain=qbe_main -c "$src" -o "$obj"
+    [ "$obj" -nt "$src" ] && [ "$obj" -nt build/objects/config.h ] && [ "$obj" -nt "$header" ] || $cc -std=c99 -O2 -w -Ibuild/objects -Dmain=qbe_main -c "$src" -o "$obj"
     objects="$objects $obj"
 done
 printf 'int qbe_main(int, char **);\nint main(int argc, char **argv) { return qbe_main(argc, argv); }\n' > build/embed/qbe.c

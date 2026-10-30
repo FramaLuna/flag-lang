@@ -627,16 +627,25 @@ note: it may be freed here
    |     ^
 ```
 
+### Elements
+It sees all the elements of a list, an array or a map as one, so when you free one element it cannot tell which. It takes a free through an element as the free of all of them, and an element stored in another list, array, map or context as all of them stored there. So this is clean
+```flag
+for s in names:
+    free(s)
+free(names)
+```
+and so are `for i in 0..names.len: free(names[i])`, `for e in m: free(e.value)`, an element taken with `pop`, `remove` or `names[0]` and freed, and elements moved to another list that frees them later. Freeing the list and not its elements still warns, `the memory allocated here for s is never freed`, and so does using an element after you freed it through the same variable.
+
+The price is what it doesn't see: freeing only some of the elements, freeing them twice, or reading one through the list after it was freed, give no warning.
+
 ### What it doesn't know
 It doesn't follow the values of the conditions, it looks at every path. It does follow `is`: after `if node is *Node:` it knows that the other path has no node to free.
 
-It sees all the elements of a list, an array or a map as one. And it sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others. So these give warnings that are not real
+These give warnings that are not real
 - freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
-- elements freed one by one, in a loop like `for s in names: free(s)` or `for i in 0..names.len: free(names[i])`, or one taken with `pop`, `remove` or `names[0]`. It warns `free cannot release s, it may be freed already` and `the memory allocated here for s may never be freed`
-- the same with the values of a map, in `for e in m: free(e.value)` or after `remove(m, key)`
-- elements moved to another list or to a context warn that they may never be freed
-- linked lists and trees whose nodes are allocated in a loop or by a recursive function
+- linked lists and trees whose nodes are allocated in a loop or by a recursive function. It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others, and a node freed through a pointer that may be either of them is not surely freed
 - a pointer that may point to one of several fields, when you store or free through it
+- a union whose members keep a pointer in the same place, like `&str|E` with an error `E` that starts with a `&strview`: after `if t is &str:` it still sees the pointer of `E` there, so `free(t)` warns that it is not on the heap
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
 - a text appended to itself, `t += t`: `+=` copies the text first when it is a view of the same memory, but the checker only sees that it may free what it reads
 - memory that a function frees more than three pointers away from its parameters, like `free(p.a.b.c.d)`: the caller is told that it is never freed
@@ -796,7 +805,9 @@ error: the line ends here, expected ':'
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with four changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, so the assembler has nothing to warn about. The fourth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with seven changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, so the assembler has nothing to warn about. The fourth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+
+The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
@@ -805,5 +816,5 @@ Things that work in a way that may surprise you, so be aware
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
-- The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know)
+- The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know), and it misses the element mistakes of [Elements](#elements)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

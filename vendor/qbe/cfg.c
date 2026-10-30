@@ -135,6 +135,18 @@ inter(Blk *b1, Blk *b2)
 	return b1;
 }
 
+static uint
+domnum(Blk *b, uint n)
+{
+	Blk *d;
+
+	b->dpre = n++;
+	for (d=b->dom; d; d=d->dlink)
+		n = domnum(d, n);
+	b->dend = n;
+	return n;
+}
+
 void
 filldom(Fn *fn)
 {
@@ -168,17 +180,14 @@ filldom(Fn *fn)
 			b->dlink = d->dom;
 			d->dom = b;
 		}
+	domnum(fn->start, 0);
 }
 
 int
 sdom(Blk *b1, Blk *b2)
 {
 	assert(b1 && b2);
-	if (b1 == b2)
-		return 0;
-	while (b2->id > b1->id)
-		b2 = b2->idom;
-	return b1 == b2;
+	return b1->dpre < b2->dpre && b2->dpre < b1->dend;
 }
 
 int
@@ -378,6 +387,16 @@ reachrec(Blk *b, Blk *to)
 	return 0;
 }
 
+static void
+unvisit(Blk *b)
+{
+	if (b && b->visit) {
+		b->visit = 0;
+		unvisit(b->s1);
+		unvisit(b->s2);
+	}
+}
+
 /* Blk.visit needs to be clear at entry */
 int
 reaches(Fn *fn, Blk *b, Blk *to)
@@ -386,8 +405,7 @@ reaches(Fn *fn, Blk *b, Blk *to)
 
 	assert(to);
 	r = reachrec(b, to);
-	for (b=fn->start; b; b=b->link)
-		b->visit = 0;
+	unvisit(b);
 	return r;
 }
 
@@ -396,8 +414,12 @@ reaches(Fn *fn, Blk *b, Blk *to)
 int
 reachesnotvia(Fn *fn, Blk *b, Blk *to, Blk *excl)
 {
+	int r;
+
 	excl->visit = 1;
-	return reaches(fn, b, to);
+	r = reaches(fn, b, to);
+	excl->visit = 0;
+	return r;
 }
 
 int

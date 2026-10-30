@@ -2268,12 +2268,17 @@ func payload(addr: Arg, t: usize) -> Arg:
         return addr
     return offset(addr, 8)
 
-func absent(addr: Arg, t: usize, held: &list[usize]):
-    for m in held:
-        if pointers(m) != 0:
-            return
-    if pointers(t) != 0:
-        add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8))})
+func absent(addr: Arg, t: usize, here: &list[usize]):
+    gone: u64 = 0
+    kept: u64 = 0
+    for m in members(t):
+        if has(here, m):
+            kept = kept or pointers(m)
+        else:
+            gone = gone or pointers(m)
+    mask := gone xor (gone and kept)
+    if mask != 0:
+        add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8)), mask = mask, copy = true})
 
 func times(count: Arg, size: usize) -> Arg:
     if size == 1:
