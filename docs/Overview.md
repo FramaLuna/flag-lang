@@ -351,7 +351,7 @@ for element in iterable:
 for index, element in iterable:
     print(index, " ", element)
 ```
-To iterate over a range you can do (the end is not included):
+To iterate over a range you can do (the end is not included). The `i` counts the loop, so you can read it but not assign it
 ```flag
 for i in 0..10:
     print(i)

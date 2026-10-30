@@ -434,10 +434,7 @@ func near(s: usize, at: usize) -> usize:
 func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     v := given
     if comp.types[to].kind == Ptr and comp.types[to].elem == given.type:
-        for l in comp.vars:
-            if l.bound != 0 and given.mem and l.addr.kind == given.at.kind and l.addr.n == given.at.n:
-                return fail(l.name + " counts this loop, so a pointer to it is not taken on its own: write ptr(" + l.name + ")", at)
-        if not given.mem and not aggregate(given.type):
+        if not given.place and not aggregate(given.type):
             v.at = alloc(given.type)
             store(given.type, given, v.at)
         v = Value{type = to, at = v.at}

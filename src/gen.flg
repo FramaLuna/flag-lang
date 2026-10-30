@@ -155,7 +155,7 @@ func gen_from(from: usize) -> usize|Fail:
             elif comp.types[t].kind == Fat or big(t):
                 how = L
             append(comp.passes, Pass{how, p, comp.numbers[usize(p.n) - 1]})
-            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
+            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false, false})
         comp.dest = Arg{}
         if big(inst.ret) and not inst.export:
             comp.dest = temp()
@@ -348,7 +348,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             zero(t, slot)
         if c < node_end(n):
             try assign(slot, t, v, source(c))
-        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, fails(t)})
+        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, fails(t)})
         if noted(tok.at):
             mark(node.tok, described(tok.text, t))
         return none
@@ -365,6 +365,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return indexed(left, n)
         first := comp.body.len
         spot := try gen(left, VOID)
+        if not spot.place and local_of(left) != 0:
+            return fail(text(left) + " counts this loop, so it cannot be assigned: copy it to a variable to change it", source(left))
         if not spot.place:
             return fail("this is not a variable, it cannot be assigned", source(left))
         try update(spot, n, first)
@@ -773,7 +775,7 @@ func iterate(n: usize) -> Fail?:
     walked: Value
     elem: usize = VOID
     addr := Arg{}
-    bound: usize = 0
+    limit: usize = 0
     if range:
         start = try value(subject + 1, VOID)
         end = try value(node_end(subject + 1), VOID)
@@ -785,20 +787,7 @@ func iterate(n: usize) -> Fail?:
         if not start.lit and not end.lit and start.type != end.type:
             return fail("a range expects both ends of one type, got " + comp.types[start.type].name + " and " + comp.types[end.type].name, at)
         if start.lit and not start.neg and end.lit and not end.neg:
-            bound = end.n
-        body := node_end(subject)
-        for p in body..node_end(body):
-            c := p + 1
-            k: usize = 0
-            while c < node_end(p):
-                if comp.nodes[c].kind == Name and comp.nodes[c].module.len == 0 and text(c) == tok.text:
-                    kind := comp.nodes[p].kind
-                    id := get(comp.type_ids, text(p))
-                    read := text(p) == "print" or text(p) == "eprint" or id is usize and id <= BYTES
-                    if kind == Assign and k == 0 or kind == Call and not read or kind == Named or kind == With:
-                        bound = 0
-                c = node_end(c)
-                k += 1
+            limit = end.n
     else:
         walked = try value(subject, VOID)
         seq := walked.type
@@ -822,28 +811,28 @@ func iterate(n: usize) -> Fail?:
         if backward:
             from = end
             to = start
-        limit := load(to).at
+        stop := load(to).at
         slot = alloc(t)
         store(t, from, slot)
         jump(l_head)
         open_block(l_head)
         current := load(Value{type = t, at = slot, mem = true}).at
         if backward:
-            branch(op(W, cmp_name("cslt", t), limit, current), l_body, l_exit)
+            branch(op(W, cmp_name("cslt", t), stop, current), l_body, l_exit)
             open_block(l_body)
             current = op(cls(t), "sub", current, int_arg(1))
             store(t, Value{type = t, at = current}, slot)
         else:
-            branch(op(W, cmp_name("cslt", t), current, limit), l_body, l_exit)
+            branch(op(W, cmp_name("cslt", t), current, stop), l_body, l_exit)
             open_block(l_body)
         if range:
             mention(tok.text, slot)
-            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, bound, false})
+            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
         else:
             place := alloc(elem)
             store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
             mention(tok.text, place)
-            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false})
+            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
             round := current
             if backward:
@@ -851,7 +840,7 @@ func iterate(n: usize) -> Fail?:
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
         if backward:
             append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
         else:
@@ -885,7 +874,7 @@ func iterate(n: usize) -> Fail?:
         if counter != 0:
             store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
         item: usize = VOID
         place := Arg{}
         if chars:
@@ -945,7 +934,7 @@ func iterate(n: usize) -> Fail?:
             open_block(l_body)
             place = payload(got.at, item)
         mention(tok.text, place)
-        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false})
+        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
     try statements(node_end(subject))
     if (range or elem != VOID) and not backward:
@@ -1436,8 +1425,8 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
         length := int_arg(i64(comp.types[t].count))
         known := array and index.lit and not index.neg and index.n < comp.types[t].count
         if array and local_of(kid(n, 1)) != 0:
-            bound := comp.vars[local_of(kid(n, 1)) - 1].bound
-            known = bound != 0 and bound <= comp.types[t].count
+            limit := comp.vars[local_of(kid(n, 1)) - 1].limit
+            known = limit != 0 and limit <= comp.types[t].count
         if not array:
             elem = element(t)
             length = load(Value{type = USIZE, at = offset(addr, 8), mem = true}).at
@@ -1571,7 +1560,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
         if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
             return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, an is outside the loop narrowed it to " + comp.types[outside.type].name + " and the loop reads it that way every round", sign)
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
-            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false})
+            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false, false})
             place = Value{type = outside.type, at = outside.addr}
     return assign(place.at, place.type, v, at)
 
@@ -1881,7 +1870,7 @@ func confine(subject: usize, kept: &list[usize], at: usize) -> Fail?:
     t := try union_of(kept, Union, at)
     whole := comp.vars[declaration(current.name)]
     absent(whole.addr, whole.type, kept)
-    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false})
+    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false, false})
     return null
 
 func keep(before: usize, back: usize, ends: *&list[Local]) -> bool|Fail:
@@ -1933,7 +1922,7 @@ func join(ends: &list[Local], lives: usize, at: usize) -> Fail?:
                 append(parts, current.type)
             merged := try union_of(parts, Union, at)
             if merged != current.type:
-                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, false})
+                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, false, false})
     return null
 
 func constant(s: usize, want: usize, at: usize) -> Value|Fail:
@@ -2173,7 +2162,7 @@ func held(found: usize, at: usize) -> Value:
     local := comp.vars[found - 1]
     if noted(at):
         mark(local.tok, described(local.name, local.type))
-    return Value{type = local.type, at = local.addr, mem = true, place = true}
+    return Value{type = local.type, at = local.addr, mem = true, place = not local.counts}
 
 func local_of(n: usize) -> usize:
     if comp.nodes[n].kind != Name or comp.nodes[n].module.len > 0:
