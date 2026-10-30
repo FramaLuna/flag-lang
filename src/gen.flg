@@ -382,7 +382,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     key += f
     for i in comp.frame..comp.binds.len:
         key += "|" + arg_name(comp.binds[i])
-    id := get(comp.inst_ids, view(key))
+    id := comp.inst_ids[view(key)]
     if id is usize:
         return id
     depth: usize = 0
@@ -606,7 +606,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if tok.text == "true" or tok.text == "false":
                 return truth(tok.text == "true")
             if tok.text == "null" or tok.text == "IterationEnd":
-                return Value{type = trust get(comp.type_ids, tok.text)}
+                return Value{type = trust comp.type_ids[tok.text]}
             if lookup(tok.text) != 0:
                 return held(lookup(tok.text), tok.at)
         s := try named(tok.text, node.module, tok.at)
@@ -668,7 +668,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return Value{type = made, at = global(comp.insts[id].name)}
             try hidden(tok.text, true, tok.at)
             try hidden(tok.text, false, tok.at)
-            id := get(comp.type_ids, tok.text)
+            id := comp.type_ids[tok.text]
             if node.module.len == 0 and id is usize and id <= BYTES:
                 return fail(tok.text + " is a type, so its name alone is not a value", tok.at)
             if reserved(tok.text):
@@ -1113,7 +1113,7 @@ func cases(n: usize) -> Fail?:
                     head := l
                     while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index:
                         head += 1
-                    typed = comp.nodes[head].kind == Name and local_of(head) == 0 and (get(comp.type_ids, text(head)) is usize or try find_type(text(head), comp.nodes[head].module, first.at) != 0)
+                    typed = comp.nodes[head].kind == Name and local_of(head) == 0 and (comp.type_ids[text(head)] is usize or try find_type(text(head), comp.nodes[head].module, first.at) != 0)
                 if typed:
                     return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", first.at)
                 last = not peek(",")
@@ -1210,7 +1210,7 @@ func called(n: usize) -> Value|Fail:
     name := tok.text
     target: usize = VOID
     if node.module.len == 0:
-        id := get(comp.type_ids, name)
+        id := comp.type_ids[name]
         if id is usize and id <= BYTES:
             target = id
     s := try find_type(name, node.module, tok.at)

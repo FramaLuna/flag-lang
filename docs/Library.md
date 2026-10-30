@@ -207,10 +207,9 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2
 
 ### Maps
 A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
-- `m[k] -> $V|null` is `get`, and `m[k] = v` is `put`
+- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `at(m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `put(m: *&map[$K, $V], key: $K) -> *$V` the place of the value of the key, and a key that wasn't there is added with a zero value. It finds the key once, so it changes a value in place: `put(players, name).score += 10`. To count, `counts[word] += 1` is enough. The place is good until the next `put`
-- `get(m: &map[$K, $V], key: $K) -> $V|null`
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
@@ -225,7 +224,7 @@ A float `nan` is not `==` to itself, so as a key it's never found again, and eve
 ### Fixed maps
 A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order they were put, so it doesn't allocate and you don't free it. Looking for a key reads the entries one by one, so it's for small maps.
 - `put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?` adds the key or changes its value, and gives the error `MapFull` when there is no room for a new key
-- `get`, `m[k]`, `contains` and `clear` like a map
+- `m[k]`, `contains` and `clear` like a map
 - `remove` like a map, and the entries after it keep their order
 - `for e in m` gives the entries in the order they were put
 

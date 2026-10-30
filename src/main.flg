@@ -301,7 +301,7 @@ func main() -> i32:
         eprint("usage: flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
-    backend := get(backends, target)
+    backend := backends[target]
     if backend is null:
         eprint(ERR, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
         return 2
@@ -555,7 +555,7 @@ func real_path(path: &strview) -> &strview where @windows():
     return view(found)
 
 func read_source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
-    code := get(texts, real_path(path)) ifnull view(try read_file(path))
+    code := texts[real_path(path)] ifnull view(try read_file(path))
     if starts_with(code, "\xef\xbb\xbf"):
         code = code[3:]
     out: &str = code

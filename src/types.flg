@@ -21,7 +21,7 @@ STEP = 256
 PRIVATE = STEP << 32
 
 func first_sym(name: &strview) -> usize:
-    s := get(comp.names, name)
+    s := comp.names[name]
     if s is usize:
         return s
     return 0
@@ -136,7 +136,7 @@ func enclosed(t: usize) -> &strview:
 func pointer(t: usize) -> usize:
     key: &str = "*"
     key += enclosed(t)
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         free(key)
         return id
@@ -180,7 +180,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
         if key.len > 0:
             key += separator
         key += enclosed(m)
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         free(key)
         return id
@@ -299,7 +299,7 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             append(args, Item{name = "", type = try resolve(c)})
         c = node_end(c)
     if node.module.len == 0 and args.len == 0:
-        id := get(comp.type_ids, tok.text)
+        id := comp.type_ids[tok.text]
         if id is usize and id >= NULL and id <= ITERATIONEND:
             return id
     if node.module.len == 0 and tok.text == "array":
@@ -358,7 +358,7 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
                 key += ", "
             key += arg_name(args[i])
         key += "]"
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize and kind != Alias and comp.types[id].decl != decl:
         failed := fail("two types are named " + key + ", one of a module and one inside a type: rename one of them", at)
         note("the other " + key + " is declared here", comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
@@ -466,7 +466,7 @@ func array_of(elem: usize, count: usize) -> usize:
     e := comp.types[elem]
     key: &str = "array["
     key += e.name + ", " + count + "]"
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
@@ -480,7 +480,7 @@ func func_of(taken: &list[usize], ret: usize) -> usize:
     key += ")"
     if ret != VOID:
         key += " -> " + comp.types[ret].name
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         return id
     first := comp.items.len

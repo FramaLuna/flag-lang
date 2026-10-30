@@ -1274,7 +1274,7 @@ func put(m: *&map[$K, $V], key: $K) -> *$V:
         m.len += 1
     return ptr(table[i].value)
 
-func get(m: &map[$K, $V], key: $K) -> $V|null:
+func at(m: &map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
         return null
     table := slots(m)
@@ -1285,9 +1285,6 @@ func get(m: &map[$K, $V], key: $K) -> $V|null:
 
 func contains(m: &map[$K, $V], key: $K) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
-
-func at(m: &map[$K, $V], key: $K) -> $V|null:
-    return get(m, key)
 
 func remove(m: *&map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
@@ -1366,14 +1363,11 @@ func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
     m.entries[i] = entry[$K, $V]{key, value}
     return null
 
-func get(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
     i := place(m, key)
     if i == m.len:
         return null
     return m.entries[i].value
-
-func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
-    return get(m, key)
 
 func contains(m: *fixmap[$K, $V, $$max], key: $K) -> bool:
     return place(m, key) < m.len

@@ -697,7 +697,7 @@ A `&map[K, V]` is a hash map, you can start it empty or with a literal
 ages := {"bo": 25} # &map[&strview, i32]
 defer free(ages)
 ages["ana"] = 30 # the same as put(ages, "ana", 30)
-age := ages["ana"] # i32|null, the same as get(ages, "ana")
+age := ages["ana"] # i32|null, null when there is no ana
 if age is i32:
     print("ana is ", age)
 ages["cy"] += 1 # a key that is not there counts as zero, so this counts

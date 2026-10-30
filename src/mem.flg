@@ -441,7 +441,7 @@ func check_memory():
         for k in spans[0].first..spans[spans.len - 1].end:
             if mem.ops[k].code == Call:
                 name := mem.callees[mem.ops[k].callee]
-                found := get(mem.ids, name)
+                found := mem.ids[name]
                 if found is usize:
                     node := mem.fns[found].node
                     mem.ops[k].named = node != 0 and comp.tokens[token_at(mem.ops[k].pos)].text == text(node)
@@ -545,7 +545,7 @@ func check_memory():
             show(w.also)
 
 func block_of(labels: *&map[u32, u32], blocks: *&list[u32], name: u32) -> u32:
-    found := get(labels.*, name)
+    found := labels[name]
     if found is u32:
         return found
     put(labels, name, u32(blocks.len))
@@ -558,7 +558,7 @@ func operand(first: u32, a: Arg) -> Operand:
         out.temp = u32(a.n) + 1 - first
     elif a.kind == Global and starts_with(comp.globals[usize(a.n)], "$ctx."):
         text := comp.globals[usize(a.n)]
-        found := get(mem.shared, text)
+        found := mem.shared[text]
         if found is u32:
             out.data = found + 2
         else:
