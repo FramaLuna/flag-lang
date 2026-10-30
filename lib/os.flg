@@ -32,9 +32,12 @@ priv extern "c":
     func waitpid(pid: i32, status: *i32, options: i32) -> i32
     func _cwait(status: *i32, process: i64, action: i32) -> i64
     func _exit(code: i32)
-    func access(path: cstr, mode: i32) -> i32
+    func readlink(path: cstr, into: *u8, size: usize) -> i64
+    func _NSGetExecutablePath(into: *u8, size: *u32) -> i32
     func realpath(path: cstr, into: *u8) -> cstr
     func GetModuleFileNameA(module: *bytes, into: *u8, size: u32) -> u32
+    func _get_osfhandle(fd: i32) -> *bytes
+    func SetHandleInformation(handle: *bytes, mask: u32, flags: u32) -> i32
     func getcwd(into: *u8, size: usize) -> cstr
     func chdir(path: cstr) -> i32
     func time(into: *i64) -> i64
@@ -77,13 +80,13 @@ func run(command: &strview) -> i32|FsError:
 func run(program: &slice[&strview]) -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
-    return finish(try spawn(program, -1, -1))
+    return finish(try spawn(program, -1))
 
 func output(command: &strview, into: *&str) -> i32|FsError:
     flush()
     stream := usize(0) as *bytes
     with scratch():
-        stream = popen(cstr(command), "r")
+        stream = popen(cstr(command), pipe_mode())
     if stream as usize == 0:
         return FsError{errno(), "run", command}
     got: usize = 1
@@ -97,9 +100,9 @@ func output(program: &slice[&strview], into: *&str) -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
     fds: array[i32, 2]
-    if not make_pipe(ptr(fds) as *i32):
+    if not make_pipe(ptr(fds)):
         return FsError{errno(), "run", program[0]}
-    pid := spawn(program, fds[1], fds[0])
+    pid := spawn(program, fds[1])
     close(fds[1])
     if pid is FsError:
         close(fds[0])
@@ -113,17 +116,26 @@ func output(program: &slice[&strview], into: *&str) -> i32|FsError:
     close(fds[0])
     return finish(pid)
 
-priv func make_pipe(fds: *i32) -> bool where not @windows():
-    return pipe(fds) == 0
+priv func pipe_mode() -> cstr where not @windows():
+    return "r"
 
-priv func make_pipe(fds: *i32) -> bool where @windows():
-    return _pipe(fds, 65536, 32768) == 0
+priv func pipe_mode() -> cstr where @windows():
+    return "rb" # binary, the bytes as the program wrote them
 
-priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError where not @windows():
+priv func make_pipe(fds: *array[i32, 2]) -> bool where not @windows():
+    if pipe(fds as *i32) != 0:
+        return false
+    fcntl(fds.*[0], 2, 1) # close on exec, a program gets only what dup2 gives it
+    fcntl(fds.*[1], 2, 1)
+    return true
+
+priv func make_pipe(fds: *array[i32, 2]) -> bool where @windows():
+    return _pipe(fds as *i32, 65536, 0x8080) == 0 # _O_BINARY and _O_NOINHERIT
+
+priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where not @windows():
     failure: array[i32, 2]
-    if pipe(ptr(failure) as *i32) != 0:
+    if not make_pipe(ptr(failure)):
         return FsError{errno(), "run", program[0]}
-    fcntl(failure[1], 2, 1) # close on exec, so the pipe ends when the program starts
     flush()
     table := (program.len + 1) * 8
     size := table
@@ -142,11 +154,8 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError
             at += program[i].len + 1
     pid := fork()
     if pid == 0:
-        close(failure[0])
         if into >= 0:
             dup2(into, 1)
-            close(into)
-            close(other)
         execvp(args.*, args)
         failed := errno()
         write(failure[1], ptr(failed) as *bytes, 4)
@@ -162,7 +171,20 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError
         return FsError{code, "run", program[0]}
     return i64(pid)
 
-priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError where @windows():
+priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where @windows():
+    dot := program[0].len
+    for i in reverse 0..program[0].len:
+        c := program[0][i]
+        if c == '.':
+            dot = i
+        if c == '.' or c == '/' or c == '\\':
+            break
+    extension := lower(program[0][dot:])
+    if extension == ".bat" or extension == ".cmd":
+        return FsError{22, "run", program[0]} # cmd.exe would read the arguments again, a batch file goes with run(command)
+    file := program[0]
+    if extension.len == 0:
+        file = file + ".exe" # so _spawnvp never finds a .bat or a .cmd
     flush()
     line: &str
     defer free(line)
@@ -190,10 +212,11 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError
     saved: i32 = -1
     if into >= 0:
         saved = dup(1)
+        SetHandleInformation(_get_osfhandle(saved), 1, 0) # the program doesn't inherit it
         dup2(into, 1)
     process: i64 = -1
     with scratch():
-        process = _spawnvp(1, cstr(program[0]), ptr(args) as **u8)
+        process = _spawnvp(1, cstr(file), ptr(args) as **u8)
     failed := FsError{errno(), "run", program[0]}
     if into >= 0:
         dup2(saved, 1)
@@ -220,29 +243,30 @@ priv func exit_code(status: i32) -> i32 where not @windows():
 priv func exit_code(status: i32) -> i32 where @windows():
     return status
 
+func executable() -> &strview where @linux():
+    buf: array[u8, 4096]
+    size := readlink("/proc/self/exe", ptr(buf) as *u8, 4096)
+    if size < 0 or size == 4096:
+        return ""
+    found: &strview
+    found = ptr(buf) as *bytes
+    found.len = usize(size)
+    return temp(found)
+
+func executable() -> &strview where @macos():
+    buf: array[u8, 4096]
+    size: u32 = 4096
+    full: array[u8, 4096]
+    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as *u8, ptr(full) as *u8) as usize == 0:
+        return ""
+    return temp(view(ptr(full) as *u8))
+
 func executable() -> &strview where @windows():
     buf: array[u8, 4096]
-    GetModuleFileNameA(usize(0) as *bytes, ptr(buf) as *u8, 4096)
+    size := GetModuleFileNameA(usize(0) as *bytes, ptr(buf) as *u8, 4096)
+    if size == 0 or size == 4096:
+        return ""
     return replace(view(ptr(buf) as *u8), "\\", "/")
-
-func executable() -> &strview where not @windows():
-    name := args()[0]
-    found := name
-    if find(name, "/") is null:
-        dirs := env("PATH")
-        if dirs is &strview:
-            for dir in split(dirs, ":"):
-                if dir.len == 0:
-                    dir = "."
-                candidate := dir + "/" + name
-                if access(cstr(candidate), 1) == 0:
-                    found = candidate
-                    break
-    real := realpath(cstr(found), usize(0) as *u8)
-    if real as usize != 0:
-        found = temp(view(real))
-    free(real)
-    return found
 
 func system_name() -> &strview where @linux():
     return "Linux"
@@ -313,11 +337,19 @@ func date() -> Date where @windows():
     return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
 
 func sleep(seconds: f64) where not @windows():
-    left := Clock{i64(seconds), 0}
-    left.nanos = i64((seconds - f64(left.seconds)) * 1000000000.0)
+    whole := seconds
+    if whole > 1000000000.0:
+        whole = 1000000000.0 # 31 years, the most the nanoseconds can count
+    left := Clock{i64(whole), 0}
+    left.nanos = i64((whole - f64(left.seconds)) * 1000000000.0)
     while left.seconds >= 0 and left.nanos >= 0 and left.nanos < 1000000000 and nanosleep(ptr(left), ptr(left)) != 0:
         pass
 
 func sleep(seconds: f64) where @windows():
-    if seconds > 0.0:
-        Sleep(u32(seconds * 1000.0))
+    left := seconds
+    while left > 0.0:
+        part := left
+        if part > 1000000.0:
+            part = 1000000.0 # Sleep counts milliseconds in 32 bits
+        Sleep(u32(part * 1000.0))
+        left -= part

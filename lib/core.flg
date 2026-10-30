@@ -15,26 +15,20 @@ extern "c":
 priv extern "c":
     func read(fd: i32, at: *bytes, size: usize) -> i32
     func write(fd: i32, at: *bytes, size: usize) -> i32
+    func open(path: cstr, flags: i32, ...) -> i32
     func close(fd: i32) -> i32
-    func dup(fd: i32) -> i32
     func isatty(fd: i32) -> i32
-    func fcntl(fd: i32, command: i32, ...) -> i32
     func poll(fds: *bytes, count: u64, wait: i32) -> i32
     func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
     func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func atexit(callback: *bytes) -> i32
     func _exit(code: i32)
-    func fopen(path: cstr, mode: cstr) -> *bytes
-    func fileno(file: *bytes) -> i32
-    func fclose(file: *bytes) -> i32
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
     func __errno_location() -> *i32
     func __error() -> *i32
     func _errno() -> *i32
-    func _get_osfhandle(fd: i32) -> *bytes
-    func SetHandleInformation(handle: *bytes, mask: u32, flags: u32) -> i32
     func FormatMessageA(flags: u32, source: *bytes, code: u32, language: u32, into: *u8, size: u32, arguments: *bytes) -> u32
 
 priv extern "ws2_32" where @windows():
@@ -964,26 +958,18 @@ priv export func flag_exit():
         _exit(1)
 
 func open(path: &strview) -> File|FsError:
-    return opened(path, "rb", "open")
+    return opened(path, 0, "open")
 
 func create(path: &strview, append: bool = false) -> File|FsError:
-    if append:
-        return opened(path, "ab", "create")
-    return opened(path, "wb", "create")
+    return opened(path, 1 + usize(append), "create")
 
-priv func opened(path: &strview, mode: cstr, action: &strview) -> File|FsError:
-    file := usize(0) as *bytes
+priv func opened(path: &strview, mode: usize, action: &strview) -> File|FsError:
+    flags := open_flags()
+    f := File{-1}
     with scratch():
-        file = fopen(cstr(path), mode)
-    if file as usize == 0:
-        return FsError{errno(), action, path}
-    f := File{dup(fileno(file))}
+        f.fd = open(cstr(path), flags[mode], flags[3])
     if f.fd < 0:
-        failed := FsError{errno(), action, path}
-        fclose(file)
-        return failed
-    fclose(file)
-    close_on_exec(f.fd)
+        return FsError{errno(), action, path}
     stream(f).path = path
     return f
 
@@ -1146,11 +1132,14 @@ priv func release(s: *Stream) where @windows():
     else:
         close(s.fd)
 
-priv func close_on_exec(fd: i32) where not @windows():
-    fcntl(fd, 2, 1) # F_SETFD, FD_CLOEXEC
+priv func open_flags() -> array[i32, 4] where @linux():
+    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
 
-priv func close_on_exec(fd: i32) where @windows():
-    SetHandleInformation(_get_osfhandle(fd), 1, 0) # HANDLE_FLAG_INHERIT off
+priv func open_flags() -> array[i32, 4] where @macos():
+    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
+
+priv func open_flags() -> array[i32, 4] where @windows():
+    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
 
 priv func reason(code: i32) -> &strview where @linux():
     if code < 0:
