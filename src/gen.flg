@@ -234,7 +234,7 @@ func bindings(binds: &slice[Item]) -> &str:
 
 func brief(name: &strview) -> &strview:
     if name.len > 100:
-        return name[0:100] + "..."
+        return name[:100] + "..."
     return name
 
 func open_proc(name: &strview, node: usize, inst: usize, export: bool) -> Proc:
@@ -295,7 +295,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     ret := result(f)
     if ret is Fail:
         if site == at and at != 0 and comp.binds.len > comp.frame:
-            note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:comp.binds.len]), at)
+            note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:]), at)
         return Fail
     export := false
     s := first_sym(text(f))
@@ -435,7 +435,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         try narrow(cond, true)
         try statements(node_end(cond))
         jump(l_head)
-        broke := comp.loops[comp.loops.len - 1].broke
+        broke := comp.loops[-1].broke
         comp.loops.len -= 1
         try forget(before)
         if not forever or broke:
@@ -1188,7 +1188,7 @@ func called(n: usize) -> Value|Fail:
         if platform and not comp.choosing:
             return fail(name + "() cannot appear outside a where, it chooses between overloads", tok.at)
         if platform:
-            return truth(name[1:name.len] == comp.system or name[1:name.len] == comp.machine)
+            return truth(name[1:] == comp.system or name[1:] == comp.machine)
         if name == "@here":
             spot := tok.at
             if comp.site != 0:
@@ -1223,7 +1223,7 @@ func called(n: usize) -> Value|Fail:
             for other in names:
                 if other == label:
                     return fail(name + " names " + label + " twice", source(c))
-        elif names.len > 0 and names[names.len - 1].len > 0:
+        elif names.len > 0 and names[-1].len > 0:
             return fail(name + " expects every argument after a named one to be named too", source(c))
         append(names, label)
         append(values, try value(c, VOID))
@@ -1566,7 +1566,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
     postpone(first, middle)
     if o != "=":
         at = sign
-        v = try binary(o[0:1], load(spot), v, at)
+        v = try binary(o[:1], load(spot), v, at)
     place := spot
     if local_of(left) != 0:
         decl := comp.vars[declaration(text(left))]
@@ -1623,7 +1623,7 @@ func put_text(place: Value, v: Value, at: usize) -> Fail?:
     shown := t.name
     home := comp.files[file_of(comp.tokens[comp.nodes[t.decl].tok].at)].module
     if shown.len > home.len and starts_with(shown, home) and items(shown)[home.len] == '.':
-        shown = shown[home.len + 1:shown.len]
+        shown = shown[home.len + 1:]
     if t.kind == Void:
         return put_words(place, shown, at)
     if t.kind == Union:

@@ -255,7 +255,7 @@ func main() -> i32:
     while i < arguments.len:
         a := arguments[i]
         if running and a == "--":
-            append(program, arguments[i + 1:arguments.len])
+            append(program, arguments[i + 1:])
             break
         if a == "-o" or a == "-overlay" or a == "-at" or a == "-target":
             i += 1
@@ -302,8 +302,8 @@ func main() -> i32:
     if backend is null:
         eprint(ERR, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
         return 2
-    comp.system = target[0:trust find(target, "-")]
-    comp.machine = target[comp.system.len + 1:target.len]
+    comp.system = target[:trust find(target, "-")]
+    comp.machine = target[comp.system.len + 1:]
     texts: &map[&strview, &strview]
     if overlay.len > 0:
         given := read_text_file(overlay)
@@ -316,15 +316,15 @@ func main() -> i32:
             size_end: usize|null = null
             size: i64|null = null
             if path_end is usize:
-                size_end = find(rest_of[path_end + 1:rest_of.len], "\n")
+                size_end = find(rest_of[path_end + 1:], "\n")
             if path_end is usize and size_end is usize:
                 size = parse_int(rest_of[path_end + 1:path_end + 1 + size_end])
             if path_end is null or size_end is null or size is null or size < 0 or usize(size) > rest_of.len - path_end - size_end - 2:
                 eprint(ERR, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
                 return 1
             from := path_end + size_end + 2
-            put(texts, real_path(rest_of[0:path_end]), rest_of[from:from + usize(size)])
-            rest_of = rest_of[from + usize(size):rest_of.len]
+            put(texts, real_path(rest_of[:path_end]), rest_of[from:from + usize(size)])
+            rest_of = rest_of[from + usize(size):]
     fleeting := running and output.len == 0
     suffix: &strview = ".out"
     if comp.system == "windows":
@@ -370,7 +370,7 @@ func main() -> i32:
     lib += "../lib/"
     here := current_dir() + "/"
     if starts_with(view(lib), here):
-        lib = lib[here.len:lib.len]
+        lib = lib[here.len:]
     if not exists(join(lib, "core.flg")):
         root: &str = "/tmp"
         cache := env("XDG_CACHE_HOME")
@@ -386,7 +386,7 @@ func main() -> i32:
         lib = join(root, "flag/")
         lib += view(flag_stamp()) + "/"
         if not exists(join(lib, "core.flg")):
-            part: &str = lib[0:lib.len - 1]
+            part: &str = lib[:-1]
             part += ".part" + getpid()
             _ = make_dir(view(part))
             name: *u8
@@ -400,7 +400,7 @@ func main() -> i32:
                 _ = write_file(join(part, view(name)), file)
                 k += 1
                 data = flag_embedded(k, ptr(name), ptr(size))
-            _ = rename(view(part), lib[0:lib.len - 1])
+            _ = rename(view(part), lib[:-1])
             _ = remove(view(part))
         if not exists(join(lib, "core.flg")):
             eprint(ERR, "cannot unpack the library into ", lib)
@@ -428,7 +428,7 @@ func main() -> i32:
         if not known and not has_text(loaded, real_path(view(path))) and exists(view(path)):
             if add_file(path, source(view(path), texts), true) is Fail:
                 return 1
-            known = comp.files[comp.files.len - 1].module == u.module
+            known = comp.files[-1].module == u.module
         if not known:
             _ = fail("no module named " + u.module + " is loaded, and the library has no " + u.module + ".flg that declares it", u.at)
             return 1
@@ -437,12 +437,12 @@ func main() -> i32:
         line: i64|null = null
         column: i64|null = null
         if parts.len > 2:
-            line = parse_int(parts[parts.len - 2])
-            column = parse_int(parts[parts.len - 1])
+            line = parse_int(parts[-2])
+            column = parse_int(parts[-1])
         if line is null or column is null or line < 1 or column < 1:
             eprint(ERR, "-at expects file:line:column but got ", query)
             return 2
-        path := query[0:query.len - parts[parts.len - 2].len - parts[parts.len - 1].len - 2]
+        path := query[:query.len - parts[-2].len - parts[-1].len - 2]
         wanted := real_path(path)
         f: usize = 0
         while f < comp.files.len and real_path(view(comp.files[f].path)) != wanted:
@@ -560,7 +560,7 @@ func has_text(l: &list[&strview], v: &strview) -> bool:
 func source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     code := get(texts, real_path(path)) ifnull view(try read_text_file(path))
     if starts_with(code, "\xef\xbb\xbf"):
-        code = code[3:code.len]
+        code = code[3:]
     out: &str = code
     return out
 
@@ -568,7 +568,7 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
     if code is &str:
         start: usize = 0
         if comp.files.len > 0:
-            last := comp.files[comp.files.len - 1]
+            last := comp.files[-1]
             start = last.start + last.code.len + 1
         own: &str
         for b in items(base_name(view(path))):

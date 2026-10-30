@@ -101,8 +101,8 @@ func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
     inner := name
     dot := find(path, ".")
     if dot is usize:
-        module = path[0:dot]
-        inner = path[dot + 1:path.len] + "." + name
+        module = path[:dot]
+        inner = path[dot + 1:] + "." + name
     s := try named(inner, module, at)
     k := comp.nodes[comp.syms[s].node].kind
     if k == Struct or k == Fat or k == Context or k == Alias or k == Void:
@@ -424,7 +424,7 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
                 return fail("type " + key + " declares the field " + name + " twice", spot)
         if kids(c) == 2:
             other := text(kid(c, 1))
-            other = other[1:other.len]
+            other = other[1:]
             owner: usize = 0
             while owner < fields.len and fields[owner].name != other:
                 owner += 1

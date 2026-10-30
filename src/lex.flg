@@ -22,7 +22,7 @@ func lex(file: usize) -> Fail?:
             while at < code.len and (bytes[at] == ' ' or bytes[at] == '\t'):
                 at += 1
             if opens.len == 0 and at < code.len and bytes[at] != '\n' and bytes[at] != '\r' and bytes[at] != '#':
-                while limits.len > 0 and at - start < limits[limits.len - 1]:
+                while limits.len > 0 and at - start < limits[-1]:
                     comp.trusted[trust pop(scopes)].to = base + at
                     limits.len -= 1
                 head = base + at
@@ -68,7 +68,7 @@ func lex(file: usize) -> Fail?:
                 return fail(code[start:at] + what, base + start)
             if marker:
                 limit := width + 1
-                if comp.tokens[comp.tokens.len - 1].kind == Line:
+                if comp.tokens[-1].kind == Line:
                     comp.tokens.len -= 1
                     limit = width
                 append(scopes, comp.trusted.len)
@@ -163,12 +163,12 @@ func lex(file: usize) -> Fail?:
             elif b == ')' or b == ']' or b == '}':
                 if opens.len == 0:
                     return fail("unexpected '" + code[start:at] + "' with nothing open to close", base + start)
-                opener := opens[opens.len - 1]
+                opener := opens[-1]
                 opens.len -= 1
                 if b == ')' and bytes[opener] != '(' or b == ']' and bytes[opener] != '[' or b == '}' and bytes[opener] != '{':
                     return fail("unexpected '" + code[start:at] + "', the bracket open here is '" + code[opener:opener + 1] + "'", base + start)
     if opens.len > 0:
-        return fail("this bracket never closes", base + opens[opens.len - 1])
+        return fail("this bracket never closes", base + opens[-1])
     append(comp.tokens, Token{Line, nothing, base + code.len, line})
     append(comp.tokens, Token{End, nothing, base + code.len, line})
     append(comp.tokens, Token{End, nothing, base + code.len, line})
