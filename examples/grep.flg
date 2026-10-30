@@ -1,0 +1,41 @@
+# writes the lines of a file that have a word into another file, with their numbers
+use os
+
+func main() -> i32:
+    given := args()
+    if given.len < 4:
+        eprint("usage: grep word from.txt to.txt")
+        return 2
+    from := open(given[2])
+    if from is FsError:
+        eprint(from)
+        return 1
+    with from:
+        to := create(given[3])
+        if to is FsError:
+            eprint(to)
+            return 1
+        with to:
+            number := 0
+            found := 0
+            while true:
+                with scratch():
+                    line := read_line(from)
+                    switch line:
+                    case null:
+                        break
+                    case FsError:
+                        eprint(line)
+                        return 1
+                    case &strview:
+                        number += 1
+                        if contains(line, given[1]):
+                            write(to, pad(number, 5))
+                            write(to, "  " + line + "\n")
+                            found += 1
+            done := flush(to)
+            if done is FsError:
+                eprint(done)
+                return 1
+            print(found, " of ", number, " lines have ", given[1])
+    return 0
