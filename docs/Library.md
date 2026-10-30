@@ -72,15 +72,15 @@ func main():
         print("hello ", name)
 ```
 
-A function that fails because the system said no gives an `FsError`
+A function that fails because the system said no, in core, `fs` and `os`, gives an `FsError`
 ```flag
 type error FsError:
-    action: &strview # what failed: open, create, read, write, list, make, remove...
-    path: &strview # the path you gave, empty for the standard files
-    reason: &strview # what the system says, temporary
+    code: i32 # the error number of the system, errno
+    action: &strview # what failed: open, create, read, write, list, make, remove, run...
+    path: &strview # the path or the program you gave, empty for the standard files
 ```
-and printing it says all of it: `cannot open notes.txt: No such file or directory`.
-- `system_error() -> &strview` what the system says about the last C call that failed, like `No such file or directory`, temporary. It's the `reason` of the errors, and you can use it after your own `extern` calls
+Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`.
+- `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
@@ -266,16 +266,11 @@ The standard input is `read_line(stdin)` of [core](#files).
 On every system the paths that `os` gives use `/`.
 
 ### Other programs
-```flag
-type error CannotRun:
-    program: &strview # the program as you gave it
-    reason: &strview # what the system says, temporary
-```
-Printing it says `cannot run gcc: No such file or directory`.
-- `run(command: &strview) -> i32|CannotRun` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
-- `run(program: &slice[&strview]) -> i32|CannotRun` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run
-- `output(command: &strview, into: *&str) -> i32|CannotRun` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
-- `output(program: &slice[&strview], into: *&str) -> i32|CannotRun` the same without a shell
+A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
+- `run(command: &strview) -> i32|FsError` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
+- `run(program: &slice[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run
+- `output(command: &strview, into: *&str) -> i32|FsError` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
+- `output(program: &slice[&strview], into: *&str) -> i32|FsError` the same without a shell
 
 ```flag
 use os
@@ -284,7 +279,7 @@ func main():
     text: &str
     defer free(text)
     code := output(ptr(["git", "status", "--short"]), text)
-    if code is CannotRun:
+    if code is FsError:
         eprint(code)
     elif code == 0:
         print(text)

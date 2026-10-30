@@ -37,10 +37,10 @@ func append_file(path: &strview, text: &strview) -> FsError?:
 priv func put_file(path: &strview, text: &strview, mode: cstr) -> FsError?:
     file := fopen(path, mode)
     if file as usize == 0:
-        return FsError{"write", path, system_error()}
+        return FsError{errno(), "write", path}
     done := fwrite(ptr(text.*), 1, text.len, file)
     if fclose(file) != 0 or done != text.len:
-        return FsError{"write", path, system_error()}
+        return FsError{errno(), "write", path}
     return null
 
 priv func fopen(path: &strview, mode: cstr) -> *bytes:
@@ -61,13 +61,13 @@ func is_dir(path: &strview) -> bool:
 
 func file_size(path: &strview) -> usize|FsError:
     if is_dir(path):
-        return FsError{"read the size of", path, "it is a folder"}
+        return FsError{21, "read the size of", path} # EISDIR, 21 on every system
     file := fopen(path, "rb")
     if file as usize == 0:
-        return FsError{"open", path, system_error()}
+        return FsError{errno(), "open", path}
     at: array[i64, 4]
     if fseek(file, 0, 2) != 0 or fgetpos(file, ptr(at) as *i64) != 0:
-        failed := FsError{"read the size of", path, system_error()}
+        failed := FsError{errno(), "read the size of", path}
         fclose(file)
         return failed
     fclose(file)
@@ -81,7 +81,7 @@ func remove(path: &strview) -> FsError?:
         else:
             failed = remove(cstr(path)) != 0
     if failed:
-        return FsError{"remove", path, system_error()}
+        return FsError{errno(), "remove", path}
     return null
 
 func rename(from: &strview, to: &strview) -> FsError?:
@@ -89,7 +89,7 @@ func rename(from: &strview, to: &strview) -> FsError?:
     with scratch():
         failed = rename(cstr(from), cstr(to)) != 0
     if failed:
-        return FsError{"rename", from, system_error()}
+        return FsError{errno(), "rename", from}
     return null
 
 func make_dir(path: &strview) -> FsError?:
@@ -103,13 +103,13 @@ func make_dir(path: &strview) -> FsError?:
     with scratch():
         failed = mkdir(cstr(path), 493) != 0
     if failed:
-        return FsError{"make", path, system_error()}
+        return FsError{errno(), "make", path}
     return null
 
 func list_dir(path: &strview) -> &slice[&strview]|FsError:
     dir := opendir(cstr(path))
     if dir as usize == 0:
-        return FsError{"list", path, system_error()}
+        return FsError{errno(), "list", path}
     names: &list[&strview]
     entry := readdir(dir)
     while entry as usize != 0:
