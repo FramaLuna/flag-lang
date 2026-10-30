@@ -37,7 +37,7 @@ With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the i
 
 The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
-The compiler stops at the first error.
+The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
 The IL and the assembly are written next to the program, `program.ssa` and `program.s`, and they are removed when the program links, unless you pass `-keep`. If QBE or the link fails they stay there so you can look at them.
 
@@ -94,7 +94,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif`, or of operators like `a - b - c` or `a and b and c`, has no limit
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time in QBE, that keeps for every block the temporaries alive in it: 2500 `elif` compile in 0.3 s, 10000 in 2.3 s and 20000 in 8 s and 1.1 GB of memory. A `case` with 20000 values takes 0.3 s
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -231,7 +231,7 @@ When you pass an argument, the value is converted only if it's
 - `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
-- a value going to a union that has its type, or a union going to a bigger union
+- a value going to a union that has its type, or a union going to a bigger union. A value that converts to exactly one member goes in through it: a `&str` into `&strview|i32`, a `&list[i32]` into `&slice[i32]?`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`: the element type of a literal leaves out a type that converts to another one in it
 - a member going in or out of an untagged union
 
 Assignments, declarations and `return` do all of that and also
@@ -274,7 +274,7 @@ print(text) # hola
 ## Unions and narrowing
 `is` checks the tag. It needs a tagged union on its left, and a check that is always true or always false is an error, so you know when a type changed and the check is useless.
 
-Narrowing only works on local variables and parameters, not on fields. Copy the field to a variable first
+Narrowing only works on local variables and parameters, not on fields, and reading a field of a member through the union says so: `Card|null has no field rank, and is and case narrow only variables: copy it to one first`. Copy the field to a variable first
 ```flag
 found := user.best
 if found is Card:
@@ -287,7 +287,7 @@ The rules
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
-- assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
+- assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
 `==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
 
@@ -314,7 +314,7 @@ Every overload that can take the arguments gets a score, and the highest one win
 - an integer literal to `f32` gives 0, so `f64` wins
 - a `$T` that is still free gives 0 and takes the type of the argument
 - a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives only what its inside gives
-- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. It doesn't work with a bare `*$T`, that one takes any pointer.
+- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &slice[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
 
 When two overloads have the same score, the one that takes more arguments through a shape like `&slice[$T]`, instead of a bare `$T`, wins.
 
@@ -379,7 +379,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array, list, slice or text that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -419,7 +419,7 @@ An operator has two parameters, its left side and its right side, there are no u
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
-A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and slices compare element by element, text by content, and `sort` uses `<`, that is never made for you. The made `==` compares every field, so a type that keeps a `len` and a fixed array, like a `fixmap`, declares its own `==` and `hash` for the part in use.
+A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. It's one function per type, and a nested struct calls the one of its type, so a big struct compiles the same whether it's compared in one place or in a hundred. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and slices compare element by element, text by content, and `sort` uses `<`, that is never made for you. The made `==` compares every field, so a type that keeps a `len` and a fixed array, like a `fixmap`, declares its own `==` and `hash` for the part in use.
 
 `hash(x) -> u64` is made the same way when no `hash` takes the type, which is what maps need for their keys: `bool`, pointers and function values hash their bits, a struct mixes the hashes of its fields, a tagged union the tag and the member it holds, and an array its elements. A struct or a union with your own `==` doesn't get one, the made one would not agree with your `==`, so asking for it is an error that tells you to declare it: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`. A type that has no way to hash, like a `&list`, says so: `&list[i32] has no hash, declare one for it: func hash(x: &list[i32]) -> u64`.
 
@@ -441,12 +441,12 @@ The variable counts the loop, so it cannot be assigned: `i counts this loop, so 
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
 
 ### Everything else
-Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
+Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`. The counter counts the loop like the variable of a range, so it cannot be assigned either.
 
-- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a whole character comes alone, and `reverse` gives the same pieces. `items(text)` gives the bytes
-- A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed. A fixed map gives them in the order they were put
+- Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a valid character comes alone, also each byte of an overlong form, a surrogate or a code above U+10FFFF, and `reverse` gives the same pieces. `items(text)` gives the bytes. The messages of the compiler read the code the same way, a byte that comes alone is shown as `\xc0`
+- A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed: `&map[&strview, i32] has no reverse_iter, so reverse cannot walk it`. A fixed map gives them in the order they were put
 - An array gives its elements, the loop takes its address so it doesn't copy it, and it can be reversed
-- A pointer to a list is not iterable, use `p.*`
+- A pointer to an array, a list, a slice or text walks what it points to
 - The elements are copies, changing `x` doesn't change the list
 - The length is read when the loop starts, what you append during the loop is not visited, and if the list grows the loop keeps reading the old memory, so don't grow a list you are walking
 
@@ -454,7 +454,7 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
 
-Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`.
+Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. A switch over a `bool` with `case true:` and `case false:` handles every value, like a switch with a default, so a function can end with it when both cases return.
 
 Over a tagged union the cases name its member types: one type, several separated by `,`, or a union `A|B`. A case runs when the union holds one of them, and inside it a local variable or a parameter has those types, like inside `if x is A|B:`. The default gets the members that no case names, and after the switch the variable has the types of the cases that don't leave, so `case null: return` leaves it without `null`. A subject that is not a variable is tested the same way, there is just nothing to narrow
 ```flag
@@ -469,7 +469,7 @@ func area(s: Circle|Square|null) -> f64:
 ```
 - every type a case names is a member still there: `i32|f64 can never be null, so this case never runs`
 - each member goes in one case: `this switch already handles null above, each type goes in one case`
-- every member is handled or there is a default: `this switch never handles i32 and has no default case`, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
+- every member is handled or there is a default: `this switch never handles i32|null and has no default case`, naming every member left, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
 - a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 
@@ -487,6 +487,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
 - It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
 - It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
+- A deferred `x = f()` into a variable that can hold an error must be read after it runs, the same rule as for a declaration, so `defer x = f()` in the block of `x` doesn't compile: nothing is left to read it
 
 ### with
 `with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of Lock can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
@@ -573,6 +574,7 @@ A context is one global value with its fields at zero. A union without `null` in
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
 - when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
+- the global names of the library, those of core like `File`, `Integer`, `FsError` or `stdout`, give way to yours. Declare a `type File` and your files see yours while the library keeps its own, which the messages then call `core.File`. A function of yours with the same parameters as one of core's is the one your files call, and core keeps calling its own
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).
 
@@ -611,7 +613,7 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 
 A message names your variable when there is one, and says `this memory` when there is none. It names a function only when you wrote the call: `drop cannot release path, it is temporary memory: a with scratch() block releases it`. The calls the compiler writes for you, for `print`, `+`, `for` or a conversion, are never named.
 
-A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the end of the function that loses it
+A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the `return` that loses it, or to the name of the function when it ends without one
 ```flag
 func main():
     names: &list[i32]
@@ -835,9 +837,11 @@ error: the line ends here, ':' goes here
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with seven changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, so the assembler has nothing to warn about. The fourth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with ten changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, so the assembler has nothing to warn about. The fourth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
+
+Three more keep long chains from growing with their square. The dominators of a block are found from its last predecessor to its first, so the end of an `elif` chain meets them one step at a time. The walk that fills the dominance frontier stops at a block that already has it. And the constants of a function are found through a hash instead of a search. 20000 `elif` took 38 s and take 8 s, a switch of 20000 cases 34 s and 7.6 s, a `case` with 20000 values 15.6 s and 0.3 s, and an array literal of 50000 numbers 9.3 s and 0.8 s.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware

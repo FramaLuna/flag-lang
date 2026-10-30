@@ -21,7 +21,7 @@ STEP = 256
 PRIVATE = STEP << 32
 
 func first_sym(name: &strview) -> usize:
-    s := get(comp.names, name)
+    s := comp.names[name]
     if s is usize:
         return s
     return 0
@@ -65,7 +65,7 @@ func named(name: &strview, module: &strview, at: usize) -> usize|Fail:
         if comp.nodes[comp.syms[s].node].kind != Func and visible(s, module, at):
             if m == here:
                 return s
-            if m.len == 0:
+            if m.len == 0 and (global == 0 or comp.syms[s].library == comp.files[file_of(at)].library):
                 global = s
             elif found == 0:
                 found = s
@@ -111,7 +111,7 @@ func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
 
 func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
     s := first_sym(name)
-    while s != 0 and (comp.syms[s].module.len > 0 or comp.nodes[comp.syms[s].node].kind != Fat):
+    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat):
         s = comp.syms[s].next
     if s == 0:
         return fail("the language needs the fat pointer " + name + ", and the library does not declare it", at)
@@ -129,16 +129,15 @@ func add_type(t: Type) -> usize:
 
 func enclosed(t: usize) -> &strview:
     ty := comp.types[t]
-    if ty.kind == Union or ty.kind == Untagged or ty.kind == Func and ty.elem != VOID:
+    if ty.kind == Union or ty.kind == Untagged or ty.kind == Func and ty.ret != VOID:
         return "(" + ty.name + ")"
     return ty.name
 
 func pointer(t: usize) -> usize:
     key: &str = "*"
     key += enclosed(t)
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
-        free(key)
         return id
     return add_type(Type{kind = Ptr, name = view(key), size = 8, align = 8, elem = t})
 
@@ -157,7 +156,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     spread: &list[usize]
     defer free(spread)
     for p in parts:
-        ty := comp.types[try typed(p, at)]
+        ty := comp.types[try concrete(p, at)]
         spread.len = 0
         if ty.kind == kind:
             for i in 0..ty.count:
@@ -180,9 +179,8 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
         if key.len > 0:
             key += separator
         key += enclosed(m)
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
-        free(key)
         return id
     first := comp.items.len
     for m in flat:
@@ -191,7 +189,7 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     lay_out(made)
     return made
 
-func typed(t: usize, at: usize) -> usize|Fail:
+func concrete(t: usize, at: usize) -> usize|Fail:
     if t == EMPTYARRAY or t == EMPTYMAP:
         example: &strview = "x: &list[i32] = []"
         if t == EMPTYMAP:
@@ -272,9 +270,9 @@ func resolve(n: usize) -> usize|Fail:
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Var:
-                append(parts, try typed(try resolve(c + 1), tok.at))
+                append(parts, try concrete(try resolve(c + 1), tok.at))
             else:
-                ret = try typed(try resolve(c), tok.at)
+                ret = try concrete(try resolve(c), tok.at)
             c = node_end(c)
         return func_of(parts, ret)
     if tok.kind == Generic:
@@ -299,7 +297,7 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             append(args, Item{name = "", type = try resolve(c)})
         c = node_end(c)
     if node.module.len == 0 and args.len == 0:
-        id := get(comp.type_ids, tok.text)
+        id := comp.type_ids[tok.text]
         if id is usize and id >= NULL and id <= ITERATIONEND:
             return id
     if node.module.len == 0 and tok.text == "array":
@@ -309,16 +307,16 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             return fail("type " + comp.types[args[0].type].name + " contains itself, hold it through a pointer", tok.at)
         if comp.types[args[0].type].kind == Bytes:
             return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
-        return array_of(try typed(args[0].type, tok.at), args[1].n)
+        return array_of(try concrete(args[0].type, tok.at), args[1].n)
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
         other := try named(tok.text, node.module, tok.at)
-        if other != 0 and comp.nodes[comp.syms[other].node].kind == Named:
+        if other != 0 and comp.nodes[comp.syms[other].node].kind == Constant:
             return fail(tok.text + " is a constant, not a type", tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
-        mark(comp.nodes[comp.syms[s].node].tok, header(comp.nodes[comp.syms[s].node].tok))
+        mark(comp.nodes[comp.syms[s].node].tok)
     return make_type(s, args, fat, tok.at)
 
 func count_of(n: usize) -> usize|null|Fail:
@@ -334,7 +332,7 @@ func count_of(n: usize) -> usize|null|Fail:
             return comp.binds[b - 1].n
         return null
     s := try named(tok.text, node.module, tok.at)
-    if s == 0 or comp.nodes[comp.syms[s].node].kind != Named:
+    if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
         return null
     v := try constant(s, VOID, tok.at)
     if not v.lit or v.neg or not integer(v.type):
@@ -358,7 +356,7 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
                 key += ", "
             key += arg_name(args[i])
         key += "]"
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize and kind != Alias and comp.types[id].decl != decl:
         failed := fail("two types are named " + key + ", one of a module and one inside a type: rename one of them", at)
         note("the other " + key + " is declared here", comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
@@ -376,9 +374,9 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
     if kind == Void and generics > 0:
         return fail("void type " + sym.name + " cannot have parameters, it carries no data to shape", at)
     if generics != args.len:
-        return fail(sym.name + " expects " + generics + " type parameters but got " + args.len, at)
+        return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + " but got " + args.len, at)
     for a in args:
-        try typed(a.type, at)
+        try concrete(a.type, at)
     if kind == Void:
         return add_type(Type{kind = Void, name = view(key), align = 1, decl = decl, error = sym.error})
     saved := open_frame()
@@ -466,7 +464,7 @@ func array_of(elem: usize, count: usize) -> usize:
     e := comp.types[elem]
     key: &str = "array["
     key += e.name + ", " + count + "]"
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
@@ -480,13 +478,13 @@ func func_of(taken: &list[usize], ret: usize) -> usize:
     key += ")"
     if ret != VOID:
         key += " -> " + comp.types[ret].name
-    id := get(comp.type_ids, view(key))
+    id := comp.type_ids[view(key)]
     if id is usize:
         return id
     first := comp.items.len
     for t in taken:
         append(comp.items, Item{name = "", type = t})
-    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, elem = ret, first = first, count = taken.len})
+    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len})
 
 func type_params(decl: usize) -> usize:
     count: usize = 0

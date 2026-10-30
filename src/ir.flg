@@ -23,7 +23,7 @@ func int_arg(n: i64) -> Arg:
     return Arg{Const, n}
 
 func global(name: &strview) -> Arg:
-    found := get(comp.global_ids, name)
+    found := comp.global_ids[name]
     if found is usize:
         return Arg{Global, i64(found)}
     put(comp.global_ids, name, comp.globals.len)
@@ -34,9 +34,8 @@ func is_number(a: Arg) -> bool:
     return a.kind != Temp or comp.numbers[usize(a.n) - 1]
 
 func add(i: Ins) -> Arg:
-    made := i
-    made.pos = comp.at
-    append(comp.body, made)
+    i.pos = comp.at
+    append(comp.body, i)
     if i.to == 0:
         return Arg{}
     comp.numbers[i.to - 1] = i.number
@@ -106,9 +105,7 @@ func listing() -> &str:
         ended := false
         for k in f.code..f.end:
             i := comp.code[k]
-            next := k + 1
-            while next < f.end and dropped[next]:
-                next += 1
+            next := kept(dropped, k + 1, f.end)
             if i.op == "@" and ended and next < f.end and comp.code[next].op == "jmp" and landing(moved, comp.code[next].a.n) != i.a.n:
                 moved[i.a.n] = comp.code[next].a.n
                 dropped[k] = true
@@ -119,9 +116,7 @@ func listing() -> &str:
         line: usize = 0
         for k in f.code..f.end:
             i := comp.code[k]
-            next := k + 1
-            while next < f.end and dropped[next]:
-                next += 1
+            next := kept(dropped, k + 1, f.end)
             if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
                 continue
             if i.pos != 0 and i.pos != shown and i.op != "@" and i.op != "alloc8":
@@ -175,8 +170,12 @@ func listing() -> &str:
         out += "}\n"
     return out
 
-func landing(moved: &list[i64], l: i64) -> i64:
-    to := l
+func kept(dropped: &list[bool], k: usize, end: usize) -> usize:
+    while k < end and dropped[k]:
+        k += 1
+    return k
+
+func landing(moved: &list[i64], to: i64) -> i64:
     while moved[to] != 0:
         to = moved[to]
     return to

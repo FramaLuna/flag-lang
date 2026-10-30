@@ -157,7 +157,7 @@ Two arrays of the same type work with the operators element by element, and give
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
 - `s[i] -> u8` the byte `i`, a negative `i` counts from the end
 - `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view. `s[a:]` goes to the end and `s[:b]` starts at 0
-- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A first byte with all the bytes that it announces is one character, and a byte that is not part of one comes alone, so text that is not UTF-8 gives its wrong bytes one by one. Both directions give the same pieces
+- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A byte that is not part of a valid character comes alone, so text that is not UTF-8 gives its wrong bytes one by one, also the bytes of an overlong form, a surrogate or a code above U+10FFFF. Both directions give the same pieces, and `count`, `valid` and `code` of `utf8` read the same ones
 - `==` and `<` compare the bytes
 - `"a" + x` joins the text with anything that can be printed, temporary
 
@@ -207,10 +207,9 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2
 
 ### Maps
 A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
-- `m[k] -> $V|null` is `get`, and `m[k] = v` is `put`
+- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `at(m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `put(m: *&map[$K, $V], key: $K) -> *$V` the place of the value of the key, and a key that wasn't there is added with a zero value. It finds the key once, so it changes a value in place: `put(players, name).score += 10`. To count, `counts[word] += 1` is enough. The place is good until the next `put`
-- `get(m: &map[$K, $V], key: $K) -> $V|null`
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
@@ -225,7 +224,7 @@ A float `nan` is not `==` to itself, so as a key it's never found again, and eve
 ### Fixed maps
 A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order they were put, so it doesn't allocate and you don't free it. Looking for a key reads the entries one by one, so it's for small maps.
 - `put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?` adds the key or changes its value, and gives the error `MapFull` when there is no room for a new key
-- `get`, `m[k]`, `contains` and `clear` like a map
+- `m[k]`, `contains` and `clear` like a map
 - `remove` like a map, and the entries after it keep their order
 - `for e in m` gives the entries in the order they were put
 
@@ -409,7 +408,7 @@ They are the same sequence on every run until you call `seed`, and they are not 
 ## utf8
 - `code(s: &strview) -> u32|null` the code of the first character, `null` when the text is empty or doesn't start with valid UTF-8: `code("é")` is 233
 - `count(s: &strview) -> usize` how many characters, the same that `for c in s` counts
-- `valid(s: &strview) -> bool` if all the text is valid UTF-8
+- `valid(s: &strview) -> bool` if all the text is valid UTF-8, that is, no byte of it comes alone in `for c in s`
 
 To walk the characters use `for c in text`, and to add a character from its code, `add_char` of core.
 

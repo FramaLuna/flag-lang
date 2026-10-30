@@ -164,7 +164,7 @@ filldom(Fn *fn)
 		for (n=1; n<fn->nblk; n++) {
 			b = fn->rpo[n];
 			d = 0;
-			for (p=0; p<b->npred; p++)
+			for (p=b->npred; p-->0;)
 				if (b->pred[p]->idom
 				||  b->pred[p] == fn->start)
 					d = inter(d, b->pred[p]);
@@ -196,19 +196,20 @@ dom(Blk *b1, Blk *b2)
 	return b1 == b2 || sdom(b1, b2);
 }
 
-static void
+static int
 addfron(Blk *a, Blk *b)
 {
 	uint n;
 
 	for (n=0; n<a->nfron; n++)
 		if (a->fron[n] == b)
-			return;
+			return 0;
 	if (!a->nfron)
 		a->fron = vnew(++a->nfron, sizeof a->fron[0], PFn);
 	else
 		vgrow(&a->fron, ++a->nfron);
 	a->fron[a->nfron-1] = b;
+	return 1;
 }
 
 /* fill the dominance frontier */
@@ -221,11 +222,11 @@ fillfron(Fn *fn)
 		b->nfron = 0;
 	for (b=fn->start; b; b=b->link) {
 		if (b->s1)
-			for (a=b; !sdom(a, b->s1); a=a->idom)
-				addfron(a, b->s1);
+			for (a=b; !sdom(a, b->s1) && addfron(a, b->s1); a=a->idom)
+				;
 		if (b->s2)
-			for (a=b; !sdom(a, b->s2); a=a->idom)
-				addfron(a, b->s2);
+			for (a=b; !sdom(a, b->s2) && addfron(a, b->s2); a=a->idom)
+				;
 	}
 }
 

@@ -202,10 +202,9 @@ func printable(code: &strview, at: usize) -> &strview:
     b := items(code)[at]
     if b >= ' ' and b <= '~':
         return code[at:at + 1]
-    tail: usize = 0
-    while at + tail + 1 < code.len and (items(code)[at + tail + 1] and 0xc0) == 0x80:
-        tail += 1
-    if b >= 0xc0 and tail == 1 + usize(b >= 0xe0) + usize(b >= 0xf0):
-        return code[at:at + tail + 1]
+    for c in code[at:]:
+        if c.len > 1:
+            return c
+        break
     digits: &strview = "0123456789abcdef"
     return "\\x" + digits[b >> 4:(b >> 4) + 1] + digits[b and 15:(b and 15) + 1]

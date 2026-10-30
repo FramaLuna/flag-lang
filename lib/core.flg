@@ -705,12 +705,11 @@ func parse_float(s: &strview) -> f64|null:
 operator +=(s: *&str, n: usize):
     digits: array[u8, 20]
     i: usize = 20
-    v := n
     while true:
         i -= 1
-        digits[i] = u8(v % 10) + '0'
-        v = v / 10
-        if v == 0:
+        digits[i] = u8(n % 10) + '0'
+        n = n / 10
+        if n == 0:
             break
     out: &strview
     out = (ptr(digits) as usize + i) as *bytes
@@ -774,7 +773,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
         smallest = 1.1754943508222875e-38
     if f < smallest and f > 0.0 - smallest:
         digits = 1 # a subnormal number holds fewer digits
-    # up to 15 digits (6 for f32) the shortest that reads back is the rounding with the zeros at the end cut
+    # shortest digits that read back: round, then cut the zeros
     buf: array[u8, 32]
     at := ptr(buf) as *u8
     out: &strview
@@ -1274,7 +1273,7 @@ func put(m: *&map[$K, $V], key: $K) -> *$V:
         m.len += 1
     return ptr(table[i].value)
 
-func get(m: &map[$K, $V], key: $K) -> $V|null:
+func at(m: &map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
         return null
     table := slots(m)
@@ -1285,9 +1284,6 @@ func get(m: &map[$K, $V], key: $K) -> $V|null:
 
 func contains(m: &map[$K, $V], key: $K) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
-
-func at(m: &map[$K, $V], key: $K) -> $V|null:
-    return get(m, key)
 
 func remove(m: *&map[$K, $V], key: $K) -> $V|null:
     if m.cap == 0:
@@ -1366,14 +1362,11 @@ func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
     m.entries[i] = entry[$K, $V]{key, value}
     return null
 
-func get(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
     i := place(m, key)
     if i == m.len:
         return null
     return m.entries[i].value
-
-func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
-    return get(m, key)
 
 func contains(m: *fixmap[$K, $V, $$max], key: $K) -> bool:
     return place(m, key) < m.len

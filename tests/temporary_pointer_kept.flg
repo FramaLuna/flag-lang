@@ -1,0 +1,55 @@
+type Pt:
+    x: i64
+    y: i64
+
+type Big:
+    inner: Pt
+    pad: array[i64, 20]
+
+type Table:
+    names: array[&strview, 9]
+
+func at(t: *Table, k: &strview) -> *&strview:
+    return ptr(t.names[0])
+
+func keep(p: *Pt) -> *Pt:
+    return p
+
+func big(x: i64) -> Big:
+    return Big{inner = Pt{x, x}}
+
+func many(n: i32) -> array[i32, 40]:
+    a: array[i32, 40]
+    for i in 0..40:
+        a[i] = n
+    return a
+
+func table(a: &strview) -> Table:
+    return Table{[a, a, a, a, a, a, a, a, a]}
+
+func main():
+    s := keep(Pt{3, 3})
+    t := keep(Pt{4, 4})
+    print(s.x, " ", t.x)
+    a := ptr([1, 2, 3])
+    b := ptr([7, 8, 9])
+    print(a[0], " ", b[0])
+    l: &slice[i32] = ptr([5, 6, 7])
+    m: &slice[i32] = ptr([0, 0, 0])
+    print(l, " ", m)
+    v := many(1)[38:]
+    w := many(2)[:2]
+    print(v, " ", w)
+    q := keep(big(5).inner)
+    r := keep(big(7).inner)
+    print(q.x, " ", r.x)
+    f := ptr(big(8).inner)
+    g := ptr(big(9).inner)
+    print(f.x, " ", g.x)
+    x := ptr(table("x")["k"])
+    y := ptr(table("y")["k"])
+    print(x.*, " ", y.*)
+    for i in 0..2:
+        p := ptr("abc")
+        p.len -= 1
+        print(p.*)

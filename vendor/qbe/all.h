@@ -402,6 +402,8 @@ struct Fn {
 	Tmp *tmp;
 	Con *con;
 	Mem *mem;
+	int *conh;
+	int nconh;
 	int ntmp;
 	int ncon;
 	int nmem;

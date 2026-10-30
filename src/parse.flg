@@ -43,7 +43,7 @@ func parse() -> Fail?:
                 append(comp.uses, Use{file, given, alias, t.at})
             try end_line()
             continue
-        sym := Sym{module = module}
+        sym := Sym{module = module, library = comp.files[file].library}
         sym.priv = t.text == "priv"
         if sym.priv:
             sym.module = comp.files[file].module
@@ -156,7 +156,10 @@ func parse() -> Fail?:
             finish(n)
         elif t.kind == Name and after.text == "=":
             try new_name(true)
-            try argument()
+            begin(Constant, comp.pos)
+            comp.pos += 2
+            try expr(1)
+            finish(n)
         elif sym.priv:
             return unexpected("priv expects a declaration after it")
         else:
@@ -223,14 +226,16 @@ func declare(n: usize, sym: Sym) -> Fail?:
             c = node_end(c)
         return null
     at := comp.tokens[comp.nodes[n].tok].at
-    id := get(comp.type_ids, sym.name)
+    id := comp.type_ids[sym.name]
     if id is usize and id <= ITERATIONEND and kind != Func:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     s := first_sym(sym.name)
     while s != 0:
         old := comp.syms[s]
         other := comp.nodes[old.node].kind
-        if old.module == sym.module:
+        if old.module == sym.module and old.library != sym.library and kind != Func and other != Func:
+            comp.syms[s].name = "core." + sym.name
+        elif old.module == sym.module and old.library == sym.library:
             problem: &strview
             if kind == Func and other == Func:
                 new_body := body(n)
@@ -247,7 +252,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
                 if twin:
                     problem = " is declared twice with the same parameters"
             elif kind == Func or other == Func:
-                if kind == Named or other == Named:
+                if kind == Constant or other == Constant:
                     problem = " is declared as a constant and as a function, a name is one or the other"
             elif other != Void or kind != Void:
                 problem = " is declared twice"
@@ -265,9 +270,6 @@ func declare(n: usize, sym: Sym) -> Fail?:
     made.next = first_sym(sym.name)
     append(comp.syms, made)
     put(comp.names, sym.name, comp.syms.len - 1)
-    if kind == Void:
-        none: &list[Item]
-        try make_type(comp.syms.len - 1, none, false, at)
     return null
 
 func func_decl(external: bool) -> Fail?:
@@ -609,7 +611,7 @@ func unary() -> Fail?:
         n := qualified(Call)
         comp.pos += 1
         while not peek(")"):
-            if t.text == "sizeof" or t.text == "can_assign":
+            if comp.nodes[n].module.len == 0 and (t.text == "sizeof" or t.text == "can_assign"):
                 try type_expr()
             else:
                 try argument()
@@ -661,7 +663,7 @@ func unary() -> Fail?:
         return unexpected("a value goes here")
     links: usize = 0
     while true:
-        comp.depth -= links
+        comp.depth -= links # each link nests, its arguments do not
         if peek(".") and comp.tokens[comp.pos + 1].kind == Name:
             wrap(start, Field, comp.pos + 1)
             comp.pos += 2
