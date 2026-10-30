@@ -1449,36 +1449,42 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             return invoke("slice", args, tok.at)
         append(args, index)
         read := try returned("at", args, tok.at)
-        if assignment != 0 and text(assignment) == "=" and read != VOID and comp.types[read].kind != Ptr:
-            middle := comp.body.len
-            append(args, settled(try value(node_end(n), read), first, middle))
-            postpone(first, middle)
-            return invoke("put", args, tok.at)
-        p := try invoke("at", args, tok.at)
-        if comp.types[p.type].kind != Ptr and assignment == 0:
-            return p
-        if comp.types[p.type].kind != Ptr:
+        if assignment != 0 and read != VOID and comp.types[read].kind != Ptr:
+            if text(assignment) == "=":
+                middle := comp.body.len
+                append(args, settled(try value(node_end(n), read), first, middle))
+                postpone(first, middle)
+                return invoke("put", args, tok.at)
             rest: &list[usize]
-            for m in members(p.type):
+            for m in members(read):
                 if m != NULL:
                     append(rest, m)
             kept := try union_of(rest, Union, tok.at)
-            spot = Value{type = kept, at = alloc(kept), mem = true, place = true}
-            zero(kept, spot.at)
-            if rest.len == members(p.type).len:
-                store(kept, p, spot.at)
+            place := try returned("put", args, tok.at)
+            if comp.types[place].kind == Ptr and comp.types[place].elem == kept:
+                spot = Value{type = kept, at = load(try invoke("put", args, tok.at)).at, mem = true, place = true}
             else:
-                l_some := label()
-                l_done := label()
-                branch(op(W, "cnew", tag(p), tag_of(NULL)), l_some, l_done)
-                open_block(l_some)
-                store(kept, Value{type = kept, at = payload(p.at, kept), mem = true}, spot.at)
-                jump(l_done)
-                open_block(l_done)
-            try update(spot, assignment, first)
-            append(args, spot)
-            return invoke("put", args, tok.at)
-        spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
+                p := try invoke("at", args, tok.at)
+                spot = Value{type = kept, at = alloc(kept), mem = true, place = true}
+                zero(kept, spot.at)
+                if rest.len == members(p.type).len:
+                    store(kept, p, spot.at)
+                else:
+                    l_some := label()
+                    l_done := label()
+                    branch(op(W, "cnew", tag(p), tag_of(NULL)), l_some, l_done)
+                    open_block(l_some)
+                    store(kept, Value{type = kept, at = payload(p.at, kept), mem = true}, spot.at)
+                    jump(l_done)
+                    open_block(l_done)
+                try update(spot, assignment, first)
+                append(args, spot)
+                return invoke("put", args, tok.at)
+        else:
+            p := try invoke("at", args, tok.at)
+            if comp.types[p.type].kind != Ptr:
+                return p
+            spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
     if assignment == 0:
         return spot
     if not spot.place:
