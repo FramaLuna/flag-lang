@@ -7,7 +7,7 @@ Every function of the standard library, module by module.
 - [fs](#fs), whole files, folders and paths
 - [os](#os), the program, other programs and the time
 - [json](#json), reading and writing JSON
-- [net](#net), TCP connections as files
+- [net](#net), TCP connections
 - [math](#math)
 - [utf8](#utf8)
 - [bits](#bits), sets of numbers as bits
@@ -37,7 +37,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 The arguments of the program are `args()` of [os](#os).
 
 ### Files
-A `File` is an open file, or a connection of [net](#net). `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
+A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
@@ -93,16 +93,16 @@ func main():
         print("hello ", name)
 ```
 
-A function that fails because the system said no, in core, `fs`, `os` and `net`, gives an `FsError`
+A function that fails because the system said no, in core, `fs` and `os`, gives an `FsError`
 ```flag
 type error FsError:
     code: i32 # the error number of the system, errno
-    action: &strview # what failed: open, create, read, write, list, make, remove, run, connect to...
+    action: &strview # what failed: open, create, read, write, list, make, remove, run...
     path: &strview # the path, the program or the address you gave
 ```
 Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with, and for the standard files it's `the standard input`, `the standard output` or `the error output`.
 
-A negative `code` is an error that has no errno: a name that `connect` cannot find gives the code of `getaddrinfo`, and on Windows the errors of connections and of `rename` are the codes of the system. `TIMED_OUT` is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read example.com:80: the timeout ran out`.
+A negative `code` is an error that has no errno: on Windows the errors of `rename` are the codes of the system.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
 
 ### Memory
@@ -369,27 +369,37 @@ type error NotJson:
 A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, `size`, how many nodes it takes with the ones inside it, and `escaped`, if it's a `Text` with escapes to decode. An object keeps each key as a `Text` node right before its value.
 
 ## net
-TCP connections, as files: `connect`, `listen` and `accept` give a `File`, so `read`, `read_line`, `write`, `flush` and `close` work on them, and the errors are the `FsError` of [core](#files).
-- `connect(host: &strview, port: u16) -> File|FsError` connects to a name or an address, it tries each address of the name until one answers: `cannot connect to example.com:80: Connection refused`
-- `listen(port: u16) -> File|FsError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
-- `accept(server: File) -> File|FsError` waits for the next connection
-- `timeout(f: File, seconds: f64)` makes a read or a write that waits longer than that give an `FsError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
-- `port(f: File) -> u16` the local port of a connection or a server, 0 when it's not one
+TCP connections. A `Socket` is one connection and a `Server` waits for them, each a type of its own, so a file never goes where a connection goes.
+- `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers: `cannot connect to example.com:80: Connection refused`
+- `listen(port: u16) -> Server|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
+- `accept(server: Server) -> Socket|NetError` waits for the next connection
+- `port(server: Server) -> u16` the port the server listens on
+- `close(server: Server)` stops listening
+- `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
+- `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: usize) -> usize|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
 
-What you write waits in the connection like in any file, and it goes out with `flush`, or by itself before the program waits to read, so a request always goes before you wait for its answer
+```flag
+type error NetError:
+    code: i32 # the error number of the system, errno
+    action: &strview # what failed: connect to, listen on port, accept a connection, read, write
+    address: &strview # the host and port of connect, the port of listen, empty for the rest
+```
+It prints like an `FsError`. A name that `connect` cannot find gives the negative code of `getaddrinfo`, and on Windows the codes are the negative ones of Winsock. `TIMED_OUT`, of core, is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read: the timeout ran out`.
+
+What you write waits in the connection like in a file, and it goes out with `flush`, or by itself before the program waits to read, so a request always goes before you wait for its answer
 ```flag
 use net
 
 func main():
     c := connect("example.com", 80)
-    if c is FsError:
+    if c is NetError:
         eprint(c)
         return
     with c:
         write(c, "HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n")
         print(read_line(c)) # HTTP/1.0 200 OK
 ```
-Writing to a connection that the other side closed gives an `FsError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
+Writing to a connection that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
 
 ## math
 It links the C math library.

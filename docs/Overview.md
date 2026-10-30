@@ -821,7 +821,7 @@ The functions of text, lists, maps and files (`open`, `read_line`, `write`...) a
 - `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading and writing JSON
-- `net`, TCP connections as files
+- `net`, TCP connections
 - `math`, `sqrt`, `sin`, `min`, random numbers...
 - `utf8`, characters of UTF-8 text
 - `bits`, sets of numbers as bits

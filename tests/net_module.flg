@@ -5,12 +5,12 @@ extern "c":
     func fcntl(fd: i32, command: i32, ...) -> i32
     func GetHandleInformation(handle: *bytes, flags: *u32) -> i32
 
-func inherited(f: File) -> bool where not @windows():
-    return (fcntl(f.fd, 1) and 1) == 0 # F_GETFD and FD_CLOEXEC
+func inherited(fd: i32) -> bool where not @windows():
+    return (fcntl(fd, 1) and 1) == 0 # F_GETFD and FD_CLOEXEC
 
-func inherited(f: File) -> bool where @windows():
+func inherited(fd: i32) -> bool where @windows():
     flags: u32 = 0
-    GetHandleInformation(usize(f.fd) as *bytes, ptr(flags))
+    GetHandleInformation(usize(fd) as *bytes, ptr(flags))
     return (flags and 1) != 0 # HANDLE_FLAG_INHERIT
 
 func broken_pipe() where not @windows():
@@ -21,18 +21,18 @@ func broken_pipe() where @windows():
 
 func main() -> i32:
     server := listen(0)
-    if server is FsError:
+    if server is NetError:
         print(server)
         return 1
     client := connect("127.0.0.1", port(server))
-    if client is FsError:
+    if client is NetError:
         print(client)
         return 1
     peer := accept(server)
-    if peer is FsError:
+    if peer is NetError:
         print(peer)
         return 1
-    print(inherited(server), " ", inherited(client), " ", inherited(peer))
+    print(inherited(server.fd), " ", inherited(client.fd), " ", inherited(peer.fd))
     write(client, "hello over tcp\r\n")
     write(client, 42)
     write(client, "\n")
@@ -47,7 +47,7 @@ func main() -> i32:
     timeout(peer, 0.05)
     start := clock()
     late := read_line(peer)
-    if late is FsError:
+    if late is NetError:
         print(late.code == TIMED_OUT, " ", clock() - start >= 0.04, " ", late)
     close(client)
     print(read_line(peer))
@@ -58,18 +58,18 @@ func main() -> i32:
             sleep(0.01)
             write(peer, "nobody listens")
             lost = flush(peer)
-    if lost is FsError:
+    if lost is NetError:
         print(lost.action)
     close(peer)
     broken_pipe()
     taken := listen(port(server))
-    if taken is FsError:
-        print(taken.action, " ", taken.path == "" + port(server))
+    if taken is NetError:
+        print(taken.action, " ", taken.address == "" + port(server))
     close(server)
     refused := connect("127.0.0.1", 1)
-    if refused is FsError:
+    if refused is NetError:
         print(refused.action, " ", starts_with("" + refused, "cannot connect to 127.0.0.1:1: "))
     unknown := connect("nosuch.invalid", 80)
-    if unknown is FsError:
+    if unknown is NetError:
         print(unknown.code < 0, " ", starts_with("" + unknown, "cannot connect to nosuch.invalid:80: "))
     return 0
