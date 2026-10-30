@@ -255,57 +255,17 @@ func invoke(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
     return call(name, "", args, names, at)
 
 func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
-    best: usize = 0
-    best_score: i64 = -1
-    best_near: usize = 0
-    tied := false
-    seen := false
-    scores: &list[i64]
-    here := comp.files[file_of(at)].module
-    kept := false
-    s := first_sym(name)
-    while s != 0:
-        kept = kept or comp.syms[s].priv and callable(s, module, args, at)
-        s = comp.syms[s].next
-    s = first_sym(name)
-    while s != 0:
-        f := comp.syms[s].node
-        if callable(s, module, args, at):
-            seen = true
-            order := arrange(f, args.len, names)
-            if order is &list[usize]:
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                score := try bind(f, order, args)
-                comp.binds.len = comp.frame
-                comp.frame = saved
-                if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
-                    score += PRIVATE
-                append(scores, score)
-                if score > best_score or score >= 0 and score == best_score and near(s, at) < best_near:
-                    best = s
-                    best_score = score
-                    best_near = near(s, at)
-                    tied = false
-                elif score >= 0 and score == best_score and near(s, at) == best_near:
-                    tied = true
-        s = comp.syms[s].next
-    if not seen and is_letter(items(name)[0]):
-        try hidden(name, true, at)
-        try hidden(name, false, at)
-        if module.len == 0 and lookup(name) != 0:
-            return fail(name + " is a variable of type " + comp.types[comp.vars[lookup(name) - 1].type].name + ", only a function value can be called", at)
-        return fail("no function named " + name + " is visible here", at)
+    best := try choose(name, module, args, names, at)
     if best == 0 and name == "==" and args.len == 2 and args[0].type == args[1].type:
         k := comp.types[args[0].type].kind
         if k == Struct or k == Union or k == Void:
             return equal(args[0], args[1], at)
     if best == 0 and name == "hash" and args.len == 1:
         return hashed(args[0], at)
-    if best == 0 or tied:
+    if best == 0:
         for wanted in names:
             declared := wanted.len == 0
-            s = first_sym(name)
+            s := first_sym(name)
             while s != 0 and not declared:
                 f := comp.syms[s].node
                 for k in 0..params(f):
@@ -313,34 +273,22 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 s = comp.syms[s].next
             if not declared:
                 return fail(name + " has no parameter named " + wanted, at)
-        shown: &str
         hint: &strview
-        for i in 0..args.len:
-            if i > 0:
-                shown += ", "
-            shown += brief(comp.types[args[i].type].name)
-            if comp.types[args[i].type].kind == Union and comp.types[args[i].type].size > 4 and not is_letter(items(name)[0]):
+        for a in args:
+            if comp.types[a.type].kind == Union and comp.types[a.type].size > 4 and not is_letter(items(name)[0]):
                 hint = ", a union is narrowed with is before its value is used"
         if name == "at" and args.len == 2 and integer(args[1].type):
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
-        message := "no overload of " + name + " matches (" + shown + ")" + hint
-        if tied:
-            message = "ambiguous call to " + name + ", several overloads match (" + shown + ") equally"
-        failed := fail(message, at)
-        k: usize = 0
+        failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said: usize = 0
-        s = first_sym(name)
-        while s != 0:
+        s := first_sym(name)
+        while s != 0 and hint.len == 0 and said < 4:
             if callable(s, module, args, at):
-                arranged := arrange(comp.syms[s].node, args.len, names) is &list[usize]
-                if tied and arranged and scores[k] == best_score or not tied and hint.len == 0 and said < 4:
-                    said += 1
-                    decl := comp.nodes[comp.syms[s].node].tok
-                    note("an overload of " + name + " is declared here", comp.tokens[decl].at)
-                    if noted(at) and comp.tokens[comp.target].text == name:
-                        mark(decl, header(decl))
-                if arranged:
-                    k += 1
+                said += 1
+                decl := comp.nodes[comp.syms[s].node].tok
+                note("an overload of " + name + " is declared here", comp.tokens[decl].at)
+                if noted(at) and comp.tokens[comp.target].text == name:
+                    mark(decl, header(decl))
             s = comp.syms[s].next
         return failed
     f := comp.syms[best].node
@@ -382,6 +330,85 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             else:
                 append(passes, Pass{cls(v.type), x, is_number(x)})
     return emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
+
+func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> usize|Fail:
+    key: &str
+    key += name + "|" + module + "|" + file_of(at)
+    for a in args:
+        key += "|" + a.type
+        if a.lit:
+            key += " " + a.neg + " " + a.n
+    for given in names:
+        key += "|" + given
+    known := get(comp.chosen, view(key))
+    if known is usize:
+        free(key)
+        return known
+    best: usize = 0
+    best_score: i64 = -1
+    best_near: usize = 0
+    tied := false
+    seen := false
+    scores: &list[i64]
+    here := comp.files[file_of(at)].module
+    kept := false
+    s := first_sym(name)
+    while s != 0:
+        kept = kept or comp.syms[s].priv and callable(s, module, args, at)
+        s = comp.syms[s].next
+    s = first_sym(name)
+    while s != 0:
+        f := comp.syms[s].node
+        if callable(s, module, args, at):
+            seen = true
+            order := arrange(f, args.len, names)
+            if order is &list[usize]:
+                saved := comp.frame
+                comp.frame = comp.binds.len
+                score := try bind(f, order, args)
+                comp.binds.len = comp.frame
+                comp.frame = saved
+                if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
+                    score += PRIVATE
+                append(scores, score)
+                if score > best_score or score >= 0 and score == best_score and near(s, at) < best_near:
+                    best = s
+                    best_score = score
+                    best_near = near(s, at)
+                    tied = false
+                elif score >= 0 and score == best_score and near(s, at) == best_near:
+                    tied = true
+        s = comp.syms[s].next
+    if not seen and is_letter(items(name)[0]):
+        try hidden(name, true, at)
+        try hidden(name, false, at)
+        if module.len == 0 and lookup(name) != 0:
+            return fail(name + " is a variable of type " + comp.types[comp.vars[lookup(name) - 1].type].name + ", only a function value can be called", at)
+        return fail("no function named " + name + " is visible here", at)
+    if tied:
+        failed := fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
+        k: usize = 0
+        s = first_sym(name)
+        while s != 0:
+            if callable(s, module, args, at) and arrange(comp.syms[s].node, args.len, names) is &list[usize]:
+                if scores[k] == best_score:
+                    decl := comp.nodes[comp.syms[s].node].tok
+                    note("an overload of " + name + " is declared here", comp.tokens[decl].at)
+                    if noted(at) and comp.tokens[comp.target].text == name:
+                        mark(decl, header(decl))
+                k += 1
+            s = comp.syms[s].next
+        return failed
+    put(comp.chosen, view(key), best)
+    return best
+
+func listed(args: &list[Value]) -> &str:
+    shown: &str
+    for a in args:
+        if shown.len > 0:
+            shown += ", "
+        shown += brief(comp.types[a.type].name)
+    return shown
 
 func near(s: usize, at: usize) -> usize:
     if comp.syms[s].module == comp.files[file_of(at)].module:
@@ -940,20 +967,7 @@ func widens(from: usize, to: usize) -> bool:
 
 func offers(name: &strview, args: &list[Value], at: usize) -> bool|Fail:
     names: &list[&strview]
-    s := first_sym(name)
-    while s != 0:
-        if callable(s, "", args, at):
-            order := arrange(comp.syms[s].node, args.len, names)
-            if order is &list[usize]:
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                score := try bind(comp.syms[s].node, order, args)
-                comp.binds.len = comp.frame
-                comp.frame = saved
-                if score >= 0:
-                    return true
-        s = comp.syms[s].next
-    return false
+    return try choose(name, "", args, names, at) != 0
 
 func noted(at: usize) -> bool:
     return comp.asked and comp.tokens[comp.target].at == at
