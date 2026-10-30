@@ -293,6 +293,15 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                     how = L
                 append(passes, Pass{how, x, is_number(x)})
             return emit(global(view(key)), passes, ret, false, at)
+    seen := first_sym(name)
+    while best == 0 and seen != 0 and not callable(seen, module, args, at):
+        seen = comp.syms[seen].next
+    if best == 0 and seen == 0 and is_letter(items(name)[0]):
+        try hidden(name, true, at)
+        try hidden(name, false, at)
+        if module.len == 0 and lookup(name) != 0:
+            return fail(name + " is a variable of type " + comp.types[comp.vars[lookup(name) - 1].type].name + ", only a function value can be called", at)
+        return fail("no function named " + name + " is visible here", at)
     if best == 0:
         for label in names:
             declared := label.len == 0
@@ -310,6 +319,12 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 hint = ", a union is narrowed with is before its value is used"
         if name == "at" and args.len == 2 and integer(args[1].type):
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
+        if name == "slice" and args.len == 3 and integer(args[1].type) and integer(args[2].type) and args[1].type != args[2].type:
+            hint = ", the two ends of a slice need one type"
+            if args[1].neg or args[2].neg:
+                hint = hint + ", and a negative one counts from the end so both need a signed type"
+        if name == "put" and args.len == 3 and try offers("at", ptr([args[0], args[1]]), at):
+            hint = ", x[i] = v calls put(x, i, v) when at gives a copy: declare put for " + comp.types[args[0].type].name + ", or make at give a pointer"
         failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said: usize = 0
         s := first_sym(name)
@@ -382,7 +397,6 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
     best_score: i64 = -1
     best_near: usize = 0
     tied := false
-    seen := false
     scores: &list[i64]
     here := comp.files[file_of(at)].module
     kept := false
@@ -394,7 +408,6 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
     while s != 0:
         f := comp.syms[s].node
         if callable(s, module, args, at):
-            seen = true
             order := arrange(f, args.len, names)
             if order is &list[usize]:
                 saved := open_frame()
@@ -411,12 +424,6 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
                 elif score >= 0 and score == best_score and near(s, at) == best_near:
                     tied = true
         s = comp.syms[s].next
-    if not seen and is_letter(items(name)[0]):
-        try hidden(name, true, at)
-        try hidden(name, false, at)
-        if module.len == 0 and lookup(name) != 0:
-            return fail(name + " is a variable of type " + comp.types[comp.vars[lookup(name) - 1].type].name + ", only a function value can be called", at)
-        return fail("no function named " + name + " is visible here", at)
     if tied:
         failed := fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
         k: usize = 0

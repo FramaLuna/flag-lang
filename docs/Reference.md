@@ -287,7 +287,7 @@ The rules
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
-- assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, an is outside the loop narrowed it to i32 and the loop reads it that way every round`
+- assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
 `==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
 
@@ -379,7 +379,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array that `p` points to.
+For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array, list, slice or text that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -441,12 +441,12 @@ The variable counts the loop, so it cannot be assigned: `i counts this loop, so 
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
 
 ### Everything else
-Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`.
+Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`. The counter counts the loop like the variable of a range, so it cannot be assigned either.
 
 - Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a whole character comes alone, and `reverse` gives the same pieces. `items(text)` gives the bytes
-- A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed. A fixed map gives them in the order they were put
+- A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed: `&map[&strview, i32] has no reverse_iter, so reverse cannot walk it`. A fixed map gives them in the order they were put
 - An array gives its elements, the loop takes its address so it doesn't copy it, and it can be reversed
-- A pointer to a list is not iterable, use `p.*`
+- A pointer to an array, a list, a slice or text walks what it points to
 - The elements are copies, changing `x` doesn't change the list
 - The length is read when the loop starts, what you append during the loop is not visited, and if the list grows the loop keeps reading the old memory, so don't grow a list you are walking
 
@@ -454,7 +454,7 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
 
-Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`.
+Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. A switch over a `bool` with `case true:` and `case false:` handles every value, like a switch with a default, so a function can end with it when both cases return.
 
 Over a tagged union the cases name its member types: one type, several separated by `,`, or a union `A|B`. A case runs when the union holds one of them, and inside it a local variable or a parameter has those types, like inside `if x is A|B:`. The default gets the members that no case names, and after the switch the variable has the types of the cases that don't leave, so `case null: return` leaves it without `null`. A subject that is not a variable is tested the same way, there is just nothing to narrow
 ```flag
@@ -469,7 +469,7 @@ func area(s: Circle|Square|null) -> f64:
 ```
 - every type a case names is a member still there: `i32|f64 can never be null, so this case never runs`
 - each member goes in one case: `this switch already handles null above, each type goes in one case`
-- every member is handled or there is a default: `this switch never handles i32 and has no default case`, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
+- every member is handled or there is a default: `this switch never handles i32|null and has no default case`, naming every member left, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
 - a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 

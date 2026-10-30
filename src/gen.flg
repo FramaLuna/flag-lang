@@ -876,11 +876,11 @@ func iterate(n: usize) -> Fail?:
             limit = end.n
     else:
         walked = try value(subject, VOID)
+        pointee := comp.types[walked.type].elem
+        if comp.types[walked.type].kind == Ptr and (comp.types[pointee].kind == Array or sequence(pointee) or textual(pointee)):
+            walked = Value{type = pointee, at = load(walked).at, mem = true, place = true}
         seq := walked.type
         addr = walked.at
-        if comp.types[seq].kind == Ptr and comp.types[comp.types[seq].elem].kind == Array:
-            addr = load(walked).at
-            seq = comp.types[seq].elem
         t = USIZE
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
@@ -926,7 +926,7 @@ func iterate(n: usize) -> Fail?:
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         if backward:
             append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
         else:
@@ -948,6 +948,8 @@ func iterate(n: usize) -> Fail?:
             walk: &strview = "iter"
             if backward:
                 walk = "reverse_iter"
+            if backward and not try offers(walk, args, tok.at):
+                return fail(comp.types[walked.type].name + " has no reverse_iter, so reverse cannot walk it", at)
             walker = try invoke(walk, args, tok.at)
             slot = alloc(walker.type)
             store(walker.type, walker, slot)
@@ -960,7 +962,7 @@ func iterate(n: usize) -> Fail?:
         if counter != 0:
             store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false, false})
+            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         item: usize = VOID
         place := Arg{}
         if chars:
@@ -1046,6 +1048,7 @@ func cases(n: usize) -> Fail?:
     before := comp.vars.len
     ends: &list[Local]
     lives: usize = 0
+    truths: usize = 0
     c := node_end(n + 1)
     while c < node_end(n):
         at := comp.tokens[comp.nodes[c].tok].at
@@ -1105,7 +1108,10 @@ func cases(n: usize) -> Fail?:
                     high := try binary("<", subject, try value(node_end(l + 1), VOID), first.at)
                     eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
                 else:
-                    eq = try binary("==", subject, try value(l, subject.type), first.at)
+                    label := try value(l, subject.type)
+                    if label.lit and subject.type == BOOL:
+                        truths = truths or usize(1) << label.n
+                    eq = try binary("==", subject, label, first.at)
                 if eq.type != BOOL:
                     return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, first.at)
                 l_more := l_next
@@ -1128,8 +1134,8 @@ func cases(n: usize) -> Fail?:
         open_block(l_next)
         c = node_end(c)
     if union and fallback == 0 and left.len > 0:
-        return fail("this switch never handles " + comp.types[left[0]].name + " and has no default case", tok.at)
-    if fallback != 0 or union:
+        return fail("this switch never handles " + comp.types[try union_of(left, Union, tok.at)].name + " and has no default case", tok.at)
+    if fallback != 0 or union or truths == 3:
         terminate("hlt", Arg{})
     else:
         lives += 1
@@ -1657,7 +1663,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
             if l.name == decl.name and l.depth < comp.loops.len and (comp.loops.len > comp.leaving or l.depth < comp.staying):
                 outside = l
         if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
-            return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, an is outside the loop narrowed it to " + comp.types[outside.type].name + " and the loop reads it that way every round", sign)
+            return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, it was narrowed to " + comp.types[outside.type].name + " outside the loop and the loop reads it that way every round", sign)
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
             append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false, false})
             place = Value{type = outside.type, at = outside.addr}
