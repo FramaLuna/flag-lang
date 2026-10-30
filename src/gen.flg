@@ -74,19 +74,16 @@ func gen_program(check: bool) -> Fail?:
                 subject += 1
             shown += text(subject)
             whole := text(subject) == "list" or text(subject) == "slice" or text(subject) == "array"
-            problem: &str
-            if text(f) != "at" and whole:
-                problem += "for over " + shown + " belongs to the language, " + text(f) + " cannot be declared for it"
-            elif text(f) == "at" and params(f) == 2 and (whole or text(subject) == "str" or text(subject) == "strview"):
+            owned := text(f) != "at" and whole
+            if text(f) == "at" and params(f) == 2 and (whole or text(subject) == "str" or text(subject) == "strview"):
                 saved := comp.frame
                 comp.frame = comp.binds.len
                 for t in I8..USIZE + 1:
-                    if problem.len == 0 and try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0:
-                        problem += "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+                    owned = owned or try match(kid(f, 1) + 1, Value{type = usize(t)}) >= 0
                     comp.binds.len = comp.frame
                 comp.frame = saved
-            if problem.len > 0:
-                return fail(problem, comp.tokens[comp.nodes[f].tok].at)
+            if owned:
+                return fail(language(text(f), shown), comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
     comp.procs.len = funcs
     comp.code.len = code
@@ -124,21 +121,108 @@ func gen_program(check: bool) -> Fail?:
     close_proc(wrapper, W, 2)
     return null
 
-func gen_from(first: usize) -> usize|Fail:
-    i := first
-    while i < comp.insts.len:
+func gen_from(from: usize) -> usize|Fail:
+    next := from
+    while next < comp.insts.len:
+        i := next
+        next += 1
         inst := comp.insts[i]
-        library := inst.at != 0 and inst.count > 0 and comp.files[file_of(comp.tokens[comp.nodes[inst.node].tok].at)].library
-        if library:
-            comp.blame = inst.at
-        failed := gen_func(i) is Fail
+        f := inst.node
+        block := body(f)
+        if block == 0:
+            continue
         comp.blame = 0
-        if failed:
-            if inst.at != 0 and inst.count > 0 and not library:
-                note("the " + text(inst.node) + " that fails was made for this call, with " + bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]), inst.at)
-            return Fail
-        i += 1
-    return i
+        if inst.count > 0:
+            comp.blame = inst.at
+        comp.vars.len = 0
+        comp.defers.len = 0
+        comp.loops.len = 0
+        comp.live = true
+        comp.inst = i
+        comp.frame = comp.binds.len
+        for k in 0..inst.count:
+            append(comp.binds, comp.inst_binds[inst.binds + k])
+        comp.ret = inst.ret
+        comp.at = comp.tokens[comp.nodes[f].tok].at
+        made := open_proc(inst.name, f, i, inst.export)
+        for k in 0..params(f):
+            c := kid(f, k)
+            t := try resolve(c + 1)
+            if comp.types[t].kind == Bytes:
+                return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
+            p := temp()
+            comp.numbers[usize(p.n) - 1] = integer(t) and comp.types[t].size == 8
+            passed := cls(t)
+            if inst.export:
+                passed = try passing(t, true, comp.at)
+            elif comp.types[t].kind == Fat or big(t):
+                passed = L
+            append(comp.passes, Pass{passed, p, comp.numbers[usize(p.n) - 1]})
+            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
+        comp.dest = Arg{}
+        if big(inst.ret) and not inst.export:
+            comp.dest = temp()
+            append(comp.passes, Pass{L, comp.dest, false})
+        for k in 0..params(f):
+            given := comp.vars[k]
+            if comp.passes[made.params + k].cls < AGG:
+                comp.vars[k].addr = alloc(given.type)
+                store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
+            mention(given.name, comp.vars[k].addr)
+        name := text(f)
+        first: usize = VOID
+        second: usize = VOID
+        if params(f) > 0:
+            first = comp.vars[0].type
+        if params(f) > 1:
+            second = comp.vars[1].type
+        target := first
+        if comp.types[first].kind == Ptr:
+            target = comp.types[first].elem
+        integral := false
+        if name == "at":
+            for t in I8..USIZE + 1:
+                integral = integral or accepts(second, Value{type = usize(t)}) >= 0
+        problem: &str
+        if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
+            if name == "=" and inst.ret != target:
+                problem += "operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name
+            elif name == "+=" and comp.types[first].name != "*&str":
+                problem += "operator += appends to text only, its first parameter is *&str: for another type declare operator +, a += b is a = a + b"
+            elif (name == "==" or name == "<") and inst.ret != BOOL:
+                problem += "operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name
+            elif name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
+                problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
+            elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
+                problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
+        elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
+            problem += language(name, comp.types[first].name)
+        if problem.len > 0:
+            return fail(problem, comp.at)
+        try statements(block)
+        if comp.live:
+            if comp.ret != VOID:
+                return fail("not every path of this function returns a value", comp.tokens[comp.nodes[f].tok].at)
+            terminate("ret", Arg{})
+        try forget(0)
+        back: u32 = 0
+        if inst.ret != VOID and inst.export:
+            back = try passing(inst.ret, true, comp.at)
+        elif inst.ret != VOID and comp.dest.kind == Empty:
+            back = cls(inst.ret)
+        close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
+        comp.binds.len = comp.frame
+    comp.blame = 0
+    return next
+
+func language(name: &strview, shown: &strview) -> &strview:
+    if name == "at":
+        return "x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it"
+    return "for over " + shown + " belongs to the language, " + name + " cannot be declared for it"
+
+func made(inst: usize) -> &str:
+    i := comp.insts[inst]
+    return bindings(comp.inst_binds[i.binds:i.binds + i.count])
 
 func bindings(binds: &slice[Item]) -> &str:
     given: &str
@@ -206,7 +290,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     if comp.insts.len > 100000 or depth > DEEP or comp.spelled > LONG:
         return fail("instancing " + text(f) + " never ends, each call builds a bigger type than the last", comp.tokens[comp.nodes[f].tok].at)
     site := at
-    if comp.blame != 0:
+    if comp.blame != 0 and comp.insts[comp.inst].library:
         site = comp.blame
     ret := result(f)
     if ret is Fail:
@@ -227,99 +311,12 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         else:
             name += "op"
         name += "." + comp.insts.len
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site, export, depth})
+    library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site, export, library, depth})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
-
-func gen_func(i: usize) -> Fail?:
-    inst := comp.insts[i]
-    f := inst.node
-    block := body(f)
-    if block == 0:
-        return null
-    comp.vars.len = 0
-    comp.defers.len = 0
-    comp.loops.len = 0
-    comp.live = true
-    comp.inst = i
-    comp.frame = comp.binds.len
-    for k in 0..inst.count:
-        append(comp.binds, comp.inst_binds[inst.binds + k])
-    comp.ret = inst.ret
-    comp.at = comp.tokens[comp.nodes[f].tok].at
-    made := open_proc(inst.name, f, i, inst.export)
-    for k in 0..params(f):
-        c := kid(f, k)
-        t := try resolve(c + 1)
-        if comp.types[t].kind == Bytes:
-            return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
-        p := temp()
-        comp.numbers[usize(p.n) - 1] = integer(t) and comp.types[t].size == 8
-        passed := cls(t)
-        if inst.export:
-            passed = try passing(t, true, comp.at)
-        elif comp.types[t].kind == Fat or big(t):
-            passed = L
-        append(comp.passes, Pass{passed, p, comp.numbers[usize(p.n) - 1]})
-        append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
-    comp.dest = Arg{}
-    if big(inst.ret) and not inst.export:
-        comp.dest = temp()
-        append(comp.passes, Pass{L, comp.dest, false})
-    for k in 0..params(f):
-        given := comp.vars[k]
-        if comp.passes[made.params + k].cls < AGG:
-            comp.vars[k].addr = alloc(given.type)
-            store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
-        mention(given.name, comp.vars[k].addr)
-    name := text(f)
-    first: usize = VOID
-    second: usize = VOID
-    if params(f) > 0:
-        first = comp.vars[0].type
-    if params(f) > 1:
-        second = comp.vars[1].type
-    target := first
-    if comp.types[first].kind == Ptr:
-        target = comp.types[first].elem
-    integral := false
-    if name == "at":
-        for t in I8..USIZE + 1:
-            integral = integral or accepts(second, Value{type = usize(t)}) >= 0
-    problem: &str
-    if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
-        if name == "=" and inst.ret != target:
-            problem += "operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name
-        elif name == "+=" and comp.types[first].name != "*&str":
-            problem += "operator += appends to text only, its first parameter is *&str: for another type declare operator +, a += b is a = a + b"
-        elif (name == "==" or name == "<") and inst.ret != BOOL:
-            problem += "operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name
-        elif name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
-            problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
-        elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
-            problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
-    elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array):
-        problem += "x[i] with an integer on " + comp.types[first].name + " belongs to the language, at cannot be declared for it"
-    elif (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
-        problem += "for over " + comp.types[first].name + " belongs to the language, " + name + " cannot be declared for it"
-    if problem.len > 0:
-        return fail(problem, comp.at)
-    try statements(block)
-    if comp.live:
-        if comp.ret != VOID:
-            return fail("not every path of this function returns a value", comp.tokens[comp.nodes[f].tok].at)
-        terminate("ret", Arg{})
-    try forget(0)
-    back: u32 = 0
-    if inst.ret != VOID and inst.export:
-        back = try passing(inst.ret, true, comp.at)
-    elif inst.ret != VOID and comp.dest.kind == Empty:
-        back = cls(inst.ret)
-    close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
-    comp.binds.len = comp.frame
-    return null
 
 func gen(n: usize, want: usize) -> Value|Fail:
     node := comp.nodes[n]
