@@ -378,62 +378,6 @@ func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview
     out.len = last - first
     return out
 
-priv type chars:
-    rest: &strview
-
-func iter(v: &strview) -> chars:
-    c: chars
-    c.rest = v
-    return c
-
-func next(c: *chars) -> &strview|IterationEnd:
-    if c.rest.len == 0:
-        return IterationEnd
-    out := c.rest
-    out.len = 1
-    lead := (ptr(out.*) as *u8).*
-    if lead >= 0xC0:
-        bytes := items(c.rest)
-        width := char_width(lead)
-        whole := width <= bytes.len
-        for k in 1..width:
-            whole = whole and (bytes[k] and 0xC0) == 0x80
-        if whole:
-            out.len = width
-    c.rest = (ptr(c.rest.*) as usize + out.len) as *bytes
-    c.rest.len -= out.len
-    return out
-
-priv func char_width(lead: u8) -> usize:
-    if lead < 0xC0 or lead >= 0xF8:
-        return 1
-    if lead < 0xE0:
-        return 2
-    if lead < 0xF0:
-        return 3
-    return 4
-
-priv type chars_back:
-    rest: &strview
-
-func reverse_iter(v: &strview) -> chars_back:
-    c: chars_back
-    c.rest = v
-    return c
-
-func next(c: *chars_back) -> &strview|IterationEnd:
-    if c.rest.len == 0:
-        return IterationEnd
-    bytes := items(c.rest)
-    start := bytes.len - 1
-    while start > 0 and bytes.len - start < 4 and (bytes[start] and 0xC0) == 0x80:
-        start -= 1
-    if char_width(bytes[start]) != bytes.len - start:
-        start = bytes.len - 1
-    out := c.rest[start:c.rest.len]
-    c.rest.len = start
-    return out
-
 func reserve(s: *&str, want: usize):
     if want <= s.cap:
         return

@@ -73,9 +73,9 @@ func gen_program(check: bool) -> Fail?:
                 shown += text(subject)
                 subject += 1
             shown += text(subject)
-            whole := text(subject) == "list" or text(subject) == "slice" or text(subject) == "array"
+            whole := text(subject) == "list" or text(subject) == "slice" or text(subject) == "array" or text(subject) == "str" or text(subject) == "strview"
             owned := text(f) != "at" and whole
-            if text(f) == "at" and params(f) == 2 and (whole or text(subject) == "str" or text(subject) == "strview"):
+            if text(f) == "at" and params(f) == 2 and whole:
                 saved := comp.frame
                 comp.frame = comp.binds.len
                 for t in I8..USIZE + 1:
@@ -195,7 +195,7 @@ func gen_from(from: usize) -> usize|Fail:
                 problem += "operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it"
             elif name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 problem += "operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again"
-        elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
+        elif name == "at" and integral and (sequence(target) or textual(target) or comp.types[target].kind == Array) or (name == "iter" or name == "reverse_iter") and (sequence(first) or textual(first) or comp.types[target].kind == Array):
             problem += language(name, comp.types[first].name)
         if problem.len > 0:
             return fail(problem, comp.at)
@@ -864,35 +864,92 @@ func iterate(n: usize) -> Fail?:
         else:
             append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
     else:
-        args: &list[Value]
-        append(args, walked)
-        walk: &strview = "iter"
-        if backward:
-            walk = "reverse_iter"
-        walker := try invoke(walk, args, tok.at)
-        it := alloc(walker.type)
-        store(walker.type, walker, it)
-        count := alloc(USIZE)
-        store(USIZE, Value{type = USIZE, at = int_arg(-1)}, count)
+        chars := textual(walked.type)
+        walker := walked
+        if chars:
+            addr = op1(L, "loadl", walked.at)
+            end = load(Value{type = USIZE, at = offset(walked.at, 8), mem = true})
+            slot = alloc(USIZE)
+            if backward:
+                store(USIZE, end, slot)
+            else:
+                store(USIZE, Value{type = USIZE, at = int_arg(0)}, slot)
+        else:
+            args: &list[Value]
+            append(args, walked)
+            walk: &strview = "iter"
+            if backward:
+                walk = "reverse_iter"
+            walker = try invoke(walk, args, tok.at)
+            slot = alloc(walker.type)
+            store(walker.type, walker, slot)
+        count := Arg{}
+        if counter != 0:
+            count = alloc(USIZE)
+            store(USIZE, Value{type = USIZE, at = int_arg(-1)}, count)
         jump(l_head)
         open_block(l_head)
-        store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
         if counter != 0:
+            store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, false})
-        args.len = 0
-        append(args, Value{type = pointer(walker.type), at = it})
-        got := try invoke("next", args, tok.at)
-        rest: &list[usize]
-        for m in members(got.type):
-            if m != ITERATIONEND:
-                append(rest, m)
-        if comp.types[got.type].kind != Union or rest.len == members(got.type).len:
-            return fail("next over " + comp.types[walker.type].name + " expects to return an element or IterationEnd, it returns " + comp.types[got.type].name, tok.at)
-        item := try union_of(rest, Union, tok.at)
-        branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
-        open_block(l_body)
-        place := payload(got.at, item)
+        item := walked.type
+        place := Arg{}
+        if chars:
+            i := load(Value{type = USIZE, at = slot, mem = true}).at
+            if backward:
+                branch(op(W, "cultl", int_arg(0), i), l_body, l_exit)
+            else:
+                branch(op(W, "cultl", i, end.at), l_body, l_exit)
+            open_block(l_body)
+            item = try fat_type("strview", VOID, tok.at)
+            here := op(L, "add", addr, i)
+            near := here
+            if backward:
+                near = op(L, "sub", here, int_arg(1))
+            sized := alloc(USIZE)
+            l_one := label()
+            l_wide := label()
+            l_piece := label()
+            branch(op(W, "cultw", op1(W, "loadub", near), int_arg(0x80)), l_one, l_wide)
+            open_block(l_one)
+            store(USIZE, Value{type = USIZE, at = int_arg(1)}, sized)
+            jump(l_piece)
+            open_block(l_wide)
+            trail := Arg{}
+            w := Arg{}
+            if backward:
+                trail = continued(near, -1, int_arg(3), op(L, "sub", i, int_arg(1)))
+                w = width(op1(W, "loadub", op(L, "sub", near, trail)))
+            else:
+                w = width(op1(W, "loadub", here))
+                trail = continued(op(L, "add", here, int_arg(1)), 1, op(L, "sub", w, int_arg(1)), op(L, "sub", op(L, "sub", end.at, i), int_arg(1)))
+            store(USIZE, Value{type = USIZE, at = op(L, "add", int_arg(1), op(L, "mul", op1(L, "extuw", op(W, "ceql", w, op(L, "add", trail, int_arg(1)))), trail))}, sized)
+            jump(l_piece)
+            open_block(l_piece)
+            size := load(Value{type = USIZE, at = sized, mem = true}).at
+            next := op(L, "add", i, size)
+            if backward:
+                next = op(L, "sub", i, size)
+                here = op(L, "add", addr, next)
+            store(USIZE, Value{type = USIZE, at = next}, slot)
+            place = alloc(item)
+            add(Ins{op = "storel", a = here, b = place})
+            store(USIZE, Value{type = USIZE, at = size}, offset(place, 8))
+        else:
+            args: &list[Value]
+            append(args, Value{type = pointer(walker.type), at = slot})
+            got := try invoke("next", args, tok.at)
+            rest: &list[usize]
+            for m in members(got.type):
+                if m != ITERATIONEND:
+                    append(rest, m)
+            if comp.types[got.type].kind != Union or rest.len == members(got.type).len:
+                return fail("next over " + comp.types[walker.type].name + " expects to return an element or IterationEnd, it returns " + comp.types[got.type].name, tok.at)
+            item = try union_of(rest, Union, tok.at)
+            branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
+            open_block(l_body)
+            place = payload(got.at, item)
         mention(tok.text, place)
         append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
@@ -2026,6 +2083,32 @@ func run_defers(from: usize) -> Fail?:
             append(aside, comp.vars[k])
         put_back(d.visible, aside)
     return null
+
+func width(lead: Arg) -> Arg:
+    w := int_arg(1)
+    for edge in [0xc0, 0xe0, 0xf0]:
+        w = op(W, "add", w, op(W, "cugew", lead, int_arg(i64(edge))))
+    return op1(L, "extuw", op(W, "sub", w, op(W, "mul", op(W, "cugew", lead, int_arg(0xf8)), int_arg(3))))
+
+func continued(first: Arg, step: i64, most: Arg, room: Arg) -> Arg:
+    count := alloc(USIZE)
+    store(USIZE, Value{type = USIZE, at = int_arg(0)}, count)
+    l_scan := label()
+    l_byte := label()
+    l_next := label()
+    l_done := label()
+    jump(l_scan)
+    open_block(l_scan)
+    k := load(Value{type = USIZE, at = count, mem = true}).at
+    branch(op(W, "and", op(W, "cultl", k, most), op(W, "cultl", k, room)), l_byte, l_done)
+    open_block(l_byte)
+    b := op1(W, "loadub", op(L, "add", first, op(L, "mul", k, int_arg(step))))
+    branch(op(W, "ceqw", op(W, "and", b, int_arg(0xc0)), int_arg(0x80)), l_next, l_done)
+    open_block(l_next)
+    store(USIZE, Value{type = USIZE, at = op(L, "add", k, int_arg(1))}, count)
+    jump(l_scan)
+    open_block(l_done)
+    return load(Value{type = USIZE, at = count, mem = true}).at
 
 func statements(n: usize) -> Fail?:
     mark := comp.defers.len
