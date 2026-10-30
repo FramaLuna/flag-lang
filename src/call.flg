@@ -327,6 +327,12 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 hint = hint + ", and a negative one counts from the end so both need a signed type"
         if name == "put" and args.len == 3 and try offers("at", ptr([args[0], args[1]]), at):
             hint = ", x[i] = v calls put(x, i, v) when at gives a copy: declare put for " + comp.types[args[0].type].name + ", or make at give a pointer"
+        if name == "put" and args.len == 2:
+            held := args[0].type
+            if comp.types[held].kind == Ptr:
+                held = comp.types[held].elem
+            if comp.types[held].kind == Fat and text(comp.types[held].decl) == "map":
+                hint = ", a pointer to a value of a map goes bad when the map grows, so core keeps that put for itself: change the value in place with m[k] += v or m[k].field = v"
         failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said: usize = 0
         s := first_sym(name)

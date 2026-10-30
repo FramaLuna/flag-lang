@@ -368,7 +368,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | You write | It calls |
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
-| `x[i] = v` | when `at` returns a value, `put(x, i, v)`, and `x[i] += v` is `put(x, i).* += v` when a `put(x, i)` gives a pointer to the value, `put(x, i, at(x, i) + v)` when not |
+| `x[i] = v` | when `at` returns a value, `put(x, i, v)`. `x[i] += v` is `put(x, i).* += v` when a `put(x, i)` gives a pointer to the value, and `put(x, i, at(x, i) + v)` when not. `x[i].f = v` and `x[i][j] = v` go through that pointer too |
 | `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
@@ -428,7 +428,7 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 ### Assignments
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
 
-When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has a `put(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once. On a fixed map `put` gives `MapFull?`, so there `x[i] = v` and `x[i] += v` are statements that drop an error (see [Rough edges](#rough-edges)).
+When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has a `put(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once, and so does assigning a field or an element of it: `players[name].score += 10`, `pairs[a][b] += 1`. The right side runs first and the pointer is used at once, so a right side that grows the map is safe. The `put` of a map that gives the pointer is priv to core, because a pointer you keep goes bad at the next `put`. Without that `put`, like on a fixed map, a field of `x[i]` cannot be assigned, it would only change a copy. On a fixed map `put` gives `MapFull?` and an assignment cannot pass an error on, so `x[i] = v` and `x[i] += v` don't compile there: call `try put(m, k, v)`.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
@@ -845,7 +845,6 @@ Three more keep long chains from growing with their square. The dominators of a 
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
-- `m[k] = v` on a fixed map gives the `MapFull?` of `put`, so write `trust put(m, k, v)` when you know there is room, or `try put(m, k, v)`
 - A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first

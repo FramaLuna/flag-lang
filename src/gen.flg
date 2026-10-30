@@ -462,6 +462,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if lk == Name and text(left) == "_":
             try value(right, VOID)
             return none
+        comp.target = left
         if lk == Index:
             return indexed(left, n)
         first := comp.body.len
@@ -1610,8 +1611,12 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             return invoke("slice", args, tok.at)
         append(args, index)
         read := try returned("at", args, tok.at)
-        if assignment != 0 and read != VOID and comp.types[read].kind != Ptr:
-            if text(assignment) == "=":
+        under := comp.target
+        while under < n and (comp.nodes[under].kind == Field or comp.nodes[under].kind == Index):
+            under += 1
+        placing := assignment == 0 and under == n
+        if (assignment != 0 or placing) and read != VOID and comp.types[read].kind != Ptr:
+            if assignment != 0 and text(assignment) == "=":
                 middle := comp.body.len
                 append(args, settled(try value(node_end(n), read), first, middle))
                 postpone(first, middle)
@@ -1621,9 +1626,11 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
                 if m != NULL:
                     append(rest, m)
             kept := try union_of(rest, Union, tok.at)
-            place := try returned("put", args, tok.at)
+            place := try returned("put", args, 0) # as core sees it, the put of a map that gives a place is priv
             if comp.types[place].kind == Ptr and comp.types[place].elem == kept:
-                spot = Value{type = kept, at = load(try invoke("put", args, tok.at)).at, mem = true, place = true}
+                spot = Value{type = kept, at = load(try invoke("put", args, 0)).at, mem = true, place = true}
+            elif placing:
+                return fail(comp.types[t].name + " gives a copy of its element and has no put(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
             else:
                 p := try invoke("at", args, tok.at)
                 spot = Value{type = kept, at = alloc(kept), mem = true, place = true}
@@ -2180,6 +2187,8 @@ func statement(n: usize, dropped: &strview) -> Fail?:
         if o == "==":
             hint = ", an assignment is written with one ="
         return fail("this statement makes a value and never uses it" + hint, at_of(n))
+    if fails(v.type) and comp.nodes[n].kind == Assign:
+        return fail("this assignment calls put, which gives " + comp.types[v.type].name + ", and an assignment cannot pass on an error: call put yourself and handle what it gives, try put(x, i, v)", at_of(n))
     if fails(v.type):
         return fail(dropped, at_of(n))
     return null
