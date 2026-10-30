@@ -282,7 +282,7 @@ type fatptr ring[$T]:
 ### Passing them to functions
 When you pass a fat pointer to a function, the function gets a copy of it. The elements are shared, but if the function makes the copy grow, the original does not see it.
 
-To let a function change the fat pointer itself, declare the parameter as `*&something`. You still call it passing the fat pointer, the compiler passes `ptr(something)` for you like with any pointer (see [Pointers](#pointers)). Indexing works through the pointer, like fields
+To let a function change the fat pointer itself, declare the parameter as `*&something`. You still call it passing the fat pointer, the compiler passes `ptr(something)` for you like with any pointer (see [Pointers](#pointers)). Indexing and `for` work through the pointer, like fields
 ```flag
 func add_two(l: *&list[i32]):
     append(l, 2)
@@ -369,7 +369,7 @@ for element in reverse iterable:
 for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
-With `for index, element in reverse iterable` the index still counts 0, 1, 2... from the first element you get.
+With `for index, element in reverse iterable` the index still counts 0, 1, 2... from the first element you get. The index and the variable of a range count the loop, so they cannot be assigned.
 
 You can make your own types iterable. `for` calls `iter` with your value and then `next` with a pointer to what `iter` gave, until `next` gives `IterationEnd`. `reverse` calls `reverse_iter` instead of `iter`
 ```flag
