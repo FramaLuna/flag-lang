@@ -59,16 +59,16 @@ Except for the lexer which is the base of the code style, all the code in the co
 
 ## Installation
 
-Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.2.0-linux-x86_64.tar.gz`, `flag-0.2.0-macos-arm64.tar.gz` or `flag-0.2.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
+Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.3.0-linux-x86_64.tar.gz`, `flag-0.3.0-macos-arm64.tar.gz` or `flag-0.3.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
 
 ```sh
-tar -xzf flag-0.2.0-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.2.0-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.3.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.3.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
 `flagc` is a single file, the standard library is inside it. You also need a C compiler, see [Requirements](#requirements).
-- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.2.0-macos-arm64/bin/flagc`
+- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.3.0-macos-arm64/bin/flagc`
 - On Windows, unpack it the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell
 
 For errors, hover and go to definition in your editor, see [flag-lsp](https://github.com/FramaLuna/flag-lsp).

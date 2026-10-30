@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.3.0
+
+A release about errors that say what happened and unions you handle with `switch`, with a standard library that is much faster and has one way to do each thing.
+
+New
+- `switch` over a tagged union names the types of its members: `case i32:`, `case A|B:`, `case f64, null:`. In each case the variable has that type, like after `is`, and the default gets the types no case named. A switch over a `bool` with `case true:` and `case false:` is complete
+- Open slices, `x[a:]`, `x[:b]` and `x[:]`, on text, lists, slices, arrays and your types with a `len` field
+- Structs and unions without their own `==` compare field by field, and get a `hash` the same way, so a struct with text fields works as the key of a map
+- `m[k] += v`, and the other assignments with an operator, on maps and on any type whose `x[i]` gives a copy. A key that is not there counts as zero, and on a map the key is looked up once
+- Errors with data, `type error BadLine:` with fields, are documented and work everywhere: `try`, `iferror`, `switch`, `print`
+- `File` is in core: `stdin`, `stdout` and `stderr`, and `open`, `create`, `read`, `read_line`, `write`, `flush` and `close` for any file. `create(path, append = true)` writes at the end without emptying it, and `flush()` sends what waits in every file
+- A TCP connection is a `File`: `connect`, `listen` and `accept` give one, so `read_line`, `write` and `flush` work on it, and `timeout(f, seconds)` makes a slow read or write fail with the code `TIMED_OUT` on every system
+- What the system refuses is an `FsError` with the code, what failed and the path, and printing it says all of it: `cannot open notes.txt: No such file or directory`, `cannot connect to example.com:80: Connection refused`. `NotJson` says where and why: `not JSON at line 3, column 14: expected ':' after the key`. With `errno()` your own C calls fail the same way
+- A name you declare that core also declares, like `File`, `Integer` or `stdout`, is yours in your files, and the library keeps its own, shown as `core.File` in messages
+- `put(m, key)` gives a pointer to the value of a key, and adds the key with a zero value, to change a value in place: `put(players, name).score += 10`
+- `words(text)` splits on spaces, tabs and line ends: `for w in words(text): counts[w] += 1`
+- `append(list, items)`, `clear` and `reserve` for lists, `clear` for rings, `find_last`, `pad`, `view(bytes)`, `free(p)` for what `heap` gives, the `Integer` alias and `json.key(d, value)`
+- A value goes into a union through the member it converts to: a `&str` into `&strview|i32`, a `&list[T]` into `&slice[T]?`, and `{}` or `{1, 2}` into a union with one struct, also `m[k] = {}`
+- `a += b` on a `&strview` joins like `a = a + b`, and a `for` walks through a pointer to an array, a list, a slice or text
+- `examples/grep.flg`, files line by line with the errors of each step
+
+Faster
+- The output is buffered: printing a million lines is 7 to 10 times faster, and `print` allocates nothing. It goes out line by line on a terminal
+- `for c in text` is written by the compiler and is 57 times faster, `find` 39 times, floats print 6 times faster, `read_line` 4 times, `split` 3 times, counting words in a map 2 times, and `json.parse` 2 times. A line of 80 MB reads in 0.13 s, it took 3.2 s
+- The compiler checks itself with half the instructions and builds itself with 38 % fewer: the overload a call chooses is remembered, and no code is generated to be thrown away
+- Structs, unions and arrays bigger than 128 bytes are copied with `memcpy` and passed by address. A struct of hundreds of kilobytes passed by value compiled for minutes, now it's instant
+- The `==` and `hash` that the compiler makes are one function per type, so big and nested structs compile at once
+- A `context` takes no room in the program file, the tags of its unions are written when the program starts
+- QBE is linear on big functions: a loop over an enum of 1500 variants compiles in 0.2 s, it took 37 s. Long chains are faster too: 20000 `elif` compile in 8 s, they took 38 s
+- The compiler uses less stack: blocks, expressions and types nest up to 500 levels (blocks were about 150), and chains of `elif`, `ifnull`, `iferror` or of one operator are not nesting
+- A connection sends at once (`TCP_NODELAY`)
+
+Changed
+- A case of a switch over a union is a type, never a value or a variable, and a default that can never run is an error
+- A deferred call that can fail doesn't compile, `defer _ = f()` drops the error on purpose, and a `with` whose `close` can fail is an error
+- A type with its own `==` and no `hash` can't be the key of a map, declare its `hash` too
+- The counter of a range loop and the index of `for i, x in` can't be assigned
+- `arg_count`, `arg`, `write(fd, text)` and `os.read_line()` are gone: `args()` of `os`, `write(stdout, x)` and `read_line(stdin)`
+- Files moved from `fs` to core, and `read_text_file` is `read_file`. `close(f)` gives nothing, so `with file:` works, and `flush(f)` gives the first write that failed since the last `flush`. A write that is interrupted or refused for now is tried again
+- `stdout` and `stderr` keep the order of your calls, and every file sends what waits before the program waits to read and before another program runs. A program whose standard output could not be written ends with `flag: cannot write the standard output: ...` and the exit code 1
+- `Socket`, `send`, `receive`, `NetError` and `CannotRun` are gone, the library fails with `FsError`
+- `os.run` and `os.output` take a `&slice` and give `i32|FsError`, and `output(command, into)` appends to your text and gives the exit code. On Windows `run` of a list refuses `.bat` and `.cmd`, `cmd.exe` would read their arguments again
+- Files, connections and pipes of the library are not passed to the programs you run
+- `get` is gone from maps and fixed maps, `m[k]` is the way. `json.text` gives `null` when the value is not a string, `json.quoted(text)` is a value for `+` and `print`, and `json.free` takes the document by pointer
+- `write_file`, `append_file` and `change_dir` give `FsError?`, `fs.join` is `join_path`, `swap` takes any integer, `bits` any integer index and `hex` any integer, printing the bits of its size
+- `parse_float` takes only decimal numbers, `inf` and `nan`, and `fixed` prints `0`, not `-0`
+- Text is read with one UTF-8 rule: an overlong form, a surrogate or a code above U+10FFFF comes byte by byte in `for c in text`, `utf8.count` counts those pieces and `utf8.valid` agrees
+- `print` computes all its values before it writes
+- An error inside a generic of the library points at your call, with a note for the line in the library
+- No type can be made from an empty literal (`wrap([])` into `array[$T, 2]`), `heap([])` still works
+- `at` for a list, a slice, an array or text can't take an index that can be an integer
+- A module with a `priv` function keeps that name for itself, so an exact public overload next to a `priv` generic wins
+- Passing an empty function value stops the program at that call
+- `for` over text belongs to the language, like over lists, so `iter` for text can't be declared
+- `-memory` takes a free through an element as the free of all the elements, so freeing them in a loop or with `pop` doesn't warn, and freeing only some of them is not reported
+- Type names in messages read like code, `func(i32, i32) -> bool`, and many messages say more about why
+
+Fixed
+- `m["a"] = show` with `show` overloaded, `return {1, 2}` into a `Point?`, and `(usize(0) as func())()` skipping the check of an empty function value
+- `-memory` false positives: unions whose members keep a pointer in the same place, reading a whole file and printing its error, errors with data after `try`, `is` on a union like `&str|FsError`, and print, read a file, print
+- Using `net` ignored `SIGPIPE` for the whole program and the programs it ran
+- `is_dir` of a folder you cannot read, `file_size` of a FIFO (it waited forever), `remove` of a link to a folder, `walk` listing locked folders as files, `executable()` after `change_dir`, and `list_dir` and `walk` on macos-x86_64
+- `rename` replaces an existing file on Windows too, and `output(command)` keeps every byte on Windows
+- `os.output` couldn't tell a program that doesn't start from one that prints nothing
+- An `eprint` inside your `operator +=` stopped the program inside core, and `out_of_memory` could call itself
+- `build.sh` rebuilds QBE when one of its headers changes
+
+What may still surprise you is in [Rough edges](https://github.com/FramaLuna/flag-lang/blob/v0.3.0/docs/Reference.md#rough-edges).
+
 ## 0.2.0
 
 A release to make the language stable, with two new things: function values and `pass`.
