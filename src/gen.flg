@@ -27,9 +27,7 @@ func gen_program(check: bool) -> Fail?:
     if s != 0:
         entry = try instantiate(comp.syms[s].node, 0)
     if s != 0 and comp.insts[entry].ret != VOID and not integer(comp.insts[entry].ret):
-        eprint(ERR, "main cannot return ", comp.types[comp.insts[entry].ret].name, ", it returns nothing or an integer, the exit code")
-        show(comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
-        return Fail
+        return fail("main cannot return " + comp.types[comp.insts[entry].ret].name + ", it returns nothing or an integer, the exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
     for k in 1..comp.syms.len:
         if comp.syms[k].export:
             f := comp.syms[k].node
@@ -47,9 +45,7 @@ func gen_program(check: bool) -> Fail?:
             elif others != 0:
                 problem = "an export function cannot be overloaded, its name is the symbol other languages call"
             if problem.len > 0:
-                eprint(ERR, problem)
-                show(at)
-                return Fail
+                return fail(problem, at)
             try instantiate(f, 0)
     done := try gen_from(0)
     reached := comp.types.len
@@ -90,9 +86,7 @@ func gen_program(check: bool) -> Fail?:
                     comp.binds.len = comp.frame
                 comp.frame = saved
             if problem.len > 0:
-                eprint(ERR, problem)
-                show(comp.tokens[comp.nodes[f].tok].at)
-                return Fail
+                return fail(problem, comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
     comp.procs.len = funcs
     comp.code.len = code
@@ -141,8 +135,7 @@ func gen_from(first: usize) -> usize|Fail:
         comp.blame = 0
         if failed:
             if inst.at != 0 and inst.count > 0 and not library:
-                eprint(NOTE, "the ", text(inst.node), " that fails was made for this call, with ", bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]))
-                show(inst.at)
+                note("the " + text(inst.node) + " that fails was made for this call, with " + bindings(comp.inst_binds[inst.binds:inst.binds + inst.count]), inst.at)
             return Fail
         i += 1
     return i
@@ -203,9 +196,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         depth = comp.insts[comp.inst].depth + 1
     comp.spelled += key.len
     if comp.insts.len > 100000 or depth > DEEP or comp.spelled > LONG:
-        eprint(ERR, "instancing ", text(f), " never ends, each call builds a bigger type than the last")
-        show(comp.tokens[comp.nodes[f].tok].at)
-        return Fail
+        return fail("instancing " + text(f) + " never ends, each call builds a bigger type than the last", comp.tokens[comp.nodes[f].tok].at)
     site := at
     if comp.blame != 0:
         site = comp.blame
@@ -215,8 +206,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         made := resolve(c)
         if made is Fail:
             if site == at and at != 0 and comp.binds.len > comp.frame:
-                eprint(NOTE, "the ", text(f), " that fails was made for this call, with ", bindings(comp.binds[comp.frame:comp.binds.len]))
-                show(at)
+                note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:comp.binds.len]), at)
             return Fail
         ret = made
     export := false
@@ -260,9 +250,7 @@ func gen_func(i: usize) -> Fail?:
         c := kid(f, k)
         t := try resolve(c + 1)
         if comp.types[t].kind == Bytes:
-            eprint(ERR, "parameter ", text(c), " needs a size, bytes is a run of unknown length: take a *bytes")
-            show(comp.tokens[comp.nodes[c].tok].at)
-            return Fail
+            return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
         p := temp()
         comp.numbers[usize(p.n) - 1] = integer(t) and comp.types[t].size == 8
         passed := cls(t)
@@ -313,15 +301,11 @@ func gen_func(i: usize) -> Fail?:
     elif (name == "iter" or name == "reverse_iter") and (sequence(first) or comp.types[target].kind == Array):
         problem += "for over " + comp.types[first].name + " belongs to the language, " + name + " cannot be declared for it"
     if problem.len > 0:
-        eprint(ERR, problem)
-        show(comp.at)
-        return Fail
+        return fail(problem, comp.at)
     try gen(block, VOID)
     if comp.live:
         if comp.ret != VOID:
-            eprint(ERR, "not every path of this function returns a value")
-            show(comp.tokens[comp.nodes[f].tok].at)
-            return Fail
+            return fail("not every path of this function returns a value", comp.tokens[comp.nodes[f].tok].at)
         terminate("ret", Arg{})
     try forget(0)
     back: u32 = 0
@@ -345,9 +329,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         c := n + 1
         while c < node_end(n):
             if not comp.live:
-                eprint(ERR, "this code can never run, the block already left")
-                show(source(c))
-                return Fail
+                return fail("this code can never run, the block already left", source(c))
             comp.at = source(c)
             try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
             c = node_end(c)
@@ -357,9 +339,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         return none
     case Var:
         if lookup(tok.text) != 0:
-            eprint(ERR, "variable ", tok.text, " is already declared and still in scope")
-            show(tok.at)
-            return Fail
+            return fail("variable " + tok.text + " is already declared and still in scope", tok.at)
         t: usize = VOID
         c := n + 1
         if comp.tokens[node.tok + 1].text == ":":
@@ -374,13 +354,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
             example: &strview = ": &list[i32]"
             if t == EMPTYMAP:
                 example = ": &map[&strview, i32]"
-            eprint(ERR, tok.text, " cannot take its type from an empty literal, write the type: ", tok.text, example)
-            show(tok.at)
-            return Fail
+            return fail(tok.text + " cannot take its type from an empty literal, write the type: " + tok.text + example, tok.at)
         if comp.types[t].kind == Bytes:
-            eprint(ERR, "variable ", tok.text, " needs a size, bytes is a run of unknown length")
-            show(tok.at)
-            return Fail
+            return fail("variable " + tok.text + " needs a size, bytes is a run of unknown length", tok.at)
         slot := alloc(t)
         mention(tok.text, slot)
         if c == node_end(n) or v.type != t:
@@ -399,32 +375,24 @@ func gen(n: usize, want: usize) -> Value|Fail:
             try value(right, VOID)
             return none
         if not (lk == Name or lk == Field or lk == Index or lk == Unary and text(left) == ".*"):
-            eprint(ERR, "cannot assign to this expression, it is not a place that holds a value")
-            show(source(left))
-            return Fail
+            return fail("cannot assign to this expression, it is not a place that holds a value", source(left))
         if lk == Index:
             return indexed(left, n)
         first := comp.body.len
         spot := try gen(left, VOID)
         if not spot.place:
-            eprint(ERR, "this is not a variable, it cannot be assigned")
-            show(source(left))
-            return Fail
+            return fail("this is not a variable, it cannot be assigned", source(left))
         try update(spot, n, first)
         return none
     case Return:
         if node.size == 1:
             if comp.ret != VOID:
-                eprint(ERR, "return expects a value, this function returns ", comp.types[comp.ret].name)
-                show(tok.at)
-                return Fail
+                return fail("return expects a value, this function returns " + comp.types[comp.ret].name, tok.at)
             try unwind(0, 0)
             terminate("ret", Arg{})
             return none
         if comp.ret == VOID:
-            eprint(ERR, "this function returns nothing, return expects no value")
-            show(tok.at)
-            return Fail
+            return fail("this function returns nothing, return expects no value", tok.at)
         try leave(try value(n + 1, comp.ret), source(n + 1))
         return none
     case If:
@@ -480,26 +448,20 @@ func gen(n: usize, want: usize) -> Value|Fail:
         return none
     case For:
         if lookup(tok.text) != 0:
-            eprint(ERR, "variable ", tok.text, " is already declared and still in scope")
-            show(tok.at)
-            return Fail
+            return fail("variable " + tok.text + " is already declared and still in scope", tok.at)
         subject := n + 1
         counter: usize = 0
         if kids(n) == 3:
             counter = subject
             subject = node_end(subject)
             if lookup(text(counter)) != 0:
-                eprint(ERR, "variable ", text(counter), " is already declared and still in scope")
-                show(comp.tokens[comp.nodes[counter].tok].at)
-                return Fail
+                return fail("variable " + text(counter) + " is already declared and still in scope", comp.tokens[comp.nodes[counter].tok].at)
         backward := comp.nodes[subject].kind == Unary and text(subject) == "reverse"
         if backward:
             subject += 1
         range := comp.nodes[subject].kind == Binary and text(subject) == ".."
         if range and counter != 0:
-            eprint(ERR, "a for over a range cannot count, the number it gives is already the index")
-            show(comp.tokens[comp.nodes[counter].tok].at)
-            return Fail
+            return fail("a for over a range cannot count, the number it gives is already the index", comp.tokens[comp.nodes[counter].tok].at)
         before := comp.vars.len
         l_head := label()
         l_body := label()
@@ -520,13 +482,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if a.lit:
                 t = b.type
             if not integer(t):
-                eprint(ERR, "a range expects integers at both ends, this one is ", comp.types[t].name)
-                show(at)
-                return Fail
+                return fail("a range expects integers at both ends, this one is " + comp.types[t].name, at)
             if not a.lit and not b.lit and a.type != b.type:
-                eprint(ERR, "a range expects both ends of one type, got ", comp.types[a.type].name, " and ", comp.types[b.type].name)
-                show(at)
-                return Fail
+                return fail("a range expects both ends of one type, got " + comp.types[a.type].name + " and " + comp.types[b.type].name, at)
             if a.lit and not a.neg and b.lit and not b.neg:
                 bound = b.n
             body := node_end(subject)
@@ -624,9 +582,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if m != ITERATIONEND:
                     append(rest, m)
             if comp.types[got.type].kind != Union or rest.len == members(got.type).len:
-                eprint(ERR, "next over ", comp.types[walker.type].name, " expects to return an element or IterationEnd, it returns ", comp.types[got.type].name)
-                show(tok.at)
-                return Fail
+                return fail("next over " + comp.types[walker.type].name + " expects to return an element or IterationEnd, it returns " + comp.types[got.type].name, tok.at)
             item := try union_of(rest, Union, tok.at)
             branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
@@ -660,21 +616,15 @@ func gen(n: usize, want: usize) -> Value|Fail:
         while c < node_end(n):
             labels := kids(c) - 1
             if fallback != 0 and labels == 0:
-                eprint(ERR, "a switch has one default case, this is a second one")
-                show(comp.tokens[comp.nodes[c].tok].at)
-                return Fail
+                return fail("a switch has one default case, this is a second one", comp.tokens[comp.nodes[c].tok].at)
             if fallback != 0:
-                eprint(ERR, "the default case goes last in a switch")
-                show(comp.tokens[comp.nodes[fallback].tok].at)
-                return Fail
+                return fail("the default case goes last in a switch", comp.tokens[comp.nodes[fallback].tok].at)
             l_body := label()
             l_next := label()
             handled: &list[usize]
             if labels == 0:
                 if union and left.len == 0:
-                    eprint(ERR, "this default case never runs, the cases above handle every type of ", whole.name)
-                    show(comp.tokens[comp.nodes[c].tok].at)
-                    return Fail
+                    return fail("this default case never runs, the cases above handle every type of " + whole.name, comp.tokens[comp.nodes[c].tok].at)
                 fallback = c
                 handled = left
                 jump(l_body)
@@ -687,13 +637,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     while comp.nodes[head].kind == Field or comp.nodes[head].kind == Index and kids(head) == 2:
                         head += 1
                     if not typed and comp.nodes[head].kind != Name:
-                        eprint(ERR, "a case over ", whole.name, " names one of its types, and this is a value: name the type and compare the value inside its case")
-                        show(source(l))
-                        return Fail
+                        return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", source(l))
                     if local_of(head) != 0:
-                        eprint(ERR, text(head), " is a variable, and a case over ", whole.name, " names one of its types: compare the values with == in an if")
-                        show(source(l))
-                        return Fail
+                        return fail(text(head) + " is a variable, and a case over " + whole.name + " names one of its types: compare the values with == in an if", source(l))
                     t: usize = VOID
                     if head == l:
                         t = try resolve(l)
@@ -705,20 +651,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
                         comp.nodes.len = made
                     for m in members(t):
                         if not has(members(subject.type), m):
-                            eprint(ERR, whole.name, " can never be ", comp.types[m].name, ", so this case never runs")
-                            show(source(l))
-                            return Fail
+                            return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", source(l))
                         if not has(left, m):
-                            eprint(ERR, "this switch already handles ", comp.types[m].name, " above, each type goes in one case")
-                            show(source(l))
-                            return Fail
+                            return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", source(l))
                         append(handled, m)
                         remove(left, trust find(left, m))
                 else:
                     if typed:
-                        eprint(ERR, "a case names a type only in a switch over a tagged union, and ", whole.name, " is not one")
-                        show(source(l))
-                        return Fail
+                        return fail("a case names a type only in a switch over a tagged union, and " + whole.name + " is not one", source(l))
                     eq := none
                     if k == Binary and text(l) == "..":
                         low := try binary(">=", subject, try value(l + 1, VOID), source(l))
@@ -727,9 +667,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     else:
                         eq = try binary("==", subject, try value(l, subject.type), source(l))
                     if eq.type != BOOL:
-                        eprint(ERR, "a case label compares with ==, and == over these answers ", comp.types[eq.type].name)
-                        show(source(l))
-                        return Fail
+                        return fail("a case label compares with ==, and == over these answers " + comp.types[eq.type].name, source(l))
                     l_more := l_next
                     if i + 1 < labels:
                         l_more = label()
@@ -749,9 +687,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             open_block(l_next)
             c = node_end(c)
         if union and fallback == 0 and left.len > 0:
-            eprint(ERR, "this switch never handles ", comp.types[left[0]].name, " and has no default case")
-            show(tok.at)
-            return Fail
+            return fail("this switch never handles " + comp.types[left[0]].name + " and has no default case", tok.at)
         if fallback != 0 or union:
             terminate("hlt", Arg{})
         else:
@@ -766,17 +702,11 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if node.size > 1:
             depth = try int_value(text(n + 1), comp.tokens[comp.nodes[n + 1].tok].at)
         if comp.loops.len == 0:
-            eprint(ERR, tok.text, " goes inside a loop")
-            show(tok.at)
-            return Fail
+            return fail(tok.text + " goes inside a loop", tok.at)
         if depth == 0:
-            eprint(ERR, tok.text, " 0 names no loop, the innermost loop is 1")
-            show(tok.at)
-            return Fail
+            return fail(tok.text + " 0 names no loop, the innermost loop is 1", tok.at)
         if depth > comp.loops.len:
-            eprint(ERR, tok.text, " ", depth, " reaches past the loops open here, it can count up to ", comp.loops.len)
-            show(tok.at)
-            return Fail
+            return fail(tok.text + " " + depth + " reaches past the loops open here, it can count up to " + comp.loops.len, tok.at)
         l := comp.loops[comp.loops.len - depth]
         try unwind(l.defers, comp.loops.len - depth + 1)
         if tok.text == "break":
@@ -791,9 +721,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if comp.nodes[i - 1].kind != Assign:
                 reads(i)
             if k == Return or k == Jump or k == Unary and text(i) == "try":
-                eprint(ERR, "a deferred statement runs on the way out, it cannot hold ", text(i))
-                show(comp.tokens[comp.nodes[i].tok].at)
-                return Fail
+                return fail("a deferred statement runs on the way out, it cannot hold " + text(i), comp.tokens[comp.nodes[i].tok].at)
         append(comp.defers, Deferred{n + 1, comp.vars.len, none})
         return none
     case With:
@@ -817,9 +745,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if tok.kind == Generic:
             b := bound(tok.text)
             if b == 0 or comp.binds[b - 1].type != VOID:
-                eprint(ERR, tok.text, " is not a number bound here, a $$name gets its value from a parameter")
-                show(tok.at)
-                return Fail
+                return fail(tok.text + " is not a number bound here, a $$name gets its value from a parameter", tok.at)
             return literal(false, comp.binds[b - 1].n)
         if node.module.len == 0:
             if tok.text == "true" or tok.text == "false":
@@ -880,9 +806,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 elif tied:
                     problem += "ambiguous function value " + tok.text + ", several overloads have the parameters of " + comp.types[wanted].name
                 if problem.len > 0:
-                    eprint(ERR, problem)
-                    show(tok.at)
-                    return Fail
+                    return fail(problem, tok.at)
                 f := comp.syms[found].node
                 saved := comp.frame
                 comp.frame = comp.binds.len
@@ -895,9 +819,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 comp.frame = saved
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
-                    eprint(ERR, tok.text, " is a ", comp.types[made].name, ", not the ", comp.types[wanted].name, " this place takes")
-                    show(tok.at)
-                    return Fail
+                    return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
                 if noted(tok.at):
                     mark(comp.nodes[f].tok, header(comp.nodes[f].tok))
                 return Value{type = made, at = global(comp.insts[id].name)}
@@ -905,17 +827,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
             try hidden(tok.text, false, tok.at)
             id := get(comp.type_ids, tok.text)
             if node.module.len == 0 and id is usize and id <= BYTES:
-                eprint(ERR, tok.text, " is a type, so its name alone is not a value")
-            elif reserved(tok.text):
-                eprint(ERR, "'", tok.text, "' is a keyword of the language, it is not a value")
-            elif comp.choosing:
-                eprint(ERR, tok.text, " is not known when the call is chosen: a where reads types, numbers and constants, not the parameters")
-            elif comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
-                eprint(ERR, "no variable named ", tok.text, " is visible here, and ", tok.text, " is not a module this file uses")
-            else:
-                eprint(ERR, "no variable, constant or type named ", tok.text, " is visible here")
-            show(tok.at)
-            return Fail
+                return fail(tok.text + " is a type, so its name alone is not a value", tok.at)
+            if reserved(tok.text):
+                return fail("'" + tok.text + "' is a keyword of the language, it is not a value", tok.at)
+            if comp.choosing:
+                return fail(tok.text + " is not known when the call is chosen: a where reads types, numbers and constants, not the parameters", tok.at)
+            if comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
+                return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
+            return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
         if noted(tok.at):
             mark(comp.nodes[comp.syms[s].node].tok, header(comp.nodes[comp.syms[s].node].tok))
         k := comp.nodes[comp.syms[s].node].kind
@@ -925,9 +844,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if k == Void:
             return Value{type = try make_type(s, args, false, tok.at)}
         if k != Context:
-            eprint(ERR, tok.text, " is a type that carries data, so its name alone is not a value")
-            show(tok.at)
-            return Fail
+            return fail(tok.text + " is a type that carries data, so its name alone is not a value", tok.at)
         t := try make_type(s, args, false, tok.at)
         return Value{type = t, at = global("$ctx." + comp.types[t].name), mem = true, place = true}
     case Literal:
@@ -962,13 +879,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 hint: &strview
                 if func_in(called.type) != VOID and called.place:
                     hint = ": narrow it with is first"
-                eprint(ERR, "only a function value can be called, this is ", shape.name, hint)
-                show(tok.at)
-                return Fail
+                return fail("only a function value can be called, this is " + shape.name + hint, tok.at)
             if given != shape.count:
-                eprint(ERR, "this ", shape.name, " expects ", shape.count, " arguments but got ", given)
-                show(tok.at)
-                return Fail
+                return fail("this " + shape.name + " expects " + shape.count + " arguments but got " + given, tok.at)
             code := load(called).at
             if code.kind != Global:
                 try panic_if(op(W, "ceql", code, int_arg(0)), "call of an empty function value", tok.at)
@@ -976,15 +889,11 @@ func gen(n: usize, want: usize) -> Value|Fail:
             c := first
             while c < node_end(n):
                 if comp.nodes[c].kind == Named:
-                    eprint(ERR, "a function value has no parameter names, pass the arguments in order")
-                    show(source(c))
-                    return Fail
+                    return fail("a function value has no parameter names, pass the arguments in order", source(c))
                 takes := comp.items[shape.first + passes.len].type
                 passed := try value(c, takes)
                 if accepts(takes, passed) < 0 and not (comp.types[takes].kind == Ptr and comp.types[takes].elem == passed.type):
-                    eprint(ERR, "this function value is a ", shape.name, ", it takes ", comp.types[takes].name, " here but the call gives ", comp.types[passed.type].name)
-                    show(source(c))
-                    return Fail
+                    return fail("this function value is a " + shape.name + ", it takes " + comp.types[takes].name + " here but the call gives " + comp.types[passed.type].name, source(c))
                 append(passes, try hand(passed, takes, false, source(c)))
                 c = node_end(c)
             return emit(code, passes, shape.elem, false, tok.at)
@@ -1008,22 +917,16 @@ func gen(n: usize, want: usize) -> Value|Fail:
             c := n + 1
             while c < node_end(n):
                 if comp.nodes[c].kind == Named:
-                    eprint(ERR, name, " is a builtin, its arguments cannot be named")
-                    show(source(c))
-                    return Fail
+                    return fail(name + " is a builtin, its arguments cannot be named", source(c))
                 c = node_end(c)
             if name == "can_assign":
-                eprint(ERR, "can_assign() cannot appear outside a where, it chooses between overloads")
-                show(tok.at)
-                return Fail
+                return fail("can_assign() cannot appear outside a where, it chooses between overloads", tok.at)
             if conversion and target >= I8 and target <= F64:
                 return convert_number(try value(n + 1, VOID), target, tok.at)
             if conversion:
                 given := try value(n + 1, target)
                 if target == BOOL and given.type != BOOL:
-                    eprint(ERR, "bool() does not convert, a number becomes a bool with a comparison: x != 0")
-                    show(tok.at)
-                    return Fail
+                    return fail("bool() does not convert, a number becomes a bool with a comparison: x != 0", tok.at)
                 slot := alloc(target)
                 zero(target, slot)
                 try assign(slot, target, given, source(n + 1))
@@ -1057,32 +960,20 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return none
             platform := name == "@linux" or name == "@macos" or name == "@windows" or name == "@x86_64" or name == "@arm64" or name == "@riscv64"
             if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@compile_error" and not platform:
-                eprint(ERR, "there is no builtin named ", name)
-                show(tok.at)
-                return Fail
+                return fail("there is no builtin named " + name, tok.at)
             if name == "@compile_error":
                 if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
-                    eprint(ERR, "@compile_error expects its message as text: @compile_error(\"this size is not supported\")")
-                    show(tok.at)
-                    return Fail
+                    return fail("@compile_error expects its message as text: @compile_error(\"this size is not supported\")", tok.at)
                 if comp.insts[comp.inst].at != 0:
                     message := text(n + 1)
-                    eprint(ERR, message[1:message.len - 1])
-                    show(comp.insts[comp.inst].at)
-                    return Fail
+                    return fail(message[1:message.len - 1], comp.insts[comp.inst].at)
                 return none
             if tok.kind == Builtin and kids(n) != 0:
-                eprint(ERR, name, " expects no arguments")
-                show(tok.at)
-                return Fail
+                return fail(name + " expects no arguments", tok.at)
             if tok.kind != Builtin and kids(n) != 1:
-                eprint(ERR, name, " expects one argument")
-                show(tok.at)
-                return Fail
+                return fail(name + " expects one argument", tok.at)
             if platform and not comp.choosing:
-                eprint(ERR, name, "() cannot appear outside a where, it chooses between overloads")
-                show(tok.at)
-                return Fail
+                return fail(name + "() cannot appear outside a where, it chooses between overloads", tok.at)
             if platform:
                 return truth(name[1:name.len] == comp.system or name[1:name.len] == comp.machine)
             if name == "@here":
@@ -1099,9 +990,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     while callee != 0 and not (comp.nodes[comp.syms[callee].node].kind == Func and visible(callee, comp.nodes[a].module, tok.at)):
                         callee = comp.syms[callee].next
                     if callee != 0 and not comp.syms[callee].export:
-                        eprint(ERR, "ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := ", text(a))
-                        show(tok.at)
-                        return Fail
+                        return fail("ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := " + text(a), tok.at)
                     if callee != 0:
                         return Value{type = pointer(BYTES), at = global("$" + text(a))}
                 v := try value(a, VOID)
@@ -1120,13 +1009,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 label = text(c)
                 for other in names:
                     if other == label:
-                        eprint(ERR, name, " names ", label, " twice")
-                        show(source(c))
-                        return Fail
+                        return fail(name + " names " + label + " twice", source(c))
             elif names.len > 0 and names[names.len - 1].len > 0:
-                eprint(ERR, name, " expects every argument after a named one to be named too")
-                show(source(c))
-                return Fail
+                return fail(name + " expects every argument after a named one to be named too", source(c))
             append(names, label)
             append(values, try value(c, VOID))
             c = node_end(c)
@@ -1146,20 +1031,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 t = structs[0]
         ty := comp.types[t]
         if node.kind == Fill and ty.kind != Struct and ty.kind != Array:
-            eprint(ERR, "a {...} without a type needs a place that gives it one: p: Point = {1, 2}")
-            show(tok.at)
-            return Fail
+            return fail("a {...} without a type needs a place that gives it one: p: Point = {1, 2}", tok.at)
         if ty.kind != Struct and ty.kind != Array and (c < node_end(n) or ty.kind == Bytes):
-            eprint(ERR, ty.name, "{...} builds a struct or an array, ", ty.name, " is neither")
-            show(tok.at)
-            return Fail
+            return fail(ty.name + "{...} builds a struct or an array, " + ty.name + " is neither", tok.at)
         slot := alloc(t)
         zero(t, slot)
         named := c < node_end(n) and comp.nodes[c].kind == Named
         if named and ty.kind == Array:
-            eprint(ERR, ty.name, " fills its elements in order, they have no names")
-            show(source(c))
-            return Fail
+            return fail(ty.name + " fills its elements in order, they have no names", source(c))
         filled: &list[Item]
         given: usize = 0
         k := c
@@ -1173,37 +1052,25 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 elif not comp.items[ty.first + i].shared:
                     append(filled, comp.items[ty.first + i])
             if given != filled.len and ty.kind == Array:
-                eprint(ERR, ty.name, " holds ", filled.len, " elements but this literal gives ", given, " values")
-                show(tok.at)
-                return Fail
+                return fail(ty.name + " holds " + filled.len + " elements but this literal gives " + given + " values", tok.at)
             if given != filled.len:
-                eprint(ERR, ty.name, " has ", filled.len, " fields but this literal gives ", given, " values")
-                show(tok.at)
-                return Fail
+                return fail(ty.name + " has " + filled.len + " fields but this literal gives " + given + " values", tok.at)
         i: usize = 0
         while c < node_end(n):
             if (comp.nodes[c].kind == Named) != named:
-                eprint(ERR, "a literal names every field it fills or none, the two forms do not mix")
-                show(source(c))
-                return Fail
+                return fail("a literal names every field it fills or none, the two forms do not mix", source(c))
             if named:
                 f: usize = 0
                 while f < ty.count and comp.items[ty.first + f].name != text(c):
                     f += 1
                 if f == ty.count:
-                    eprint(ERR, ty.name, " has no field ", text(c))
-                    show(source(c))
-                    return Fail
+                    return fail(ty.name + " has no field " + text(c), source(c))
                 field := comp.items[ty.first + f]
                 for g in filled:
                     if g.name == field.name:
-                        eprint(ERR, "field ", field.name, " is filled twice")
-                        show(source(c))
-                        return Fail
+                        return fail("field " + field.name + " is filled twice", source(c))
                     if field.n < g.n + comp.types[g.type].size and g.n < field.n + comp.types[field.type].size:
-                        eprint(ERR, "field ", field.name, " cannot be filled, ", g.name, " already fills the storage they share")
-                        show(source(c))
-                        return Fail
+                        return fail("field " + field.name + " cannot be filled, " + g.name + " already fills the storage they share", source(c))
                 append(filled, field)
             try assign(offset(slot, filled[i].n), filled[i].type, try value(c, filled[i].type), source(c))
             i += 1
@@ -1225,11 +1092,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                         mark(comp.nodes[field_node(t, f.name)].tok, described(f.name, f.type))
                     return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place}
         if comp.tokens[node.tok + 1].text == "(":
-            eprint(ERR, comp.types[t].name, " has no field ", tok.text, " to call, a function takes its value as an argument: ", tok.text, "(...)")
-        else:
-            eprint(ERR, comp.types[t].name, " has no field ", tok.text)
-        show(tok.at)
-        return Fail
+            return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
+        return fail(comp.types[t].name + " has no field " + tok.text, tok.at)
     case Index:
         return indexed(n, 0)
     case Binary:
@@ -1240,31 +1104,21 @@ func gen(n: usize, want: usize) -> Value|Fail:
             v := try value(left, VOID)
             wanted := try resolve(right)
             if comp.types[v.type].kind == Untagged:
-                eprint(ERR, comp.types[v.type].name, " has no tag for is to test, read it with as")
-                show(tok.at)
-                return Fail
+                return fail(comp.types[v.type].name + " has no tag for is to test, read it with as", tok.at)
             if comp.types[v.type].kind != Union:
                 if local_of(left) != 0:
                     if comp.types[comp.vars[declaration(text(left))].type].kind == Union:
-                        eprint(ERR, text(left), " is already ", comp.types[v.type].name, " here, an is above narrowed it and there is nothing left to test")
-                        show(tok.at)
-                        return Fail
-                eprint(ERR, "is expects a union on its left, ", comp.types[v.type].name, " is a plain type")
-                show(tok.at)
-                return Fail
+                        return fail(text(left) + " is already " + comp.types[v.type].name + " here, an is above narrowed it and there is nothing left to test", tok.at)
+                return fail("is expects a union on its left, " + comp.types[v.type].name + " is a plain type", tok.at)
             tags: &list[usize]
             asked := members(wanted)
             for m in members(v.type):
                 if has(asked, m):
                     append(tags, m)
             if tags.len == 0:
-                eprint(ERR, comp.types[v.type].name, " can never be ", comp.types[wanted].name, ", so this is always false")
-                show(tok.at)
-                return Fail
+                return fail(comp.types[v.type].name + " can never be " + comp.types[wanted].name + ", so this is always false", tok.at)
             if tags.len == members(v.type).len:
-                eprint(ERR, comp.types[v.type].name, " is always ", comp.types[wanted].name, ", so this is always true")
-                show(tok.at)
-                return Fail
+                return fail(comp.types[v.type].name + " is always " + comp.types[wanted].name + ", so this is always true", tok.at)
             return Value{type = BOOL, at = tag_test(v, tags)}
         if o == "as":
             v := try value(left, VOID)
@@ -1281,26 +1135,18 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     return Value{type = to, at = op1(cls(to), "cast", x)}
                 return Value{type = to, at = extend(to, x)}
             if from.kind == Union or dest.kind == Union:
-                eprint(ERR, "cannot reinterpret ", from.name, " as ", dest.name, ", a union is read only as one of its members or as a narrower union")
-                show(tok.at)
-                return Fail
+                return fail("cannot reinterpret " + from.name + " as " + dest.name + ", a union is read only as one of its members or as a narrower union", tok.at)
             if from.size == dest.size and aggregate(v.type) and aggregate(to):
                 return Value{type = to, at = v.at, mem = v.mem, place = v.place}
-            eprint(ERR, "cannot reinterpret ", from.name, " as ", dest.name, ", they do not have the same byte size")
-            show(tok.at)
-            return Fail
+            return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
         if o == "..":
-            eprint(ERR, "a range goes in a for header or a case label, nothing else reads it")
-            show(tok.at)
-            return Fail
+            return fail("a range goes in a for header or a case label, nothing else reads it", tok.at)
         if o == "+":
             return concat(n, none, comp.body.len)
         if o == "iferror" or o == "ifnull":
             v := try value(left, want)
             if comp.types[v.type].kind != Union:
-                eprint(ERR, o, " expects a union on its left, ", comp.types[v.type].name, " has nothing to replace")
-                show(tok.at)
-                return Fail
+                return fail(o + " expects a union on its left, " + comp.types[v.type].name + " has nothing to replace", tok.at)
             removed: &list[usize]
             rest: &list[usize]
             for m in members(v.type):
@@ -1309,13 +1155,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 else:
                     append(rest, m)
             if removed.len == 0 and o == "iferror":
-                eprint(ERR, comp.types[v.type].name, " never fails, there is no error for iferror to replace")
-                show(tok.at)
-                return Fail
+                return fail(comp.types[v.type].name + " never fails, there is no error for iferror to replace", tok.at)
             if removed.len == 0:
-                eprint(ERR, comp.types[v.type].name, " is never null, there is nothing for ifnull to replace")
-                show(tok.at)
-                return Fail
+                return fail(comp.types[v.type].name + " is never null, there is nothing for ifnull to replace", tok.at)
             kept := try union_of(rest, Union, tok.at)
             l_bad := label()
             l_good := label()
@@ -1373,34 +1215,24 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if t.kind == Fat:
                 return Value{type = BYTES, at = op1(L, "loadl", v.at), mem = true, place = true}
             if t.kind != Ptr:
-                eprint(ERR, "only a pointer reads with .*, this is ", t.name)
-                show(tok.at)
-                return Fail
+                return fail("only a pointer reads with .*, this is " + t.name, tok.at)
             return Value{type = t.elem, at = load(v).at, mem = true, place = true}
         if o == "-" and v.lit and integer(v.type):
             if not v.neg and v.n > 1 << 63:
-                eprint(ERR, "-", v.n, " does not fit in i64, the smallest i64 is -9223372036854775808")
-                show(tok.at)
-                return Fail
+                return fail("-" + v.n + " does not fit in i64, the smallest i64 is -9223372036854775808", tok.at)
             return literal(not v.neg, v.n)
         if o == "-" and v.lit and t.kind == Float:
             return float_literal(-v.f, tok.at)
         if o == "-":
             if t.kind != Int and t.kind != Float:
-                eprint(ERR, "- expects a signed number or a float on its right, this is ", t.name)
-                show(tok.at)
-                return Fail
+                return fail("- expects a signed number or a float on its right, this is " + t.name, tok.at)
             return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", load(v).at))}
         if o == "not":
             if v.type != BOOL:
-                eprint(ERR, "not works on bool, this is ", t.name)
-                show(tok.at)
-                return Fail
+                return fail("not works on bool, this is " + t.name, tok.at)
             return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
         if t.kind != Union:
-            eprint(ERR, o, " expects a union on its right, ", t.name, " has nothing to remove")
-            show(tok.at)
-            return Fail
+            return fail(o + " expects a union on its right, " + t.name + " has nothing to remove", tok.at)
         removed: &list[usize]
         rest: &list[usize]
         for m in members(v.type):
@@ -1412,24 +1244,16 @@ func gen(n: usize, want: usize) -> Value|Fail:
             elif not has(removed, m):
                 append(rest, m)
         if removed.len == 0 and o == "try":
-            eprint(ERR, t.name, " never fails, there is no error to try for")
-            show(tok.at)
-            return Fail
+            return fail(t.name + " never fails, there is no error to try for", tok.at)
         if removed.len == 0:
-            eprint(ERR, t.name, " holds no error and no null, there is nothing to trust away")
-            show(tok.at)
-            return Fail
+            return fail(t.name + " holds no error and no null, there is nothing to trust away", tok.at)
         if rest.len == 0:
-            eprint(ERR, t.name, " is nothing but errors, there is no value left")
-            show(tok.at)
-            return Fail
+            return fail(t.name + " is nothing but errors, there is no value left", tok.at)
         kept := try union_of(rest, Union, tok.at)
         if o == "try":
             for e in removed:
                 if not has(members(comp.ret), e):
-                    eprint(ERR, "try passes ", comp.types[e].name, " up but this function returns ", comp.types[comp.ret].name)
-                    show(tok.at)
-                    return Fail
+                    return fail("try passes " + comp.types[e].name + " up but this function returns " + comp.types[comp.ret].name, tok.at)
             failed := try union_of(removed, Union, tok.at)
             l_fail := label()
             l_ok := label()
@@ -1478,9 +1302,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return Value{type = t, at = slot, mem = true}
         t := want
         if fixed and keys.len > comp.items[hint.args + 2].n:
-            eprint(ERR, hint.name, " holds ", comp.items[hint.args + 2].n, " entries but this literal gives ", keys.len)
-            show(tok.at)
-            return Fail
+            return fail(hint.name + " holds " + comp.items[hint.args + 2].n + " entries but this literal gives " + keys.len, tok.at)
         if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
             map := first_sym("map")
             while map != 0 and (comp.syms[map].module.len > 0 or comp.nodes[comp.syms[map].node].kind != Fat):
@@ -1499,17 +1321,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
             try invoke("put", pair, tok.at)
         return Value{type = t, at = slot, mem = true}
     case:
-        eprint(ERR, "gen: this node kind has no generator")
-        show(tok.at)
-    return Fail
+        return fail("gen: this node kind has no generator", tok.at)
 
 func indexed(n: usize, assignment: usize) -> Value|Fail:
     tok := comp.tokens[comp.nodes[n].tok]
     none: Value
     if assignment != 0 and kids(n) == 3:
-        eprint(ERR, "a slice is a view, it cannot be assigned: assign its elements one by one")
-        show(tok.at)
-        return Fail
+        return fail("a slice is a view, it cannot be assigned: assign its elements one by one", tok.at)
     first := comp.body.len
     base := try value(n + 1, VOID)
     if comp.types[base.type].kind == Ptr and comp.types[comp.types[base.type].elem].kind == Fat:
@@ -1527,9 +1345,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     array := comp.types[t].kind == Array
     if (array or (sequence(t) or textual(t)) and integer(index.type)) and kids(n) == 2:
         if not integer(index.type):
-            eprint(ERR, "an array index expects an integer, this one is ", comp.types[index.type].name)
-            show(source(kid(n, 1)))
-            return Fail
+            return fail("an array index expects an integer, this one is " + comp.types[index.type].name, source(kid(n, 1)))
         e := comp.types[t].elem
         length := int_arg(i64(comp.types[t].count))
         known := array and index.lit and not index.neg and index.n < comp.types[t].count
@@ -1585,9 +1401,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
                     if f.name == "len" and (comp.types[holder].kind == Struct or comp.types[holder].kind == Fat):
                         end = load(Value{type = f.type, at = offset(place, f.n), mem = true})
                 if end.type == VOID:
-                    eprint(ERR, "this slice has no end, so it ends at the len of ", comp.types[holder].name, ", and it has no field len: write the end")
-                    show(tok.at)
-                    return Fail
+                    return fail("this slice has no end, so it ends at the len of " + comp.types[holder].name + ", and it has no field len: write the end", tok.at)
                 if integer(index.type):
                     wide: usize = USIZE
                     if index.neg or not index.lit and comp.types[index.type].kind == Int:
@@ -1633,9 +1447,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     if assignment == 0:
         return spot
     if not spot.place:
-        eprint(ERR, "this element belongs to a value that is not a variable, assigning it would only change a copy")
-        show(source(n + 1))
-        return Fail
+        return fail("this element belongs to a value that is not a variable, assigning it would only change a copy", source(n + 1))
     try update(spot, assignment, first)
     return none
 
@@ -1665,9 +1477,7 @@ func update(spot: Value, n: usize, first: usize) -> Fail?:
             if l.name == decl.name and l.depth < comp.loops.len and (comp.loops.len > comp.leaving or l.depth < comp.staying):
                 outside = l
         if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
-            eprint(ERR, decl.name, " cannot take ", comp.types[v.type].name, " inside this loop, an is outside the loop narrowed it to ", comp.types[outside.type].name, " and the loop reads it that way every round")
-            show(sign)
-            return Fail
+            return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, an is outside the loop narrowed it to " + comp.types[outside.type].name + " and the loop reads it that way every round", sign)
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
             append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false})
             place = Value{type = outside.type, at = outside.addr}
@@ -1694,9 +1504,7 @@ func settled(v: Value, first: usize, middle: usize) -> Value:
 func value(n: usize, want: usize) -> Value|Fail:
     v := try gen(n, want)
     if v.type == VOID:
-        eprint(ERR, "a function that returns nothing is a statement, not a value")
-        show(source(n))
-        return Fail
+        return fail("a function that returns nothing is a statement, not a value", source(n))
     reads(n)
     return v
 
@@ -1785,8 +1593,7 @@ func equal(a: Value, b: Value, at: usize) -> Value|Fail:
             if not f.shared:
                 same := binary("==", Value{type = f.type, at = offset(a.at, f.n), mem = true}, Value{type = f.type, at = offset(b.at, f.n), mem = true}, at)
                 if same is Fail:
-                    eprint(NOTE, t.name, " has no == of its own, so == compares its fields, and this is field ", f.name)
-                    show(comp.tokens[comp.nodes[field_node(a.type, f.name)].tok].at)
+                    note(t.name + " has no == of its own, so == compares its fields, and this is field " + f.name, comp.tokens[comp.nodes[field_node(a.type, f.name)].tok].at)
                     return Fail
                 l_next := label()
                 branch(load(same).at, l_next, l_done)
@@ -1816,9 +1623,7 @@ func hashed(v: Value, at: usize) -> Value|Fail:
     append(both, v)
     append(both, v)
     if (t.kind == Struct or t.kind == Union) and try offers("==", both, at):
-        eprint(ERR, t.name, " declares == but not hash, and equal values need equal hashes: declare hash for ", t.name, " too")
-        show(at)
-        return Fail
+        return fail(t.name + " declares == but not hash, and equal values need equal hashes: declare hash for " + t.name + " too", at)
     h := alloc(U64)
     add(Ins{op = "storel", a = int_arg(0), b = h})
     if t.kind == Bool:
@@ -1829,8 +1634,7 @@ func hashed(v: Value, at: usize) -> Value|Fail:
         for i in 0..t.count:
             f := comp.items[t.first + i]
             if not f.shared and mix(h, Value{type = f.type, at = offset(v.at, f.n), mem = true}, at) is Fail:
-                eprint(NOTE, t.name, " has no hash of its own, so hash mixes the hashes of its fields, and this is field ", f.name)
-                show(comp.tokens[comp.nodes[field_node(v.type, f.name)].tok].at)
+                note(t.name + " has no hash of its own, so hash mixes the hashes of its fields, and this is field " + f.name, comp.tokens[comp.nodes[field_node(v.type, f.name)].tok].at)
                 return Fail
     elif t.kind == Union:
         try mix(h, Value{type = USIZE, at = op1(L, "extuw", tag(v))}, at)
@@ -1862,9 +1666,7 @@ func hashed(v: Value, at: usize) -> Value|Fail:
         jump(l_head)
         open_block(l_done)
     elif t.kind != Void:
-        eprint(ERR, t.name, " has no hash, declare one for it: func hash(x: ", t.name, ") -> u64")
-        show(at)
-        return Fail
+        return fail(t.name + " has no hash, declare one for it: func hash(x: " + t.name + ") -> u64", at)
     return load(Value{type = U64, at = h, mem = true})
 
 func mix(h: Arg, part: Value, at: usize) -> Fail?:
@@ -1941,9 +1743,7 @@ func common(values: &list[Value], at: usize) -> usize|Fail:
                 append(parts, v.type)
     for v in values:
         if v.type == EMPTYARRAY or v.type == EMPTYMAP:
-            eprint(ERR, "an empty literal inside a literal has no type to take, write the type of the whole literal: z: array[&list[i32], 2] = [[], []]")
-            show(at)
-            return Fail
+            return fail("an empty literal inside a literal has no type to take, write the type of the whole literal: z: array[&list[i32], 2] = [[], []]", at)
     return union_of(parts, Union, at)
 
 func textual(t: usize) -> bool:
@@ -1962,9 +1762,7 @@ func source(n: usize) -> usize:
 func condition(n: usize) -> Value|Fail:
     c := try gen(n, VOID)
     if c.type != BOOL:
-        eprint(ERR, "a condition must be bool, this one is ", comp.types[c.type].name)
-        show(source(n))
-        return Fail
+        return fail("a condition must be bool, this one is " + comp.types[c.type].name, source(n))
     return load(c)
 
 func narrow(cond: usize, matching: bool) -> Fail?:
@@ -2003,9 +1801,7 @@ func keep(before: usize, ends: *&list[Local]) -> bool|Fail:
 func forget(before: usize) -> Fail?:
     for i in before..comp.vars.len:
         if comp.vars[i].unread:
-            eprint(ERR, comp.vars[i].name, " can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =")
-            show(comp.tokens[comp.vars[i].tok].at)
-            return Fail
+            return fail(comp.vars[i].name + " can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =", comp.tokens[comp.vars[i].tok].at)
     comp.vars.len = before
     return null
 
@@ -2046,15 +1842,12 @@ func join(ends: &list[Local], lives: usize, at: usize) -> Fail?:
 func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
     if has(comp.resolving, d):
-        eprint(ERR, comp.syms[s].name, " refers to itself")
-        show(at)
-        return Fail
+        return fail(comp.syms[s].name + " refers to itself", at)
     append(comp.resolving, d)
     v := value(d + 1, want)
     comp.resolving.len -= 1
     if v is Fail:
-        eprint(NOTE, comp.syms[s].name, " is read here")
-        show(at)
+        note(comp.syms[s].name + " is read here", at)
         return Fail
     v.place = false
     return v
@@ -2077,9 +1870,7 @@ func literal(neg: bool, n: usize) -> Value:
 
 func float_literal(x: f64, at: usize) -> Value|Fail:
     if x != x or x - x != 0.0:
-        eprint(ERR, "this float literal has no finite value")
-        show(at)
-        return Fail
+        return fail("this float literal has no finite value", at)
     return Value{type = F64, at = Arg{Double, x as i64}, lit = true, f = x}
 
 func real(v: Value) -> f64:
@@ -2182,9 +1973,7 @@ func run_defers(from: usize) -> Fail?:
             append(closing, d.subject)
             closed := try invoke("close", closing, at)
             if fails(closed.type):
-                eprint(ERR, "close of ", comp.types[d.subject.type].name, " can fail, and with would drop the error: call close yourself where you can handle it")
-                show(at)
-                return Fail
+                return fail("close of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: call close yourself where you can handle it", at)
         else:
             try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it")
         for k in stays..comp.vars.len:
@@ -2199,13 +1988,9 @@ func statement(n: usize, dropped: &strview) -> Fail?:
         hint: &strview
         if o == "==":
             hint = ", an assignment is written with one ="
-        eprint(ERR, "this statement makes a value and never uses it", hint)
-        show(source(n))
-        return Fail
+        return fail("this statement makes a value and never uses it" + hint, source(n))
     if fails(v.type):
-        eprint(ERR, dropped)
-        show(source(n))
-        return Fail
+        return fail(dropped, source(n))
     return null
 
 func set_aside(visible: usize) -> &list[Local]:

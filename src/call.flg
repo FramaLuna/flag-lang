@@ -43,9 +43,7 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
             negative = l.neg != nb
         case "/", "%":
             if r.n == 0:
-                eprint(ERR, "division by zero")
-                show(at)
-                return Fail
+                return fail("division by zero", at)
             m = l.n / r.n
             negative = l.neg != nb
             if o == "%":
@@ -56,9 +54,7 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
                 sign: &strview
                 if nb:
                     sign = "-"
-                eprint(ERR, "a shift expects an amount from 0 to 63, this one is ", sign, r.n)
-                show(at)
-                return Fail
+                return fail("a shift expects an amount from 0 to 63, this one is " + sign + r.n, at)
             if o == "<<":
                 overflow = l.n > 0xffff_ffff_ffff_ffff >> r.n
                 m = l.n << r.n
@@ -88,9 +84,7 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
             if negative:
                 m = 0 - m
         if overflow or negative and m > 1 << 63:
-            eprint(ERR, "the result of this literal arithmetic does not fit in 64 bits")
-            show(at)
-            return Fail
+            return fail("the result of this literal arithmetic does not fit in 64 bits", at)
         return literal(negative, m)
     if l.lit and r.lit and numeric(l.type) and numeric(r.type):
         x := real(l)
@@ -123,9 +117,7 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
     lt := comp.types[l.type]
     rt := comp.types[r.type]
     if numeric(l.type) and numeric(r.type) and l.type != r.type:
-        eprint(ERR, o, " expects two numbers of one type but got ", lt.name, " and ", rt.name, ", convert one side with ", lt.name, "(...) or ", rt.name, "(...)")
-        show(at)
-        return Fail
+        return fail(o + " expects two numbers of one type but got " + lt.name + " and " + rt.name + ", convert one side with " + lt.name + "(...) or " + rt.name + "(...)", at)
     if o == "==" or o == "!=":
         c: &strview = "ceqw"
         if o == "!=":
@@ -149,9 +141,7 @@ func binary(o: &strview, a: Value, b: Value, at: usize) -> Value|Fail:
     if (o == "<<" or o == ">>") and lt.size == 8:
         y = op1(W, "copy", y)
     if k != Float and (o == "/" or o == "%") and y.kind == Const and y.n == 0:
-        eprint(ERR, "division by zero")
-        show(at)
-        return Fail
+        return fail("division by zero", at)
     if k != Float and (o == "/" or o == "%") and y.kind == Temp:
         try panic_if(op(W, cmp_name("ceq", l.type), y, int_arg(0)), "division by zero", at)
     if k == Int and (name == "div" or name == "rem") and (y.kind == Temp or y.kind == Const and y.n == -1):
@@ -257,9 +247,7 @@ func operate(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
     if o != "!=" and o != "<=" and o != ">=":
         return v
     if v.type != BOOL:
-        eprint(ERR, o, " is the negation of ", name, ", which answers ", comp.types[v.type].name, " here instead of bool")
-        show(at)
-        return Fail
+        return fail(o + " is the negation of " + name + ", which answers " + comp.types[v.type].name + " here instead of bool", at)
     return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
 
 func invoke(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
@@ -306,11 +294,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         try hidden(name, true, at)
         try hidden(name, false, at)
         if module.len == 0 and lookup(name) != 0:
-            eprint(ERR, name, " is a variable of type ", comp.types[comp.vars[lookup(name) - 1].type].name, ", only a function value can be called")
-        else:
-            eprint(ERR, "no function named ", name, " is visible here")
-        show(at)
-        return Fail
+            return fail(name + " is a variable of type " + comp.types[comp.vars[lookup(name) - 1].type].name + ", only a function value can be called", at)
+        return fail("no function named " + name + " is visible here", at)
     if best == 0 and name == "==" and args.len == 2 and args[0].type == args[1].type:
         k := comp.types[args[0].type].kind
         if k == Struct or k == Union or k == Void:
@@ -327,9 +312,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                     declared = declared or callable(s, module, args, at) and text(kid(f, k)) == wanted
                 s = comp.syms[s].next
             if not declared:
-                eprint(ERR, name, " has no parameter named ", wanted)
-                show(at)
-                return Fail
+                return fail(name + " has no parameter named " + wanted, at)
         shown: &str
         hint: &strview
         for i in 0..args.len:
@@ -340,11 +323,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 hint = ", a union is narrowed with is before its value is used"
         if name == "at" and args.len == 2 and integer(args[1].type):
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
+        message := "no overload of " + name + " matches (" + shown + ")" + hint
         if tied:
-            eprint(ERR, "ambiguous call to ", name, ", several overloads match (", shown, ") equally")
-        else:
-            eprint(ERR, "no overload of ", name, " matches (", shown, ")", hint)
-        show(at)
+            message = "ambiguous call to " + name + ", several overloads match (" + shown + ") equally"
+        failed := fail(message, at)
         k: usize = 0
         said: usize = 0
         s = first_sym(name)
@@ -354,14 +336,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 if tied and arranged and scores[k] == best_score or not tied and hint.len == 0 and said < 4:
                     said += 1
                     decl := comp.nodes[comp.syms[s].node].tok
-                    eprint(NOTE, "an overload of ", name, " is declared here")
-                    show(comp.tokens[decl].at)
+                    note("an overload of " + name + " is declared here", comp.tokens[decl].at)
                     if noted(at) and comp.tokens[comp.target].text == name:
                         mark(decl, header(decl))
                 if arranged:
                     k += 1
             s = comp.syms[s].next
-        return Fail
+        return failed
     f := comp.syms[best].node
     if noted(at) and comp.tokens[comp.target].text == name:
         mark(comp.nodes[f].tok, header(comp.nodes[f].tok))
@@ -394,9 +375,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             v := args[k]
             t := comp.types[v.type]
             if aggregate(v.type) or t.kind == Void or t.kind == Func:
-                eprint(ERR, name, " expects integers, floats, bool and pointers after its declared parameters but got ", t.name)
-                show(at)
-                return Fail
+                return fail(name + " expects integers, floats, bool and pointers after its declared parameters but got " + t.name, at)
             x := load(v).at
             if v.type == F32:
                 append(passes, Pass{D, op1(D, "exts", x), false})
@@ -416,9 +395,7 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     if comp.types[to].kind == Ptr and comp.types[to].elem == given.type:
         for l in comp.vars:
             if l.bound != 0 and given.mem and l.addr.kind == given.at.kind and l.addr.n == given.at.n:
-                eprint(ERR, l.name, " counts this loop, so a pointer to it is not taken on its own: write ptr(", l.name, ")")
-                show(at)
-                return Fail
+                return fail(l.name + " counts this loop, so a pointer to it is not taken on its own: write ptr(" + l.name + ")", at)
         if not given.mem and not aggregate(given.type):
             v.at = alloc(given.type)
             store(given.type, given, v.at)
@@ -516,9 +493,7 @@ func arrange(f: usize, count: usize, names: &list[&strview]) -> &list[usize]?:
 func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
     ty := comp.types[t]
     if foreign and ty.kind == Func:
-        eprint(ERR, ty.name, " cannot cross the C ABI, C takes the address of an export func: declare the parameter as *bytes and pass ptr(name)")
-        show(at)
-        return Fail
+        return fail(ty.name + " cannot cross the C ABI, C takes the address of an export func: declare the parameter as *bytes and pass ptr(name)", at)
     if foreign and aggregate(t):
         return c_type(t, at)
     if foreign and ty.size == 1 and ty.kind == Int:
@@ -536,13 +511,9 @@ func c_type(t: usize, at: usize) -> u32|Fail:
     if has(comp.c_types, t):
         return CAGG + u32(t)
     if ty.kind != Struct and ty.kind != Untagged:
-        eprint(ERR, ty.name, " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do")
-        show(at)
-        return Fail
+        return fail(ty.name + " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do", at)
     if ty.packed:
-        eprint(ERR, ty.name, " cannot cross the C ABI by value, it is packed: pass a pointer")
-        show(at)
-        return Fail
+        return fail(ty.name + " cannot cross the C ABI by value, it is packed: pass a pointer", at)
     fields: &str
     for i in 0..ty.count:
         item := comp.items[ty.first + i]
@@ -554,9 +525,7 @@ func c_type(t: usize, at: usize) -> u32|Fail:
         k := comp.types[e].kind
         one: &str
         if item.shared:
-            eprint(ERR, ty.name, " cannot cross the C ABI by value, its field ", item.name, " shares storage: pass a pointer, or declare that part as an untagged union")
-            show(at)
-            return Fail
+            return fail(ty.name + " cannot cross the C ABI by value, its field " + item.name + " shares storage: pass a pointer, or declare that part as an untagged union", at)
         elif comp.types[e].size == 0:
             continue
         elif k == Struct or k == Untagged:
@@ -574,9 +543,7 @@ func c_type(t: usize, at: usize) -> u32|Fail:
         elif numeric(e) or k == Ptr:
             one += "w"
         else:
-            eprint(ERR, ty.name, " cannot cross the C ABI, it holds ", comp.types[item.type].name)
-            show(at)
-            return Fail
+            return fail(ty.name + " cannot cross the C ABI, it holds " + comp.types[item.type].name, at)
         one += " " + count
         if ty.kind == Untagged:
             fields += "{ " + one + " } "
@@ -839,17 +806,12 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
             shown += "-"
         shown += v.n
         if v.neg and target.kind == Uint:
-            eprint(ERR, shown, " does not fit in ", target.name, ", the smallest ", target.name, " is 0")
-        else:
-            eprint(ERR, shown, " does not fit in ", target.name, ", the largest ", target.name, " is ", largest(to))
-        show(at)
-        return Fail
+            return fail(shown + " does not fit in " + target.name + ", the smallest " + target.name + " is 0", at)
+        return fail(shown + " does not fit in " + target.name + ", the largest " + target.name + " is " + largest(to), at)
     if v.lit and numeric(v.type) and target.kind == Float:
         x := real(v)
         if to == F32 and f32(x) - f32(x) != 0.0:
-            eprint(ERR, x, " does not fit in f32")
-            show(at)
-            return Fail
+            return fail(x + " does not fit in f32", at)
         f := try float_literal(x, at)
         if to == F32:
             f.at.kind = Single
@@ -881,9 +843,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
                 shown += v.f
             else:
                 shown += v.n
-            eprint(ERR, shown, " fits more than one member of ", target.name, " equally, name its type: ", comp.types[found].name, "(", shown, ")")
-            show(at)
-            return Fail
+            return fail(shown + " fits more than one member of " + target.name + " equally, name its type: " + comp.types[found].name + "(" + shown + ")", at)
         if found != VOID:
             return convert(try convert(v, found, Arg{}, at), to, dest, at)
     if target.kind == Untagged and untagged_member(to, v.type):
@@ -931,9 +891,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         terminate("hlt", Arg{})
         open_block(l_done)
         return Value{type = to, at = slot, mem = true}
-    eprint(ERR, "cannot assign ", from.name, " to ", target.name)
-    show(at)
-    return Fail
+    return fail("cannot assign " + from.name + " to " + target.name, at)
 
 func spread(from: usize, to: usize) -> bool:
     target := comp.types[to]
@@ -1048,9 +1006,7 @@ func holds(n: usize) -> bool|Fail:
             return (try resolve(left) == try resolve(node_end(left))) == (o == "==")
     v := try gen(n, VOID)
     if v.type != BOOL or not v.lit:
-        eprint(ERR, "a where compares types and numbers known when the call is chosen, this one is not")
-        show(source(n))
-        return Fail
+        return fail("a where compares types and numbers known when the call is chosen, this one is not", source(n))
     return v.n == 1
 
 func assignable(to: usize, from: usize, at: usize) -> bool|Fail:
@@ -1071,9 +1027,7 @@ func convert_number(v: Value, to: usize, at: usize) -> Value|Fail:
     from := comp.types[v.type]
     target := comp.types[to]
     if not numeric(v.type) and from.kind != Bool:
-        eprint(ERR, target.name, "() converts numbers, ", from.name, " is not one")
-        show(at)
-        return Fail
+        return fail(target.name + "() converts numbers, " + from.name + " is not one", at)
     if v.lit and (integer(v.type) or target.kind == Float):
         typed := try convert(v, to, Arg{}, at)
         typed.lit = false

@@ -426,8 +426,7 @@ func main() -> i32:
                 return 1
             known = comp.files[comp.files.len - 1].module == u.module
         if not known:
-            eprint(ERR, "no module named ", u.module, " is loaded, and the library has no ", u.module, ".flg that declares it")
-            show(u.at)
+            _ = fail("no module named " + u.module + " is loaded, and the library has no " + u.module + ".flg that declares it", u.at)
             return 1
     if query is &strview:
         parts := split(query, ":")
@@ -581,6 +580,15 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
         return parse()
     eprint(ERR, code)
     return Fail
+
+func fail(message: &strview, at: usize) -> Fail:
+    eprint(ERR, message)
+    show(at)
+    return Fail
+
+func note(message: &strview, at: usize):
+    eprint(NOTE, message)
+    show(at)
 
 func show(at: usize):
     if comp.blame != 0:
