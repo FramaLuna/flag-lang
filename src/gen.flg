@@ -183,6 +183,12 @@ func params(f: usize) -> usize:
         c = node_end(c)
     return count
 
+func result(f: usize) -> usize|Fail:
+    c := kid(f, params(f))
+    if c == node_end(f) or comp.nodes[c].kind == Where or comp.nodes[c].kind == Block:
+        return VOID
+    return resolve(c)
+
 func instantiate(f: usize, at: usize) -> usize|Fail:
     key: &str
     key += f
@@ -200,15 +206,11 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
     site := at
     if comp.blame != 0:
         site = comp.blame
-    ret: usize = VOID
-    c := kid(f, params(f))
-    if c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
-        made := resolve(c)
-        if made is Fail:
-            if site == at and at != 0 and comp.binds.len > comp.frame:
-                note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:comp.binds.len]), at)
-            return Fail
-        ret = made
+    ret := result(f)
+    if ret is Fail:
+        if site == at and at != 0 and comp.binds.len > comp.frame:
+            note("the " + text(f) + " that fails was made for this call, with " + bindings(comp.binds[comp.frame:comp.binds.len]), at)
+        return Fail
     export := false
     s := first_sym(text(f))
     while s != 0:
@@ -1413,15 +1415,15 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             append(args, end)
             return invoke("slice", args, tok.at)
         append(args, index)
-        reached := comp.body.len
+        read := try returned("at", args, tok.at)
+        if assignment != 0 and text(assignment) == "=" and read != VOID and comp.types[read].kind != Ptr:
+            middle := comp.body.len
+            append(args, settled(try value(node_end(n), read), first, middle))
+            postpone(first, middle)
+            return invoke("put", args, tok.at)
         p := try invoke("at", args, tok.at)
         if comp.types[p.type].kind != Ptr and assignment == 0:
             return p
-        if comp.types[p.type].kind != Ptr and text(assignment) == "=":
-            comp.body.len = reached
-            append(args, settled(try value(node_end(n), p.type), first, reached))
-            postpone(first, reached)
-            return invoke("put", args, tok.at)
         if comp.types[p.type].kind != Ptr:
             rest: &list[usize]
             for m in members(p.type):

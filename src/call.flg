@@ -254,6 +254,20 @@ func invoke(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
     names: &list[&strview]
     return call(name, "", args, names, at)
 
+func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
+    names: &list[&strview]
+    best := try choose(name, "", args, names, at)
+    if best == 0:
+        return VOID
+    f := comp.syms[best].node
+    saved := comp.frame
+    comp.frame = comp.binds.len
+    try bind(f, trust arrange(f, args.len, names), args)
+    ret := result(f)
+    comp.binds.len = comp.frame
+    comp.frame = saved
+    return ret
+
 func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
     best := try choose(name, module, args, names, at)
     if best == 0 and name == "==" and args.len == 2 and args[0].type == args[1].type:
