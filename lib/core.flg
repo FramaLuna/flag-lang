@@ -1019,7 +1019,7 @@ priv func drain(s: *Stream):
     s.unsent.len = 0
 
 func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize|FsError:
-    s := reading(f, place)
+    s := stream(f, place)
     if s.given == s.received.len:
         s.given = 0
         s.received.len = 0
@@ -1034,7 +1034,7 @@ func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize
     return taken
 
 func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
-    s := reading(f, place)
+    s := stream(f, place)
     checked: usize = 0
     while true:
         line: &strview
@@ -1058,15 +1058,8 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
                 return null
             return temp(view(s.received))
 
-priv func reading(f: File, place: &strview) -> *Stream:
-    if f.fd == 0:
-        drain(stream(stdout))
-        drain(stream(stderr))
-    s := stream(f, place)
-    drain(s) # what you wrote goes before you wait for the answer
-    return s
-
 priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
+    flush() # what you wrote goes out before the program waits for an answer
     reserve(into, into.len + size)
     got := try transfer(s, (ptr(into.*.*) as usize + into.len) as *bytes, size, false)
     into.len += got
