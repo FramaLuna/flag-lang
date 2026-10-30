@@ -1341,6 +1341,9 @@ func merge(a: State, b: State, s: usize) -> State:
             c := mem.cells[id]
             append(out.ids, id)
             append(out.vals, intern(unite(mem.pool[a.vals[i]], missing(b, c), la, lb)))
+            if c.member != 0:
+                view := mem.pool[out.vals[out.vals.len - 1]]
+                refer(id, view.live or view.dead)
             i += 1
         elif i == a.ids.len or b.ids[j] < a.ids[i]:
             id := b.ids[j]
@@ -1348,6 +1351,9 @@ func merge(a: State, b: State, s: usize) -> State:
             if needed(id, s):
                 append(out.ids, id)
                 append(out.vals, intern(unite(missing(a, c), mem.pool[b.vals[j]], la, lb)))
+                if c.member != 0:
+                    view := mem.pool[out.vals[out.vals.len - 1]]
+                    refer(id, view.live or view.dead)
             j += 1
         else:
             id := a.ids[i]
@@ -1369,6 +1375,8 @@ func merge(a: State, b: State, s: usize) -> State:
         if binary_search(out.ids, u32(v >> 32)) is null:
             views[kept] = v
             kept += 1
+            word := mem.pool[v and 0xffff_ffff]
+            refer(u32(v >> 32), word.live or word.dead)
     if kept > 0:
         views.len = kept
         for k in 0..out.ids.len:
@@ -1704,11 +1712,14 @@ func place(id: usize, v: Target):
     else:
         mem.stamp[id] = mem.tick
         append(mem.present, u32(id))
-    for o in objects(fresh):
-        append(mem.refs[o], u32(id))
+    refer(u32(id), fresh)
     mem.cur[id] = v
     mem.fresh[id] = mem.tick
     mem.known[id] = 0
+
+func refer(id: u32, blocks: Set):
+    for o in objects(blocks):
+        append(mem.refs[o], id)
 
 func drop(id: usize):
     if mem.stamp[id] == mem.tick:
