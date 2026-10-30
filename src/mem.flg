@@ -1177,9 +1177,10 @@ func visit(block: usize):
             address := target_of(o.a)
             gone: Set
             for k in 0..i64(o.size) / 8:
-                spot := plus(address, i32(k * 8), 0)
-                gone = gone or fetch(spot).must and (mem.heaps and mem.marks.live or mem.outer - mem.roots)
-                stash(spot, number(0))
+                if marked(o.mask, k):
+                    spot := plus(address, i32(k * 8), 0)
+                    gone = gone or fetch(spot).must and (mem.heaps and mem.marks.live or mem.outer - mem.roots)
+                    stash(spot, number(0))
             if not empty(gone and mem.outer):
                 for x in mem.outer:
                     if mem.objs[x].depth > 0 and gone[mem.objs[x].parent]:
@@ -1872,9 +1873,12 @@ func reads(o: Op):
 func transfer(to: Target, from: Target, size: i64, mask: u64):
     for k in 0..size / 8:
         v := number(0)
-        if k < 63 and ((mask >> u64(k)) and 1) != 0 or k >= 63 and (mask >> 63) != 0:
+        if marked(mask, k):
             v = fetch(plus(from, i32(k * 8), 0))
         stash(plus(to, i32(k * 8), 0), v)
+
+func marked(mask: u64, k: i64) -> bool:
+    return k < 63 and ((mask >> u64(k)) and 1) != 0 or k >= 63 and (mask >> 63) != 0
 
 func carry(from: Set, x: usize, into: Set, h: usize, replace: bool) -> Set:
     out := into

@@ -604,6 +604,7 @@ It sees all the memory that one line allocates in a loop as two blocks, the newe
 - freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
 - linked lists and trees whose nodes are allocated in a loop or by a recursive function
 - a pointer that may point to one of several fields, when you store or free through it
+- a union whose members keep a pointer in the same place, like `&str|E` with an error `E` that starts with a `&strview`: after `if t is &str:` it still sees the pointer of `E` there, so `free(t)` warns that it is not on the heap
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
 - a text appended to itself, `t += t`: `+=` copies the text first when it is a view of the same memory, but the checker only sees that it may free what it reads
 - memory that a function frees more than three pointers away from its parameters, like `free(p.a.b.c.d)`: the caller is told that it is never freed

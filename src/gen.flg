@@ -1281,7 +1281,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             l_done := label()
             branch(tag_test(v, removed), l_bad, l_good)
             open_block(l_bad)
-            absent(v.at, v.type)
+            absent(v.at, v.type, [])
             other := try gen(right, kept)
             reads(right)
             if other.type == VOID:
@@ -1393,7 +1393,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             l_ok := label()
             branch(tag_test(v, removed), l_fail, l_ok)
             open_block(l_fail)
-            absent(v.at, v.type)
+            absent(v.at, v.type, [])
             try leave(Value{type = failed, at = payload(v.at, failed), mem = true}, tok.at)
             open_block(l_ok)
         return Value{type = kept, at = payload(v.at, kept), mem = true, place = v.place}
@@ -1750,11 +1750,7 @@ func narrow(cond: usize, matching: bool) -> Fail?:
             append(kept, m)
     t := try union_of(kept, Union, comp.tokens[comp.nodes[cond].tok].at)
     whole := comp.vars[declaration(current.name)]
-    bare := true
-    for m in kept:
-        bare = bare and comp.types[m].kind == Void
-    if bare:
-        absent(whole.addr, whole.type)
+    absent(whole.addr, whole.type, kept)
     append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false})
     return null
 
@@ -2036,9 +2032,17 @@ func payload(addr: Arg, t: usize) -> Arg:
         return addr
     return offset(addr, 8)
 
-func absent(addr: Arg, t: usize):
-    if pointers(t) != 0:
-        add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8))})
+func absent(addr: Arg, t: usize, here: &list[usize]):
+    gone: u64 = 0
+    kept: u64 = 0
+    for m in members(t):
+        if has(here, m):
+            kept = kept or pointers(m)
+        else:
+            gone = gone or pointers(m)
+    mask := gone xor (gone and kept)
+    if mask != 0:
+        add(Ins{op = "absent", a = offset(addr, 8), c = int_arg(i64(comp.types[t].size - 8)), mask = mask, copy = true})
 
 func times(count: Arg, size: usize) -> Arg:
     if size == 1:
