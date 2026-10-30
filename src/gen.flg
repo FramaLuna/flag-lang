@@ -152,12 +152,12 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
             p := temp()
             comp.numbers[usize(p.n) - 1] = integer(t) and comp.types[t].size == 8
-            passed := cls(t)
+            how := cls(t)
             if inst.export:
-                passed = try passing(t, true, comp.at)
+                how = try passing(t, true, comp.at)
             elif comp.types[t].kind == Fat or big(t):
-                passed = L
-            append(comp.passes, Pass{passed, p, comp.numbers[usize(p.n) - 1]})
+                how = L
+            append(comp.passes, Pass{how, p, comp.numbers[usize(p.n) - 1]})
             append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false})
         comp.dest = Arg{}
         if big(inst.ret) and not inst.export:
@@ -258,7 +258,7 @@ func close_proc(p: Proc, cls: u32, count: usize):
     append(comp.procs, made)
     comp.slots.len = 0
     comp.spare.len = 0
-    comp.taken.len = 0
+    comp.held.len = 0
     comp.body.len = 0
 
 func params(f: usize) -> usize:
@@ -775,23 +775,24 @@ func iterate(n: usize) -> Fail?:
     slot := Arg{}
     t: usize = VOID
     at := source(subject)
-    a := literal(false, 0)
-    b := none
+    start := literal(false, 0)
+    end := none
+    walked := none
     elem: usize = VOID
     addr := Arg{}
     bound: usize = 0
     if range:
-        a = try value(subject + 1, VOID)
-        b = try value(node_end(subject + 1), VOID)
-        t = a.type
-        if a.lit:
-            t = b.type
+        start = try value(subject + 1, VOID)
+        end = try value(node_end(subject + 1), VOID)
+        t = start.type
+        if start.lit:
+            t = end.type
         if not integer(t):
             return fail("a range expects integers at both ends, this one is " + comp.types[t].name, at)
-        if not a.lit and not b.lit and a.type != b.type:
-            return fail("a range expects both ends of one type, got " + comp.types[a.type].name + " and " + comp.types[b.type].name, at)
-        if a.lit and not a.neg and b.lit and not b.neg:
-            bound = b.n
+        if not start.lit and not end.lit and start.type != end.type:
+            return fail("a range expects both ends of one type, got " + comp.types[start.type].name + " and " + comp.types[end.type].name, at)
+        if start.lit and not start.neg and end.lit and not end.neg:
+            bound = end.n
         body := node_end(subject)
         for p in body..node_end(body):
             c := p + 1
@@ -806,28 +807,28 @@ func iterate(n: usize) -> Fail?:
                 c = node_end(c)
                 k += 1
     else:
-        b = try value(subject, VOID)
-        seq := b.type
-        addr = b.at
+        walked = try value(subject, VOID)
+        seq := walked.type
+        addr = walked.at
         if comp.types[seq].kind == Ptr and comp.types[comp.types[seq].elem].kind == Array:
-            addr = load(b).at
+            addr = load(walked).at
             seq = comp.types[seq].elem
         t = USIZE
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
-            b = literal(false, comp.types[seq].count)
+            end = literal(false, comp.types[seq].count)
         elif sequence(seq):
             elem = element(seq)
-            b = load(Value{type = USIZE, at = offset(addr, 8), mem = true})
+            end = load(Value{type = USIZE, at = offset(addr, 8), mem = true})
             addr = op1(L, "loadl", addr)
     if range or elem != VOID:
-        a = try convert(a, t, Arg{}, at)
-        b = try convert(b, t, Arg{}, at)
-        from := a
-        to := b
+        start = try convert(start, t, Arg{}, at)
+        end = try convert(end, t, Arg{}, at)
+        from := start
+        to := end
         if backward:
-            from = b
-            to = a
+            from = end
+            to = start
         limit := load(to).at
         slot = alloc(t)
         store(t, from, slot)
@@ -853,7 +854,7 @@ func iterate(n: usize) -> Fail?:
         if counter != 0:
             round := current
             if backward:
-                round = op(L, "sub", op(L, "sub", load(b).at, int_arg(1)), current)
+                round = op(L, "sub", op(L, "sub", load(end).at, int_arg(1)), current)
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
             mention(text(counter), count)
@@ -864,7 +865,7 @@ func iterate(n: usize) -> Fail?:
             append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
     else:
         args: &list[Value]
-        append(args, b)
+        append(args, walked)
         walk: &strview = "iter"
         if backward:
             walk = "reverse_iter"
@@ -1029,14 +1030,14 @@ func called(n: usize) -> Value|Fail:
                 called = try constant(s, VOID, tok.at)
     if called.type != VOID:
         shape := comp.types[called.type]
-        given := kids(n) - usize(tok.text == "(")
+        count := kids(n) - usize(tok.text == "(")
         if shape.kind != Func:
             hint: &strview
             if func_in(called.type) != VOID and called.place:
                 hint = ": narrow it with is first"
             return fail("only a function value can be called, this is " + shape.name + hint, tok.at)
-        if given != shape.count:
-            return fail("this " + shape.name + " expects " + shape.count + " arguments but got " + given, tok.at)
+        if count != shape.count:
+            return fail("this " + shape.name + " expects " + shape.count + " arguments but got " + count, tok.at)
         code := load(called).at
         if code.kind != Global:
             try panic_if(op(W, "ceql", code, int_arg(0)), "call of an empty function value", tok.at)
@@ -1045,11 +1046,11 @@ func called(n: usize) -> Value|Fail:
         while c < node_end(n):
             if comp.nodes[c].kind == Named:
                 return fail("a function value has no parameter names, pass the arguments in order", source(c))
-            takes := comp.items[shape.first + passes.len].type
-            passed := try value(c, takes)
-            if accepts(takes, passed) < 0 and not (comp.types[takes].kind == Ptr and comp.types[takes].elem == passed.type):
-                return fail("this function value is a " + shape.name + ", it takes " + comp.types[takes].name + " here but the call gives " + comp.types[passed.type].name, source(c))
-            append(passes, try hand(passed, takes, false, source(c)))
+            to := comp.items[shape.first + passes.len].type
+            given := try value(c, to)
+            if accepts(to, given) < 0 and not (comp.types[to].kind == Ptr and comp.types[to].elem == given.type):
+                return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, source(c))
+            append(passes, try hand(given, to, false, source(c)))
             c = node_end(c)
         return emit(code, passes, shape.elem, false, tok.at)
     name := tok.text
@@ -1380,14 +1381,14 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     if (array or (sequence(t) or textual(t)) and integer(index.type)) and kids(n) == 2:
         if not integer(index.type):
             return fail("an array index expects an integer, this one is " + comp.types[index.type].name, source(kid(n, 1)))
-        e := comp.types[t].elem
+        elem := comp.types[t].elem
         length := int_arg(i64(comp.types[t].count))
         known := array and index.lit and not index.neg and index.n < comp.types[t].count
         if array and local_of(kid(n, 1)) != 0:
             bound := comp.vars[local_of(kid(n, 1)) - 1].bound
             known = bound != 0 and bound <= comp.types[t].count
         if not array:
-            e = element(t)
+            elem = element(t)
             length = load(Value{type = USIZE, at = offset(addr, 8), mem = true}).at
             addr = op1(L, "loadl", addr)
         wide: usize = USIZE
@@ -1409,7 +1410,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             try invoke("out_of_bounds", bounds, tok.at)
             terminate("hlt", Arg{})
             open_block(l_in)
-        spot = Value{type = e, at = op(L, "add", addr, times(i, comp.types[e].size)), mem = true, place = base.place or not array}
+        spot = Value{type = elem, at = op(L, "add", addr, times(i, comp.types[elem].size)), mem = true, place = base.place or not array}
     else:
         args: &list[Value]
         if comp.types[t].kind == Array and kids(n) == 3:
@@ -2035,11 +2036,11 @@ func statements(n: usize) -> Fail?:
     return null
 
 func statement(n: usize, dropped: &strview) -> Fail?:
-    taken := comp.taken.len
+    held := comp.held.len
     v := try gen(n, VOID)
-    for k in taken..comp.taken.len:
-        append(comp.spare, comp.taken[k])
-    comp.taken.len = taken
+    for k in held..comp.held.len:
+        append(comp.spare, comp.held[k])
+    comp.held.len = held
     o := text(n)
     if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
         hint: &strview
@@ -2286,9 +2287,9 @@ func alloc(t: usize) -> Arg:
             s := comp.spare[i]
             if comp.slots[s].a.n == size:
                 remove(comp.spare, i)
-                append(comp.taken, s)
+                append(comp.held, s)
                 return Arg{Temp, i64(comp.slots[s].to)}
-        append(comp.taken, comp.slots.len)
+        append(comp.held, comp.slots.len)
     slot := temp()
     append(comp.slots, Ins{op = "alloc8", cls = L, to = u32(slot.n), a = int_arg(size)})
     return slot

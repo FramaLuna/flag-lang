@@ -277,16 +277,16 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     if best == 0 and name == "hash" and args.len == 1:
         return hashed(args[0], at)
     if best == 0:
-        for wanted in names:
-            declared := wanted.len == 0
+        for label in names:
+            declared := label.len == 0
             s := first_sym(name)
             while s != 0 and not declared:
                 f := comp.syms[s].node
                 for k in 0..params(f):
-                    declared = declared or callable(s, module, args, at) and text(kid(f, k)) == wanted
+                    declared = declared or callable(s, module, args, at) and text(kid(f, k)) == label
                 s = comp.syms[s].next
             if not declared:
-                return fail(name + " has no parameter named " + wanted, at)
+                return fail(name + " has no parameter named " + label, at)
         hint: &strview
         for a in args:
             if comp.types[a.type].kind == Union and comp.types[a.type].size > 4 and not is_letter(items(name)[0]):
@@ -312,9 +312,9 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     saved := comp.frame
     comp.frame = comp.binds.len
     try bind(f, order, args)
-    wanted: &list[usize]
+    taken: &list[usize]
     for k in 0..order.len:
-        append(wanted, try resolve(kid(f, k) + 1))
+        append(taken, try resolve(kid(f, k) + 1))
     id := try instantiate(f, at)
     comp.binds.len = comp.frame
     comp.frame = saved
@@ -322,13 +322,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     passes: &list[Pass]
     for k in 0..order.len:
         if order[k] < args.len:
-            append(passes, try hand(args[order[k]], wanted[k], foreign, at))
+            append(passes, try hand(args[order[k]], taken[k], foreign, at))
         else:
             given := node_end(kid(f, k) + 1)
             aside := set_aside(0)
             site := comp.site
             comp.site = at
-            append(passes, try hand(try gen(given, wanted[k]), wanted[k], foreign, source(given)))
+            append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, source(given)))
             put_back(0, aside)
             comp.site = site
     if order.len < params(f):
