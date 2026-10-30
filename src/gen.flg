@@ -65,8 +65,7 @@ func gen_program(check: bool) -> Fail?:
                 c = node_end(c)
         name := text(f)
         if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter"):
-            saved := comp.frame
-            comp.frame = comp.binds.len
+            saved := open_frame()
             for i in kid(f, 0)..kid(f, params(f)):
                 t := comp.tokens[comp.nodes[i].tok]
                 if t.kind == Generic and bound(t.text) == 0:
@@ -85,8 +84,7 @@ func gen_program(check: bool) -> Fail?:
                     second := try resolve(kid(f, 1) + 1)
                     for t in I8..USIZE + 1:
                         owned = owned or accepts(second, Value{type = usize(t)}) >= 0
-            comp.binds.len = comp.frame
-            comp.frame = saved
+            close_frame(saved)
             shown := comp.types[target].name
             shown = shown[:find(shown, "[") ifnull shown.len]
             if owned and name == "at":
@@ -148,7 +146,7 @@ func gen_from(from: usize) -> usize|Fail:
         comp.loops.len = 0
         comp.live = true
         comp.inst = i
-        comp.frame = comp.binds.len
+        saved := open_frame()
         for k in 0..inst.count:
             append(comp.binds, comp.inst_binds[inst.binds + k])
         comp.ret = inst.ret
@@ -211,7 +209,7 @@ func gen_from(from: usize) -> usize|Fail:
         elif inst.ret != VOID and comp.dest.kind == Empty:
             back = cls(inst.ret)
         close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
-        comp.binds.len = comp.frame
+        close_frame(saved)
     comp.blame = 0
     return next
 
@@ -529,15 +527,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     elif wanted == VOID and generic(f):
                         untyped = true
                     elif wanted == VOID or params(f) == order.len:
-                        saved := comp.frame
-                        comp.frame = comp.binds.len
+                        saved := open_frame()
                         fits = try bind(f, order, typed) >= 0
                         k: usize = 0
                         while fits and k < order.len:
                             fits = try resolve(kid(f, k) + 1) == typed[k].type
                             k += 1
-                        comp.binds.len = comp.frame
-                        comp.frame = saved
+                        close_frame(saved)
                     if fits and (found == 0 or near(s, tok.at) < near(found, tok.at)):
                         found = s
                         tied = false
@@ -556,15 +552,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if tied:
                     return fail("ambiguous function value " + tok.text + ", several overloads have the parameters of " + comp.types[wanted].name, tok.at)
                 f := comp.syms[found].node
-                saved := comp.frame
-                comp.frame = comp.binds.len
-                try bind(f, order, typed)
                 taken: &list[usize]
-                for k in 0..params(f):
-                    append(taken, try resolve(kid(f, k) + 1))
-                id := try instantiate(f, tok.at)
-                comp.binds.len = comp.frame
-                comp.frame = saved
+                id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
