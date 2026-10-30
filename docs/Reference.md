@@ -600,9 +600,9 @@ The price is what it doesn't see: freeing only some of the elements, freeing the
 ### What it doesn't know
 It doesn't follow the values of the conditions, it looks at every path. It does follow `is`: after `if node is *Node:` it knows that the other path has no node to free.
 
-It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others. So these give warnings that are not real
+These give warnings that are not real
 - freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
-- linked lists and trees whose nodes are allocated in a loop or by a recursive function
+- linked lists and trees whose nodes are allocated in a loop or by a recursive function. It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others, and a node freed through a pointer that may be either of them is not surely freed
 - a pointer that may point to one of several fields, when you store or free through it
 - a union whose members keep a pointer in the same place, like `&str|E` with an error `E` that starts with a `&strview`: after `if t is &str:` it still sees the pointer of `E` there, so `free(t)` warns that it is not on the heap
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
