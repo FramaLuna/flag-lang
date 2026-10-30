@@ -172,50 +172,50 @@ priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where not @
     return i64(pid)
 
 priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where @windows():
-    dot := program[0].len
-    for i in reverse 0..program[0].len:
-        c := program[0][i]
-        if c == '.':
-            dot = i
-        if c == '.' or c == '/' or c == '\\':
-            break
-    extension := lower(program[0][dot:])
-    if extension == ".bat" or extension == ".cmd":
-        return FsError{22, "run", program[0]} # cmd.exe would read the arguments again, a batch file goes with run(command)
-    file := program[0]
-    if extension.len == 0:
-        file = file + ".exe" # so _spawnvp never finds a .bat or a .cmd
-    flush()
     line: &str
     defer free(line)
-    for part in program:
-        if line.len > 0:
-            line += " "
-        if part.len > 0 and not contains(part, " ") and not contains(part, "\t") and not contains(part, "\""):
-            line += part
-        else:
-            line += "\""
-            slashes: usize = 0
-            for c in items(part):
-                if c == '"':
-                    for k in 0..slashes + 1:
-                        add_byte(line, '\\')
-                add_byte(line, c)
-                if c == '\\':
-                    slashes += 1
-                else:
-                    slashes = 0
-            for k in 0..slashes:
-                add_byte(line, '\\')
-            line += "\""
-    args := array[*u8, 2]{c_text(line), usize(0) as *u8}
     saved: i32 = -1
-    if into >= 0:
-        saved = dup(1)
-        SetHandleInformation(_get_osfhandle(saved), 1, 0) # the program doesn't inherit it
-        dup2(into, 1)
     process: i64 = -1
     with scratch():
+        dot := program[0].len
+        for i in reverse 0..program[0].len:
+            c := program[0][i]
+            if c == '.':
+                dot = i
+            if c == '.' or c == '/' or c == '\\':
+                break
+        extension := lower(program[0][dot:])
+        if extension == ".bat" or extension == ".cmd":
+            return FsError{22, "run", program[0]} # cmd.exe would read the arguments again, a batch file goes with run(command)
+        file := program[0]
+        if extension.len == 0:
+            file = file + ".exe" # so _spawnvp never finds a .bat or a .cmd
+        flush()
+        for part in program:
+            if line.len > 0:
+                line += " "
+            if part.len > 0 and not contains(part, " ") and not contains(part, "\t") and not contains(part, "\""):
+                line += part
+            else:
+                line += "\""
+                slashes: usize = 0
+                for c in items(part):
+                    if c == '"':
+                        for k in 0..slashes + 1:
+                            add_byte(line, '\\')
+                    add_byte(line, c)
+                    if c == '\\':
+                        slashes += 1
+                    else:
+                        slashes = 0
+                for k in 0..slashes:
+                    add_byte(line, '\\')
+                line += "\""
+        args := array[*u8, 2]{c_text(line), usize(0) as *u8}
+        if into >= 0:
+            saved = dup(1)
+            SetHandleInformation(_get_osfhandle(saved), 1, 0) # the program doesn't inherit it
+            dup2(into, 1)
         process = _spawnvp(1, cstr(file), ptr(args) as **u8)
     failed := FsError{errno(), "run", program[0]}
     if into >= 0:
