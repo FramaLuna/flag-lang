@@ -332,7 +332,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if comp.types[held].kind == Ptr:
                 held = comp.types[held].elem
             if comp.types[held].kind == Fat and text(comp.types[held].decl) == "map":
-                hint = ", a pointer to a value of a map goes bad when the map grows, so core keeps that put for itself: change the value in place with m[k] += v or m[k].field = v"
+                hint = ", a pointer to a value of a map goes bad when the map grows, so core keeps that put for itself: change the value in place with m[k] += v or m[k].field = v, or pass m[k] where a pointer goes, append(m[k], v)"
         failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said: usize = 0
         s := first_sym(name)
@@ -353,9 +353,16 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     id := try instantiate_for(f, order, args, ptr(taken), at)
     foreign := body(f) == 0 or comp.insts[id].export
     passes: &list[Pass]
+    back: &list[Value]
     for k in 0..order.len:
         if order[k] < args.len:
-            append(passes, try hand(args[order[k]], taken[k], foreign, at))
+            given := args[order[k]]
+            if given.element != 0 and comp.types[taken[k]].kind == Ptr:
+                append(back, comp.elements[given.element - 2])
+                append(back, comp.elements[given.element - 1])
+                given = filled(given, comp.types[taken[k]].elem)
+                append(back, given)
+            append(passes, try hand(given, taken[k], foreign, at))
         else:
             given := node_end(kid(f, k) + 1)
             aside := set_aside(0)
@@ -376,7 +383,19 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 append(passes, Pass{D, op1(D, "exts", x), false})
             else:
                 append(passes, Pass{cls(v.type), x, is_number(x)})
-    return emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
+    result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
+    while back.len > 0:
+        element := back[back.len - 3:]
+        three: &list[Value]
+        append(three, element)
+        back.len -= 3
+        if not try offers("put", three, at):
+            return fail(comp.types[element[0].type].name + " gives a copy of its element and has no put(x, i, v) to put it back, so " + name + " would only change the copy: change a copy of the element and put it back", at)
+        gives := try returned("put", three, at)
+        if gives != VOID:
+            return fail(name + " changes an element of " + comp.types[element[0].type].name + " through a pointer and put puts it back, but put gives " + comp.types[gives].name + " and a call cannot pass on an error: change a copy of the element and try put(x, i, v)", at)
+        try invoke("put", three, at)
+    return result
 
 func instantiate_for(f: usize, order: &list[usize], args: &list[Value], taken: *&list[usize], at: usize) -> usize|Fail:
     saved := open_frame()
@@ -627,6 +646,8 @@ func match(n: usize, v: Value) -> i64|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     t := comp.types[v.type]
+    if v.element != 0 and node.kind == TUnary and tok.text == "*":
+        return match(n, Value{type = try present(v.type, tok.at), at = v.at})
     if node.kind == TName and tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:

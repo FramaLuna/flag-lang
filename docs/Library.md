@@ -209,7 +209,7 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2
 A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
 - `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `at(m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
-- `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. To add to a list kept in a map, take it, append and put it back: `l: &list[i32] = groups[k] ifnull []`, `append(l, v)`, `groups[k] = l`
+- `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory

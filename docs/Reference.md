@@ -368,7 +368,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | You write | It calls |
 |---|---|
 | `x[i]` | `at(x, i)`. If it returns a pointer, `x[i]` is the element and you can assign to it, if it returns a value that's what you read, like `V|null` for a map |
-| `x[i] = v` | when `at` returns a value, `put(x, i, v)`. `x[i] += v` is `put(x, i).* += v` when a `put(x, i)` gives a pointer to the value, and `put(x, i, at(x, i) + v)` when not. `x[i].f = v` and `x[i][j] = v` go through that pointer too |
+| `x[i] = v` | when `at` returns a value, `put(x, i, v)`. `x[i] += v` is `put(x, i).* += v` when a `put(x, i)` gives a pointer to the value, and `put(x, i, at(x, i) + v)` when not. `x[i].f = v` and `x[i][j] = v` go through that pointer too. `f(x[i])` with a pointer parameter passes a copy and calls `put(x, i, copy)` after `f` |
 | `x[a:b]` | `slice(x, a, b)`, and `x[a:]` is `slice(x, a, x.len)` |
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
@@ -429,6 +429,8 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
 
 When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has a `put(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once, and so does assigning a field or an element of it: `players[name].score += 10`, `pairs[a][b] += 1`. The right side runs first and the pointer is used at once, so a right side that grows the map is safe. The `put` of a map that gives the pointer is priv to core, because a pointer you keep goes bad at the next `put`. Without that `put`, like on a fixed map, a field of `x[i]` cannot be assigned, it would only change a copy. On a fixed map `put` gives `MapFull?` and an assignment cannot pass an error on, so `x[i] = v` and `x[i] += v` don't compile there: call `try put(m, k, v)`.
+
+A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `put(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map. The map is not touched while the call runs, so a call that grows it is safe. Without a `put(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 

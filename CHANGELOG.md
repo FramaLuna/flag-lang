@@ -14,7 +14,7 @@ New
 - A `Socket` of `net` reads and writes like a file, with `read`, `read_line`, `write`, `flush` and `close`, and `timeout(s, seconds)` makes a slow read or write fail with the code `TIMED_OUT` on every system. A server is a `Server`, its own type, so a file, a server and a connection never go one where the other goes
 - What the system refuses is an `FsError` with the code, what failed and the path, and printing it says all of it: `cannot open notes.txt: No such file or directory`. `net` fails with a `NetError` of the same fields: `cannot connect to example.com:80: Connection refused`. `NotJson` says where and why: `not JSON at line 3, column 14: expected ':' after the key`. With `errno()` your own C calls fail the same way
 - A name you declare that core also declares, like `File`, `Integer` or `stdout`, is yours in your files, and the library keeps its own, shown as `core.File` in messages
-- A field or an element of a value in a map changes in place, the key found once and added with a zero value when it is missing: `players[name].score += 10`, `pairs[a][b] += 1`
+- A field or an element of a value in a map changes in place, the key found once and added with a zero value when it is missing: `players[name].score += 10`, `pairs[a][b] += 1`. Passed where a pointer goes, `m[k]` is copied and put back after the call: `append(groups[k], v)`
 - `words(text)` splits on spaces, tabs and line ends: `for w in words(text): counts[w] += 1`
 - `append(list, items)`, `clear` and `reserve` for lists, `clear` for rings, `find_last`, `pad`, `view(bytes)`, `free(p)` for what `heap` gives, the `Integer` alias and `json.key(d, value)`
 - A value goes into a union through the member it converts to: a `&str` into `&strview|i32`, a `&list[T]` into `&slice[T]?`, and `{}` or `{1, 2}` into a union with one struct, also `m[k] = {}`
@@ -34,6 +34,7 @@ Faster
 - A connection sends at once (`TCP_NODELAY`)
 
 Changed
+- `f(x[i])` with a pointer parameter, when `x[i]` gives a copy, puts the copy back with `put(x, i, v)` after the call, and without that `put` it doesn't compile: it changed a copy that nobody saw
 - An enum without a value starts as the first variant you wrote, also when another enum declared some of its variants before, and two enums with all the same variants are an error: `type Paint = Color` gives one a second name
 - A case of a switch over a union is a type, never a value or a variable, and a default that can never run is an error
 - A deferred call that can fail doesn't compile, `defer _ = f()` drops the error on purpose, and a `with` whose `close` can fail is an error

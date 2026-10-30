@@ -1318,7 +1318,9 @@ func called(n: usize) -> Value|Fail:
         elif names.len > 0 and names[-1].len > 0:
             return fail(name + " expects every argument after a named one to be named too", at_of(c))
         append(names, label)
+        comp.passed = c
         append(values, try value(c, VOID))
+        comp.passed = 0
         c = node_end(c)
     return call(name, node.module, values, names, tok.at)
 
@@ -1533,6 +1535,7 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
     none: Value
     if assignment != 0 and kids(n) == 3:
         return fail("a slice is a view, it cannot be assigned: assign its elements one by one", tok.at)
+    passing := comp.passed == n
     first := comp.body.len
     base := try value(n + 1, VOID)
     if comp.types[base.type].kind == Ptr and comp.types[comp.types[base.type].elem].kind == Fat:
@@ -1630,35 +1633,27 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
                 append(args, settled(try value(node_end(n), read), first, middle))
                 postpone(first, middle)
                 return invoke("put", args, tok.at)
-            rest: &list[usize]
-            for m in members(read):
-                if m != NULL:
-                    append(rest, m)
-            kept := try union_of(rest, Union, tok.at)
+            kept := try present(read, tok.at)
             place := try returned("put", args, 0) # as core sees it, the put of a map that gives a place is priv
             if comp.types[place].kind == Ptr and comp.types[place].elem == kept:
                 spot = Value{type = kept, at = load(try invoke("put", args, 0)).at, mem = true, place = true}
             elif placing:
                 return fail(comp.types[t].name + " gives a copy of its element and has no put(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
             else:
-                p := try invoke("at", args, tok.at)
-                spot = Value{type = kept, at = alloc(kept), mem = true, place = true}
-                zero(kept, spot.at)
-                if rest.len == members(p.type).len:
-                    store(kept, p, spot.at)
-                else:
-                    l_some := label()
-                    l_done := label()
-                    branch(op(W, "cnew", tag(p), tag_of(NULL)), l_some, l_done)
-                    open_block(l_some)
-                    store(kept, Value{type = kept, at = payload(p.at, kept), mem = true}, spot.at)
-                    jump(l_done)
-                    open_block(l_done)
+                spot = filled(try invoke("at", args, tok.at), kept)
                 try update(spot, assignment, first)
                 append(args, spot)
                 return invoke("put", args, tok.at)
         else:
             p := try invoke("at", args, tok.at)
+            if comp.types[p.type].kind != Ptr and passing:
+                key := load(args[1])
+                if key.mem:
+                    key = Value{type = key.type, at = alloc(key.type), mem = true}
+                    store(key.type, load(args[1]), key.at)
+                append(comp.elements, args[0])
+                append(comp.elements, key)
+                p.element = comp.elements.len # a call that takes it by pointer puts it back in x[i]
             if comp.types[p.type].kind != Ptr:
                 return p
             spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
@@ -1668,6 +1663,28 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
         return fail("this element belongs to a value that is not a variable, assigning it would only change a copy", at_of(n + 1))
     try update(spot, assignment, first)
     return none
+
+func present(t: usize, at: usize) -> usize|Fail:
+    rest: &list[usize]
+    for m in members(t):
+        if m != NULL:
+            append(rest, m)
+    return union_of(rest, Union, at)
+
+func filled(v: Value, kept: usize) -> Value:
+    spot := Value{type = kept, at = alloc(kept), mem = true, place = true}
+    zero(kept, spot.at)
+    if not contains(members(v.type), NULL):
+        store(kept, v, spot.at)
+        return spot
+    l_some := label()
+    l_done := label()
+    branch(op(W, "cnew", tag(v), tag_of(NULL)), l_some, l_done)
+    open_block(l_some)
+    store(kept, Value{type = kept, at = payload(v.at, kept), mem = true}, spot.at)
+    jump(l_done)
+    open_block(l_done)
+    return spot
 
 func update(spot: Value, n: usize, first: usize) -> Fail?:
     o := text(n)
