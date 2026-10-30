@@ -471,36 +471,51 @@ symeq(Sym s0, Sym s1)
 	return s0.type == s1.type && s0.id == s1.id;
 }
 
+static int *
+conslot(Con *c, Fn *fn)
+{
+	uint64_t h;
+	int *s;
+
+	h = c->type + 3 * c->sym.type + 7 * (uint64_t)c->sym.id + 11 * (uint64_t)c->bits.i;
+	h = (h ^ h >> 29) * 0x9e3779b97f4a7c15;
+	for (s=&fn->conh[h >> 32 & (fn->nconh-1)];; s++) {
+		if (s == &fn->conh[fn->nconh])
+			s = fn->conh;
+		if (!*s
+		|| (c->type == fn->con[*s].type
+		&& symeq(c->sym, fn->con[*s].sym)
+		&& c->bits.i == fn->con[*s].bits.i))
+			return s;
+	}
+}
+
+/* constants are found through a hash of their index, rebuilt as it fills */
 Ref
 newcon(Con *c0, Fn *fn)
 {
-	Con *c1;
-	int i;
+	int *s, i;
 
-	for (i=1; i<fn->ncon; i++) {
-		c1 = &fn->con[i];
-		if (c0->type == c1->type
-		&& symeq(c0->sym, c1->sym)
-		&& c0->bits.i == c1->bits.i)
-			return CON(i);
+	if (fn->nconh < 2 * fn->ncon) {
+		for (fn->nconh=64; fn->nconh<4*fn->ncon; fn->nconh*=2)
+			;
+		fn->conh = alloc(fn->nconh * sizeof fn->conh[0]);
+		for (i=1; i<fn->ncon; i++)
+			*conslot(&fn->con[i], fn) = i;
 	}
-	vgrow(&fn->con, ++fn->ncon);
-	fn->con[i] = *c0;
-	return CON(i);
+	s = conslot(c0, fn);
+	if (!*s) {
+		vgrow(&fn->con, ++fn->ncon);
+		fn->con[fn->ncon-1] = *c0;
+		*s = fn->ncon-1;
+	}
+	return CON(*s);
 }
 
 Ref
 getcon(int64_t val, Fn *fn)
 {
-	int c;
-
-	for (c=1; c<fn->ncon; c++)
-		if (fn->con[c].type == CBits
-		&& fn->con[c].bits.i == val)
-			return CON(c);
-	vgrow(&fn->con, ++fn->ncon);
-	fn->con[c] = (Con){.type = CBits, .bits.i = val};
-	return CON(c);
+	return newcon(&(Con){.type = CBits, .bits.i = val}, fn);
 }
 
 int

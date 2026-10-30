@@ -1407,48 +1407,60 @@ func operation(n: usize, want: usize) -> Value|Fail:
     if o == "+":
         return concat(n, none, comp.body.len)
     if o == "iferror" or o == "ifnull":
-        v := try value(left, want)
-        if comp.types[v.type].kind != Union:
-            return fail(o + " expects a union on its left, " + comp.types[v.type].name + " has nothing to replace", tok.at)
-        removed: &list[usize]
-        rest: &list[usize]
-        for m in members(v.type):
-            if o == "iferror" and comp.types[m].error or o == "ifnull" and m == NULL:
-                append(removed, m)
-            else:
-                append(rest, m)
-        if removed.len == 0 and o == "iferror":
-            return fail(comp.types[v.type].name + " never fails, there is no error for iferror to replace", tok.at)
-        if removed.len == 0:
-            return fail(comp.types[v.type].name + " is never null, there is nothing for ifnull to replace", tok.at)
-        kept := try union_of(rest, Union, tok.at)
-        l_bad := label()
-        l_good := label()
-        l_done := label()
-        branch(tag_test(v, removed), l_bad, l_good)
-        open_block(l_bad)
-        absent(v.at, v.type, removed)
-        other := try gen(right, kept)
-        reads(right)
-        if other.type == VOID:
-            jump(l_good)
+        chain: &list[usize]
+        c := n
+        while comp.nodes[c].kind == Binary and (text(c) == "iferror" or text(c) == "ifnull"):
+            append(chain, c)
+            c += 1
+        v := try value(c, want)
+        for k in reverse chain:
+            o = text(k)
+            at := comp.tokens[comp.nodes[k].tok].at
+            right = node_end(k + 1)
+            if comp.types[v.type].kind != Union:
+                return fail(o + " expects a union on its left, " + comp.types[v.type].name + " has nothing to replace", at)
+            removed: &list[usize]
+            rest: &list[usize]
+            for m in members(v.type):
+                if o == "iferror" and comp.types[m].error or o == "ifnull" and m == NULL:
+                    append(removed, m)
+                else:
+                    append(rest, m)
+            if removed.len == 0 and o == "iferror":
+                return fail(comp.types[v.type].name + " never fails, there is no error for iferror to replace", at)
+            if removed.len == 0:
+                return fail(comp.types[v.type].name + " is never null, there is nothing for ifnull to replace", at)
+            kept := try union_of(rest, Union, at)
+            l_bad := label()
+            l_good := label()
+            l_done := label()
+            branch(tag_test(v, removed), l_bad, l_good)
+            open_block(l_bad)
+            absent(v.at, v.type, removed)
+            other := try gen(right, kept)
+            reads(right)
+            if other.type == VOID and k != n:
+                return fail("a function that returns nothing is a statement, not a value", at_of(right))
+            if other.type == VOID:
+                jump(l_good)
+                open_block(l_good)
+                return none
+            result := kept
+            if not try assignable(kept, other.type, at) and not (other.lit and accepts(kept, other) >= 0):
+                both_sides: &list[usize]
+                append(both_sides, kept)
+                append(both_sides, other.type)
+                result = try union_of(both_sides, Union, at)
+            slot := alloc(result)
+            try assign(slot, result, other, at_of(right))
+            jump(l_done)
             open_block(l_good)
-            return none
-        result := kept
-        if not try assignable(kept, other.type, tok.at) and not (other.lit and accepts(kept, other) >= 0):
-            both_sides: &list[usize]
-            append(both_sides, kept)
-            append(both_sides, other.type)
-            result = try union_of(both_sides, Union, tok.at)
-        slot := alloc(result)
-        try assign(slot, result, other, at_of(right))
-        jump(l_done)
-        open_block(l_good)
-        absent(v.at, v.type, rest)
-        try assign(slot, result, Value{type = kept, at = payload(v.at, kept), mem = true}, tok.at)
-        jump(l_done)
-        open_block(l_done)
-        return Value{type = result, at = slot, mem = true}
+            absent(v.at, v.type, rest)
+            try assign(slot, result, Value{type = kept, at = payload(v.at, kept), mem = true}, at)
+            jump(l_done)
+            open_block(l_done)
+            v = Value{type = result, at = slot, mem = true}
+        return v
     chain: &list[usize]
     c := n
     while comp.nodes[c].kind == Binary:
