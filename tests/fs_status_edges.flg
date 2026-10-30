@@ -1,0 +1,39 @@
+use fs
+
+extern "c":
+    func chmod(path: cstr, mode: u32) -> i32
+    func mkfifo(path: cstr, mode: u32) -> i32
+    func symlink(target: cstr, path: cstr) -> i32
+
+func locked(path: &strview, mode: u32) where not @windows():
+    chmod(cstr(path), mode)
+
+func locked(path: &strview, mode: u32) where @windows():
+    pass
+
+func special(path: &strview) where not @windows():
+    mkfifo(cstr(path), 420)
+    symlink("..", cstr(path + ".up"))
+
+func special(path: &strview) where @windows():
+    _ = write_file(path, "")
+
+func main():
+    root := "build/tests/fs_status_edges.dir"
+    _ = make_dir(root + "/locked")
+    _ = make_dir(root + "/inside")
+    _ = write_file(root + "/inside/five.txt", "12345")
+    special(root + "/inside/fifo")
+    locked(root + "/locked", 0)
+    print(exists(root + "/locked"), " ", is_dir(root + "/locked"), " ", file_size(root + "/locked"))
+    print(file_size(root + "/inside/fifo"), " ", file_size(root + "/inside/five.txt"))
+    for path in trust walk(root):
+        if not ends_with(path, ".up"):
+            print(path)
+    locked(root + "/locked", 493)
+    _ = remove(root + "/inside/fifo.up")
+    _ = remove(root + "/inside/fifo")
+    _ = remove(root + "/inside/five.txt")
+    _ = remove(root + "/inside")
+    _ = remove(root + "/locked")
+    print(exists(root + "/inside"), " ", exists(root + "/locked"))

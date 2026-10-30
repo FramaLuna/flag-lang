@@ -3,25 +3,32 @@ module fs
 priv extern "c":
     func fopen(path: cstr, mode: cstr) -> *bytes
     func fwrite(from: *bytes, size: usize, count: usize, file: *bytes) -> usize
-    func fseek(file: *bytes, offset: i64, whence: i32) -> i32
-    func fgetpos(file: *bytes, into: *i64) -> i32
     func fclose(file: *bytes) -> i32
-    func access(path: cstr, mode: i32) -> i32
+    func stat(path: cstr, into: *bytes) -> i32
+    func lstat(path: cstr, into: *bytes) -> i32
+    func _stat64(path: cstr, into: *bytes) -> i32
+    func GetFileAttributesA(path: cstr) -> u32
     func remove(path: cstr) -> i32
     func rmdir(path: cstr) -> i32
     func rename(from: cstr, to: cstr) -> i32
+    func MoveFileExA(from: cstr, to: cstr, flags: u32) -> i32
+    func GetLastError() -> u32
     func mkdir(path: cstr, mode: u32) -> i32
     func opendir(path: cstr) -> *bytes
     func readdir(dir: *bytes) -> *u8
     func closedir(dir: *bytes) -> i32
-    func readlink(path: cstr, into: *u8, size: usize) -> i64
 
-func read_text_file(path: &strview) -> &str|FsError:
+func read_file(path: &strview) -> &str|FsError:
     f := try open(path)
     out: &str
-    got := read(f, out, 65536)
+    known := status(path)
+    if known is Status:
+        reserve(out, usize(known.size) + 1)
+    got: usize|FsError = 1
     while got is usize and got > 0:
-        got = read(f, out, 65536)
+        if out.len == out.cap:
+            reserve(out, out.len + 65536)
+        got = read(f, out, out.cap - out.len)
     close(f)
     if got is FsError:
         free(out)
@@ -35,7 +42,9 @@ func append_file(path: &strview, text: &strview) -> FsError?:
     return put_file(path, text, "ab")
 
 priv func put_file(path: &strview, text: &strview, mode: cstr) -> FsError?:
-    file := fopen(path, mode)
+    file := usize(0) as *bytes
+    with scratch():
+        file = fopen(cstr(path), mode)
     if file as usize == 0:
         return FsError{errno(), "write", path}
     done := fwrite(ptr(text.*), 1, text.len, file)
@@ -43,40 +52,26 @@ priv func put_file(path: &strview, text: &strview, mode: cstr) -> FsError?:
         return FsError{errno(), "write", path}
     return null
 
-priv func fopen(path: &strview, mode: cstr) -> *bytes:
-    with scratch():
-        return fopen(cstr(path), mode)
-
 func exists(path: &strview) -> bool:
-    with scratch():
-        return access(cstr(path), 0) == 0
+    return status(path) is Status
 
 func is_dir(path: &strview) -> bool:
-    with scratch():
-        dir := opendir(cstr(path))
-        if dir as usize != 0:
-            closedir(dir)
-            return true
-    return false
+    found := status(path)
+    return found is Status and found.folder
 
 func file_size(path: &strview) -> usize|FsError:
-    if is_dir(path):
+    found := status(path)
+    if found is null:
+        return FsError{errno(), "read the size of", path}
+    if found.folder:
         return FsError{21, "read the size of", path} # EISDIR on every system
-    file := fopen(path, "rb")
-    if file as usize == 0:
-        return FsError{errno(), "open", path}
-    at: array[i64, 4]
-    if fseek(file, 0, 2) != 0 or fgetpos(file, ptr(at) as *i64) != 0:
-        failed := FsError{errno(), "read the size of", path}
-        fclose(file)
-        return failed
-    fclose(file)
-    return usize(at[0])
+    return usize(found.size)
 
 func remove(path: &strview) -> FsError?:
+    found := status(path, follow_links = false)
     failed := false
     with scratch():
-        if is_dir(path):
+        if found is Status and found.folder:
             failed = rmdir(cstr(path)) != 0
         else:
             failed = remove(cstr(path)) != 0
@@ -84,12 +79,20 @@ func remove(path: &strview) -> FsError?:
         return FsError{errno(), "remove", path}
     return null
 
-func rename(from: &strview, to: &strview) -> FsError?:
+func rename(from: &strview, to: &strview) -> FsError? where not @windows():
     failed := false
     with scratch():
         failed = rename(cstr(from), cstr(to)) != 0
     if failed:
         return FsError{errno(), "rename", from}
+    return null
+
+func rename(from: &strview, to: &strview) -> FsError? where @windows():
+    failed := false
+    with scratch():
+        failed = MoveFileExA(cstr(from), cstr(to), 3) == 0 # MOVEFILE_REPLACE_EXISTING and MOVEFILE_COPY_ALLOWED
+    if failed:
+        return FsError{0 - i32(GetLastError()), "rename", from}
     return null
 
 func make_dir(path: &strview) -> FsError?:
@@ -136,7 +139,8 @@ func walk(folder: &strview) -> &slice[&strview]|FsError:
         if names is &slice[&strview]:
             for name in names:
                 path := join(folders[i], name)
-                if is_dir(path) and not is_link(path):
+                found := status(path, follow_links = false)
+                if found is Status and found.folder:
                     append(folders, path)
                 else:
                     append(files, path)
@@ -172,22 +176,60 @@ func dir_of(path: &strview) -> &strview:
         return "./"
     return path[:name_start(path)]
 
+priv type Status:
+    folder: bool
+    size: u64
+
+priv func status(path: &strview, follow_links: bool = true) -> Status?:
+    room: array[u64, 20]
+    with scratch():
+        if not stat_into(path, ptr(room) as *bytes, follow_links):
+            return null
+    place := layout()
+    mode := ((ptr(room) as usize + place[0]) as *u16).* and 0xf000
+    return Status{mode == 0x4000, ((ptr(room) as usize + place[1]) as *u64).*} # S_IFDIR
+
+priv func stat_into(path: &strview, into: *bytes, follow_links: bool) -> bool where not @windows():
+    if follow_links:
+        return stat(cstr(path), into) == 0
+    return lstat(cstr(path), into) == 0
+
+priv func stat_into(path: &strview, into: *bytes, follow_links: bool) -> bool where @windows():
+    plain := path
+    while plain.len > 1 and slash(plain[-1]) and plain[-2] != ':':
+        plain = plain[:-1] # the C library doesn't find a folder with a / after it
+    if _stat64(cstr(plain), into) != 0:
+        return false
+    if not follow_links and (GetFileAttributesA(cstr(plain)) and 0x400) != 0: # a link or a junction
+        ((into as usize + 6) as *u16).* = 0xa000 # S_IFLNK, so it's not a folder
+    return true
+
+priv func layout() -> array[usize, 2] where @linux() and @x86_64():
+    return [24, 48] # where struct stat has st_mode and st_size
+
+priv func layout() -> array[usize, 2] where @linux() and not @x86_64():
+    return [16, 48]
+
+priv func layout() -> array[usize, 2] where @macos() and @arm64():
+    return [4, 96]
+
+priv func layout() -> array[usize, 2] where @macos() and @x86_64():
+    return [8, 72] # the stat of 32-bit inodes, the one of the plain symbol
+
+priv func layout() -> array[usize, 2] where @windows():
+    return [6, 24] # struct _stat64
+
 priv func name_in_entry() -> usize where @linux():
     return 19
 
-priv func name_in_entry() -> usize where @macos():
+priv func name_in_entry() -> usize where @macos() and @arm64():
     return 21
+
+priv func name_in_entry() -> usize where @macos() and @x86_64():
+    return 8 # the dirent of 32-bit inodes, the one of the plain readdir
 
 priv func name_in_entry() -> usize where @windows():
     return 8
-
-priv func is_link(path: &strview) -> bool where not @windows():
-    buf: array[u8, 1]
-    with scratch():
-        return readlink(cstr(path), ptr(buf) as *u8, 1) >= 0
-
-priv func is_link(path: &strview) -> bool where @windows():
-    return false
 
 priv func slash(c: u8) -> bool where not @windows():
     return c == '/'

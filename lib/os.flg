@@ -66,7 +66,7 @@ func args() -> &slice[&strview]:
     return startup.args
 
 func run(command: &strview) -> i32|FsError:
-    _ = flush(stderr) # stdout goes first
+    flush()
     status: i32 = -1
     with scratch():
         status = system(cstr(command))
@@ -80,7 +80,7 @@ func run(program: &slice[&strview]) -> i32|FsError:
     return finish(try spawn(program, -1, -1))
 
 func output(command: &strview, into: *&str) -> i32|FsError:
-    _ = flush(stderr) # stdout goes first
+    flush()
     stream := usize(0) as *bytes
     with scratch():
         stream = popen(cstr(command), "r")
@@ -124,7 +124,7 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError
     if pipe(ptr(failure) as *i32) != 0:
         return FsError{errno(), "run", program[0]}
     fcntl(failure[1], 2, 1) # close on exec, so the pipe ends when the program starts
-    _ = flush(stderr) # stdout goes first
+    flush()
     table := (program.len + 1) * 8
     size := table
     for part in program:
@@ -163,7 +163,7 @@ priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError
     return i64(pid)
 
 priv func spawn(program: &slice[&strview], into: i32, other: i32) -> i64|FsError where @windows():
-    _ = flush(stderr) # stdout goes first
+    flush()
     line: &str
     defer free(line)
     for part in program:
