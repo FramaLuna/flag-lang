@@ -36,7 +36,7 @@ type Use:
     at: usize
 
 type enum NodeKind:
-    Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Assign
+    Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Constant, Assign
     TName, TUnary, TUnion, TFunc
     Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
     Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Items, Pairs
@@ -67,6 +67,7 @@ type Type:
     size: usize
     align: usize
     elem: usize
+    ret: usize
     first: usize
     count: usize
     args: usize
@@ -223,8 +224,7 @@ context comp:
     blame: usize
     live: bool
     inst: usize
-    asked: bool
-    target: usize
+    asked: usize
     defined: &list[usize]
     hover: &str
     system: &strview
@@ -473,15 +473,14 @@ func main() -> i32:
         for t in 0..comp.tokens.len:
             k := comp.tokens[t]
             if k.kind != Line and k.at <= at and at < k.at + k.text.len:
-                comp.asked = true
-                comp.target = t
+                comp.asked = t + 1
     failed := gen_program(check) is Fail
     if memory and not failed:
         check_memory()
-    if comp.asked:
+    if comp.asked != 0:
         for s in comp.syms:
-            if s.name.len > 0 and comp.nodes[s.node].tok == comp.target:
-                mark(comp.nodes[s.node].tok, header(comp.nodes[s.node].tok))
+            if s.name.len > 0 and comp.nodes[s.node].tok == comp.asked - 1:
+                mark(comp.asked - 1)
         for d in comp.defined:
             print("definition ", location(comp.tokens[d].at))
         if comp.hover.len > 0:
@@ -600,9 +599,7 @@ func show(at: usize):
     f := comp.files[file_of(at)]
     bytes := items(f.code)
     local := at - f.start
-    first := local
-    while first > 0 and bytes[first - 1] != '\n':
-        first -= 1
+    first := line_start(at) - f.start
     line: &str
     pad: &str
     i := first
@@ -656,10 +653,9 @@ func line_of(at: usize) -> usize:
 
 func line_start(at: usize) -> usize:
     f := comp.files[file_of(at)]
-    first := at
-    while first > f.start and items(f.code)[first - f.start - 1] != '\n':
-        first -= 1
-    return first
+    while at > f.start and items(f.code)[at - f.start - 1] != '\n':
+        at -= 1
+    return at
 
 func header(tok: usize) -> &strview:
     first := tok
@@ -671,13 +667,15 @@ func header(tok: usize) -> &strview:
     f := comp.files[file_of(comp.tokens[tok].at)]
     return f.code[comp.tokens[first].at - f.start:comp.tokens[last].at + comp.tokens[last].text.len - f.start]
 
-func mark(tok: usize, hover: &strview):
+func mark(tok: usize, hover: &strview = ""):
     for d in comp.defined:
         if d == tok:
             return
     append(comp.defined, tok)
     if comp.hover.len > 0:
         comp.hover += "\n"
+    if hover.len == 0:
+        hover = header(tok)
     comp.hover += hover
 
 func node_end(n: usize) -> usize:

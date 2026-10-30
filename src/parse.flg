@@ -156,7 +156,10 @@ func parse() -> Fail?:
             finish(n)
         elif t.kind == Name and after.text == "=":
             try new_name(true)
-            try argument()
+            begin(Constant, comp.pos)
+            comp.pos += 2
+            try expr(1)
+            finish(n)
         elif sym.priv:
             return unexpected("priv expects a declaration after it")
         else:
@@ -249,7 +252,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
                 if twin:
                     problem = " is declared twice with the same parameters"
             elif kind == Func or other == Func:
-                if kind == Named or other == Named:
+                if kind == Constant or other == Constant:
                     problem = " is declared as a constant and as a function, a name is one or the other"
             elif other != Void or kind != Void:
                 problem = " is declared twice"
@@ -660,7 +663,7 @@ func unary() -> Fail?:
         return unexpected("a value goes here")
     links: usize = 0
     while true:
-        comp.depth -= links
+        comp.depth -= links # each link nests, its arguments do not
         if peek(".") and comp.tokens[comp.pos + 1].kind == Name:
             wrap(start, Field, comp.pos + 1)
             comp.pos += 2

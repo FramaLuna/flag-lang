@@ -345,8 +345,7 @@ func brief(name: &strview) -> &strview:
 func open_proc(name: &strview, node: usize, inst: usize, export: bool) -> Proc:
     return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, node = node, inst = inst, export = export}
 
-func close_proc(p: Proc, cls: u32, count: usize):
-    made := p
+func close_proc(made: Proc, cls: u32, count: usize):
     made.cls = cls
     made.count = count
     made.code = comp.code.len
@@ -664,7 +663,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
                 if noted(tok.at):
-                    mark(comp.nodes[f].tok, header(comp.nodes[f].tok))
+                    mark(comp.nodes[f].tok)
                 return Value{type = made, at = global(comp.insts[id].name)}
             try hidden(tok.text, true, tok.at)
             try hidden(tok.text, false, tok.at)
@@ -679,9 +678,9 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
             return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
         if noted(tok.at):
-            mark(comp.nodes[comp.syms[s].node].tok, header(comp.nodes[comp.syms[s].node].tok))
+            mark(comp.nodes[comp.syms[s].node].tok)
         k := comp.nodes[comp.syms[s].node].kind
-        if k == Named:
+        if k == Constant:
             return constant(s, want, tok.at)
         args: &list[Item]
         if k == Void:
@@ -1176,7 +1175,7 @@ func called(n: usize) -> Value|Fail:
             callee = held(lookup(tok.text), tok.at)
     else:
         s := try named(tok.text, node.module, tok.at)
-        if s != 0 and comp.nodes[comp.syms[s].node].kind == Named:
+        if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
             f := first_sym(tok.text)
             while f != 0 and not (comp.nodes[comp.syms[f].node].kind == Func and visible(f, node.module, tok.at)):
                 f = comp.syms[f].next
@@ -1206,7 +1205,7 @@ func called(n: usize) -> Value|Fail:
                 return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
             append(passes, try hand(given, to, false, at_of(c)))
             c = node_end(c)
-        return emit(code, passes, shape.elem, false, tok.at)
+        return emit(code, passes, shape.ret, false, tok.at)
     name := tok.text
     target: usize = VOID
     if node.module.len == 0:
@@ -1798,7 +1797,7 @@ func mix(h: Arg, part: Value, at: usize) -> Fail?:
     one: &list[Value]
     append(one, part)
     x := load(try convert_number(try invoke("hash", one, at), U64, at)).at
-    add(Ins{op = "storel", a = op(L, "mul", op(L, "xor", op1(L, "loadl", h), x), int_arg(0x100_0000_01b3)), b = h})
+    add(Ins{op = "storel", a = op(L, "mul", op(L, "xor", op1(L, "loadl", h), x), int_arg(FNVPRIME)), b = h})
     return null
 
 func field_node(t: usize, name: &strview) -> usize:
@@ -2423,7 +2422,7 @@ func address(v: Value) -> Value:
 
 func alloc(t: usize) -> Arg:
     size := i64(room(t))
-    if size > 8 and comp.types[t].kind != Union: # QBE puts the small ones in registers, and a union is written in part but copied whole
+    if size > 8 and comp.types[t].kind != Union: # small slots live in registers, unions are copied whole
         for i in 0..comp.spare.len:
             s := comp.spare[i]
             if comp.slots[s].a.n == size:
