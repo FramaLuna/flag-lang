@@ -448,6 +448,7 @@ func main():
 ```
 - `append(r, v)` adds at the end, and `prepend(r, v)` at the start
 - `pop(r) -> $T|null` takes out the last element, and `take(r) -> $T|null` the first
+- `clear(r)` removes every element and keeps the memory
 - `r[i]` the element `i` from the start, a negative `i` counts from the end
 - `for v in r` from the start, `print` writes `[1, 2]`, and `free(r)`
 

@@ -1082,8 +1082,11 @@ priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
     return got
 
 priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|FsError:
+    part := size
+    if part > 1 << 30:
+        part = 1 << 30 # macOS refuses 2 GiB in one call, and Windows counts in an i32
     while true:
-        n := moved(s, at, size, writing)
+        n := moved(s, at, part, writing)
         if n >= 0:
             return usize(n)
         code := failure(s, writing)
@@ -1101,6 +1104,8 @@ func close(f: File, place: &strview = @here()):
     s.path.len = 0
     s.received.len = 0
     s.given = 0
+    if s.received.cap > 131072:
+        free(s.received) # after a long line the stream keeps only its usual room
 
 func errno() -> i32 where @linux():
     return __errno_location().*
