@@ -6,7 +6,7 @@ cc=${CC:-cc}
 mkdir -p build/objects build/embed
 case $(uname -m) in aarch64|arm64) machine=arm64 ;; riscv64) machine=riscv64 ;; *) machine=x86_64 ;; esac
 exe=
-stack=
+linking=
 case $(uname) in
 Darwin)
     system=macos
@@ -17,7 +17,7 @@ Darwin)
 MINGW*|MSYS*|CYGWIN*)
     system=windows
     exe=.exe
-    stack=-Wl,--stack,16777216
+    linking="-Wl,--stack,16777216 -lws2_32"
     target=T_amd64_win
     section='.rdata,"dr"'
     symbol=
@@ -83,10 +83,10 @@ $cc -c build/embed/files.s -o build/embed/files.o
 $cc -O2 -c build/embed/index.c -o build/embed/index.o
 objects="$objects build/embed/files.o build/embed/index.o"
 build/qbe -o build/seed.s boot/$system.ssa
-$cc -o build/flagc0 build/seed.s $objects $stack
-build/flagc0 src/*.flg $objects $stack -o build/flagc1
-build/flagc1 src/*.flg $objects $stack -o build/flagc2 -keep
-build/flagc2 src/*.flg $objects $stack -o build/flagc -keep
+$cc -o build/flagc0 build/seed.s $objects $linking
+build/flagc0 src/*.flg $objects $linking -o build/flagc1
+build/flagc1 src/*.flg $objects $linking -o build/flagc2 -keep
+build/flagc2 src/*.flg $objects $linking -o build/flagc -keep
 cmp build/flagc2.ssa build/flagc.ssa
 if [ "${1:-}" = seed ]; then
     for target in linux-x86_64 macos-arm64 windows-x86_64; do

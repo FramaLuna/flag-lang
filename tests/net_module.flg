@@ -4,6 +4,7 @@ use os
 extern "c":
     func fcntl(fd: i32, command: i32, ...) -> i32
     func GetHandleInformation(handle: *bytes, flags: *u32) -> i32
+    func signal(number: i32, handler: usize) -> usize
 
 func inherited(fd: i32) -> bool where not @windows():
     return (fcntl(fd, 1) and 1) == 0 # F_GETFD and FD_CLOEXEC
@@ -13,6 +14,12 @@ func inherited(fd: i32) -> bool where @windows():
     GetHandleInformation(usize(fd) as *bytes, ptr(flags))
     return (flags and 1) != 0 # HANDLE_FLAG_INHERIT
 
+func default_broken_pipe() where not @windows():
+    signal(13, 0) # SIGPIPE to SIG_DFL, the CI runner starts us with it ignored
+
+func default_broken_pipe() where @windows():
+    pass
+
 func broken_pipe() where not @windows():
     _ = run("yes | head -1")
 
@@ -20,6 +27,7 @@ func broken_pipe() where @windows():
     print("y")
 
 func main() -> i32:
+    default_broken_pipe()
     server := listen(0)
     if server is NetError:
         print(server)
