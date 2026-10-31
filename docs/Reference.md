@@ -991,7 +991,7 @@ error: the line ends here, ':' goes here
 - `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
-- `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db`
+- `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db` and the `Thread 1 hit` that comes before a breakpoint on Windows, where a program always has more than one thread
 - `name.args` has more arguments for the compiler in that test. With `-check` among them nothing runs, and `name.out` is what the compiler must print, that's how `-at` is tested
 - `name.env` has the environment of the compiler in that test, a `NAME=value` on each line, and the compiler runs the way it's installed, a copy alone in `build/tests/bin` that unpacks the library it carries. That's how a missing `cc` and a library that cannot be unpacked are tested
 - a file the test needs, like the overlay of `name.overlay`, goes next to it with the same name

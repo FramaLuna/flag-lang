@@ -92,7 +92,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
     if [ ! -f "tests/$name.gdb" ]; then
         within "$out/$name" < /dev/null > "$out/$name.got" 2>&1
     elif command -v gdb > /dev/null; then
-        within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | grep -v libthread_db > "$out/$name.got"
+        within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | sed -e /libthread_db/d -e 's/^Thread [0-9]* hit //' > "$out/$name.got"
     else
         continue # without gdb there is nothing to read the DWARF
     fi

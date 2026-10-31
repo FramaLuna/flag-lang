@@ -563,10 +563,11 @@ chopat(Ref r, int64_t *off)
 	return c;
 }
 
+/* the next cut after p, and a piece ends with the slot */
 static int
 chopnext(Chop *c, int p)
 {
-	while (!c->cut[++p])
+	while (++p < c->sz && !c->cut[p])
 		;
 	return p;
 }
