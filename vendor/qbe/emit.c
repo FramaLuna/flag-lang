@@ -23,7 +23,9 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 	sfx = "";
 	if (T.apple && l->thread) {
 		l->sec = "__DATA";
-		l->secf = "__thread_data,thread_local_regular";
+		l->secf = s == SecBss
+			? "__thread_bss,thread_local_zerofill"
+			: "__thread_data,thread_local_regular";
 		sfx = "$tlv$init";
 		fputs(
 			".section __DATA,__thread_vars,"

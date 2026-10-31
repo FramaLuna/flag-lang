@@ -543,7 +543,7 @@ rv64_emitfn(Fn *fn, FILE *f)
 		lbl = 1;
 		switch (b->jmp.type) {
 		case Jhlt:
-			fprintf(f, "\tebreak\n");
+			fprintf(f, "\tunimp\n");
 			break;
 		case Jret0:
 			if (fn->dynalloc) {

@@ -17,7 +17,7 @@ within() {
         done
         kill -9 $job 2> /dev/null && echo "FAIL $name: still running after $limit seconds, killed" >&3
     ) > /dev/null 2>&1 &
-    wait $job
+    wait $job 2> /dev/null # on Windows a crash ends with its exception code, and the shell would say it was a signal
 }
 for src in tests/*.flg tests/*/; do
     name=$(basename "$src" .flg)

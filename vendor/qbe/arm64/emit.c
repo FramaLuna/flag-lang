@@ -638,7 +638,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 		lbl = 1;
 		switch (b->jmp.type) {
 		case Jhlt:
-			fprintf(e->f, "\tbrk\t#1000\n");
+			fprintf(e->f, "\tudf\t#0\n");
 			break;
 		case Jret0:
 			s = (e->frame - e->padding) / 4;
