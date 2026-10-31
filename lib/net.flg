@@ -96,28 +96,34 @@ func close(server: Server):
     dispose(i64(server.fd))
 
 func write(s: Socket, value: $T, place: &strview = @here()):
-    write(File{s.fd}, value, place)
+    write(file(s), value, place)
 
 func read(s: Socket, into: *&str, size: usize, place: &strview = @here()) -> usize|NetError:
-    got := read(File{s.fd}, into, size, place)
+    got := read(file(s), into, size, place)
     if got is FsError:
         return NetError{got.code, got.action, got.path}
     return got
 
 func read_line(s: Socket, place: &strview = @here()) -> &strview|null|NetError:
-    line := read_line(File{s.fd}, place)
+    line := read_line(file(s), place)
     if line is FsError:
         return NetError{line.code, line.action, line.path}
     return line
 
 func flush(s: Socket, place: &strview = @here()) -> NetError?:
-    failed := flush(File{s.fd}, place)
+    failed := flush(file(s), place)
     if failed is FsError:
         return NetError{failed.code, failed.action, failed.path}
     return null
 
 func close(s: Socket, place: &strview = @here()):
-    close(File{s.fd}, place)
+    close(file(s), place)
+
+priv func file(s: Socket) -> File where not @windows():
+    return File{s.fd}
+
+priv func file(s: Socket) -> File where @windows():
+    return File{8192 + s.fd} # core reads a File past the 8192 descriptors of the C runtime as a socket
 
 func timeout(s: Socket, seconds: f64) where @linux():
     wait := timeval(seconds)

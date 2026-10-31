@@ -965,9 +965,8 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
     s := io.streams[usize(f.fd)]
     if not s.open:
         s.open = true
-        address: array[u8, 128]
-        size: u32 = 128
-        s.socket = getsockname(i64(f.fd), ptr(address) as *bytes, ptr(size)) == 0
+        s.fd = f.fd
+        recognize(s)
         s.by_lines = not s.socket and (f.fd == 2 or isatty(f.fd) != 0)
         if f.fd < 3:
             names := ["the standard input", "the standard output", "the error output"]
@@ -1156,6 +1155,16 @@ priv func failure(s: *Stream, writing: bool) -> i32 where @windows():
     if s.socket:
         return 0 - WSAGetLastError()
     return errno()
+
+priv func recognize(s: *Stream) where not @windows():
+    address: array[u8, 128]
+    size: u32 = 128
+    s.socket = getsockname(i64(s.fd), ptr(address) as *bytes, ptr(size)) == 0
+
+priv func recognize(s: *Stream) where @windows():
+    s.socket = s.fd >= 8192 # net gives a socket as File{8192 + handle}, past every descriptor of the C runtime, so the numbers never meet
+    if s.socket:
+        s.fd -= 8192
 
 priv func release(s: *Stream) where not @windows():
     close(s.fd)

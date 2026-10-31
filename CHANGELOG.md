@@ -63,6 +63,7 @@ Changed
 Fixed
 - `m["a"] = show` with `show` overloaded, `return {1, 2}` into a `Point?`, and `(usize(0) as func())()` skipping the check of an empty function value
 - `-memory` false positives: unions whose members keep a pointer in the same place, reading a whole file and printing its error, errors with data after `try`, `is` on a union like `&str|FsError`, and print, read a file, print
+- On Windows a connection and a file could get the same number and share what waits to be sent
 - Using `net` ignored `SIGPIPE` for the whole program and the programs it ran
 - `is_dir` of a folder you cannot read, `file_size` of a FIFO (it waited forever), `remove` of a link to a folder, `walk` listing locked folders as files, `executable()` after `change_dir`, and `list_dir` and `walk` on macos-x86_64
 - `rename` replaces an existing file on Windows too, and `output(command)` keeps every byte on Windows
