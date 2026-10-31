@@ -125,8 +125,8 @@ phiins(Fn *fn)
 	uint n, defb;
 	short k;
 
-	bsinit(u, fn->nblk);
-	bsinit(defs, fn->nblk);
+	bsinit(u);
+	bsinit(defs);
 	blist = emalloc(fn->nblk * sizeof blist[0]);
 	be = &blist[fn->nblk];
 	nt = fn->ntmp;

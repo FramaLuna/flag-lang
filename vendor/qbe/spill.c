@@ -101,6 +101,7 @@ static int locs;  /* stack size used by locals */
 static int slot4; /* next slot of 4 bytes */
 static int slot8; /* ditto, 8 bytes */
 static BSet mask[2][1]; /* class masks */
+static BSet b2[1], pm[1]; /* for limit2() and dopm() */
 
 static int
 tcmp0(const void *pa, const void *pb)
@@ -202,9 +203,6 @@ limit(BSet *b, int k, BSet *f)
 static void
 limit2(BSet *b1, int k1, int k2, BSet *f)
 {
-	BSet b2[1];
-
-	bsinit(b2, ntmp); /* todo, free those */
 	bscopy(b2, b1);
 	bsinter(b1, mask[0]);
 	bsinter(b2, mask[1]);
@@ -252,11 +250,9 @@ static Ins *
 dopm(Blk *b, Ins *i, BSet *v)
 {
 	int n, t;
-	BSet u[1];
 	Ins *i1;
 	bits r;
 
-	bsinit(u, ntmp); /* todo, free those */
 	/* consecutive copies from
 	 * registers need to be handled
 	 * as one large instruction
@@ -278,7 +274,7 @@ dopm(Blk *b, Ins *i, BSet *v)
 		}
 		bsset(v, i->arg[0].val);
 	} while (i != b->ins && regcpy(i-1));
-	bscopy(u, v);
+	bscopy(pm, v);
 	if (i != b->ins && (i-1)->op == Ocall) {
 		v->t[0] &= ~T.retregs((i-1)->arg[1], 0);
 		limit2(v, T.nrsave[0], T.nrsave[1], 0);
@@ -290,7 +286,7 @@ dopm(Blk *b, Ins *i, BSet *v)
 		r = v->t[0];
 	}
 	sethint(v, r);
-	reloads(u, v);
+	reloads(pm, v);
 	do
 		emiti(*--i1);
 	while (i1 != i);
@@ -336,11 +332,13 @@ spill(Fn *fn)
 
 	tmp = fn->tmp;
 	ntmp = fn->ntmp;
-	bsinit(u, ntmp);
-	bsinit(v, ntmp);
-	bsinit(w, ntmp);
-	bsinit(mask[0], ntmp);
-	bsinit(mask[1], ntmp);
+	bsinit(u);
+	bsinit(v);
+	bsinit(w);
+	bsinit(mask[0]);
+	bsinit(mask[1]);
+	bsinit(b2);
+	bsinit(pm);
 	locs = fn->slot;
 	slot4 = 0;
 	slot8 = 0;

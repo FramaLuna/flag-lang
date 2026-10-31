@@ -929,7 +929,12 @@ amd64_isel(Fn *fn)
 					assert(a+1 < p->narg);
 				fixarg(&p->arg[a], p->cls, 0, fn);
 			}
-		memset(num, 0, n * sizeof num[0]);
+		/* anumber() reads only the arguments
+		 * of b, and sets what b defines */
+		for (i=b->ins; i<&b->ins[b->nins]; i++)
+			for (a=0; a<2; a++)
+				if (rtype(i->arg[a]) == RTmp)
+					num[i->arg[a].val] = (Num){0};
 		anumber(num, b, fn->con);
 		seljmp(b, fn);
 		for (i=&b->ins[b->nins]; i!=b->ins;) {

@@ -317,14 +317,8 @@ lca(Blk *b1, Blk *b2)
 		return b2;
 	if (!b2)
 		return b1;
-	while (b1->depth > b2->depth)
+	while (!dom(b1, b2))
 		b1 = b1->idom;
-	while (b2->depth > b1->depth)
-		b2 = b2->idom;
-	while (b1 != b2) {
-		b1 = b1->idom;
-		b2 = b2->idom;
-	}
 	return b1;
 }
 

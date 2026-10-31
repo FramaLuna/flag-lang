@@ -845,8 +845,8 @@ typecheck(Fn *fn)
 	BSet pb[1], ppb[1];
 
 	fillpreds(fn);
-	bsinit(pb, fn->nblk);
-	bsinit(ppb, fn->nblk);
+	bsinit(pb);
+	bsinit(ppb);
 	for (b=fn->start; b; b=b->link) {
 		for (p=b->phi; p; p=p->link)
 			fn->tmp[p->to.val].cls = p->cls;

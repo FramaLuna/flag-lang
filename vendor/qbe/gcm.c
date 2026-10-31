@@ -112,7 +112,7 @@ lcabid(Fn *fn, uint bid1, uint bid2)
 static uint
 bestbid(Fn *fn, uint earlybid, uint latebid)
 {
-	Blk *curb, *earlyb, *bestb;
+	Blk *earlyb, *bestb;
 
 	if (latebid == NOBID)
 		return NOBID; /* unused */
@@ -120,14 +120,11 @@ bestbid(Fn *fn, uint earlybid, uint latebid)
 	assert(earlybid != NOBID);
 
 	earlyb = fn->rpo[earlybid];
-	bestb = curb = fn->rpo[latebid];
-	assert(dom(earlyb, curb));
+	bestb = fn->rpo[latebid];
+	assert(dom(earlyb, bestb));
 
-	while (curb != earlyb) {
-		curb = curb->idom;
-		if (curb->loop < bestb->loop)
-			bestb = curb;
-	}
+	while (bestb->odom && dom(earlyb, bestb->odom))
+		bestb = bestb->odom;
 	return bestb->id;
 }
 
@@ -432,10 +429,17 @@ void
 gcm(Fn *fn)
 {
 	Tmp *t;
+	Blk *b, *d;
 	uint bid;
 
 	filldepth(fn);
 	fillloop(fn);
+	for (bid=0; bid<fn->nblk; bid++) {
+		b = fn->rpo[bid];
+		for (d=b->idom; d && d->loop >= b->loop; d=d->odom)
+			;
+		b->odom = d;
+	}
 
 	for (t=fn->tmp; t<&fn->tmp[fn->ntmp]; t++) {
 		t->visit = 0;

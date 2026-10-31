@@ -324,8 +324,14 @@ zeroval(Fn *fn, Blk *b, Ref r, int cls, int *z)
 	Blk *d;
 	Ref arg;
 	int cls1, eqval;
+	uint bid;
 
-	for (d=b->idom; d; d=d->idom) {
+	/* gvn keeps the first definition in
+	 * rpo, a jnz before it cannot test r */
+	bid = 0;
+	if (rtype(r) == RTmp)
+		bid = fn->tmp[r.val].bid;
+	for (d=b->idom; d && d->id >= bid; d=d->idom) {
 		if (d->jmp.type != Jjnz)
 			continue;
 		if (req(r, d->jmp.arg)
