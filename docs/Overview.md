@@ -83,7 +83,7 @@ MYCONST = "hello"
 NUM = 2
 MYSECONDCONST = 2 + 2 + NUM # this computes at comptime to 6
 ```
-Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro.
+Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro. A constant array or struct of literals, like `TABLE = [3, 1, 4, 1, 5]`, is kept once in the data of the program and every use reads it there (see [Constants](Reference.md#constants)).
 
 ## File variables
 A variable at the root of a file is one value that every function sees. It starts at zero, or at a value the compiler knows: literals, constants, and structs and arrays of them
@@ -631,6 +631,21 @@ func main():
 When a function has overloads or is generic, give its name to a variable with the type, that's what chooses: `show_int: func(i32) = show`. A function value that can be missing is `(func(i32) -> i32)?`, checked with `is` like any other union.
 
 There are no closures: a function cannot use the variables of the place where you took its name, so pass what it needs as an argument (see [Function values](Reference.md#function-values) for the exact rules).
+
+### Inline
+The compiler replaces a call to a small function with the body of the function, so small helpers and operators cost nothing. `inline` asks for it at every call, whatever the size
+```flag
+type V:
+    x: f64
+    y: f64
+
+inline operator +(a: V, b: V) -> V:
+    return V{a.x + b.x, a.y + b.y}
+
+inline func scale(v: V, k: f64) -> V:
+    return V{v.x * k, v.y * k}
+```
+A recursive function, `main` and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
 
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.

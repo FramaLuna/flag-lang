@@ -569,6 +569,7 @@ void simplcfg(Fn *);
 /* mem.c */
 void promote(Fn *);
 void coalesce(Fn *);
+void chop(Fn *);
 
 /* alias.c */
 void fillalias(Fn *);

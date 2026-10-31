@@ -31,10 +31,10 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 1. The lexer cuts every file into tokens (`src/lex.flg`)
 2. The parser builds the tree of the program (`src/parse.flg`)
 3. The generator checks the types and builds the program as a list of QBE instructions in memory (`src/types.flg`, `src/gen.flg` and `src/call.flg`)
-4. That list is written as QBE IL, the text language of the [QBE](https://c9x.me/compile/) backend (`src/ir.flg`), and QBE, that is built into flagc, turns the IL into assembly
+4. That list is written as QBE IL, the text language of the [QBE](https://c9x.me/compile/) backend (`src/ir.flg`), with the calls to small functions replaced by their bodies (see [Inlining](#inlining)), and QBE, that is built into flagc, turns the IL into assembly
 5. The C compiler assembles it and links it with the C library
 
-With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)).
+With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote.
 
 The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
@@ -95,7 +95,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time in QBE, that keeps for every block the temporaries alive in it: 2500 `elif` compile in 0.3 s, 10000 in 2.3 s and 20000 in 8 s and 1.1 GB of memory. A `case` with 20000 values takes 0.3 s
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time in QBE, that keeps for every block the temporaries alive in it: 2500 `elif` compile in 0.3 s, 10000 in 1 s and 20000 in 2 s and 0.8 GB of memory. A `case` with 20000 values takes 0.3 s
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -120,7 +120,7 @@ error: 'return' is a keyword of the language, it cannot be used as a name
 ```
 `reverse` cannot name a variable, a parameter or a constant, because a `for` reads it as the direction, but it's also the function `reverse(items)`.
 
-The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field.
+The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `inline`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field.
 
 ## Types in memory
 ### Sizes
@@ -366,6 +366,24 @@ func main():
 - C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
 - there are no closures, no functions inside functions and no functions without a name. A function gets what it needs as arguments
 
+### Inlining
+When the program is written, a direct call to a small function is replaced by the body of that function. A function is small when it has at most 45 instructions of IL, after the calls inside it were replaced, and the function that makes the call has at most 500: inlining into big functions makes QBE slow, and a big function gains little from it. `inline func` and `inline operator` replace every direct call, whatever the sizes, and a generic one does it in each instance
+```flag
+inline func clamp(x: $T, low: $T, high: $T) -> $T:
+    if x < low:
+        return low
+    if x > high:
+        return high
+    return x
+```
+`inline` is a word of the declaration, like `export`, and it goes after `priv`. These calls are never inlined
+- to a function that calls itself, directly or through others. Declaring one `inline` is an error, with a note at the call that leads back: `fact is inline and recursive, inlining it would never end: declare it without inline`
+- to `main`, nothing is inlined into the start of the program. `inline func main` is an error, and so is `inline export func`, other languages call an export function by its name, and an `inline` C function in an `extern` block
+- through a function value that is read when the program runs, from a variable, a field or an element. A function value of an inline function points to the function out of line, which is kept for that. A constant that holds a function is written again where you use it, so calling it is a direct call
+- that `parallel` makes: the new thread calls the function out of line, `parallel f(x)` with an inline `f` too
+
+The inlined body behaves like the call: its parameters are copies, it can return from the middle, and its `defer`s run when it returns. It doesn't change the place of a runtime error, that is computed at the call like `@here()`, and it doesn't grow the stack, the inlined bodies of a function share the places of their variables, so a loop of millions of inlined calls runs in the same frame. A debugger shows the lines of the inlined body when it comes from the same file, and the line of the call when it comes from another one: QBE knows one file for each function. A function whose calls were all inlined, and whose name is not used as a value, is not written to the program.
+
 ### Protocol functions
 The compiler calls some functions by their name, so you make your types work with the language by declaring them
 | You write | It calls |
@@ -564,7 +582,9 @@ func main():
     small: u8 = N
     print(small, " ", BIG)
 ```
-Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. When the expression fails for one of them, a note says which: `PAIR is read here`. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. When the expression fails for one of them, a note says which: `PAIR is read here`.
+
+A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
 
 A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`.
 
@@ -805,7 +825,7 @@ extern "m":
 You can also give the compiler `.c`, `.o` and `.a` files, they go to the C compiler with the rest.
 
 ### export
-`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded or `main`. `ptr(name)` of an export function is its address as a `*bytes`, for C functions that take a callback
+`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. `ptr(name)` of an export function is its address as a `*bytes`, for C functions that take a callback
 ```flag
 extern "c":
     func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
@@ -925,17 +945,19 @@ error: the line ends here, ':' goes here
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with twelve changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with fourteen changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
-Three more keep long chains from growing with their square. The dominators of a block are found from its last predecessor to its first, so the end of an `elif` chain meets them one step at a time. The walk that fills the dominance frontier stops at a block that already has it. And the constants of a function are found through a hash instead of a search. 20000 `elif` took 38 s and take 8 s, a switch of 20000 cases 34 s and 7.6 s, a `case` with 20000 values 15.6 s and 0.3 s, and an array literal of 50000 numbers 9.3 s and 0.8 s.
+Three more keep long chains from growing with their square. The dominators of a block are found from its last predecessor to its first, so the end of an `elif` chain meets them one step at a time. The walk that fills the dominance frontier stops at a block that already has it. And the constants of a function are found through a hash instead of a search. 20000 `elif` took 38 s and 8 s after them, a switch of 20000 cases 34 s and 7.6 s, a `case` with 20000 values 15.6 s and 0.3 s, and an array literal of 50000 numbers 9.3 s and 0.8 s.
 
 The twelfth is for the contexts, that are thread data. `amd64_win` takes thread data: it goes in the section `.tls$`, and its address is the block of the thread in the table at `gs:88`, at `_tls_index`, plus the place of the symbol in it. And on Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. On macOS that also fixes the address of thread data given as an argument of a call, whose call to the runtime broke the arguments already in their registers. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1 % more when it only checks.
 
+The thirteenth and the fourteenth come with the inlining. A small slot of the stack, of 32 bytes or less, whose address only reaches loads, stores, blits and additions of constants, is cut into one slot for each piece that is read or written, before `promote`, which then keeps the pieces in registers. That's how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, a store of a constant is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, so no path reads it undefined. `qbe -w` keeps every slot whole. And rv64 copies a constant, or a value on the stack, into a temporary on the stack through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
+
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
-- A text literal is static data that every use shares. Don't write into a view of a literal, copy it to a `&str` first
+- A text literal is static data that every use shares, and so do the literals with the same text and the constants kept in data (see [Constants](#constants)). Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash

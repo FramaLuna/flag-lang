@@ -2,7 +2,7 @@
 
 ## 0.4.0 (not released yet)
 
-A release about threads and arenas: a program uses every core with two words, `parallel` and `wait`, and memory can be released all at once, with the same lists, text and maps as always. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
+A release about threads, arenas and speed: a program uses every core with two words, `parallel` and `wait`, memory can be released all at once, with the same lists, text and maps as always, and small functions and structs cost what they cost in C. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
 
 New
 - `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own or an error to handle. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends
@@ -13,6 +13,7 @@ New
 - A `&str`, `&list` or `&map` that lives in an arena grows there, in its place when it's the last piece of the block, and its `free` leaves it empty without releasing anything, so a function that frees what it gets works with any list
 - `-memory` knows arenas: what lives in one is not a leak, using it after `free` or `clear` of its arena warns like a temporary after its `with scratch():`, also through a function, `free` of a pointer from an arena says `free cannot release boss, it lives in level, free(level) releases it`, and an arena that is never freed is a leak
 - `memset` with the C functions of core
+- `inline func` and `inline operator` replace every direct call with the body of the function, whatever its size, also in each instance of a generic one. A recursive function, `main`, an `export` function and a C function cannot be `inline`, and the error of a recursive one points to the call that leads back
 - `examples/threads.flg`, the Mandelbrot set drawn by a thread for each processor, and primes counted by workers that share a channel
 - `examples/arena.flg`, the enemies of a level and the memory of each frame in two arenas
 
@@ -28,9 +29,17 @@ Changed
 - The scratch memory of the temporaries is an `Arena`
 - The compiler builds itself with 2 % more instructions, half of it the bigger fat pointers and half the code of arenas
 
+Faster
+- A direct call to a small function is replaced by its body when the program is written, after `-memory`, so the warnings still name your functions. The parameters are still copies, a runtime error keeps its place, the stack doesn't grow, and a function whose calls were all inlined is not written to the program
+- Small structs live in registers: QBE cuts a slot of 32 bytes or less whose address stays in the function into its pieces. `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop of 100 million rounds runs in 0.11 s, it took 0.69 s, as fast as C with `-O2`
+- A constant that is an array or a struct of literals is kept once in the read-only data of the program, and every use reads it: a lookup in `TABLE = [3, 1, 4, 1, 5, 9, 2, 6]` in a loop is 2.8 times faster
+- Text literals with the same text share their data, and `print` no longer builds `stdout` on the stack, so long functions compile much faster: 20000 `elif` compile in 2 s, they took 8 s, and a switch of 20000 cases in 1.4 s, it took 7.6 s
+- The compiler checks itself with 13 % fewer instructions. Building it costs 16 % more, the work that QBE and the assembler do on the inlined code
+
 Fixed
 - The `==` and `hash` that the compiler writes for a type could take the name of a function of the program, and the program didn't assemble
 - `-memory` warned that a call may free memory it also reads through another argument when both were memory of contexts, and no argument was involved
+- QBE for riscv64 stopped with `unimplemented` when a constant or a value on the stack went into a temporary that lives on the stack
 
 ## 0.3.0
 

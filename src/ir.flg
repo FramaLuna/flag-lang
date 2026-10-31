@@ -9,6 +9,8 @@ SH = 7
 UH = 8
 AGG = 16
 CAGG = 1 << 30
+SMALL = 45
+LARGE = 500
 
 func temp() -> Arg:
     comp.temps += 1
@@ -73,7 +75,112 @@ func mention(name: &strview, a: Arg):
             remove(comp.held, k) # the slot of a variable is never given back
             return
 
-func listing() -> &str:
+func listing(optimize: bool) -> &str:
+    ids: &map[&strview, usize]
+    defer free(ids)
+    sizes: &list[usize]
+    defer free(sizes)
+    for f in 0..comp.procs.len:
+        p := comp.procs[f]
+        if optimize and p.name != "$main": # the start of the program, main is never inlined
+            large := size(p) > LARGE
+            top := p.labels
+            for i in comp.code[p.code:p.end]:
+                if i.op == "@" and u32(i.a.n) > top:
+                    top = u32(i.a.n)
+            first := p.temps
+            p.temps = comp.temps + 1
+            names := fresh(first, p.last)
+            hop := i64(comp.labels) - i64(p.labels)
+            comp.labels += top - p.labels
+            p.labels = u32(i64(p.labels) + hop)
+            params := comp.passes.len
+            for k in p.params..p.params + p.count:
+                given := comp.passes[k]
+                given.arg = named(given.arg, names, first)
+                append(comp.passes, given)
+            p.params = params
+            slots: &list[Ins]
+            body: &list[Ins]
+            pool: &list[Ins]
+            for k in p.code..p.end:
+                i := renamed(comp.code[k], names, first, hop)
+                g := callee(i, ids)
+                if g < f and (sizes[g] <= SMALL and not large or declared_inline(comp.procs[g].node)) and not comp.procs[g].recursive and not comp.procs[g].export:
+                    q := comp.procs[g]
+                    inner := fresh(q.temps, q.last)
+                    taken: &list[usize]
+                    for j in 0..q.count:
+                        want := comp.passes[q.params + j]
+                        given := comp.passes[usize(i.first) + j]
+                        at := usize(want.arg.n) - usize(q.temps)
+                        inner[at] = given.arg
+                        if want.cls >= AGG:
+                            t := usize(want.cls - AGG)
+                            inner[at] = pooled(i64(room(t)), pool, taken)
+                            append(body, Ins{op = "blit", a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
+                    if i.cls >= AGG:
+                        append(slots, Ins{op = "alloc8", cls = L, to = i.to, a = int_arg(i64(room(usize(i.cls - AGG))))})
+                    comp.labels += 1
+                    after := comp.labels
+                    jumped := false
+                    for j in q.code..q.end:
+                        c := comp.code[j]
+                        if c.op == "alloc8":
+                            inner[c.to - q.temps] = pooled(c.a.n, pool, taken)
+                            continue
+                        c = renamed(c, inner, q.temps, i64(after) - i64(q.labels))
+                        if q.file != p.file:
+                            c.pos = i.pos
+                        if c.op == "@" and u32(c.a.n) > comp.labels:
+                            comp.labels = u32(c.a.n)
+                        if c.op != "ret":
+                            append(body, c)
+                            continue
+                        if i.cls >= AGG:
+                            append(body, Ins{op = "blit", a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(i64(comp.types[usize(i.cls - AGG)].size)), pos = c.pos})
+                        elif i.to != 0:
+                            append(body, Ins{op = "copy", cls = i.cls, to = i.to, a = c.a, pos = c.pos})
+                        if j + 1 < q.end:
+                            append(body, Ins{op = "jmp", a = int_arg(i64(after)), pos = c.pos})
+                            jumped = true
+                    if jumped or comp.code[q.end - 1].op != "ret":
+                        append(body, Ins{op = "@", a = int_arg(i64(after))})
+                    free(inner)
+                    free(taken)
+                elif i.op == "alloc8":
+                    append(slots, i)
+                else:
+                    append(body, i)
+            p.code = comp.code.len
+            append(comp.code, slots[:])
+            append(comp.code, pool[:])
+            append(comp.code, body[:])
+            free(names)
+            free(slots)
+            free(pool)
+            free(body)
+            p.end = comp.code.len
+            p.last = comp.temps
+            comp.procs[f] = p
+        put(ids, p.name, f)
+        append(sizes, size(p))
+    live: &list[bool]
+    defer free(live)
+    work: &list[usize]
+    defer free(work)
+    for f in 0..comp.procs.len:
+        p := comp.procs[f]
+        append(live, p.export or comp.insts[p.inst].valued)
+        if live[f]:
+            append(work, f)
+    while work.len > 0:
+        p := comp.procs[trust pop(work)]
+        for i in comp.code[p.code:p.end]:
+            g := callee(i, ids)
+            if g < comp.procs.len and not live[g]:
+                live[g] = true
+                append(work, g)
     out: &str
     moved: &list[i64]
     for l in 0..comp.labels + 1:
@@ -86,7 +193,9 @@ func listing() -> &str:
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
     out += comp.data
-    for f in comp.procs:
+    for index, f in comp.procs:
+        if not live[index]:
+            continue
         out += "dbgfile \"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\"\n"
         if f.export:
             out += "export "
@@ -169,6 +278,59 @@ func listing() -> &str:
             out += "\n"
         out += "}\n"
     return out
+
+func callee(i: Ins, ids: &map[&strview, usize]) -> usize:
+    if i.op != "call" or i.a.kind != Global or i.ghost:
+        return comp.procs.len
+    return ids[comp.globals[usize(i.a.n)]] ifnull comp.procs.len
+
+func pooled(size: i64, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
+    k: usize = 0
+    while k < pool.len and (pool[k].a.n != size or contains(taken.*, k)):
+        k += 1
+    if k == pool.len:
+        comp.temps += 1
+        append(pool, Ins{op = "alloc8", cls = L, to = comp.temps, a = int_arg(size)})
+    append(taken, k)
+    return Arg{Temp, i64(pool[k].to)}
+
+func size(p: Proc) -> usize:
+    count: usize = 0
+    for i in comp.code[p.code:p.end]:
+        count += usize(i.op != "alloc8" and i.op != "absent")
+    return count
+
+func fresh(first: u32, last: u32) -> &list[Arg]:
+    names: &list[Arg]
+    for k in first..last + 1:
+        comp.temps += 1
+        append(names, Arg{Temp, i64(comp.temps)})
+    return names
+
+func named(a: Arg, names: &list[Arg], first: u32) -> Arg:
+    if a.kind != Temp:
+        return a
+    return names[usize(a.n) - usize(first)]
+
+func renamed(i: Ins, names: &list[Arg], first: u32, labels: i64) -> Ins:
+    if i.to != 0:
+        i.to = u32(names[i.to - first].n)
+    if i.op == "@" or i.op == "jmp":
+        i.a.n += labels
+    if i.op == "jnz":
+        i.b.n += labels
+        i.c.n += labels
+    i.a = named(i.a, names, first)
+    i.b = named(i.b, names, first)
+    i.c = named(i.c, names, first)
+    if i.op == "call":
+        from := comp.passes.len
+        for k in i.first..i.first + i.count:
+            given := comp.passes[k]
+            given.arg = named(given.arg, names, first)
+            append(comp.passes, given)
+        i.first = u32(from)
+    return i
 
 func kept(dropped: &list[bool], k: usize, end: usize) -> usize:
     while k < end and dropped[k]:

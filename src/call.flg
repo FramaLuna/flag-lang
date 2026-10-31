@@ -383,6 +383,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     if threaded and back.len > 0:
         return fail(name + " takes x[i] where a pointer goes, and a thread could not put the copy back: pass a pointer to a variable", at)
     if threaded:
+        comp.insts[id].valued = true
         return spawn(global(comp.insts[id].name), passes, func_of(taken, comp.insts[id].ret), at)
     result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
     while back.len > 0:
@@ -422,7 +423,9 @@ func spawn(code: Arg, passes: &list[Pass], shape: usize, at: usize) -> Value|Fai
         comp.body[i].ghost = true # the call as -memory sees it, in this thread
     args.len = 0
     append(args, block)
-    append(args, Value{type = pointer(BYTES), at = global(comp.insts[written("run", shape, VOID, at)].name)})
+    run := written("run", shape, VOID, at)
+    comp.insts[run].valued = true
+    append(args, Value{type = pointer(BYTES), at = global(comp.insts[run].name)})
     append(args, try place_of(at))
     try runtime("launch", args, at)
     result := ty.ret
@@ -447,7 +450,7 @@ func written(label: &strview, t: usize, ret: usize, at: usize) -> usize:
         return id
     name: &str = "$"
     name += label + "." + comp.insts.len
-    append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0})
+    append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0, false})
     append(comp.inst_binds, Item{"$T", t, 0, false})
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1

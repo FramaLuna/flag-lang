@@ -59,10 +59,10 @@ func gen_program(check: bool) -> Fail?:
                 given := node_end(d + 1)
                 body := comp.body.len
                 slots := comp.slots.len
-                data := comp.data.len
                 try assign(alloc(t), t, try value(given, t), at_of(given)) # checked like a local, the code is dropped
-                comp.data.len = data
-                try image(t, given, held)
+                unknown := try image(t, given, held)
+                if unknown != 0:
+                    return fail(UNKNOWN, at_of(unknown))
                 comp.body.len = body
                 comp.slots.len = slots
                 comp.held.len = 0
@@ -124,11 +124,82 @@ func gen_program(check: bool) -> Fail?:
             if owned:
                 return fail("for over " + shown + " belongs to the language, " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
-    comp.procs.len = funcs
+    ids: &map[&strview, usize]
+    for k in 0..comp.procs.len:
+        put(ids, comp.procs[k].name, k)
+    calls: &list[&list[usize]]
+    for p in comp.procs:
+        callees: &list[usize]
+        for i in comp.code[p.code:p.end]:
+            g := callee(i, ids)
+            if g < comp.procs.len:
+                append(callees, g)
+        append(calls, callees)
+    visits: &list[usize]
+    lows: &list[usize]
+    stacked: &list[bool]
+    for p in comp.procs:
+        append(visits, 0)
+        append(lows, 0)
+        append(stacked, false)
+    stack: &list[usize]
+    path: &list[usize]
+    edges: &list[usize]
+    order: &list[usize]
+    for root in 0..comp.procs.len:
+        if visits[root] == 0:
+            append(path, root)
+            append(edges, 0)
+        while path.len > 0:
+            v := path[-1]
+            if visits[v] == 0:
+                visits[v] = order.len + stack.len + 1
+                lows[v] = visits[v]
+                append(stack, v)
+                stacked[v] = true
+            if edges[-1] < calls[v].len:
+                w := calls[v][edges[-1]]
+                edges[-1] += 1
+                if visits[w] == 0:
+                    append(path, w)
+                    append(edges, 0)
+                elif stacked[w] and visits[w] < lows[v]:
+                    lows[v] = visits[w]
+                continue
+            path.len -= 1
+            edges.len -= 1
+            if path.len > 0 and lows[v] < lows[path[-1]]:
+                lows[path[-1]] = lows[v]
+            if lows[v] == visits[v]:
+                first := order.len
+                while stacked[v]:
+                    w := trust pop(stack)
+                    stacked[w] = false
+                    append(order, w)
+                cycle := order.len - first > 1 or contains(calls[v], v)
+                for m in order[first:]:
+                    comp.procs[m].recursive = cycle
+                    f := comp.procs[m].node
+                    if cycle and declared_inline(f):
+                        shown := text(f)
+                        if comp.tokens[comp.nodes[f].tok - 1].text == "operator":
+                            shown = "operator " + shown
+                        for c in order[first:]:
+                            for i in comp.code[comp.procs[c].code:comp.procs[c].end]:
+                                if i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == comp.procs[m].name:
+                                    failed := fail(shown + " is inline and recursive, inlining it would never end: declare it without inline", comp.tokens[comp.nodes[f].tok].at)
+                                    note("this call leads back to " + shown, i.pos)
+                                    return failed
+    procs: &list[Proc]
+    for k in order:
+        if k < funcs:
+            append(procs, comp.procs[k])
+    comp.procs = procs
     comp.code.len = code
     comp.passes.len = passes
     comp.mentions.len = mentions
     comp.data.len = data
+    clear(comp.stored)
     comp.reached = reached
     if check:
         return null
@@ -426,6 +497,9 @@ func params(f: usize) -> usize:
         c = node_end(c)
     return count
 
+func declared_inline(f: usize) -> bool:
+    return f != 0 and comp.tokens[comp.nodes[f].tok - 2].text == "inline"
+
 func result(f: usize) -> usize|Fail:
     c := kid(f, params(f))
     if c == node_end(f) or comp.nodes[c].kind == Where or comp.nodes[c].kind == Block:
@@ -466,7 +540,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
             name += "op"
         name += "." + comp.insts.len
     library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, false})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
@@ -716,6 +790,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 f := comp.syms[found].node
                 taken: &list[usize]
                 id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
+                comp.insts[id].valued = true
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
@@ -2162,6 +2237,12 @@ func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
     if contains(comp.resolving, d):
         return fail(comp.syms[s].name + " refers to itself, a constant cannot be computed from itself", at)
+    inner := false
+    for r in comp.resolving:
+        inner = inner or comp.nodes[r].kind == Constant
+    first := comp.body.len
+    slots := comp.slots.len
+    held := comp.held.len
     append(comp.resolving, d)
     v := value(d + 1, want)
     comp.resolving.len -= 1
@@ -2169,12 +2250,38 @@ func constant(s: usize, want: usize, at: usize) -> Value|Fail:
         note(comp.syms[s].name + " is read here", at)
         return Fail
     v.place = false
-    return v
+    if inner or not aggregate(v.type) or v.at.kind != Temp:
+        return v
+    end := comp.body.len
+    data: &str = "{ "
+    if try image(v.type, d + 1, data) != 0:
+        comp.body.len = end
+        return v
+    zeros(data, room(v.type) - comp.types[v.type].size)
+    data += "}"
+    for k in comp.held[held:]:
+        if k < slots:
+            append(comp.spare, k)
+    comp.held.len = held
+    comp.slots.len = slots
+    comp.body.len = first
+    id := comp.stored[view(data)] ifnull i64(comp.globals.len)
+    if id == i64(comp.globals.len):
+        name: &str = "$const."
+        name += id
+        global(view(name))
+        put(comp.stored, view(data), id)
+        if comp.system == "linux":
+            comp.data += "section \".data.rel.ro\" "
+        elif comp.system == "windows":
+            comp.data += "section \".rdata\" \"dr\" "
+        comp.data += "data " + name + " = align 8 " + data + "\n" # macOS takes no quoted section, there it stays in data
+    return Value{type = v.type, at = Arg{Global, id}, mem = true, lit = true}
 
 func shared(d: usize) -> Value|Fail:
     return Value{type = try resolve(d + 1), at = global("$var." + text(d) + "." + d), mem = true, place = true}
 
-func image(t: usize, n: usize, out: *&str) -> Fail?:
+func image(t: usize, n: usize, out: *&str) -> usize|Fail: # the node of a part that is computed, or 0
     while n != 0 and comp.nodes[n].kind == Name:
         s := try named(text(n), comp.nodes[n].module, at_of(n))
         if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
@@ -2183,7 +2290,7 @@ func image(t: usize, n: usize, out: *&str) -> Fail?:
     ty := comp.types[t]
     if n == 0 and not tagged(t):
         zeros(out, ty.size)
-        return null
+        return 0
     kind: NodeKind = Var # no node, the value is zero
     if n != 0:
         kind = comp.nodes[n].kind
@@ -2202,13 +2309,15 @@ func image(t: usize, n: usize, out: *&str) -> Fail?:
             if not contains(members(t), member):
                 member = try member_for(t, v, at_of(n))
         if not contains(members(t), member):
-            return fail(UNKNOWN, at_of(n))
+            return n
         out.* += "w " + (member - 1) + ", "
         if ty.size > 4:
             zeros(out, 4)
-            try image(member, n, out)
+            unknown := try image(member, n, out)
+            if unknown != 0:
+                return unknown
             zeros(out, ty.size - 8 - comp.types[member].size)
-        return null
+        return 0
     if ty.kind == Struct and (n == 0 or kind == Brace or kind == Fill):
         given: &list[usize]
         defer free(given)
@@ -2240,31 +2349,36 @@ func image(t: usize, n: usize, out: *&str) -> Fail?:
                         filler = j
                 inner := comp.items[ty.first + filler].type
                 zeros(out, field.n - offset)
-                try image(inner, given[filler], out)
+                unknown := try image(inner, given[filler], out)
+                if unknown != 0:
+                    return unknown
                 zeros(out, comp.types[field.type].size - comp.types[inner].size)
                 offset = field.n + comp.types[field.type].size
         zeros(out, ty.size - offset)
-        return null
+        return 0
     if ty.kind == Array and (n == 0 or kind == Items or kind == Brace):
         c := n + 1
         if kind == Brace:
             c = node_end(n + 1)
         for i in 0..ty.count:
-            if n == 0:
-                try image(ty.elem, 0, out)
-            else:
-                try image(ty.elem, c, out)
+            element: usize = 0
+            if n != 0:
+                element = c
                 c = node_end(c)
-        return null
+            unknown := try image(ty.elem, element, out)
+            if unknown != 0:
+                return unknown
+        return 0
     if quoted and ty.name == "&strview":
-        out.* += text_fields(text(n)[1:text(n).len - 1]) + ", "
-        return null
+        id := comp.globals[usize(text_data(text(n)[1:text(n).len - 1]).n)][4:]
+        out.* += "l $str." + id + ", l " + comp.texts[trust parse_int(id)] + ", "
+        return 0
     if ty.size == 0:
-        return null
+        return 0
     v := try convert(try value(n, t), t, Arg{}, at_of(n))
     known := v.at.kind == Const or v.at.kind == Single or v.at.kind == Double or v.at.kind == Global and not v.mem and not starts_with(comp.globals[usize(v.at.n)], "thread ")
     if aggregate(t) or not known:
-        return fail(UNKNOWN, at_of(n))
+        return n
     letter: &strview = "l"
     if v.at.kind == Single:
         letter = "s"
@@ -2279,7 +2393,7 @@ func image(t: usize, n: usize, out: *&str) -> Fail?:
     out.* += letter + " "
     put_arg(out, v.at, 0)
     out.* += ", "
-    return null
+    return 0
 
 func zeros(out: *&str, count: usize):
     if count > 0:
@@ -2749,15 +2863,12 @@ func room(t: usize) -> usize:
     return size
 
 func text_data(raw: &strview) -> Arg:
-    fields := text_fields(raw)
-    name: &str = "$sv."
-    name += comp.strings - 1
-    comp.data += "data " + name + " = { " + fields + " }\n"
-    return global(view(name))
-
-func text_fields(raw: &strview) -> &strview:
-    id := comp.strings
-    comp.strings += 1
+    key: &str = "\""
+    key += raw
+    found := comp.stored[view(key)]
+    if found is i64:
+        return Arg{Global, found}
+    id := comp.texts.len
     comp.data += "data $str." + id + " = { "
     bytes := items(raw)
     length: usize = 0
@@ -2784,5 +2895,10 @@ func text_fields(raw: &strview) -> &strview:
         i += 1
     if quoted:
         comp.data += "\", "
-    comp.data += "b 0 }\n"
-    return "l $str." + id + ", l " + length
+    comp.data += "b 0 }\ndata $sv." + id + " = { l $str." + id + ", l " + length + " }\n"
+    append(comp.texts, length)
+    name: &str = "$sv."
+    name += id
+    made := global(view(name))
+    put(comp.stored, view(key), made.n)
+    return made

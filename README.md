@@ -17,9 +17,10 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Generics support
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures
+- Small functions are inlined and small structs live in registers, `inline func` inlines at every call
 - ABI FFI to interop with other languages (both ways)
 - A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP and raylib
-- QBE backend for really fast compilation, for example, the compiler builds itself in about a second
+- QBE backend for really fast compilation, for example, the compiler builds itself in about a second and a half
 - Support for Linux, macOS and Windows
 
 ## Quick Code Example

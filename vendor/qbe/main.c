@@ -37,6 +37,7 @@ static Target *tlist[] = {
 };
 static FILE *outf;
 static int dbg;
+static int whole;
 
 static void
 data(Dat *d)
@@ -64,6 +65,10 @@ func(Fn *fn)
 	T.abi0(fn);
 	fillcfg(fn);
 	filluse(fn);
+	if (!whole) {
+		chop(fn);
+		filluse(fn);
+	}
 	promote(fn);
 	filluse(fn);
 	ssa(fn);
@@ -138,7 +143,7 @@ main(int ac, char *av[])
 
 	T = Deftgt;
 	outf = stdout;
-	while ((c = getopt(ac, av, "hd:o:t:")) != -1)
+	while ((c = getopt(ac, av, "hd:o:t:w")) != -1)
 		switch (c) {
 		case 'd':
 			for (; *optarg; optarg++)
@@ -172,6 +177,9 @@ main(int ac, char *av[])
 				}
 			}
 			break;
+		case 'w':
+			whole = 1;
+			break;
 		case 'h':
 		default:
 			hf = c != 'h' ? stderr : stdout;
@@ -187,6 +195,7 @@ main(int ac, char *av[])
 			}
 			fprintf(hf, "\n");
 			fprintf(hf, "\t%-11s dump debug information\n", "-d <flags>");
+			fprintf(hf, "\t%-11s keep each stack slot whole\n", "-w");
 			exit(c != 'h');
 		}
 

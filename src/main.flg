@@ -92,6 +92,7 @@ type Inst:
     export: bool
     library: bool
     depth: usize
+    valued: bool
 
 type enum ArgKind:
     Empty, Temp, Const, Single, Double, Global
@@ -141,6 +142,7 @@ type Proc:
     node: usize
     inst: usize
     export: bool
+    recursive: bool
 
 type Local:
     name: &strview
@@ -200,7 +202,8 @@ context comp:
     c_types: &list[usize]
     c_defs: &str
     data: &str
-    strings: usize
+    texts: &list[usize]
+    stored: &map[&strview, i64]
     globals: &list[&strview]
     global_ids: &map[&strview, usize]
     reached: usize
@@ -252,6 +255,7 @@ func main() -> i32:
     keep := false
     check := false
     memory := false
+    optimize := true
     overlay: &strview
     query: &strview|null = null
     target := view(flag_target())
@@ -500,7 +504,7 @@ func main() -> i32:
     ssa += ".ssa"
     asm: &str = view(output)
     asm += ".s"
-    if write_file(view(ssa), listing()) is FsError:
+    if write_file(view(ssa), listing(optimize)) is FsError:
         eprint(ERR, "cannot write ", ssa)
         return 1
     args := array[*u8, 7]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8}

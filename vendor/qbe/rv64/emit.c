@@ -314,6 +314,7 @@ emitins(Ins *i, Fn *fn, FILE *f)
 	char *rn;
 	int64_t s;
 	Con *con;
+	Ins ld;
 
 	switch (i->op) {
 	default:
@@ -345,8 +346,21 @@ emitins(Ins *i, Fn *fn, FILE *f)
 			switch (rtype(i->arg[0])) {
 			case RSlot:
 			case RCon:
-				die("unimplemented");
-				break;
+				/* through ft11, t6 may hold an address */
+				if (rtype(i->arg[0]) == RCon) {
+					loadcon(&fn->con[i->arg[0].val], T6, i->cls, f);
+					fprintf(f, "\tfmv.%c.x ft11, t6\n", KWIDE(i->cls) ? 'd' : 'w');
+				} else {
+					ld = (Ins){.op = Oload, .cls = KWIDE(i->cls) ? Kd : Ks, .to = TMP(FT11), .arg = {i->arg[0]}};
+					emitins(&ld, fn, f);
+				}
+				i->arg[0] = TMP(FT11);
+				i->arg[1] = i->to;
+				i->to = R;
+				i->op = KWIDE(i->cls) ? Ostored : Ostores;
+				i->cls = Kw;
+				fixmem(&i->arg[1], fn, f);
+				goto Table;
 			default:
 				assert(isreg(i->arg[0]));
 				i->arg[1] = i->to;

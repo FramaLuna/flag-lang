@@ -50,12 +50,18 @@ func parse() -> Fail?:
             comp.pos += 1
         sym.packed = peek("packed")
         sym.export = peek("export")
-        if sym.export and comp.tokens[comp.pos + 1].text != "func":
+        inline := peek("inline")
+        after := comp.tokens[comp.pos + 1]
+        if sym.export and after.text == "inline" or inline and after.text == "export":
+            return fail("an export function cannot be inline, other languages call it and cannot take its body", here().at)
+        if sym.export and after.text != "func":
             return fail("export goes before a func declaration: export func name():", here().at)
-        if sym.packed or sym.export:
+        if inline and after.text != "func" and after.text != "operator":
+            return fail("inline goes before a func or an operator declaration: inline func name():", here().at)
+        if sym.packed or sym.export or inline:
             comp.pos += 1
         t = here()
-        after := comp.tokens[comp.pos + 1]
+        after = comp.tokens[comp.pos + 1]
         n := comp.nodes.len
         if t.text == "type" or t.text == "context":
             comp.pos += 1
@@ -139,6 +145,8 @@ func parse() -> Fail?:
                     finish(begin(Void, comp.nodes[c].tok))
         elif t.text == "func" or t.text == "operator":
             try func_decl(false)
+            if inline and text(n) == "main":
+                return fail("main is the entry point of the program, it cannot be inline", comp.tokens[comp.nodes[n].tok].at)
         elif t.text == "extern":
             if after.kind != Str:
                 return fail("extern expects the library name as text: extern \"c\":", t.at)
@@ -150,6 +158,8 @@ func parse() -> Fail?:
                 return unexpected("an extern block holds its functions on the lines below it")
             width := here().text.len
             while try next_line(0, width):
+                if peek("inline"):
+                    return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
                 if not peek("func"):
                     return fail("an extern block declares functions only", here().at)
                 try func_decl(true)

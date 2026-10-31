@@ -1,0 +1,82 @@
+type V:
+    x: f64
+    y: f64
+
+type Mixed:
+    flag: bool
+    small: i16
+    count: i32
+    ratio: f32
+    total: f64
+
+type Box:
+    low: V
+    high: V
+
+packed type Tight:
+    tag: u8
+    value: i32
+    more: u16
+
+operator +(a: V, b: V) -> V:
+    return V{a.x + b.x, a.y + b.y}
+
+func grow(m: Mixed, by: i32) -> Mixed:
+    return Mixed{not m.flag, m.small + 1, m.count + by, m.ratio * 2.0, m.total + f64(by)}
+
+func push(p: *V):
+    p.x += 100.0
+
+func area(b: Box) -> f64:
+    return (b.high.x - b.low.x) * (b.high.y - b.low.y)
+
+func pick(n: i32) -> i32|f64|null:
+    if n % 3 == 0:
+        return null
+    if n % 3 == 1:
+        return n * 2
+    return f64(n) / 2.0
+
+func main():
+    acc := V{0.0, 0.0}
+    for i in 0..1000:
+        acc = acc + V{1.0, f64(i)}
+    print(acc)
+    m := Mixed{false, 0, 0, 1.0, 0.0}
+    for i in 0..10:
+        m = grow(m, i)
+    print(m)
+    held := V{1.0, 2.0}
+    push(ptr(held))
+    p := ptr(held)
+    p.y = 7.0
+    print(held)
+    b := Box{V{1.0, 1.0}, V{4.0, 3.0}}
+    b.high.y += 1.0
+    print(area(b), " ", b)
+    t := Tight{7, 1000, 9}
+    t.value += i32(t.tag)
+    print(t, " ", sizeof(Tight))
+    sum := 0.0
+    nulls := 0
+    for i in 0..9:
+        u := pick(i)
+        if u is i32:
+            sum += f64(u)
+        elif u is f64:
+            sum += u
+        else:
+            nulls += 1
+    print(sum, " ", nulls)
+    bits: i32||f32 = f32(1.5)
+    print(bits as i32)
+    a := [1, 2, 3, 4]
+    a[0] = a[3] * 10
+    a[2] += a[1]
+    print(a)
+    j := 3
+    a[j] = 0
+    print(a)
+    half: V
+    half.x = 3.0
+    print(half)
