@@ -693,10 +693,14 @@ framestart(E *e)
 {
 	e->fp = RBP;
 	fputs("\tpushq %rbp\n", e->f);
+	if (T.windows)
+		fputs("\t.seh_pushreg %rbp\n", e->f);
 	if (dbginfo)
 		fputs("\t.cfi_def_cfa_offset 16\n"
 			"\t.cfi_offset %rbp, -16\n", e->f);
 	fputs("\tmovq %rsp, %rbp\n", e->f);
+	if (T.windows)
+		fputs("\t.seh_setframe %rbp, 0\n", e->f);
 	if (dbginfo)
 		fputs("\t.cfi_def_cfa_register %rbp\n", e->f);
 }
@@ -868,6 +872,10 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 
 	e = &(E){.f = f, .fn = fn};
 	emitfnlnk(fn, f);
+	/* the unwind information of Windows, that its
+	 * debuggers read to find the end of the prologue
+	 * and the caller */
+	fprintf(f, "\t.seh_proc %s\n", fn->name);
 	fputs("\tendbr64\n", f);
 	if (fn->vararg) {
 		fprintf(f, "\tmovq %%rcx, 0x8(%%rsp)\n");
@@ -880,13 +888,18 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	if (e->fsz >= 4096)
 		fprintf(f, "\tmovl $%"PRIu64", %%eax\n\tcallq ___chkstk_ms\n", e->fsz);
 	if (e->fsz)
-		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
+		fprintf(f,
+			"\tsubq $%"PRIu64", %%rsp\n"
+			"\t.seh_stackalloc %"PRIu64"\n",
+			e->fsz, e->fsz);
 	for (r=amd64_winabi_rclob; r<&amd64_winabi_rclob[NCLR_WIN]; r++)
 		if (fn->reg & BIT(*r)) {
 			itmp.arg[0] = TMP(*r);
 			emitf("pushq %L0", &itmp, e);
+			fprintf(f, "\t.seh_pushreg %%%s\n", rname[*r][0]);
 			e->nclob++;
 		}
+	fputs("\t.seh_endprologue\n", f);
 
 	for (lbl=0, b=fn->start; b; b=b->link) {
 		if (lbl || b->npred > 1)
@@ -938,4 +951,5 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	}
 	id0 += fn->nblk;
 	emitfnend(fn, f);
+	fputs("\t.seh_endproc\n", f);
 }

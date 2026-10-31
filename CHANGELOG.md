@@ -30,7 +30,7 @@ Changed
 - `&str`, `&list` and `&map` take 32 bytes: a fourth word, `arena`, says where their memory lives, zero for the heap. The views, `&strview` and `&slice`, stay at 16
 - The scratch memory of the temporaries is an `Arena`
 - Every function keeps a frame pointer, on x86_64 too, so the chain can be read: a program is about 1 % bigger
-- QBE has thirteen more changes, twenty-four in all: thread data on Windows, its address read once per function on Windows and macOS, and the thread data that starts at zero kept out of the file on macOS, small slots cut into pieces that live in registers, a fix for riscv64, five for the chain of calls and the debugger, and five that keep a long function linear
+- QBE has fourteen more changes, twenty-five in all: thread data on Windows, its address read once per function on Windows and macOS, and the thread data that starts at zero kept out of the file on macOS, small slots cut into pieces that live in registers, a fix for riscv64, six for the chain of calls and the debugger, and five that keep a long function linear
 - Building the compiler takes 36 % more instructions: most of it is the work QBE and the assembler do on the inlined code, and the rest is the code of threads, arenas and the debugger. The compiler that comes out is faster, it checks the sources of 0.3 with 7 % fewer instructions
 
 Faster
