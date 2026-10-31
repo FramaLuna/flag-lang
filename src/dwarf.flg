@@ -23,6 +23,7 @@ VARIANT_DIE = 19
 FUNCTION_TYPE_DIE = 20
 PROCEDURE_TYPE_DIE = 21
 ARGUMENT_DIE = 22
+TYPEDEF_DIE = 23
 LEAF = 32 # added to the code of a kind with children, it is the same kind without them
 
 # DWARF 4 for the procs QBE wrote, appended to the assembly: the assembler resolves the offsets of the slots and the marks
@@ -52,6 +53,7 @@ func dwarf() -> &str:
     abbreviation(out, ptr([FUNCTION_TYPE_DIE, 0x15, 1, 0x27, 0x19, 0x49, 0x10, 0, 0])) # subroutine type: prototyped, type
     abbreviation(out, ptr([PROCEDURE_TYPE_DIE, 0x15, 1, 0x27, 0x19, 0, 0]))
     abbreviation(out, ptr([ARGUMENT_DIE, 0x05, 0, 0x49, 0x10, 0, 0]))
+    abbreviation(out, ptr([TYPEDEF_DIE, 0x16, 0, 0x03, 0x08, 0x49, 0x10, 0, 0])) # name, type
     out += "\t.byte 0\n"
     out += section("debug_line") + local + "debug_line:\n"
     out += section("debug_info") + local + "debug_info:\n"
@@ -175,7 +177,8 @@ func dwarf() -> &str:
                     uleb(out, UNION_DIE)
                     asciz(out, ty.name)
                     uleb(out, ty.size)
-                    for m in members(t):
+                    for i in 0..ty.count:
+                        m := comp.items[ty.first + i].type
                         uleb(out, MEMBER_DIE)
                         asciz(out, comp.types[m].name)
                         out += reference(local + "type" + m)
@@ -221,6 +224,10 @@ func dwarf() -> &str:
                     uleb(out, STRUCT_DIE + LEAF)
                     asciz(out, ty.name)
                     uleb(out, 0)
+                if ty.decl != 0 and (ty.kind == Struct and ty.name == text(ty.decl) and not context(t) or ty.kind == Union):
+                    uleb(out, TYPEDEF_DIE) # the language is C, where a struct is named struct Point
+                    asciz(out, text(ty.decl))
+                    out += reference(here)
         first = false
         for t in 0..comp.reached:
             if context(t) and file_of(comp.tokens[comp.nodes[comp.types[t].decl].tok].at) == file:
@@ -245,9 +252,6 @@ func dwarf() -> &str:
         for f in procs:
             if f.file == file:
                 inst := comp.insts[f.inst]
-                at := inst.at
-                if f.node != 0:
-                    at = comp.tokens[comp.nodes[f.node].tok].at
                 start := symbol_prefix() + f.name[1:]
                 leaf := LEAF * usize(f.mentioned == f.mentions)
                 if inst.ret == VOID:
@@ -256,7 +260,7 @@ func dwarf() -> &str:
                     uleb(out, FUNCTION_DIE + leaf)
                 asciz(out, view(proc_name(f)))
                 uleb(out, numbers[file])
-                uleb(out, line_of(at))
+                uleb(out, line_of(declared_at(f)))
                 if inst.ret != VOID:
                     out += reference(local + "type" + inst.ret)
                 out += "\t.quad " + start + "\n\t.long " + local + f.name[1:] + ".end-" + start + "\n"

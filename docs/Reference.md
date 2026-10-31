@@ -840,18 +840,20 @@ The checker skips the trusted functions that no untrusted code needs, so trustin
 flagc main.flg -o main -debug
 gdb ./main
 ```
-- each file is a compile unit, and each function has its name, the line where it's declared and its code. The instances of a generic share its name, so `break sort` stops in all of them
+- each file is a compile unit, and each function has its name, the line where it's declared and its code. The instances of a generic share its name, so `break sort` stops in all of them. A breakpoint in a function stops at the first line of its body, with the parameters in their place
+- `break main` stops twice, first in the `main` of C that starts the program and has no lines, then in yours: `break main.flg:main` stops only in yours
+- `break panic` stops at a runtime error, before it writes its message, and `bt` shows the calls that led there with their arguments. A crash stops the program in the debugger by itself, at the instruction that failed
 - the parameters and the variables are in their slot of the stack, inside the blocks of code where they are visible, so the `i` of one loop and the `i` of the next are two variables
 - the variables at the root of a file are global variables, and the contexts are thread-local variables, so the debugger shows the ones of the thread it stops in. On Linux for arm64 and riscv64 a context has no place in the DWARF: no relocation of those systems gives the place of thread data to it, gcc and clang leave it out too
 - numbers, `bool` and pointers are the types of C, and a `*u8` is a C string, so the `data` of a text shows the text, and what follows it too
-- a struct has its fields, a fat pointer is a struct with `data` and its fields, like `len`, `cap` and `arena`, a function value is a pointer to a function, and a `Thread[T]` is a struct with the address of its `block`
+- a struct has its fields, and a struct or an enum you declare is also a typedef of its name, so `ptype Point` and `print (Color)1` work, where C would want `struct Point` and `enum Color`. A fat pointer is a struct with `data` and its fields, like `len`, `cap` and `arena`, a function value is a pointer to a function, and a `Thread[T]` is a struct with the address of its `block`
 - an enum is an enumeration with its variants, and their values are the tags of that compilation (see [Unions](#unions))
 - a tagged union is a struct with its `tag`, an enumeration of its members, and the member it holds as a variant part, like Rust does. gdb shows that member, lldb reads variant parts only in Rust code, so it may show only the tag
 - an untagged union is a union of its members
 
 The compile units say they are C, that's how both debuggers print a value: `{x = 3, y = 4}`.
 
-The program changes so that what the debugger reads stays true. Nothing is inlined (see [Inlining](#inlining)), every variable stays in its slot, QBE doesn't move it to a register or cut a small struct into pieces, and a parameter passed by its address, like a struct, gets a slot that holds that address. The blocks keep the order they have in the code, so a block of variables is one range of addresses. A program with `-debug` is a little slower and bigger, the compiler is 3 % bigger with it, and it compiles 9 % faster, there is no inlined code for QBE and the assembler.
+The program changes so that what the debugger reads stays true. Nothing is inlined (see [Inlining](#inlining)), every variable stays in its slot, QBE doesn't move it to a register or cut a small struct into pieces, and a parameter passed by its address, like a struct, gets a slot that holds that address. The blocks keep the order they have in the code, so a block of variables is one range of addresses, and each block starts a row of the table of lines, so stepping through a loop comes back to its line on each turn. A program with `-debug` is a little slower and bigger, the compiler is 3 % bigger with it, and it compiles 9 % faster, there is no inlined code for QBE and the assembler.
 
 On macOS the linker leaves the DWARF in the object file, so `-debug` assembles the program into `program.o`, links it, runs `dsymutil`, that writes `program.dSYM` next to the program, and removes the object unless `-keep`. A `dsymutil` that cannot run is an error: `cannot run dsymutil: ..., -debug on macOS keeps the DWARF in main.dSYM with dsymutil`.
 
@@ -989,6 +991,7 @@ error: the line ends here, ':' goes here
 - `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
+- `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db`
 - `name.args` has more arguments for the compiler in that test. With `-check` among them nothing runs, and `name.out` is what the compiler must print, that's how `-at` is tested
 - a file the test needs, like the overlay of `name.overlay`, goes next to it with the same name
 - a folder is a test with all its files
@@ -1008,7 +1011,7 @@ The last five are for the chain of calls and for the debugger. On x86_64 every f
 - `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and that keeps it in memory, whole
 - `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it
 - the blocks keep the order of the IL, and one is not merged into the block before it, so a scope is one range of code
-- each function has its `.cfi` in `.debug_frame`, and its first `.loc` before its prologue
+- each function has its `.cfi` in `.debug_frame`, and its first `.loc`, the line of its declaration, before its prologue and not again after it: a debugger that skips the prologue stops at the next line, the first one of the body
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware

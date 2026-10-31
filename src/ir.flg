@@ -225,7 +225,7 @@ func listing() -> &str:
         hidden := f.node == 0 or comp.insts[f.inst].library
         out += ", l " + f.name + ", w " + place + ", w " + usize(hidden)
         if not hidden:
-            at := comp.tokens[comp.nodes[f.node].tok].at
+            at := declared_at(f)
             shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
             place += shown.len + 1
             places += ", "
@@ -274,6 +274,9 @@ func listing() -> &str:
                     out += "\tdbgslot "
                     put_arg(out, Arg{Temp, i64(slot)}, f.temps)
                     out += ", " + m + "\n"
+                shown = declared_at(f) # the prologue takes this line, so a debugger stops after it with the parameters in place
+                line = line_of(shown)
+                out += "\tdbgloc " + line + ", " + (shown - line_start(shown) + 1) + "\n"
             next := kept(dropped, k + 1, f.end)
             if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
                 continue
@@ -284,6 +287,9 @@ func listing() -> &str:
                     out += "\tdbgloc " + line + ", " + (i.pos - line_start(i.pos) + 1) + "\n"
             if i.op == "@":
                 out += "@L" + (i.a.n - i64(f.labels)) + "\n"
+                if comp.debug:
+                    shown = 0 # a block starts a row of the line table, so a debugger stops where a jump lands
+                    line = 0
                 continue
             out += "\t"
             if i.op == "jmp":

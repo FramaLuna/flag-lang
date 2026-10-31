@@ -68,11 +68,14 @@ emitfnlnk(Fn *fn, FILE *f)
 	if (!dbginfo)
 		return;
 	fputs("\t.cfi_startproc\n", f);
-	/* the prologue takes the line of the code after it */
+	/* the prologue takes the first line, and the code
+	 * does not repeat it: a debugger that skips the
+	 * prologue stops at the next line */
 	for (b=fn->start; b; b=b->link)
 		for (i=b->ins; i<&b->ins[b->nins]; i++)
 			if (i->op == Odbgloc) {
 				emitdbgloc(i->arg[0].val, i->arg[1].val, f);
+				i->op = Onop;
 				return;
 			}
 }

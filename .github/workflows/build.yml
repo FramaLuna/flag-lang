@@ -28,9 +28,11 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc git diffutils
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gdb git diffutils
       - if: runner.os == 'Windows'
         run: echo "CC=gcc" >> "$GITHUB_ENV"
+      - if: runner.os == 'Linux'
+        run: command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y -qq gdb > /dev/null; }
       - run: ./build.sh package
       - run: ./test.sh build/flagc 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
       - if: failure()
