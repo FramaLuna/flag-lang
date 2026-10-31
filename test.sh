@@ -1,7 +1,9 @@
 #!/bin/sh
 compiler=${1:-build/flagc0}
 out=build/tests
-mkdir -p "$out"
+mkdir -p "$out/bin"
+[ -f "$compiler.exe" ] && compiler=$compiler.exe
+cp "$compiler" "$out/bin/"
 pass=0
 fail=0
 limit=120
@@ -19,14 +21,21 @@ within() {
     ) > /dev/null 2>&1 &
     wait $job 2> /dev/null # on Windows a crash ends with its exception code, and the shell would say it was a signal
 }
-for src in tests/*.flg tests/*/; do
-    name=$(basename "$src" .flg)
-    files=$src
-    [ -d "$src" ] && files=$(ls -d "$src"*)
+for expected in tests/*.out tests/*.err tests/*.warn; do
+    name=$(basename "${expected%.*}")
+    files=
+    [ -f "tests/$name.flg" ] && files=tests/$name.flg
+    [ -d "tests/$name" ] && files=$(ls -d "tests/$name/"*)
     args=
     [ -f "tests/$name.args" ] && args=$(cat "tests/$name.args")
+    flagc=$compiler
+    vars=
+    if [ -f "tests/$name.env" ]; then
+        flagc=$out/bin/$(basename "$compiler")
+        vars=$(cat "tests/$name.env")
+    fi
     if [ -f "tests/$name.err" ]; then
-        if within "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+        if within env $vars "$flagc" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: compiled, expected an error"
             fail=$((fail + 1))
         elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
@@ -39,7 +48,7 @@ for src in tests/*.flg tests/*/; do
         continue
     fi
     if [ -f "tests/$name.warn" ]; then
-        if ! within "$compiler" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
+        if ! within env $vars "$flagc" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
             echo "FAIL $name: does not compile"
             cat "$out/$name.got"
             fail=$((fail + 1))
@@ -56,7 +65,7 @@ for src in tests/*.flg tests/*/; do
         fi
         continue
     fi
-    if ! within "$compiler" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+    if ! within env $vars "$flagc" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
         echo "FAIL $name: does not compile"
         cat "$out/$name.got"
         fail=$((fail + 1))

@@ -891,6 +891,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return fail(ty.name + " holds " + counted(filled.len, "element", "elements") + " but this literal gives " + counted(given, "value", "values"), tok.at)
             if given != filled.len:
                 return fail(ty.name + " has " + counted(filled.len, "field", "fields") + " but this literal gives " + counted(given, "value", "values"), tok.at)
+        word := Arg{}
+        last: usize = 0
         i: usize = 0
         while c < node_end(n):
             if (comp.nodes[c].kind == Named) != named:
@@ -908,7 +910,31 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     if field.n < g.n + comp.types[g.type].size and g.n < field.n + comp.types[field.type].size:
                         return fail("field " + field.name + " cannot be filled, " + g.name + " already fills the storage they share", at_of(c))
                 append(filled, field)
-            try assign(offset(slot, filled[i].n), filled[i].type, try value(c, filled[i].type), at_of(c))
+            f := filled[i]
+            size := comp.types[f.type].size
+            v := try value(c, f.type)
+            at := f.n / 8 * 8
+            if not named and at >= last and packs(f, at):
+                v = try convert(v, f.type, Arg{}, at_of(c))
+                bits := load(v).at
+                if comp.types[f.type].kind == Union:
+                    bits = tag(v)
+                elif comp.types[f.type].kind == Float:
+                    bits = op1(W, "cast", bits)
+                if size < 4:
+                    bits = op(W, "and", bits, int_arg(i64((1 << (8 * size)) - 1)))
+                bits = op1(L, "extuw", bits)
+                if f.n > at:
+                    bits = op(L, "shl", bits, int_arg(i64(8 * (f.n - at))))
+                if word.kind != Empty:
+                    bits = op(L, "or", word, bits)
+                word = bits
+                if i + 1 == filled.len or not packs(filled[i + 1], at):
+                    store(U64, Value{type = U64, at = word}, offset(slot, at)) # the whole word, so a copy of it reads one store
+                    word = Arg{}
+            else:
+                try assign(offset(slot, f.n), f.type, v, at_of(c))
+                last = f.n + size
             i += 1
             c = node_end(c)
         return Value{type = t, at = slot, mem = true}
@@ -2510,6 +2536,10 @@ func stamp_start(program: bool):
         elif comp.nodes[d].kind == Var and kids(d) == 1 and program:
             v := trust shared(d)
             stamp(v.type, v.at, 0)
+
+func packs(f: Item, at: usize) -> bool:
+    size := comp.types[f.type].size
+    return size < 8 and f.n + size <= at + 8 and (numeric(f.type) or f.type == BOOL or comp.types[f.type].kind == Union)
 
 func set_tag(t: usize, member: usize, addr: Arg):
     name: &strview = "storew"

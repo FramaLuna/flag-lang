@@ -138,7 +138,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`.
 
-Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`.
+Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces.
 
 ### Structs
 The fields are in the order you write them, each one aligned to its own size, and the size of the struct is rounded up to its biggest alignment, like C does
@@ -993,8 +993,10 @@ error: the line ends here, ':' goes here
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
 - `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db`
 - `name.args` has more arguments for the compiler in that test. With `-check` among them nothing runs, and `name.out` is what the compiler must print, that's how `-at` is tested
+- `name.env` has the environment of the compiler in that test, a `NAME=value` on each line, and the compiler runs the way it's installed, a copy alone in `build/tests/bin` that unpacks the library it carries. That's how a missing `cc` and a library that cannot be unpacked are tested
 - a file the test needs, like the overlay of `name.overlay`, goes next to it with the same name
 - a folder is a test with all its files
+- a test with no `name.flg` and no folder gives the compiler no files, only its arguments, that's how the usage is tested
 - and every example in `examples/` must compile
 
 QBE is in `vendor/qbe` with nineteen changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.

@@ -1,0 +1,68 @@
+type enum Color:
+    Red, Green, Blue
+
+type Mixed:
+    on: bool
+    level: i8
+    depth: i16
+    count: i32
+    ratio: f32
+    color: Color
+    maybe: Color?
+    where: *i32
+    after: u8
+
+type Inner:
+    a: u8
+    b: u8
+
+type Near:
+    k: u8
+    inner: Inner
+    pair: array[u8, 3]
+    n: i32
+    last: i16
+
+packed type Cross:
+    a: i32
+    b: u16
+    c: u8
+    d: i32
+    e: i8
+
+func made(on: bool, level: i8, depth: i16, count: i32, ratio: f32, color: Color, where: *i32) -> Mixed:
+    return Mixed{on, level, depth, count, ratio, color, null, where, u8(count)}
+
+func main():
+    held: i32 = 7
+    items: &list[Mixed]
+    for i in 0..3:
+        append(items, made(i != 1, i8(i) - 100, i16(i) * -300, i32(i) * 70000 - 1, f32(i) + 0.5, Blue, ptr(held)))
+    append(items, Mixed{true, -1, -1, -1, -0.25, Green, Red, ptr(held), 255})
+    append(items, Mixed{on = true, color = Red, where = ptr(held), after = 9})
+    for m in items:
+        print(m.on, " ", m.level, " ", m.depth, " ", m.count, " ", m.ratio, " ", m.color, " ", m.maybe, " ", m.where.*, " ", m.after)
+    by_hand: Mixed
+    by_hand.on = true
+    by_hand.level = -1
+    by_hand.depth = -1
+    by_hand.count = -1
+    by_hand.ratio = -0.25
+    by_hand.color = Green
+    by_hand.maybe = Red
+    by_hand.where = ptr(held)
+    by_hand.after = 255
+    assert(items[3] == by_hand)
+    near: &list[Near]
+    for i in 0..2:
+        append(near, Near{u8(i) + 250, Inner{u8(i) + 1, 2}, [u8(i), 4, 5], i32(i) - 2, i16(i) - 30000})
+    for x in near:
+        print(x)
+    cross: &list[Cross]
+    for i in 0..2:
+        append(cross, Cross{i32(i) - 5, u16(i) + 65000, u8(i) + 200, i32(i) * 100000 - 7, i8(i) - 127})
+    for x in cross:
+        print(x)
+    bytes := array[i8, 12]{-1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11, i8(held)}
+    halves := array[f32, 3]{0.5, f32(held), -2.0}
+    print(bytes, " ", halves)
