@@ -20,6 +20,7 @@ Each function is written with its parameters and what it returns, and `$I` is an
 What a function gives you is
 - **yours** when you own it and release it with `free`
 - **temporary** when it lives in the scratch memory, until the `with scratch():` around the call ends (see [Temporary memory](Reference.md#temporary-memory)). Copy it to a `&str` to keep it
+- **in the arena** when it lives in the `Arena` you passed, until `free` or `clear` of the arena (see [Arenas](#arenas))
 - **a view** when it points inside what you passed, so it lives as long as that
 
 A function that can fail gives its errors in a union, and each module says which error types it has.
@@ -159,10 +160,10 @@ func main():
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
-- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list or a map frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself
+- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list or a map frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c))
 - `sizeof(T)` the size of a type in bytes, as an integer literal
-- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
+- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
 - `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
 ### Temporary memory
@@ -170,6 +171,17 @@ func main():
 - `temp(size: usize) -> *bytes` that many bytes of temporary memory
 - `temp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
 - `temp(items: &slice[$T]) -> &slice[$T]` a temporary copy of the elements, to return what you built in a list that you free
+
+### Arenas
+An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, like a list, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
+- `arena(a: *Arena, v: $T) -> *$T` a copy of the value, like `heap`, in the arena
+- `arena(a: *Arena, text: &strview) -> &str` a copy of the text, in the arena
+- `arena(a, [...])` and `arena(a, {...})` the list or the map of the literal, in the arena, with the type of the place where it lands: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
+- `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
+- `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
+- `count`, `used` and `blocks` are its fields: the blocks in use, the bytes used in the last one, and every block it has
+
+An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
 
 ### Lists and slices
 A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
@@ -186,7 +198,7 @@ On lists
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
 - `clear(l: *&list[$T])` removes every element and keeps the memory
-- `free(l: *&list[$T])` releases the list and leaves it empty. The elements are not released, free them first when they own memory
+- `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
 
 On slices, so also on lists
 - `find(items: &slice[$T], v: $T) -> usize|null` the index of the first element `== v`
@@ -220,7 +232,7 @@ Building a `&str`
 - `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
 - `reserve(s: *&str, want: usize)` makes room for `want` bytes, so the appends until then don't allocate
 - `view(s: &str) -> &strview` a view of the text
-- `free(s: *&str)` releases the text and leaves it empty
+- `free(s: *&str)` releases the text and leaves it empty, and in an arena it only leaves it empty
 
 Searching and cutting
 - `find(s: &strview, part: &strview) -> usize|null` the byte index of the first `part`
@@ -265,7 +277,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
-- `free(m: *&map[$K, $V])` releases the map and leaves it empty. The keys and values are not released, free them first when they own memory
+- `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
 - `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
 - `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
 
@@ -495,7 +507,7 @@ func main():
 - `for n in b` gives the numbers from the smallest, and `print` writes `{3, 70}`
 
 ## ring
-A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest.
+A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest. It always lives in the heap, an arena doesn't make one.
 ```flag
 use ring
 

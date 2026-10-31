@@ -1,0 +1,35 @@
+func squares(n: i32) -> i64:
+    a: Arena
+    defer free(a)
+    values: &list[i64] = arena(a, [])
+    for i in 0..n:
+        append(values, i64(i) * i64(i))
+    total: i64 = 0
+    for v in values:
+        total += v
+    return total
+
+func named(n: i32) -> &str:
+    a: Arena
+    defer free(a)
+    parts: &list[&str] = arena(a, [])
+    for i in 0..n:
+        part: &str = arena(a, "part ")
+        part += i
+        append(parts, part)
+    out: &str
+    for part in parts:
+        out += part[part.len - 1:]
+    return out
+
+func main():
+    sums: &list[Thread[i64]]
+    defer free(sums)
+    for k in 1..9:
+        append(sums, parallel squares(k * 10000))
+    names := parallel named(10)
+    for t in sums:
+        print(wait t)
+    text := wait names
+    defer free(text)
+    print(text)

@@ -176,10 +176,12 @@ A fat pointer is the address of the data and then its fields
 | Type | Layout | Size |
 |---|---|---|
 | `&strview`, `&slice[T]` | address, len | 16 |
-| `&str`, `&list[T]` | address, len, cap | 24 |
-| `&map[K, V]` | address, len, cap | 24 |
+| `&str`, `&list[T]` | address, len, cap, arena | 32 |
+| `&map[K, V]` | address, len, cap, arena | 32 |
 
 A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
+
+`arena` is a `*Arena`, the arena the memory lives in, and zero when it lives in the heap (see [Arenas](#arenas)). The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&slice` without copying anything.
 
 `x.*` is the data of a fat pointer, so `ptr(x.*)` is its address as a `*bytes`.
 
@@ -609,7 +611,7 @@ func main():
 - Every thread ends before the program does: when `main` returns, the program waits for the threads that still run and then writes what waits in the files. `exit()` in any thread ends all of them, and a runtime error in any thread ends the program with its message and its place, like in `main`
 - Each thread has 8 MiB of stack, on every system
 - Each thread has its own contexts, at zero when it starts, and its own scratch memory, freed when the thread ends. So a temporary never goes from one thread to another: give the other thread text you own, a `&str`
-- File variables are shared and nothing protects them, guard what two threads change with a `Lock`. `-memory` doesn't look for two threads that use the same memory at once
+- File variables are shared and nothing protects them, guard what two threads change with a `Lock`, an `Arena` too. `-memory` doesn't look for two threads that use the same memory at once
 
 `Lock`, `Channel[T, N]`, `done` and `cores` are in the library (see [Threads](Library.md#threads)).
 
@@ -641,6 +643,7 @@ Flag doesn't have a garbage collector, you free what you allocate.
 - `&str`, `&list` and `&map` own their memory, you free them with `free`
 - `&strview` and `&slice` are views, they don't own anything
 - `heap(value)` copies a value to the heap and gives you a pointer, you free it with `free(p)`
+- `arena(a, value)` copies a value to the arena `a`, and `free(a)` releases it with everything else in `a`
 - a list of `&str` owns each text, freeing the list doesn't free them, free them first
 
 ### Temporary memory
@@ -657,6 +660,29 @@ print(kept)
 ```
 A program that never uses `with scratch():` keeps every temporary until it ends. That's fine for small programs, and for loops that run a lot put the body inside `with scratch():`.
 
+The scratch memory is an `Arena` of core, in a context, so each thread has its own, and `scratch()` and `close` mark it and go back to the mark.
+
+### Arenas
+An `Arena` gives out pieces of big blocks that it asks the heap for, 64 KiB each, or the size of a request that doesn't fit in one. It's a struct of core that starts empty, like a list, and every place that allocates has its verb: `heap(v)` the heap, `temp(...)` the scratch memory and `arena(a, ...)` the arena `a`. Nothing chooses an arena for you, `heap` always uses the heap.
+```flag
+level: Arena
+defer free(level)
+boss := arena(level, Enemy{hp = 100}) # a *Enemy in level
+enemies: &list[Enemy] = arena(level, []) # an empty list that lives in level
+append(enemies, Enemy{hp = 10}) # grows in level
+name: &str = arena(level, "boss") # text that lives in level
+name += " final" # grows in level too
+```
+- `arena(a, v)` copies the value into `a` and gives a pointer to it, like `heap(v)`. The pieces are aligned to 8 bytes, the most any type needs
+- `arena(a, text)` with a `&strview` or a `&str` gives a `&str` with a copy of the text
+- `arena(a, [...])` and `arena(a, {...})` build the literal as a `&list` or a `&map` that lives in `a`, with the type of the place where it lands, also of a union with one list or map in it: `bytes: &list[u8] = arena(a, [1, 2])`. Without one the literal gives its own, `arena(a, [1, 2])` is a `&list[i32]`, and an empty literal needs one: `this empty list lives in an arena and takes its type from where it lands, and nothing here gives a &list: x: &list[i32] = arena(a, [])`. The compiler builds these, so `arena` with a list or map literal is always this one, also when you declare an `arena` of yours
+- `a` is the `Arena` or a pointer to one, and anything else is an error: `arena(a, ...) takes the Arena it allocates in first, or a pointer to one, and this is i32`
+- `clear(a)` releases everything in `a` and keeps its blocks to give them out again, for the memory of one frame of a game. `free(a)` releases everything and returns the blocks to the heap. After both the arena is empty and ready to use again
+
+A `&str`, `&list` or `&map` keeps its arena in the field `arena` and grows there: it takes a new piece and copies, and the old piece stays until `free(a)` or `clear(a)`. When its memory is the last piece of the block it grows in its place. `free` of one leaves it empty and releases nothing, so a function that frees what it is given works with a list from anywhere, and it keeps its arena, so growing it again uses the same arena. Assigning an address to it by hand (`text = ptr(buf) as *bytes`) changes only the address, like for any fat pointer.
+
+The pointer of `arena(a, v)` doesn't know its arena, and `free` of it is a mistake that `-memory` reports. A `&ring` of the module `ring` always lives in the heap, `arena` doesn't make one. A copy of an `Arena` gives out the same blocks as the original, so pass a pointer to it, the functions that take one take `*Arena`. An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one, also the lists and texts that grow in it.
+
 ## The memory checker
 `-memory` reads the IL of your program and follows every allocation, and warns about
 - memory that is never freed, or that some path doesn't free: `the memory allocated here for names is never freed`, `the memory that make allocates here may never be freed`
@@ -667,6 +693,11 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 - a pointer to a local variable that leaves its function: `a pointer to buf cannot leave name, buf lives on its stack`
 - a function that frees one argument and reads another that may be the same memory, like `t += t`: `this call may free memory that it also reads through another argument`
 - threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, and `done(t)` after `wait t` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it. `send` of a `Channel` gives what the value points to to the thread that receives it, so it's not yours to free any more, and using it after is using memory that may be freed already
+- memory of an arena used after `free` or `clear` of the arena, like a temporary after its `with scratch():`: `boss points to memory that may be freed already`, with a note at the `free` or `clear`. Through a function too, `reset(level)` that calls `clear`
+- freeing what lives in an arena: `free cannot release boss, it lives in level, free(level) releases it`
+- an `Arena` that is never freed: its blocks are on the heap, so `the memory allocated here for level is never freed`, at the first allocation in it
+
+What lives in an arena belongs to the arena: it's never a leak, and freeing a list or a text that lives in one is clean too.
 
 A message names your variable when there is one, and says `this memory` when there is none. It names a function only when you wrote the call: `drop cannot release path, it is temporary memory: a with scratch() block releases it`. The calls the compiler writes for you, for `print`, `+`, `for` or a conversion, are never named.
 

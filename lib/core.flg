@@ -5,6 +5,7 @@ extern "c":
     func free(at: *bytes)
     func memcpy(to: *bytes, from: *bytes, size: usize) -> *bytes
     func memmove(to: *bytes, from: *bytes, size: usize) -> *bytes
+    func memset(to: *bytes, byte: i32, size: usize) -> *bytes
     func memcmp(a: *bytes, b: *bytes, size: usize) -> i32
     func memchr(at: *bytes, byte: i32, size: usize) -> *bytes
     func strlen(s: cstr) -> usize
@@ -204,6 +205,7 @@ operator ==(a: *array[$T, $$n], b: *array[$T, $$n]) -> bool:
 type fatptr list[$T]:
     len: usize
     cap: usize
+    arena: *Arena
 
 func reserve(l: *&list[$T], want: usize):
     if want <= l.cap:
@@ -213,10 +215,7 @@ func reserve(l: *&list[$T], want: usize):
         cap = want
     if cap < 8:
         cap = 8
-    grown := realloc(ptr(l.*.*), cap * sizeof($T))
-    if grown as usize == 0 and sizeof($T) > 0:
-        out_of_memory()
-    l.* = grown
+    l.* = resize(l.arena, ptr(l.*.*), l.cap * sizeof($T), cap * sizeof($T))
     l.cap = cap
 
 func append(l: *&list[$T], v: $T):
@@ -305,7 +304,7 @@ func clear(l: *&list[$T]):
     l.len = 0
 
 func free(l: *&list[$T]):
-    free(ptr(l.*.*))
+    discard(l.arena, ptr(l.*.*))
     l.* = usize(0) as *bytes
     l.len = 0
     l.cap = 0
@@ -373,6 +372,7 @@ type fatptr strview:
 type fatptr str:
     len: usize
     cap: usize
+    arena: *Arena
 
 func view(s: &str) -> &strview:
     v: &strview
@@ -417,32 +417,35 @@ func reserve(s: *&str, want: usize):
         cap = want
     if cap < 32:
         cap = 32
-    grown := realloc(ptr(s.*.*), cap)
-    if grown as usize == 0:
-        out_of_memory()
-    s.* = grown
+    s.* = resize(s.arena, ptr(s.*.*), s.cap, cap)
     s.cap = cap
 
-type Scratch:
-    count: usize
-    used: usize
-
-priv context scratch_space:
+type Arena:
     blocks: &list[&strview]
     count: usize
     used: usize
 
-func scratch() -> Scratch:
-    return Scratch{scratch_space.count, scratch_space.used}
+func arena(a: *Arena, v: $T) -> *$T:
+    p := take(a, sizeof($T)) as *$T
+    p.* = v
+    return p
 
-func close(s: Scratch):
-    scratch_space.count = s.count
-    scratch_space.used = s.used
+func arena(a: *Arena, text: &strview) -> &str:
+    out: &str
+    out.arena = a
+    out += text
+    return out
 
-func temp(size: usize) -> *bytes:
+func clear(a: *Arena):
+    reclaim(a, false)
+
+func free(a: *Arena):
+    reclaim(a, true)
+
+priv func take(a: *Arena, size: usize) -> *bytes:
     need := (size + 7) / 8 * 8
-    if scratch_space.count == 0 or scratch_space.used + need > scratch_space.blocks[scratch_space.count - 1].len:
-        if scratch_space.count == scratch_space.blocks.len or scratch_space.blocks[scratch_space.count].len < need:
+    if a.count == 0 or a.used + need > a.blocks[a.count - 1].len:
+        if a.count == a.blocks.len or a.blocks[a.count].len < need:
             room: usize = 65536
             if room < need:
                 room = need
@@ -451,12 +454,55 @@ func temp(size: usize) -> *bytes:
             if ptr(block.*) as usize == 0:
                 out_of_memory()
             block.len = room
-            insert(scratch_space.blocks, scratch_space.count, block)
-        scratch_space.count += 1
-        scratch_space.used = 0
-    out := (ptr(scratch_space.blocks[scratch_space.count - 1].*) as usize + scratch_space.used) as *bytes
-    scratch_space.used += need
+            insert(a.blocks, a.count, block)
+        a.count += 1
+        a.used = 0
+    out := (ptr(a.blocks[a.count - 1].*) as usize + a.used) as *bytes
+    a.used += need
     return out
+
+priv func resize(a: *Arena, at: *bytes, size: usize, wanted: usize) -> *bytes:
+    if a as usize == 0:
+        grown := realloc(at, wanted)
+        if grown as usize == 0 and wanted > 0:
+            out_of_memory()
+        return grown
+    held := (size + 7) / 8 * 8
+    if a.count > 0 and at as usize + held == ptr(a.blocks[a.count - 1].*) as usize + a.used:
+        a.used -= held # the last piece of the block, take gives the same place back when it fits
+    grown := take(a, wanted)
+    if grown as usize != at as usize:
+        memcpy(grown, at, size)
+    return grown
+
+priv func discard(a: *Arena, at: *bytes):
+    if a as usize == 0:
+        free(at)
+
+priv func reclaim(a: *Arena, freeing: bool):
+    if freeing:
+        for block in a.blocks:
+            free(ptr(block.*))
+        free(a.blocks)
+    a.count = 0
+    a.used = 0
+
+type Scratch:
+    count: usize
+    used: usize
+
+priv context scratch_space:
+    arena: Arena
+
+func scratch() -> Scratch:
+    return Scratch{scratch_space.arena.count, scratch_space.arena.used}
+
+func close(s: Scratch):
+    scratch_space.arena.count = s.count
+    scratch_space.arena.used = s.used
+
+func temp(size: usize) -> *bytes:
+    return take(scratch_space.arena, size)
 
 func temp(text: &strview) -> &strview:
     at := temp(text.len + 1)
@@ -497,7 +543,7 @@ operator =(s: *&str, v: &strview) -> &str:
     return s.*
 
 func free(s: *&str):
-    free(ptr(s.*.*))
+    discard(s.arena, ptr(s.*.*))
     s.* = usize(0) as *bytes
     s.len = 0
     s.cap = 0
@@ -948,7 +994,7 @@ type Locked:
 
 func lock(l: *Lock) -> Locked:
     if l.owner != me():
-        take(l)
+        acquire(l)
         l.owner = me()
     l.depth += 1
     return Locked{l}
@@ -958,22 +1004,22 @@ func close(held: Locked):
     l.depth -= 1
     if l.depth == 0:
         l.owner = usize(0) as *bytes
-        give(l)
+        release(l)
 
 priv func me() -> *bytes:
     return ptr(scratch_space) as *bytes # each thread has its own
 
-priv func take(l: *Lock) where not @windows():
+priv func acquire(l: *Lock) where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     pthread_mutex_lock(ptr(l.room) as *bytes)
 
-priv func take(l: *Lock) where @windows():
+priv func acquire(l: *Lock) where @windows():
     AcquireSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv func give(l: *Lock) where not @windows():
+priv func release(l: *Lock) where not @windows():
     pthread_mutex_unlock(ptr(l.room) as *bytes)
 
-priv func give(l: *Lock) where @windows():
+priv func release(l: *Lock) where @windows():
     ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
 
 priv signing: u32 # an os_unfair_lock, valid at zero
@@ -1053,9 +1099,7 @@ priv func started(t: *Started, run: *bytes) -> bool where @windows():
     return t.handle != 0
 
 priv func finished(block: *bytes):
-    for b in scratch_space.blocks:
-        free(ptr(b.*))
-    free(scratch_space.blocks)
+    free(scratch_space.arena)
     free(printing.line)
     t := block as *Started
     alone := false
@@ -1510,6 +1554,7 @@ type entry[$K, $V]:
 type fatptr map[$K, $V]:
     len: usize
     cap: usize
+    arena: *Arena
 
 func hash(s: &strview) -> u64:
     # FNV-1a
@@ -1561,9 +1606,8 @@ priv func put(m: *&map[$K, $V], key: $K) -> *$V:
         cap := m.cap * 2
         if cap < 16:
             cap = 16
-        grown := calloc(cap, sizeof(Slot[$K, $V]))
-        if grown as usize == 0:
-            out_of_memory()
+        grown := resize(m.arena, usize(0) as *bytes, 0, cap * sizeof(Slot[$K, $V]))
+        memset(grown, 0, cap * sizeof(Slot[$K, $V]))
         m.* = grown
         m.cap = cap
         table := slots(m.*)
@@ -1573,7 +1617,7 @@ priv func put(m: *&map[$K, $V], key: $K) -> *$V:
                 while table[j].hash != 0:
                     j = (j + 1) and cap - 1
                 table[j] = s
-        free(ptr(old.*))
+        discard(m.arena, ptr(old.*))
     i := locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
@@ -1619,7 +1663,7 @@ func clear(m: *&map[$K, $V]):
     m.len = 0
 
 func free(m: *&map[$K, $V]):
-    free(ptr(m.*.*))
+    discard(m.arena, ptr(m.*.*))
     m.* = usize(0) as *bytes
     m.len = 0
     m.cap = 0

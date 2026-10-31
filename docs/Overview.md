@@ -282,7 +282,7 @@ A fat pointer starts empty, you don't need to create it, just use it
 a: &list[i32]
 append(a, 1)
 ```
-The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&slice` is expected.
+The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&slice` is expected.
 
 You can declare your own fat pointers with `type fatptr`
 ```flag
@@ -725,6 +725,35 @@ if put(colors, "green", 0x00ff00) is MapFull:
 print(colors["red"], " ", colors.len)
 ```
 
+## Arenas
+An `Arena` is memory that you release all at once. It gives out pieces of big blocks, so allocating is cheap, and `free` of the arena releases everything in it
+```flag
+type Enemy:
+    hp: i32
+
+func main():
+    level: Arena # starts empty, like a list
+    defer free(level) # releases all of it
+    boss := arena(level, Enemy{hp = 100}) # a *Enemy in level, like heap(v)
+    enemies: &list[Enemy] = arena(level, []) # an empty list that lives in level
+    append(enemies, Enemy{hp = 10}) # grows in level
+    name: &str = arena(level, "boss") # text that lives in level
+    name += " final" # grows in level too
+    counts: &map[&strview, i32] = arena(level, {"orc": 2})
+    print(boss.hp, " ", enemies.len, " ", name, " ", counts)
+```
+A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` and a list you declare use the heap, like always.
+
+`clear(a)` releases everything and keeps the blocks to use them again, which is what the memory of one frame of a game wants
+```flag
+frame: Arena
+defer free(frame)
+while running:
+    clear(frame)
+    visible: &list[*Enemy] = arena(frame, []) # this frame only
+```
+The scratch memory of the temporaries is an arena too, the one `with scratch():` marks, and each thread has its own. An arena you make is not shared between [threads](#threads) without a `Lock`. The rules are in [Arenas](Reference.md#arenas).
+
 ## Contexts
 A context is global state of each thread: the fields start at zero, every function can use them, and each thread has its own
 ```flag
@@ -988,7 +1017,8 @@ Compiling with `-memory` checks the memory of your program at compile time, and 
 - memory that is never freed
 - memory freed twice
 - memory used after it was freed or after a list grew and moved it
-- temporaries used after their `with scratch():` ended
+- temporaries used after their `with scratch():` ended, and memory of an arena used after `free` or `clear` of it
+- `free` of a pointer that lives in an arena, and an arena that is never freed
 - pointers to the stack of a function that leave it
 
 It is optional because it makes the compilation slower.

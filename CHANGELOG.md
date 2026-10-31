@@ -2,14 +2,19 @@
 
 ## 0.4.0 (not released yet)
 
-A release about threads: a program uses every core with two words, `parallel` and `wait`, and keeps what Flag checks, the types, the errors that can't be dropped and `-memory`.
+A release about threads and arenas: a program uses every core with two words, `parallel` and `wait`, and memory can be released all at once, with the same lists, text and maps as always. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
 
 New
 - `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own or an error to handle. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends
 - A thread you keep must be read, a function that can fail can't run alone, and `-memory` warns about a thread never waited, waited twice or used after `wait`, about a pointer to a local variable that leaves with a thread, and about using what you sent through a channel
 - `Lock`, that works at zero and is taken with `with lock(x.lock):`, `Channel[T, N]`, a bounded queue that lives where you declare it, with `send`, `receive`, `close` and `for v in c`, and `cores()`
 - Variables at the root of a file, `count: i32` or `names: array[&strview, 3] = ["a", "b", "c"]`, shared by every function and every thread. They start at zero or at a value the compiler knows, in the data of the program, so a table that never changes is not built again each time
+- `Arena`, a struct of core that starts empty and gives out pieces of big blocks. `arena(a, v)` copies a value into it and gives a pointer, like `heap(v)`, `arena(a, "text")` gives a `&str`, and `arena(a, [])`, `arena(a, [1, 2])`, `arena(a, {})` and `arena(a, {k: v})` build a list or a map that lives in the arena, with the type of the place where they land. `free(a)` releases everything and `clear(a)` releases everything and keeps the blocks, for the memory of each frame. A small allocation takes 76 instructions in an arena, and 400 with `heap` and `free`
+- A `&str`, `&list` or `&map` that lives in an arena grows there, in its place when it's the last piece of the block, and its `free` leaves it empty without releasing anything, so a function that frees what it gets works with any list
+- `-memory` knows arenas: what lives in one is not a leak, using it after `free` or `clear` of its arena warns like a temporary after its `with scratch():`, also through a function, `free` of a pointer from an arena says `free cannot release boss, it lives in level, free(level) releases it`, and an arena that is never freed is a leak
+- `memset` with the C functions of core
 - `examples/threads.flg`, the Mandelbrot set drawn by a thread for each processor, and primes counted by workers that share a channel
+- `examples/arena.flg`, the enemies of a level and the memory of each frame in two arenas
 
 Changed
 - A `context` belongs to each thread: a new thread starts with its contexts at zero and its own scratch memory, freed when it ends
@@ -19,6 +24,9 @@ Changed
 - On Windows a context takes room in the program file, thread data of Windows keeps its zeros there
 - A Linux program links with `-lpthread`
 - QBE has a twelfth change: thread data on Windows, and the address of thread data read once per function on Windows and macOS
+- `&str`, `&list` and `&map` take 32 bytes: a fourth word, `arena`, says where their memory lives, zero for the heap. The views, `&strview` and `&slice`, stay at 16
+- The scratch memory of the temporaries is an `Arena`
+- The compiler builds itself with 2 % more instructions, half of it the bigger fat pointers and half the code of arenas
 
 Fixed
 - The `==` and `hash` that the compiler writes for a type could take the name of a function of the program, and the program didn't assemble

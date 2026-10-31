@@ -7,6 +7,7 @@ FULL = 0xffff_ffff_ffff_ffff
 ALL = 0xffff_ffff
 DROPPED = 1 << 31
 AGED = 1 << 63
+POOLED = 1 << 62
 
 EXACT = 4096
 FAR = EXACT + 1
@@ -32,12 +33,13 @@ GLOBAL = 5
 RECURSIVE = 6
 FIXED = 7
 PLACE = 8
+BLOCKS = 9
 MEMBERS = 1 << 14
 
 UNSETTLED = "its memory use does not settle"
 
 type enum Code:
-    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Fresh, Arena, Rewind, Grow, Release, Give, Copy, Fill, Absent, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Give, Copy, Fill, Absent, Parse, Stop, Extern, Goto, Fork, Leave, Halt
 
 type enum Kind:
     Pinned, Heap, Entry, Shared, Slot
@@ -109,10 +111,13 @@ type Obj:
     stride: i32
     member: u32
     born: usize
+    home: u32
     kind: Kind
     many: bool
     strict: bool
     arena: bool
+    pool: bool
+    loose: bool
     element: bool
 
 type Marks:
@@ -467,6 +472,14 @@ func check_memory():
                         while d > spans[0].first and mem.ops[d].to != mem.args[mem.ops[k].first].temp:
                             d -= 1
                         mem.ops[k].from = u32(d)
+                    elif core and text(node) == "take":
+                        mem.ops[k].code = Take
+                    elif core and text(node) == "resize":
+                        mem.ops[k].code = Resize
+                    elif core and text(node) == "discard":
+                        mem.ops[k].code = Discard
+                    elif core and text(node) == "reclaim":
+                        mem.ops[k].code = Reclaim
                     else:
                         mem.ops[k].callee = u32(found + 1)
                         if not contains(mem.fns[g].calls, found):
@@ -776,7 +789,7 @@ func analyze(f: usize) -> bool:
             if owner >= SLOTS or not (owner == RETURNED or owner == OUTSIDE or mem.fn.outer[owner] or escaping[owner]):
                 continue
             v := mem.pool[mem.exit.vals[k]]
-            if mem.fn.outer[owner] and v == initial(owner, c.off, c.stride, c.member) and empty(v.live and mem.exit.marks.killed):
+            if mem.fn.outer[owner] and v == initial(owner, c.off, c.stride, c.member) and empty(v.live and (mem.exit.marks.killed or mem.exit.marks.made)):
                 continue
             if v.slot != 0:
                 v.slot = 0
@@ -832,6 +845,8 @@ func analyze(f: usize) -> bool:
                 for x in fresh:
                     if mem.fn.swaps[x] == 0:
                         mem.fn.swaps[x] = was + 1
+                        if mem.fn.objs[x].home != 0:
+                            mem.fn.objs[was].home = mem.fn.objs[x].home
     mem.fn.sum = sum
     mem.fn.ret = ret
     mem.fn.relevant = relevant
@@ -976,16 +991,16 @@ func visit(block: usize):
                     h: usize = 0
                     replace := true
                     if mem.fns[g].global[x]:
-                        h = object((u64(ob.site) << 8) or GLOBAL, Obj{kind = Heap, many = true, site = ob.site, born = i, pos = ob.pos, from = ob.from, arena = ob.arena})
+                        h = object((u64(ob.site) << 8) or GLOBAL, Obj{kind = Heap, many = true, site = ob.site, born = i, pos = ob.pos, from = ob.from, arena = ob.arena, pool = ob.pool})
                         replace = false
                     elif inner and recursive != NONE:
                         h = recursive
                         replace = false
                     elif inner:
-                        h = birth(RECURSIVE, Obj{kind = Heap, site = ob.site, born = i, pos = o.pos, from = mem.who, arena = ob.arena})
+                        h = birth(RECURSIVE, Obj{kind = Heap, site = ob.site, born = i, pos = o.pos, from = mem.who, arena = ob.arena, pool = ob.pool})
                         recursive = h
                     else:
-                        h = birth((u64(i) << 16) or (u64(x) << 8) or SITE, Obj{kind = Heap, many = mem.fns[g].many[x], site = ob.site, born = i, pos = o.pos, from = mem.who, arena = ob.arena})
+                        h = lodge(arena_of(ob), (u64(i) << 16) or (u64(x) << 8) or SITE, Obj{kind = Heap, many = mem.fns[g].many[x], site = ob.site, born = i, pos = o.pos, from = mem.who, arena = ob.arena, pool = ob.pool})
                     mem.marks.live = carry(marks.live, x, mem.marks.live, h, replace)
                     mem.marks.freed = carry(marks.freed, x, mem.marks.freed, h, replace)
                     mem.marks.killed = carry(marks.killed, x, mem.marks.killed, h, replace)
@@ -1010,7 +1025,7 @@ func visit(block: usize):
                         name: &strview
                         if ob.root > 0 and ob.root <= usize(o.count):
                             name = mem.fn.names[mem.args[usize(o.first) + ob.root - 1].temp]
-                        why := refusal(b)
+                        why := refusal(b, ob.loose)
                         if marks.freed[x] and why.len > 0:
                             refuse(who, name, why, b, mem.fns[g].strict)
                         elif marks.used[x]:
@@ -1028,16 +1043,28 @@ func visit(block: usize):
                                     break
                 for x in relevant and outer:
                     b := mem.binds[x]
+                    ob := obj_of(g, x)
+                    passed := b.live and mem.fn.outer
                     if marks.killed[x]:
-                        for h in freeable(b.live):
+                        killed := freeable(b.live)
+                        if ob.pool:
+                            killed = killed or b.live and mem.fn.arenas
+                        for h in killed:
                             condemn(h, marks.sure[x] and b.must[h], marks.freed[x])
                             mem.fn.objs[h].element = mem.fn.objs[h].element or marks.freed[x] and b.element
+                        for h in passed:
+                            mem.fn.objs[h].pool = mem.fn.objs[h].pool or ob.pool
+                            mem.fn.objs[h].loose = mem.fn.objs[h].loose or ob.loose
                     if marks.gone[x]:
                         vanish(freeable(b.must))
                     if marks.used[x]:
-                        mem.marks.used = mem.marks.used or b.live and mem.fn.outer
+                        mem.marks.used = mem.marks.used or passed
                     if marks.made[x]:
-                        mem.marks.made = mem.marks.made or b.live and mem.fn.outer
+                        mem.marks.made = mem.marks.made or passed
+                        if ob.home != 0:
+                            home := home_of(arena_of(ob))
+                            for h in passed:
+                                mem.fn.objs[h].home = home
                 sweep()
                 if o.blob:
                     h := mem.fn.heads[SLOTS + usize(o.slot)]
@@ -1096,28 +1123,54 @@ func visit(block: usize):
             define(o.to, Target{live = bit(h), must = bit(h)})
         case Rewind:
             for h in mem.fn.arenas:
-                if mem.fn.objs[h].born > usize(o.from) and mem.fn.objs[h].born < usize(o.upto):
+                if not mem.fn.objs[h].pool and mem.fn.objs[h].born > usize(o.from) and mem.fn.objs[h].born < usize(o.upto):
                     condemn(h, true, false)
                     vanish(bit(h))
             sweep()
-        case Grow:
+        case Take:
             touch_args(o)
-            first := target_of(mem.args[o.first])
+            k := chunk(target_of(mem.args[o.first]), (u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), born = usize(i), pos = o.pos, from = "arena"})
+            define(o.to, Target{live = bit(k), must = bit(k)})
+        case Reclaim:
+            arena := target_of(mem.args[o.first])
+            held := fetch(arena)
+            blocks := objects(held.live)
+            chunks := objects(fetch(Target{live = blocks, off = ANY}).live) and (mem.fn.arenas or mem.fn.outer - mem.fn.roots)
+            for h in chunks:
+                mem.fn.objs[h].pool = true
+                condemn(h, true, false)
+            vanish(chunks)
+            if target_of(mem.args[o.first + 1]).off != 0:
+                freed := freeable(blocks)
+                for h in freed:
+                    condemn(h, held.must[h], true)
+                vanish(freed and held.must)
+                stash(arena, number(0))
+            sweep()
+        case Grow, Resize:
+            touch_args(o)
+            arena := number(0)
+            if o.code == Resize:
+                arena = target_of(mem.args[o.first])
+            first := target_of(mem.args[o.first + u32(o.code == Resize)])
             blocks := freeable(first.live)
             for h in blocks:
                 condemn(h, first.must[h], false)
+            for h in blocks and mem.fn.outer:
+                mem.fn.objs[h].home = home_of(arena)
             mem.marks.made = mem.marks.made or blocks and mem.fn.outer
             sweep()
             out := Target{live = objects(first.live), must = first.must}
-            reborn(first, blocks, ptr(out), (u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), pos = o.pos, from = "realloc"})
+            reborn(first, blocks, ptr(out), arena, (u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), pos = o.pos, from = "realloc"})
             if empty(out.live):
                 out.live = bit(NOWHERE)
             define(o.to, out)
-        case Release:
-            first := target_of(mem.args[o.first])
-            name := mem.fn.names[mem.args[o.first].temp]
+        case Release, Discard:
+            given := mem.args[o.first + u32(o.code == Discard)]
+            first := target_of(given)
+            name := mem.fn.names[given.temp]
             blocks := freeable(first.live)
-            why := refusal(first)
+            why := refusal(first, o.code == Discard)
             if why.len == 0 and not empty(blocks) and first.off != ANY and first.off != 0 and first.stride == 0:
                 why = ", it points inside a heap block, not at its start"
                 blocks = Set{}
@@ -1126,6 +1179,7 @@ func visit(block: usize):
             for h in blocks:
                 condemn(h, first.must[h], true)
                 mem.fn.objs[h].element = mem.fn.objs[h].element or first.element
+                mem.fn.objs[h].loose = mem.fn.objs[h].loose or o.code == Discard
             vanish(blocks and first.must)
             sweep()
         case Give:
@@ -1222,7 +1276,7 @@ func visit(block: usize):
                 may := reach(given, ByLive)
                 for h in (mem.fn.heaps and mem.marks.live) - must - mem.fn.arenas:
                     x := mem.fn.objs[h]
-                    if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]):
+                    if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]) or x.home != 0:
                         continue
                     text: &str
                     if x.name.len > 0:
@@ -1754,12 +1808,12 @@ func object(key: u64, x: Obj) -> usize:
         mem.fn.arenas = mem.fn.arenas or bit(n)
     return n
 
-func reborn(was: Target, blocks: Set, out: *Target, key: u64, given: Obj) -> usize:
+func reborn(was: Target, blocks: Set, out: *Target, arena: Target, key: u64, given: Obj) -> usize:
     unset := was.live[NOWHERE] or blank(was)
     if unset and single(blocks) and not empty(blocks and mem.fn.heaps and was.must):
         mem.marks.live = mem.marks.live or blocks
     elif unset:
-        h := birth(key, given)
+        h := lodge(arena, key, given)
         out.live = out.live or bit(h)
         out.must = out.must or bit(h)
         return h
@@ -1926,14 +1980,61 @@ func stale(a: Target, name: &strview, strict: bool):
 func freeable(live: Set) -> Set:
     return live and (mem.fn.heaps - mem.fn.arenas or mem.fn.outer - mem.fn.roots)
 
-func refusal(v: Target) -> &strview:
+func refusal(v: Target, kept: bool) -> &strview:
     if not empty(v.dead):
         return ", it may be freed already"
     if v.slot != 0 or not empty(v.live and (mem.noheap or mem.fn.roots)):
         return ", it is not on the heap"
-    if not empty(v.live and mem.fn.arenas):
-        return ", it is temporary memory: a with scratch() block releases it"
-    return ""
+    chunks := v.live and mem.fn.arenas
+    for h in chunks:
+        if not mem.fn.objs[h].pool:
+            return ", it is temporary memory: a with scratch() block releases it"
+    if kept or empty(chunks):
+        return ""
+    for h in chunks:
+        for id in mem.refs[h]:
+            c := mem.fn.cells[id]
+            if c.off == ANY and c.owner < SLOTS and not mem.fn.objs[c.owner].arena and mem.fn.objs[c.owner].name.len > 0:
+                name := mem.fn.objs[c.owner].name
+                return ", it lives in " + name + ", free(" + name + ") releases it"
+    return ", it lives in an arena, freeing the arena releases it"
+
+func chunk(arena: Target, key: u64, given: Obj) -> usize:
+    held := fetch(arena)
+    if empty(objects(held.live)):
+        name: &strview
+        o := sole(arena)
+        if o != NONE and o >= SLOTS:
+            name = mem.fn.names[mem.fn.slots[o - SLOTS]]
+        elif o != NONE:
+            name = mem.fn.objs[o].name
+        b := birth((key and 0xffff_ffff_ffff_ff00) or BLOCKS, Obj{kind = Heap, site = given.site, born = given.born, pos = given.pos, from = given.from, name = name})
+        held = Target{live = bit(b), must = bit(b)}
+    blocks := objects(held.live)
+    stash(arena, Target{live = blocks, must = held.must and blocks})
+    mem.marks.made = mem.marks.made or blocks and mem.fn.outer
+    given.arena = true
+    given.pool = true
+    k := birth(key or POOLED, given)
+    stash(Target{live = blocks, off = ANY}, Target{live = bit(k), must = bit(k)})
+    return k
+
+func lodge(arena: Target, key: u64, given: Obj) -> usize:
+    given.home = home_of(arena)
+    if pointing(arena) and given.home == 0:
+        return chunk(arena, key, given)
+    return birth(key, given)
+
+func arena_of(ob: Obj) -> Target:
+    if ob.home == 0:
+        return number(0)
+    return binding(usize(ob.home) - 1)
+
+func home_of(arena: Target) -> u32:
+    entry := sole(arena)
+    if entry == NONE or entry >= SLOTS or not mem.fn.outer[entry] or mem.fn.roots[entry]:
+        return 0
+    return u32(entry) + 1
 
 func refuse(who: &strview, name: &strview, why: &strview, v: Target, strict: bool):
     text: &str
@@ -2013,7 +2114,7 @@ func binding(x: usize) -> Target:
         key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
         if home.off != ANY and home.stride == 0 and sole(home) != NONE:
             key = (child(sole(home), home.off, 0) xor FIELD) or PLACE
-        h := reborn(out, objects(out.live), ptr(out), key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.who, name = name})
+        h := reborn(out, objects(out.live), ptr(out), arena_of(ob), key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.who, name = name})
         if h != NONE:
             mem.fn.objs[h].strict = mem.fn.objs[h].strict or mem.fns[g].strict
         out.live = objects(out.live)

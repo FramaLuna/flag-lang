@@ -1,0 +1,49 @@
+type Game:
+    frame: Arena
+    level: Arena
+
+context world:
+    level: Arena
+    names: &list[&str]
+
+func fill(l: *&list[i32], n: i32):
+    for i in 0..n:
+        append(l, i)
+
+func done(l: *&list[i32]):
+    free(l)
+
+func make(a: *Arena) -> &list[i32]:
+    l: &list[i32] = arena(a, [1, 2])
+    append(l, 3)
+    return l
+
+func main():
+    g: Game
+    defer free(g.frame)
+    defer free(g.level)
+    boss := arena(g.level, 5)
+    kept: &list[i32] = arena(g.level, [])
+    fill(kept, 100)
+    done(kept)
+    fill(kept, 10)
+    loose := make(g.level)
+    for i in 0..3:
+        tmp := arena(g.frame, [i, i])
+        counts: &map[&strview, i32] = arena(g.frame, {})
+        counts["k" + i] += 1
+        n := arena(g.frame, {"a": 1})
+        text: &str = arena(g.frame, "line ")
+        text += i
+        print(tmp, counts, n, text)
+        clear(g.frame)
+    names: &list[&str] = arena(g.level, [])
+    for i in 0..10:
+        append(names, arena(g.level, "n" + i))
+    for s in names:
+        free(s)
+    free(names)
+    world.names = arena(world.level, [])
+    append(world.names, arena(world.level, "x"))
+    print(boss.*, kept, loose, world.names)
+    clear(world.level)

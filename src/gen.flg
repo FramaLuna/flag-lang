@@ -503,7 +503,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return fail(tok.text + " cannot take its type from an empty literal, write the type: " + tok.text + example, tok.at)
         if comp.types[t].kind == Bytes:
             return fail("variable " + tok.text + " needs a size, bytes is a run of unknown length", tok.at)
-        slot := alloc(t)
+        slot := alloc(t, true)
         mention(tok.text, slot)
         if c == node_end(n) or v.type != t:
             zero(t, slot)
@@ -757,7 +757,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
     case Named:
         return value(n + 1, want)
     case Call:
-        return called(n, false)
+        return called(n, want, false)
     case Brace, Fill:
         t := struct_in(want)
         c := n + 1
@@ -842,61 +842,106 @@ func gen(n: usize, want: usize) -> Value|Fail:
     case Binary, Unary:
         return operation(n, want)
     case:
-        t := struct_in(want)
-        hint := comp.types[t]
-        fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
-        if node.size == 1 and (hint.kind == Struct or hint.kind == Array):
-            slot := alloc(t)
-            zero(t, slot)
-            return Value{type = t, at = slot, mem = true}
-        if node.size == 1 and node.kind == Items:
-            return Value{type = EMPTYARRAY}
-        if node.size == 1:
-            return Value{type = EMPTYMAP}
-        want_key: usize = VOID
-        want_value: usize = VOID
-        if node.kind == Items and hint.kind == Array and hint.count == kids(n):
-            want_value = hint.elem
-        if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
-            want_key = comp.items[hint.args].type
-            want_value = comp.items[hint.args + 1].type
-        keys: &list[Value]
-        values: &list[Value]
-        c := n + 1
-        while c < node_end(n):
-            if node.kind == Pairs:
-                append(keys, try value(c, want_key))
-                c = node_end(c)
-            append(values, try value(c, want_value))
+        return collection(n, want, none)
+
+func collection(n: usize, want: usize, arena: Value) -> Value|Fail:
+    node := comp.nodes[n]
+    tok := comp.tokens[node.tok]
+    t := struct_in(want)
+    hint := comp.types[t]
+    fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
+    shape: &strview = "map"
+    example: &strview = "x: &map[&strview, i32] = arena(a, {})"
+    if node.kind == Items:
+        shape = "list"
+        example = "x: &list[i32] = arena(a, [])"
+    owned := false
+    if arena.type != VOID:
+        fitting: &list[usize]
+        for m in members(want):
+            if comp.types[m].kind == Fat and text(comp.types[m].decl) == shape:
+                append(fitting, m)
+        owned = fitting.len == 1
+        if owned:
+            t = fitting[0]
+            hint = comp.types[t]
+    if node.size == 1 and arena.type != VOID and not owned:
+        return fail("this empty " + shape + " lives in an arena and takes its type from where it lands, and nothing here gives a &" + shape + ": " + example, tok.at)
+    if node.size == 1 and (owned or hint.kind == Struct or hint.kind == Array):
+        return placed(t, arena, tok.at)
+    if node.size == 1 and node.kind == Items:
+        return Value{type = EMPTYARRAY}
+    if node.size == 1:
+        return Value{type = EMPTYMAP}
+    want_key: usize = VOID
+    want_value: usize = VOID
+    if node.kind == Items and hint.kind == Array and hint.count == kids(n):
+        want_value = hint.elem
+    if node.kind == Items and owned:
+        want_value = element(t)
+    if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
+        want_key = comp.items[hint.args].type
+        want_value = comp.items[hint.args + 1].type
+    keys: &list[Value]
+    values: &list[Value]
+    c := n + 1
+    while c < node_end(n):
+        if node.kind == Pairs:
+            append(keys, try value(c, want_key))
             c = node_end(c)
-        if want_value == VOID:
-            want_value = try common(values, tok.at)
-        if node.kind == Items:
-            t = array_of(want_value, values.len)
-            slot := alloc(t)
-            zero(t, slot)
-            for i in 0..values.len:
-                try assign(offset(slot, i * comp.types[want_value].size), want_value, values[i], tok.at)
-            return Value{type = t, at = slot, mem = true}
-        if fixed and keys.len > comp.items[hint.args + 2].n:
-            return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
-        if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
-            map := first_sym("map")
-            while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
-                map = comp.syms[map].next
-            args: &list[Item]
-            append(args, Item{name = "", type = try common(keys, tok.at)})
-            append(args, Item{name = "", type = want_value})
-            t = try make_type(map, args, true, tok.at)
-        slot := alloc(t)
-        zero(t, slot)
-        for i in 0..keys.len:
-            pair: &list[Value]
-            append(pair, Value{type = t, at = slot, mem = true})
-            append(pair, keys[i])
-            append(pair, values[i])
-            try invoke("put", pair, tok.at)
-        return Value{type = t, at = slot, mem = true}
+        append(values, try value(c, want_value))
+        c = node_end(c)
+    if want_value == VOID:
+        want_value = try common(values, tok.at)
+    if node.kind == Items:
+        whole := try placed(array_of(want_value, values.len), Value{}, tok.at)
+        for i in 0..values.len:
+            try assign(offset(whole.at, i * comp.types[want_value].size), want_value, values[i], tok.at)
+        if arena.type == VOID:
+            return whole
+        if not owned:
+            t = try fat_type("list", want_value, tok.at)
+        list := try placed(t, arena, tok.at)
+        args: &list[Value]
+        append(args, list)
+        append(args, try convert(address(whole), try fat_type("slice", want_value, tok.at), Arg{}, tok.at))
+        try invoke("append", args, tok.at)
+        return list
+    if fixed and keys.len > comp.items[hint.args + 2].n:
+        return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
+    if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
+        map := first_sym("map")
+        while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
+            map = comp.syms[map].next
+        args: &list[Item]
+        append(args, Item{name = "", type = try common(keys, tok.at)})
+        append(args, Item{name = "", type = want_value})
+        t = try make_type(map, args, true, tok.at)
+    made := try placed(t, arena, tok.at)
+    for i in 0..keys.len:
+        pair: &list[Value]
+        append(pair, made)
+        append(pair, keys[i])
+        append(pair, values[i])
+        try invoke("put", pair, tok.at)
+    return made
+
+func placed(t: usize, arena: Value, at: usize) -> Value|Fail:
+    made := Value{type = t, at = alloc(t), mem = true}
+    zero(t, made.at)
+    if arena.type == VOID:
+        return made
+    for i in 0..comp.types[t].count:
+        f := comp.items[comp.types[t].first + i]
+        if f.name == "arena":
+            given := arena
+            if comp.types[f.type].elem == given.type:
+                given = address(given)
+            if given.type != f.type:
+                return fail("arena(a, ...) takes the Arena it allocates in first, or a pointer to one, and this is " + comp.types[arena.type].name, at)
+            store(f.type, given, offset(made.at, f.n))
+            return made
+    return fail(comp.types[t].name + " has no field arena to remember one, so it cannot live in an arena", at)
 
 func iterate(n: usize) -> Fail?:
     node := comp.nodes[n]
@@ -983,7 +1028,7 @@ func iterate(n: usize) -> Fail?:
             mention(tok.text, slot)
             append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
         else:
-            place := alloc(elem)
+            place := alloc(elem, true)
             store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
             mention(tok.text, place)
             append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
@@ -1081,7 +1126,7 @@ func iterate(n: usize) -> Fail?:
                 next = op(L, "sub", i, size)
                 here = op(L, "add", addr, next)
             store(USIZE, Value{type = USIZE, at = next}, slot)
-            place = alloc(item)
+            place = alloc(item, true)
             add(Ins{op = "storel", a = here, b = place})
             store(USIZE, Value{type = USIZE, at = size}, offset(place, 8))
         else:
@@ -1222,7 +1267,7 @@ func cases(n: usize) -> Fail?:
         try join(ends, lives, tok.at)
     return null
 
-func called(n: usize, threaded: bool) -> Value|Fail:
+func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     none: Value
@@ -1375,6 +1420,10 @@ func called(n: usize, threaded: bool) -> Value|Fail:
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
+    if name == "arena" and node.module.len == 0 and kids(n) == 2 and (comp.nodes[kid(n, 1)].kind == Items or comp.nodes[kid(n, 1)].kind == Pairs):
+        if threaded:
+            return fail("parallel runs a function in a new thread, and arena of a literal is not one: wrap it in a func", tok.at)
+        return collection(kid(n, 1), want, try value(n + 1, VOID))
     c := n + 1
     while c < node_end(n):
         label: &strview
@@ -1399,7 +1448,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
     if node.kind == Unary:
         o := tok.text
         if o == "parallel":
-            return called(n + 1, true)
+            return called(n + 1, VOID, true)
         v := try value(n + 1, VOID)
         t := comp.types[v.type]
         if o == "wait":
@@ -2626,21 +2675,21 @@ func blit(from: Arg, to: Arg, t: usize):
 
 func pointers(t: usize) -> u64:
     ty := comp.types[t]
-    if ty.kind == Ptr or ty.kind == Fat or ty.kind == Func or ty.kind == Thread:
+    if ty.kind == Ptr or ty.kind == Func or ty.kind == Thread:
         return 1
     if ty.size < 8:
         return 0
-    mask: u64 = 0
+    mask := u64(ty.kind == Fat)
     if ty.kind == Array:
         inner := pointers(ty.elem)
         i: usize = 0
         while inner != 0 and i < ty.count and i * comp.types[ty.elem].size < 512:
             mask = mask or words(inner, i * comp.types[ty.elem].size / 8)
             i += 1
-    elif ty.kind == Struct or ty.kind == Union or ty.kind == Untagged:
+    elif ty.kind == Struct or ty.kind == Fat or ty.kind == Union or ty.kind == Untagged:
         for i in 0..ty.count:
             item := comp.items[ty.first + i]
-            if ty.kind == Struct:
+            if ty.kind == Struct or ty.kind == Fat:
                 mask = mask or words(pointers(item.type), item.n / 8)
             elif ty.kind == Union:
                 mask = mask or words(pointers(item.type), 1)
@@ -2679,9 +2728,9 @@ func address(v: Value) -> Value:
         comp.held.len = 0 # a pointer to a temporary keeps every slot held now
     return Value{type = pointer(v.type), at = at}
 
-func alloc(t: usize) -> Arg:
+func alloc(t: usize, variable: bool = false) -> Arg:
     size := i64(room(t))
-    if size > 8 and comp.types[t].kind != Union: # small slots live in registers, unions are copied whole
+    if size > 8 and comp.types[t].kind != Union and not variable: # small slots live in registers, unions are copied whole, a variable names its slot
         for i in 0..comp.spare.len:
             s := comp.spare[i]
             if comp.slots[s].a.n == size:

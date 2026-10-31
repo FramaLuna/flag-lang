@@ -1,0 +1,22 @@
+func squares(n: i32, out: *Arena) -> i64:
+    a: Arena
+    defer free(a)
+    values: &list[i64] = arena(a, [])
+    for i in 0..n:
+        append(values, i64(i) * i64(i))
+    kept := arena(out, values.len)
+    return i64(kept.*)
+
+func leaks(n: i32) -> i64:
+    a: Arena
+    values: &list[i64] = arena(a, [])
+    append(values, i64(n))
+    return values[0]
+
+func main():
+    level: Arena
+    defer free(level)
+    t := parallel squares(1000, level)
+    print(wait t)
+    u := parallel leaks(1)
+    print(wait u)

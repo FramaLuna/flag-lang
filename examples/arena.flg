@@ -1,0 +1,42 @@
+type Enemy:
+    name: &str
+    x: i32
+    hp: i32
+
+type Level:
+    enemies: &list[*Enemy]
+    by_name: &map[&strview, *Enemy]
+
+func load(a: *Arena, count: i32) -> Level:
+    level := Level{arena(a, []), arena(a, {})}
+    for i in 0..count:
+        name := arena(a, "orc ")
+        name += i
+        e := arena(a, Enemy{name, i * 10, 3})
+        append(level.enemies, e)
+        level.by_name[e.name] = e
+    return level
+
+func main():
+    world: Arena # what lives as long as the level
+    defer free(world)
+    frame: Arena # what lives for one frame
+    defer free(frame)
+    level := load(world, 8)
+    player := 0
+    for turn in 0..4:
+        clear(frame) # the lists of the last frame are gone, their blocks are reused
+        near: &list[*Enemy] = arena(frame, [])
+        for e in level.enemies:
+            if e.hp > 0 and e.x >= player and e.x < player + 25:
+                append(near, e)
+        report: &str = arena(frame, "turn ")
+        report += turn + ":"
+        for e in near:
+            e.hp -= 2
+            report += " " + e.name + "=" + e.hp
+        print(report)
+        player += 15
+    boss := level.by_name["orc 3"]
+    if boss is *Enemy:
+        print(boss.name, " has ", boss.hp, " hp, the world arena has ", world.blocks.len, " block")
