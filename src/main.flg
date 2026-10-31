@@ -125,6 +125,10 @@ type Pass:
 type Mention:
     temp: u32
     name: &strview
+    type: usize
+    tok: usize
+    scope: usize
+    pointer: u32
 
 type Proc:
     name: &strview
@@ -139,6 +143,8 @@ type Proc:
     labels: u32
     mentions: usize
     mentioned: usize
+    scopes: usize
+    scoped: usize
     node: usize
     inst: usize
     export: bool
@@ -215,6 +221,8 @@ context comp:
     held: &list[usize]
     passes: &list[Pass]
     mentions: &list[Mention]
+    scopes: &list[usize]
+    scope: usize
     temps: u32
     numbers: &list[bool]
     labels: u32
@@ -239,6 +247,7 @@ context comp:
     system: &strview
     machine: &strview
     choosing: bool
+    debug: bool
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
@@ -255,7 +264,6 @@ func main() -> i32:
     keep := false
     check := false
     memory := false
-    optimize := true
     overlay: &strview
     query: &strview|null = null
     target := view(flag_target())
@@ -289,6 +297,8 @@ func main() -> i32:
             check = true
         elif a == "-memory":
             memory = true
+        elif a == "-debug":
+            comp.debug = true
         elif a == "-version":
             print("flag ", view(flag_version()))
             return 0
@@ -308,7 +318,7 @@ func main() -> i32:
             append(rest, a)
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]")
+        eprint("usage: flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
@@ -504,23 +514,43 @@ func main() -> i32:
     ssa += ".ssa"
     asm: &str = view(output)
     asm += ".s"
-    if write_file(view(ssa), listing(optimize)) is FsError:
+    if write_file(view(ssa), listing()) is FsError:
         eprint(ERR, "cannot write ", ssa)
         return 1
-    args := array[*u8, 7]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8}
-    if qbe_main(6, ptr(args) as **u8) != 0:
+    args := array[*u8, 8]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8, usize(0) as *u8}
+    if comp.debug:
+        args[5] = "-g"
+        args[6] = ssa
+    if qbe_main(6 + i32(comp.debug), ptr(args) as **u8) != 0:
         return 1
-    link: &list[&strview]
+    if comp.debug and append_file(view(asm), dwarf()) is FsError:
+        eprint(ERR, "cannot write ", asm)
+        return 1
+    cc: &list[&strview]
     compiler: &strview = "cc"
     given := env("CC")
     if given is &strview and given.len > 0:
         compiler = given
     for part in split(compiler, " "):
         if part.len > 0:
-            append(link, part)
+            append(cc, part)
+    linking: &strview = ", flagc links with a C compiler and the CC variable chooses which"
+    source := view(asm)
+    object: &str = view(output)
+    object += ".o"
+    apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
+    if apart:
+        assembling: &list[&strview]
+        append(assembling, cc)
+        append(assembling, ptr(["-c", "-o", view(object), view(asm)]))
+        if not ran(assembling, linking):
+            return 1
+        source = view(object)
+    link: &list[&strview]
+    append(link, cc)
     append(link, "-o")
     append(link, output)
-    append(link, asm)
+    append(link, source)
     append(link, "-L" + lib)
     for input in inputs:
         append(link, "-L" + dir_of(input))
@@ -528,15 +558,15 @@ func main() -> i32:
         append(link, "-l" + l)
     for r in rest:
         append(link, r)
-    linked := run(link)
-    if linked is FsError:
-        eprint(ERR, linked, ", flagc links with a C compiler and the CC variable chooses which")
+    if not ran(link, linking):
         return 1
-    if linked != 0:
+    if apart and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
         _ = remove(view(ssa))
         _ = remove(view(asm))
+        if apart:
+            _ = remove(view(object))
     if not running:
         return 0
     me := view(output)
@@ -550,6 +580,13 @@ func main() -> i32:
         eprint(ERR, code)
         return 1
     return code
+
+func ran(command: &slice[&strview], why: &strview) -> bool:
+    code := run(command)
+    if code is FsError:
+        eprint(ERR, code, why)
+        return false
+    return code == 0
 
 func real_path(path: &strview) -> &strview where not @windows():
     found := realpath(cstr(path), usize(0) as *u8)

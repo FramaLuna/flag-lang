@@ -66,23 +66,35 @@ func open_block(l: u32):
     add(Ins{op = "@", a = int_arg(i64(l))})
     comp.live = true
 
-func mention(name: &strview, a: Arg):
+func mention(name: &strview, a: Arg, type: usize, tok: usize):
     if a.kind != Temp:
         return
-    append(comp.mentions, Mention{u32(a.n), name})
+    pointer := Arg{}
+    own := false
+    for s in comp.slots:
+        own = own or s.to == u32(a.n)
+    if comp.debug and not own:
+        pointer = alloc(USIZE) # a debugger reads the variable through it
+        add(Ins{op = "storel", a = a, b = pointer})
+    append(comp.mentions, Mention{u32(a.n), name, type, tok, comp.scope, u32(pointer.n)})
     for k in reverse 0..comp.held.len:
         if comp.slots[comp.held[k]].to == u32(a.n):
             remove(comp.held, k) # the slot of a variable is never given back
             return
 
-func listing(optimize: bool) -> &str:
+func label_prefix() -> &strview:
+    if comp.system == "linux":
+        return ".L" # how QBE begins a label that the assembler keeps to itself
+    return "L"
+
+func listing() -> &str:
     ids: &map[&strview, usize]
     defer free(ids)
     sizes: &list[usize]
     defer free(sizes)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
-        if optimize and p.name != "$main": # the start of the program, main is never inlined
+        if not comp.debug and p.name != "$main": # the start of the program, main is never inlined
             large := size(p) > LARGE
             top := p.labels
             for i in comp.code[p.code:p.end]:
@@ -181,6 +193,11 @@ func listing(optimize: bool) -> &str:
             if g < comp.procs.len and not live[g]:
                 live[g] = true
                 append(work, g)
+    written: &list[Proc]
+    for index, f in comp.procs:
+        if live[index]:
+            append(written, f)
+    comp.procs = written
     out: &str
     moved: &list[i64]
     for l in 0..comp.labels + 1:
@@ -193,9 +210,22 @@ func listing(optimize: bool) -> &str:
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
     out += comp.data
-    for index, f in comp.procs:
-        if not live[index]:
-            continue
+    out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
+    places: &str
+    place := 16 + 16 * comp.procs.len
+    for f in comp.procs:
+        hidden := f.node == 0 or comp.insts[f.inst].library
+        out += ", l " + f.name + ", w " + place + ", w " + usize(hidden)
+        if not hidden:
+            at := comp.tokens[comp.nodes[f.node].tok].at
+            shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
+            place += shown.len + 1
+            places += ", "
+            text_bytes(places, replace(shown, "\\", "\\\\"))
+            places += "b 0"
+    out += places + " }\n"
+    out += "function l $flag_frame() {\n@start\n\t%f =l frame\n\tret %f\n}\nfunction l $flag_functions() {\n@start\n\tret $flag.functions\n}\n"
+    for f in comp.procs:
         out += "dbgfile \"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\"\n"
         if f.export:
             out += "export "
@@ -223,8 +253,18 @@ func listing(optimize: bool) -> &str:
                 ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
         shown: usize = 0
         line: usize = 0
+        slotted := not comp.debug
         for k in f.code..f.end:
             i := comp.code[k]
+            if not slotted and i.op != "alloc8":
+                slotted = true # the allocs are first, and QBE says where each one went
+                for m in f.mentions..f.mentioned:
+                    slot := comp.mentions[m].pointer
+                    if slot == 0:
+                        slot = comp.mentions[m].temp
+                    out += "\tdbgslot "
+                    put_arg(out, Arg{Temp, i64(slot)}, f.temps)
+                    out += ", " + m + "\n"
             next := kept(dropped, k + 1, f.end)
             if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
                 continue

@@ -421,7 +421,13 @@ sel(Ins i, Num *tn, Fn *fn)
 	case_Oload:
 		seladdr(&i.arg[0], tn, fn);
 		goto Emit;
+	case Odbgslot:
+		i.arg[0] = SLOT(rslot(i.arg[0], fn));
+		emiti(i);
+		break;
 	case Odbgloc:
+	case Odbgmark:
+	case Oframe:
 	case Ocall:
 	case Osalloc:
 	case Ocopy:

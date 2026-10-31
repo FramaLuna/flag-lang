@@ -31,7 +31,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 ### The program
 - `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
 - `eprint(values...)` the same to the error output
-- `panic(message: &strview)` writes `flag: <message>` and the place of the call to the error output, and ends the program with exit code 134
+- `panic(message: &strview)` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
 - `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
 - `exit(code: i32)` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
@@ -44,7 +44,7 @@ What you write waits in the file and goes to the system in big pieces, so many s
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
 
-`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush`.
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it.
 
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read

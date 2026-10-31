@@ -664,6 +664,16 @@ emitins(Ins i, E *e)
 	case Odbgloc:
 		emitdbgloc(i.arg[0].val, i.arg[1].val, e->f);
 		break;
+	case Odbgslot:
+		fprintf(e->f, ".set %sslot%d, %d\n",
+			T.asloc, i.arg[1].val, slot(i.arg[0], e));
+		break;
+	case Odbgmark:
+		emitdbgmark(&i, e->fn, e->f);
+		break;
+	case Oframe:
+		emitcopy(i.to, TMP(RBP), Kl, e);
+		break;
 	case_Oxsel:
 		if (req(i.to, i.arg[1]))
 			emitf(cmov[i.op-Oxsel][0], &i, e);
@@ -674,6 +684,34 @@ emitins(Ins i, E *e)
 		}
 		break;
 	}
+}
+
+/* every function keeps a frame pointer, so the
+ * runtime can walk the calls when the program fails */
+static void
+framestart(E *e)
+{
+	e->fp = RBP;
+	fputs("\tpushq %rbp\n", e->f);
+	if (dbginfo)
+		fputs("\t.cfi_def_cfa_offset 16\n"
+			"\t.cfi_offset %rbp, -16\n", e->f);
+	fputs("\tmovq %rsp, %rbp\n", e->f);
+	if (dbginfo)
+		fputs("\t.cfi_def_cfa_register %rbp\n", e->f);
+}
+
+static void
+frameend(E *e)
+{
+	if (dbginfo)
+		fputs("\t.cfi_remember_state\n", e->f);
+	fputs("\tleave\n", e->f);
+	if (dbginfo)
+		fputs("\t.cfi_def_cfa %rsp, 8\n", e->f);
+	fputs("\tret\n", e->f);
+	if (dbginfo)
+		fputs("\t.cfi_restore_state\n", e->f);
 }
 
 static void
@@ -713,13 +751,9 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 	E *e;
 
 	e = &(E){.f = f, .fn = fn};
-	emitfnlnk(fn->name, &fn->lnk, f);
+	emitfnlnk(fn, f);
 	fputs("\tendbr64\n", f);
-	if (!fn->leaf || fn->vararg || fn->dynalloc) {
-		e->fp = RBP;
-		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
-	} else
-		e->fp = RSP;
+	framestart(e);
 	sysv_framesz(e);
 	if (e->fsz)
 		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
@@ -764,13 +798,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 					itmp.arg[0] = TMP(*r);
 					emitf("popq %L0", &itmp, e);
 				}
-			if (e->fp == RBP)
-				fputs("\tleave\n", f);
-			else if (e->fsz)
-				fprintf(f,
-					"\taddq $%"PRIu64", %%rsp\n",
-					e->fsz);
-			fputs("\tret\n", f);
+			frameend(e);
 			break;
 		case Jjmp:
 		Jmp:
@@ -798,6 +826,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 		}
 	}
 	id0 += fn->nblk;
+	emitfnend(fn, f);
 	if (!T.apple)
 		elf_emitfnfin(fn->name, f);
 }
@@ -838,7 +867,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	E *e;
 
 	e = &(E){.f = f, .fn = fn};
-	emitfnlnk(fn->name, &fn->lnk, f);
+	emitfnlnk(fn, f);
 	fputs("\tendbr64\n", f);
 	if (fn->vararg) {
 		fprintf(f, "\tmovq %%rcx, 0x8(%%rsp)\n");
@@ -846,11 +875,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 		fprintf(f, "\tmovq %%r8, 0x18(%%rsp)\n");
 		fprintf(f, "\tmovq %%r9, 0x20(%%rsp)\n");
 	}
-	if (!fn->leaf || fn->vararg || fn->dynalloc) {
-		e->fp = RBP;
-		fputs("\tpushq %rbp\n\tmovq %rsp, %rbp\n", f);
-	} else
-		e->fp = RSP;
+	framestart(e);
 	winabi_framesz(e);
 	if (e->fsz >= 4096)
 		fprintf(f, "\tmovl $%"PRIu64", %%eax\n\tcallq ___chkstk_ms\n", e->fsz);
@@ -884,13 +909,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 					itmp.arg[0] = TMP(*r);
 					emitf("popq %L0", &itmp, e);
 				}
-			if (e->fp == RBP)
-				fputs("\tleave\n", f);
-			else if (e->fsz)
-				fprintf(f,
-					"\taddq $%"PRIu64", %%rsp\n",
-					e->fsz);
-			fputs("\tret\n", f);
+			frameend(e);
 			break;
 		case Jjmp:
 		Jmp:
@@ -918,4 +937,5 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 		}
 	}
 	id0 += fn->nblk;
+	emitfnend(fn, f);
 }

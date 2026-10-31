@@ -52,6 +52,12 @@ priv extern "c":
     func SleepConditionVariableSRW(condition: *bytes, lock: *bytes, milliseconds: u32, flags: u32) -> i32
     func WakeAllConditionVariable(condition: *bytes)
     func GetActiveProcessorCount(group: u16) -> u32
+    func sigaction(signal: i32, action: *bytes, old: *bytes) -> i32
+    func sigaltstack(stack: *bytes, old: *bytes) -> i32
+    func AddVectoredExceptionHandler(first: u32, handler: *bytes) -> *bytes
+    func SetThreadStackGuarantee(size: *u32) -> i32
+    func flag_frame() -> usize
+    func flag_functions() -> *usize
 
 extern "pthread" where @linux():
 
@@ -74,6 +80,7 @@ func free(p: *$T):
 func panic(message: &strview, place: &strview = @here()):
     eprint("flag: ", message)
     eprint("  --> ", place)
+    trace(flag_frame(), 0)
     exit(134)
 
 func assert(condition: bool, message: &strview = "assertion failed", place: &strview = @here()):
@@ -1101,6 +1108,7 @@ priv func started(t: *Started, run: *bytes) -> bool where @windows():
 priv func finished(block: *bytes):
     free(scratch_space.arena)
     free(printing.line)
+    drop_stack()
     t := block as *Started
     alone := false
     with lock(threads.lock):
@@ -1761,3 +1769,217 @@ operator +=(s: *&str, m: *fixmap[$K, $V, $$max]):
             s.* += ", "
         s.* += m.entries[i].key + ": " + m.entries[i].value
     s.* += "}"
+
+@trust
+priv SHOWN_CALLS = 20
+
+priv type Function:
+    start: usize
+    place: u32
+    library: bool
+
+priv type Crash:
+    frame: usize
+    code: usize
+    stack: usize
+    address: usize
+
+priv type Chain:
+    head: usize
+    table: &slice[Function]
+    line: usize
+    times: usize
+    shown: usize
+    more: usize
+
+priv context failing:
+    told: bool
+    stack: *bytes # where the handler runs, each thread takes its own
+
+priv export func flag_start():
+    catch_crashes()
+    guard_stack()
+
+priv func catch_crashes() where @linux():
+    action: array[usize, 19] # struct sigaction: the handler, the mask, the flags and the restorer
+    action[0] = ptr(flag_crash) as usize
+    action[17] = 0x8800_0004 # SA_RESETHAND, SA_ONSTACK, SA_SIGINFO
+    for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
+        sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
+
+priv func catch_crashes() where @macos():
+    action := [ptr(flag_crash) as usize, 0x45 << 32] # struct sigaction: the handler, then the mask and the flags SA_SIGINFO, SA_RESETHAND and SA_ONSTACK
+    for signal in [4, 8, 10, 11]: # SIGILL, SIGFPE, SIGBUS, SIGSEGV
+        sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
+
+priv func catch_crashes() where @windows():
+    AddVectoredExceptionHandler(1, ptr(flag_exception))
+
+# each thread keeps room for the handler, so a stack overflow is reported too
+priv func guard_stack() where @linux():
+    failing.stack = malloc(65536)
+    if failing.stack as usize == 0:
+        out_of_memory()
+    stack := [failing.stack as usize, 0, 65536] # stack_t: where, the flags and the size
+    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+
+priv func guard_stack() where @macos():
+    failing.stack = malloc(65536)
+    if failing.stack as usize == 0:
+        out_of_memory()
+    stack := [failing.stack as usize, 65536, 0] # stack_t: where, the size and the flags
+    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+
+priv func guard_stack() where @windows():
+    room: u32 = 65536 # what a stack overflow leaves to the handler
+    SetThreadStackGuarantee(ptr(room))
+
+priv func drop_stack() where @linux():
+    stack := [0, 2, 0] # SS_DISABLE
+    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    free(failing.stack)
+
+priv func drop_stack() where @macos():
+    stack := [0, 0, 4] # SS_DISABLE
+    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    free(failing.stack)
+
+priv func drop_stack() where @windows():
+    return
+
+priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
+    c := crash(info as usize, context as usize)
+    what: &strview = "invalid memory access"
+    if signal == 4:
+        what = "illegal instruction"
+    elif signal == 8:
+        what = "arithmetic error"
+    elif c.address + 65536 >= c.stack and c.address < c.stack + 1048576:
+        what = "stack overflow"
+    crashed(what, c, 128 + signal)
+
+priv export func flag_exception(pointers: *bytes) -> i32:
+    record := peek(pointers as usize)
+    code := (record as *u32).*
+    what: &strview
+    switch code:
+    case 0xc0000005, 0xc0000006: # EXCEPTION_ACCESS_VIOLATION, EXCEPTION_IN_PAGE_ERROR
+        what = "invalid memory access"
+    case 0xc00000fd:
+        what = "stack overflow"
+    case 0xc000001d, 0xc0000096:
+        what = "illegal instruction"
+    case 0xc0000094, 0xc0000095:
+        what = "arithmetic error"
+    if what.len > 0:
+        crashed(what, crash(record, peek(pointers as usize + 8)), i32(code))
+    return 0 # EXCEPTION_CONTINUE_SEARCH, the exception is not one that ends the program
+
+priv func crash(info: usize, context: usize) -> Crash where @linux() and @x86_64():
+    return {peek(context + 120), peek(context + 168), peek(context + 160), peek(info + 16)} # rbp, rip and rsp of the ucontext_t, si_addr of the siginfo_t
+
+priv func crash(info: usize, context: usize) -> Crash where @linux() and @arm64():
+    return {peek(context + 416), peek(context + 440), peek(context + 432), peek(info + 16)} # x29, pc and sp
+
+priv func crash(info: usize, context: usize) -> Crash where @linux() and @riscv64():
+    return {peek(context + 240), peek(context + 176), peek(context + 192), peek(info + 16)} # s0, pc and sp
+
+priv func crash(info: usize, context: usize) -> Crash where @macos() and @x86_64():
+    state := peek(context + 48)
+    return {peek(state + 64), peek(state + 144), peek(state + 72), peek(info + 24)} # rbp, rip and rsp of the mcontext, si_addr
+
+priv func crash(info: usize, context: usize) -> Crash where @macos() and @arm64():
+    state := peek(context + 48)
+    return {peek(state + 248), peek(state + 272), peek(state + 264), peek(info + 24)} # fp, pc and sp
+
+priv func crash(record: usize, context: usize) -> Crash where @windows():
+    return {peek(context + 0xa0), peek(context + 0xf8), peek(context + 0x98), peek(record + 40)} # Rbp, Rip and Rsp of the CONTEXT, the address of an access violation
+
+# a crash inside the handler finds it told and returns, the signal is back to its default and ends the program
+priv func crashed(what: &strview, c: Crash, code: i32):
+    if failing.told:
+        return
+    failing.told = true
+    flush()
+    report("flag: ")
+    report(what)
+    if what == "invalid memory access":
+        report(" at 0x")
+        report(u64(c.address), 16)
+    report("\n")
+    trace(c.frame, c.code)
+    _exit(code)
+
+# the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own: a crash can come from inside malloc
+priv func trace(frame: usize, stopped: usize):
+    head := flag_functions() as usize # how many functions, where the last one ends, and then each function in the order of their code
+    table: &slice[Function]
+    table = (head + 16) as *bytes
+    table.len = peek(head)
+    chain := Chain{head, table, table.len, 0, 0, 0}
+    code := stopped
+    fp := frame
+    while true:
+        if code == 0 and fp != 0 and fp % 8 == 0:
+            code = peek(fp + 8) - 1
+            up := peek(fp)
+            if up <= fp:
+                up = 0 # the stack grows down, a caller is above
+            fp = up
+        low: usize = 0 # how many functions start at code or before it
+        high := table.len
+        while low < high:
+            middle := (low + high) / 2
+            if table[middle].start <= code:
+                low = middle + 1
+            else:
+                high = middle
+        if low == 0 or low == table.len and code >= peek(head + 8):
+            break
+        code = 0
+        f := low - 1
+        if table[f].library:
+            continue
+        if f == chain.line:
+            chain.times += 1
+        else:
+            put_line(chain)
+            chain.line = f
+            chain.times = 1
+    put_line(chain)
+    if chain.more > 0:
+        report("  ... and ")
+        report(u64(chain.more), 10)
+        report(" more\n")
+
+priv func put_line(chain: *Chain):
+    if chain.line == chain.table.len:
+        return
+    if chain.shown == SHOWN_CALLS:
+        chain.more += 1
+        return
+    chain.shown += 1
+    report("  in ")
+    report(view((chain.head + usize(chain.table[chain.line].place)) as cstr))
+    if chain.times > 1:
+        report(", ")
+        report(u64(chain.times), 10)
+        report(" times")
+    report("\n")
+
+priv func peek(at: usize) -> usize:
+    return (at as *usize).*
+
+priv func report(text: &strview):
+    write(2, ptr(text.*), text.len)
+
+priv func report(n: u64, base: u64):
+    digits: array[u8, 20]
+    i: usize = 20
+    while true:
+        i -= 1
+        digits[i] = "0123456789abcdef"[n % base]
+        n = n / base
+        if n == 0:
+            break
+    report(view(digits[i:]))

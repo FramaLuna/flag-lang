@@ -82,6 +82,7 @@ func gen_program(check: bool) -> Fail?:
     code := comp.code.len
     passes := comp.passes.len
     mentions := comp.mentions.len
+    scopes := comp.scopes.len
     data := comp.data.len
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
@@ -198,6 +199,7 @@ func gen_program(check: bool) -> Fail?:
     comp.code.len = code
     comp.passes.len = passes
     comp.mentions.len = mentions
+    comp.scopes.len = scopes
     comp.data.len = data
     clear(comp.stored)
     comp.reached = reached
@@ -214,6 +216,7 @@ func gen_program(check: bool) -> Fail?:
     add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
     add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
     stamp_start(true)
+    add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
     if comp.system == "windows":
         for fd in 0..3:
             modes := comp.passes.len
@@ -251,6 +254,7 @@ func gen_from(from: usize) -> usize|Fail:
         comp.vars.len = 0
         comp.defers.len = 0
         comp.loops.len = 0
+        comp.scope = 0
         comp.live = true
         comp.inst = i
         saved := open_frame()
@@ -266,6 +270,8 @@ func gen_from(from: usize) -> usize|Fail:
             block := temp()
             append(comp.passes, Pass{L, block, false})
             stamp_start(false)
+            args: &list[Value]
+            try invoke("guard_stack", args, 0)
             start := HEAD + align_up(comp.types[shape.ret].size, 8)
             passes: &list[Pass]
             used := start + 8
@@ -280,7 +286,6 @@ func gen_from(from: usize) -> usize|Fail:
                     append(passes, Pass{cls(p), x, is_number(x)})
                 used += room(p)
             store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at), offset(block, HEAD))
-            args: &list[Value]
             append(args, Value{type = pointer(BYTES), at = block})
             try invoke("finished", args, 0)
             terminate("ret", int_arg(0))
@@ -403,7 +408,7 @@ func gen_from(from: usize) -> usize|Fail:
             if comp.passes[made.params + k].cls < AGG:
                 comp.vars[k].addr = alloc(given.type)
                 store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
-            mention(given.name, comp.vars[k].addr)
+            mention(given.name, comp.vars[k].addr, given.type, given.tok)
         name := text(f)
         first: usize = VOID
         second: usize = VOID
@@ -470,7 +475,22 @@ func brief(name: &strview) -> &strview:
     return name
 
 func open_proc(name: &strview, node: usize, inst: usize, export: bool) -> Proc:
-    return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, node = node, inst = inst, export = export}
+    return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, scopes = comp.scopes.len, node = node, inst = inst, export = export}
+
+func proc_name(f: Proc) -> &str:
+    inst := comp.insts[f.inst]
+    name: &str
+    if f.node == 0 and inst.ret == BOOL:
+        name += "operator == of " + comp.types[comp.inst_binds[inst.binds].type].name
+    elif f.node == 0 and inst.ret == U64:
+        name += "hash of " + comp.types[comp.inst_binds[inst.binds].type].name
+    elif f.node == 0:
+        name += "start of a thread that runs a " + comp.types[comp.inst_binds[inst.binds].type].name
+    else:
+        if comp.tokens[comp.nodes[f.node].tok].kind != Name or reserved(text(f.node)):
+            name += "operator "
+        name += text(f.node)
+    return name
 
 func close_proc(made: Proc, cls: u32, count: usize):
     made.cls = cls
@@ -483,6 +503,7 @@ func close_proc(made: Proc, cls: u32, count: usize):
     made.end = comp.code.len
     made.last = comp.temps
     made.mentioned = comp.mentions.len
+    made.scoped = comp.scopes.len
     append(comp.procs, made)
     comp.slots.len = 0
     comp.spare.len = 0
@@ -578,7 +599,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if comp.types[t].kind == Bytes:
             return fail("variable " + tok.text + " needs a size, bytes is a run of unknown length", tok.at)
         slot := alloc(t, true)
-        mention(tok.text, slot)
+        mention(tok.text, slot, t, node.tok)
         if c == node_end(n) or v.type != t:
             zero(t, slot)
         if c < node_end(n):
@@ -1037,6 +1058,7 @@ func iterate(n: usize) -> Fail?:
     if range and counter != 0:
         return fail("a for over a range cannot count, the number it gives is already the index", comp.tokens[comp.nodes[counter].tok].at)
     before := comp.vars.len
+    outer := open_scope()
     l_head := label()
     l_body := label()
     l_step := label()
@@ -1100,12 +1122,12 @@ func iterate(n: usize) -> Fail?:
             branch(op(W, cmp_name("cslt", t), current, stop), l_body, l_exit)
             open_block(l_body)
         if range:
-            mention(tok.text, slot)
+            mention(tok.text, slot, t, node.tok)
             append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
         else:
             place := alloc(elem, true)
             store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
-            mention(tok.text, place)
+            mention(tok.text, place, elem, node.tok)
             append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
             round := current
@@ -1113,7 +1135,7 @@ func iterate(n: usize) -> Fail?:
                 round = op(L, "sub", op(L, "sub", load(end).at, int_arg(1)), current)
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
-            mention(text(counter), count)
+            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         if backward:
             append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
@@ -1149,7 +1171,7 @@ func iterate(n: usize) -> Fail?:
         open_block(l_head)
         if counter != 0:
             store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
-            mention(text(counter), count)
+            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         item: usize = VOID
         place := Arg{}
@@ -1218,7 +1240,7 @@ func iterate(n: usize) -> Fail?:
             branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
             place = payload(got.at, item)
-        mention(tok.text, place)
+        mention(tok.text, place, item, node.tok)
         append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
     try statements(node_end(subject))
@@ -1227,6 +1249,7 @@ func iterate(n: usize) -> Fail?:
         open_block(l_step)
         store(t, Value{type = t, at = op(cls(t), "add", load(Value{type = t, at = slot, mem = true}).at, int_arg(1))}, slot)
     jump(l_head)
+    close_scope(outer)
     comp.loops.len -= 1
     try forget(before)
     open_block(l_exit)
@@ -2570,6 +2593,7 @@ func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
 
 func statements(n: usize) -> Fail?:
     defers := comp.defers.len
+    outer := open_scope()
     c := n + 1
     while c < node_end(n):
         if not comp.live:
@@ -2580,7 +2604,25 @@ func statements(n: usize) -> Fail?:
     if comp.live:
         try run_defers(defers)
     comp.defers.len = defers
+    close_scope(outer)
     return null
+
+func open_scope() -> usize:
+    outer := comp.scope
+    append(comp.scopes, outer)
+    comp.scope = comp.scopes.len
+    if comp.debug:
+        append(comp.body, Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope))})
+    return outer
+
+func close_scope(outer: usize):
+    if comp.debug:
+        mark := Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope + 1))}
+        if comp.live:
+            append(comp.body, mark)
+        else:
+            insert(comp.body, comp.body.len - 1, mark) # before the jump that left the block, so it stays inside
+    comp.scope = outer
 
 func statement(n: usize, dropped: &strview) -> Fail?:
     start := comp.held.len
@@ -2870,6 +2912,16 @@ func text_data(raw: &strview) -> Arg:
         return Arg{Global, found}
     id := comp.texts.len
     comp.data += "data $str." + id + " = { "
+    length := text_bytes(comp.data, raw)
+    comp.data += "b 0 }\ndata $sv." + id + " = { l $str." + id + ", l " + length + " }\n"
+    append(comp.texts, length)
+    name: &str = "$sv."
+    name += id
+    made := global(view(name))
+    put(comp.stored, view(key), made.n)
+    return made
+
+func text_bytes(into: *&str, raw: &strview) -> usize:
     bytes := items(raw)
     length: usize = 0
     quoted := false
@@ -2883,22 +2935,16 @@ func text_data(raw: &strview) -> Arg:
                 i += 2
         if b >= ' ' and b <= '~' and b != '"' and b != '\\':
             if not quoted:
-                comp.data += "b \""
+                into.* += "b \""
                 quoted = true
-            add_byte(comp.data, b)
+            add_byte(into, b)
         else:
             if quoted:
-                comp.data += "\", "
+                into.* += "\", "
                 quoted = false
-            comp.data += "b " + usize(b) + ", "
+            into.* += "b " + usize(b) + ", "
         length += 1
         i += 1
     if quoted:
-        comp.data += "\", "
-    comp.data += "b 0 }\ndata $sv." + id + " = { l $str." + id + ", l " + length + " }\n"
-    append(comp.texts, length)
-    name: &str = "$sv."
-    name += id
-    made := global(view(name))
-    put(comp.stored, view(key), made.n)
-    return made
+        into.* += "\", "
+    return length

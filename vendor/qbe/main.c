@@ -35,9 +35,9 @@ static Target *tlist[] = {
 	&T_rv64,
 	0
 };
+char dbginfo;
 static FILE *outf;
 static int dbg;
-static int whole;
 
 static void
 data(Dat *d)
@@ -65,7 +65,7 @@ func(Fn *fn)
 	T.abi0(fn);
 	fillcfg(fn);
 	filluse(fn);
-	if (!whole) {
+	if (!dbginfo) {
 		chop(fn);
 		filluse(fn);
 	}
@@ -113,12 +113,15 @@ func(Fn *fn)
 	simpljmp(fn);
 	fillcfg(fn);
 	assert(fn->rpo[0] == fn->start);
-	for (n=0;; n++)
-		if (n == fn->nblk-1) {
-			fn->rpo[n]->link = 0;
-			break;
-		} else
-			fn->rpo[n]->link = fn->rpo[n+1];
+	/* with -g the blocks keep the order of the
+	 * input, so a scope is one range of code */
+	if (!dbginfo)
+		for (n=0;; n++)
+			if (n == fn->nblk-1) {
+				fn->rpo[n]->link = 0;
+				break;
+			} else
+				fn->rpo[n]->link = fn->rpo[n+1];
 	if (!dbg) {
 		T.emitfn(fn, outf);
 		fprintf(outf, "/* end function %s */\n\n", fn->name);
@@ -143,8 +146,11 @@ main(int ac, char *av[])
 
 	T = Deftgt;
 	outf = stdout;
-	while ((c = getopt(ac, av, "hd:o:t:w")) != -1)
+	while ((c = getopt(ac, av, "ghd:o:t:")) != -1)
 		switch (c) {
+		case 'g':
+			dbginfo = 1;
+			break;
 		case 'd':
 			for (; *optarg; optarg++)
 				if (isalpha(*optarg)) {
@@ -177,15 +183,13 @@ main(int ac, char *av[])
 				}
 			}
 			break;
-		case 'w':
-			whole = 1;
-			break;
 		case 'h':
 		default:
 			hf = c != 'h' ? stderr : stdout;
 			fprintf(hf, "%s [OPTIONS] {file.ssa, -}\n", av[0]);
 			fprintf(hf, "\t%-11s prints this help\n", "-h");
 			fprintf(hf, "\t%-11s output to file\n", "-o file");
+			fprintf(hf, "\t%-11s emit what a debugger reads, every stack slot whole\n", "-g");
 			fprintf(hf, "\t%-11s generate for a target among:\n", "-t <target>");
 			fprintf(hf, "\t%-11s ", "");
 			for (t=tlist, sep=""; *t; t++, sep=", ") {
@@ -195,10 +199,11 @@ main(int ac, char *av[])
 			}
 			fprintf(hf, "\n");
 			fprintf(hf, "\t%-11s dump debug information\n", "-d <flags>");
-			fprintf(hf, "\t%-11s keep each stack slot whole\n", "-w");
 			exit(c != 'h');
 		}
 
+	if (dbginfo)
+		fputs(".cfi_sections .debug_frame\n", outf);
 	do {
 		f = av[optind];
 		if (!f || strcmp(f, "-") == 0) {

@@ -2,7 +2,7 @@
 
 ## 0.4.0 (not released yet)
 
-A release about threads, arenas and speed: a program uses every core with two words, `parallel` and `wait`, memory can be released all at once, with the same lists, text and maps as always, and small functions and structs cost what they cost in C. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
+A release about threads, arenas, speed and failing well: a program uses every core with two words, `parallel` and `wait`, memory can be released all at once, with the same lists, text and maps as always, small functions and structs cost what they cost in C, and a program that fails says the chain of calls that led there. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
 
 New
 - `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own or an error to handle. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends
@@ -14,27 +14,30 @@ New
 - `-memory` knows arenas: what lives in one is not a leak, using it after `free` or `clear` of its arena warns like a temporary after its `with scratch():`, also through a function, `free` of a pointer from an arena says `free cannot release boss, it lives in level, free(level) releases it`, and an arena that is never freed is a leak
 - `memset` with the C functions of core
 - `inline func` and `inline operator` replace every direct call with the body of the function, whatever its size, also in each instance of a generic one. A recursive function, `main`, an `export` function and a C function cannot be `inline`, and the error of a recursive one points to the call that leads back
+- A runtime error writes the chain of calls after its place, one line for each function of yours with the line where it's declared: `in parse_line, main.flg:9`. The library is left out, a function called again and again is one line with the count, after 20 lines the rest is counted, and an error in a thread writes the chain of that thread
+- A crash says what happened and writes the chain too: `flag: invalid memory access at 0x0`, `flag: stack overflow`, `flag: illegal instruction` and `flag: arithmetic error`, in any thread. On Linux and macOS a signal handler runs on a stack that each thread keeps for it, and on Windows a vectored exception handler. The exit code is 128 plus the signal, or the code of the exception on Windows
+- `-debug` puts DWARF in the program, for gdb and lldb: the variables in their blocks, the types (structs, enums, tagged unions as variant parts, fat pointers, threads, function values), the variables of the files, the contexts as thread-local variables, the lines and the frames. Nothing is inlined in it. On macOS it runs `dsymutil` and leaves `program.dSYM`
 - `examples/threads.flg`, the Mandelbrot set drawn by a thread for each processor, and primes counted by workers that share a channel
 - `examples/arena.flg`, the enemies of a level and the memory of each frame in two arenas
 
 Changed
 - A `context` belongs to each thread: a new thread starts with its contexts at zero and its own scratch memory, freed when it ends
 - `parallel` and `wait` are keywords
-- `print` formats all its values into one line and writes it at once, so the lines of two threads never mix. An `eprint` inside the `+=` of a value now comes out before the line that prints that value, and `write(f, value)` formats the value before the file takes it
+- `print` formats all its values into one line and writes it at once, so the lines of two threads never mix. An `eprint` inside the `+=` of a value now comes out before the line that prints that value, and `write(f, value)` formats the value before the file takes it. A function with thousands of `print` takes more memory to compile, 1.9 GB for 20000 of them where it took 1.1
 - Files can be used from any thread: each one has a lock for writing and another for reading, so a thread waiting to read a connection doesn't stop the ones that write
 - On Windows a context takes room in the program file, thread data of Windows keeps its zeros there
 - A Linux program links with `-lpthread`
-- QBE has a twelfth change: thread data on Windows, and the address of thread data read once per function on Windows and macOS
 - `&str`, `&list` and `&map` take 32 bytes: a fourth word, `arena`, says where their memory lives, zero for the heap. The views, `&strview` and `&slice`, stay at 16
 - The scratch memory of the temporaries is an `Arena`
-- The compiler builds itself with 2 % more instructions, half of it the bigger fat pointers and half the code of arenas
+- Every function keeps a frame pointer, on x86_64 too, so the chain can be read: a program is about 1 % bigger
+- QBE has seven more changes, eighteen in all: thread data on Windows and its address read once per function on Windows and macOS, small slots cut into pieces that live in registers, a fix for riscv64, and four for the chain of calls and the debugger
+- Building the compiler takes 36 % more instructions: most of it is the work QBE and the assembler do on the inlined code, and the rest is the code of threads, arenas and the debugger. The compiler that comes out is faster, it checks the sources of 0.3 with 7 % fewer instructions
 
 Faster
 - A direct call to a small function is replaced by its body when the program is written, after `-memory`, so the warnings still name your functions. The parameters are still copies, a runtime error keeps its place, the stack doesn't grow, and a function whose calls were all inlined is not written to the program
 - Small structs live in registers: QBE cuts a slot of 32 bytes or less whose address stays in the function into its pieces. `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop of 100 million rounds runs in 0.11 s, it took 0.69 s, as fast as C with `-O2`
-- A constant that is an array or a struct of literals is kept once in the read-only data of the program, and every use reads it: a lookup in `TABLE = [3, 1, 4, 1, 5, 9, 2, 6]` in a loop is 2.8 times faster
-- Text literals with the same text share their data, and `print` no longer builds `stdout` on the stack, so long functions compile much faster: 20000 `elif` compile in 2 s, they took 8 s, and a switch of 20000 cases in 1.4 s, it took 7.6 s
-- The compiler checks itself with 13 % fewer instructions. Building it costs 16 % more, the work that QBE and the assembler do on the inlined code
+- A constant whose value the compiler knows, an array or a struct of literals, of enum variants or of other such constants, is kept once in the read-only data of the program, and every use reads it: a lookup in `TABLE = [3, 1, 4, 1, 5, 9, 2, 6]` in a loop is 2.8 times faster
+- Text literals with the same text share their data, and `print` no longer builds `stdout` on the stack, so long functions compile much faster: 20000 `elif`, or a switch of 20000 cases, take 5 times fewer instructions
 
 Fixed
 - The `==` and `hash` that the compiler writes for a type could take the name of a function of the program, and the program didn't assemble

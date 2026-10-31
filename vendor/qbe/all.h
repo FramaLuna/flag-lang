@@ -419,6 +419,8 @@ struct Fn {
 	char leaf;
 	char *name;
 	Lnk lnk;
+	int *dbgmark; /* -1 once emitted */
+	uint ndbgmark;
 };
 
 struct Typ {
@@ -473,6 +475,7 @@ struct Dat {
 /* main.c */
 extern Target T;
 extern char debug['Z'+1];
+extern char dbginfo;
 
 /* util.c */
 typedef enum {
@@ -625,7 +628,9 @@ void spill(Fn *);
 void rega(Fn *);
 
 /* emit.c */
-void emitfnlnk(char *, Lnk *, FILE *);
+void emitfnlnk(Fn *, FILE *);
+void emitfnend(Fn *, FILE *);
+void emitdbgmark(Ins *, Fn *, FILE *);
 void emitdat(Dat *, FILE *);
 void emitdbgfile(char *, FILE *);
 void emitdbgloc(uint, uint, FILE *);

@@ -19,6 +19,7 @@ This is the reference of the language
 - [Modules](#modules)
 - [Memory](#memory)
 - [The memory checker](#the-memory-checker)
+- [Debugging](#debugging)
 - [Calling C](#calling-c)
 - [Platforms](#platforms)
 - [Editor support](#editor-support)
@@ -31,10 +32,10 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 1. The lexer cuts every file into tokens (`src/lex.flg`)
 2. The parser builds the tree of the program (`src/parse.flg`)
 3. The generator checks the types and builds the program as a list of QBE instructions in memory (`src/types.flg`, `src/gen.flg` and `src/call.flg`)
-4. That list is written as QBE IL, the text language of the [QBE](https://c9x.me/compile/) backend (`src/ir.flg`), with the calls to small functions replaced by their bodies (see [Inlining](#inlining)), and QBE, that is built into flagc, turns the IL into assembly
+4. That list is written as QBE IL, the text language of the [QBE](https://c9x.me/compile/) backend (`src/ir.flg`), with the calls to small functions replaced by their bodies (see [Inlining](#inlining)) unless you build for a debugger, and QBE, that is built into flagc, turns the IL into assembly
 5. The C compiler assembles it and links it with the C library
 
-With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote.
+With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
 The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
@@ -44,14 +45,15 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 
 ## The command line
 ```
-flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]
+flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]
 ```
 - An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
 - `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
 - `-o` names the program, `a.out` if you don't give one, `a.exe` on Windows
 - `-check` stops after checking the code, it writes nothing and it doesn't need a `main`
 - `-memory` runs the memory checker, the warnings don't change the exit code
-- `-keep` keeps the `.ssa` and `.s` files
+- `-debug` builds the program for gdb and lldb (see [Debugging](#debugging))
+- `-keep` keeps the `.ssa` and `.s` files, and the `.o` of `-debug` on macOS
 - `-target` builds for another system (see [Platforms](#platforms)). A target that doesn't exist is a wrong command line
 - `-overlay` and `-at` are for editors (see [Editor support](#editor-support))
 - `-version` prints the version and the commit it was built from
@@ -95,7 +97,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time in QBE, that keeps for every block the temporaries alive in it: 2500 `elif` compile in 0.3 s, 10000 in 1 s and 20000 in 2 s and 0.8 GB of memory. A `case` with 20000 values takes 0.3 s
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time in QBE, that keeps for every block the temporaries alive in it: 2500 `elif` compile in 0.4 s, 10000 in 3 s and 20000 in 6 s and 1.9 GB of memory, most of it the temporaries of each `print`. A `case` with 20000 values takes 0.3 s
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -564,8 +566,32 @@ These stop the program, and write the message to the error output
 | `flag: cannot start a thread, the system refuses one more` | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
+| `flag: invalid memory access at 0x0` | 139 |
+| `flag: stack overflow` | 139 |
+| `flag: illegal instruction` | 132 |
+| `flag: arithmetic error` | 136 |
 
-The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`). `flag: out of memory` has no place, any allocation can be the one that fails. The last one comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
+The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared
+```
+flag: index 5 is out of bounds, length 3
+  --> main.flg:12:11
+  in parse_line, main.flg:9
+  in load, main.flg:20
+  in main, main.flg:31
+```
+`flag: out of memory` has no place and no chain, any allocation can be the one that fails. The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
+
+The last four are crashes, what the system stops: a read or a write through a pointer to memory the program cannot touch, like a null pointer, says the address, an illegal instruction is most often a union that holds no valid tag, like memory you zeroed yourself (see [Unions](#unions)), and a recursion that goes too deep is a stack overflow. They write the chain too, without a place. The exit code is 128 plus the number of the signal, the table shows Linux, where a memory access can also be a bus error, 135, and macOS gives it 138. On Windows it's the code of the exception, like `0xc0000005`. The program ends with that code, not killed by the signal, so it leaves no core dump: to stop where it crashed, run it in a debugger (see [Debugging](#debugging)).
+
+The chain
+- shows only your functions: the ones of the library are left out, the place already points at your call into them
+- writes the same function called again and again in one line, with the count: `in walk, tree.flg:3, 52341 times`
+- stops at a function of C, its frame cannot be read, so a callback that C calls ends the chain there
+- has 20 lines at most, and the rest is counted: `  ... and 12 more`
+- has no line for a function that is inlined into its caller, only its caller is there
+- is the one of the thread that failed, and in a thread started by `parallel` it ends at the function that `parallel` runs
+
+The program reads it from the frame pointers, that every function keeps, and a table in the program says which function each return address belongs to, with the name and place of each function of yours: about 50 bytes for each function written to the program, and with the frame pointers 1 % of the size of the compiler. The handler of the crashes is set when the program starts, before `main`, and every thread, the first one too, keeps a stack of 64 KiB for it, so a stack overflow can be told in any of them. A program that sets its own handler for `SIGSEGV`, `SIGBUS`, `SIGILL` or `SIGFPE` replaces it.
 
 A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
@@ -628,7 +654,7 @@ func main():
 - A local variable that keeps a thread and that nothing reads doesn't compile: `t keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own`
 - `parallel f(x)` alone on its line starts a thread that nobody waits for. Its function can't fail, nothing would see the error: `this thread runs alone and nothing would see an error of i32|Bad, which its function gives: keep the thread and wait for it, t := parallel f(x)`
 - `Thread[T]` is 8 bytes, the address of a block on the heap where the thread finds its arguments and leaves its result. `wait` frees the block, so a thread is waited once, and one that nobody waits is a block that is never freed, `-memory` tells you. The block of a thread that runs alone is freed when it ends. A `Thread` that never got a thread, like a field at zero, stops the program when it's waited: `flag: wait of a thread that was never started`
-- Every thread ends before the program does: when `main` returns, the program waits for the threads that still run and then writes what waits in the files. `exit()` in any thread ends all of them, and a runtime error in any thread ends the program with its message and its place, like in `main`
+- Every thread ends before the program does: when `main` returns, the program waits for the threads that still run and then writes what waits in the files. `exit()` in any thread ends all of them, and a runtime error or a crash in any thread ends the program with its message, its place and the chain of calls of that thread (see [Runtime errors](#runtime-errors))
 - Each thread has 8 MiB of stack, on every system
 - Each thread has its own contexts, at zero when it starts, and its own scratch memory, freed when the thread ends. So a temporary never goes from one thread to another: give the other thread text you own, a `&str`
 - File variables are shared and nothing protects them, guard what two threads change with a `Lock`, an `Arena` too. `-memory` doesn't look for two threads that use the same memory at once
@@ -637,7 +663,7 @@ func main():
 
 On Linux and macOS a thread is a `pthread`, and a `Lock` and the waits of a `Channel` are a `pthread_mutex_t` and a `pthread_cond_t`. On Windows they are `CreateThread`, an `SRWLOCK` and a `CONDITION_VARIABLE`. They all work at zero, so a `Lock` or a `Channel` needs no setup: on macOS, where the zero of a mutex is not ready, the library writes the signature of its initializer the first time. A Linux program links with `-lpthread`, that is empty on a recent C library.
 
-The compiler writes a start function for each type of function that runs in a thread: it writes the tags of the contexts of the new thread, takes the arguments from the block, calls the function, leaves the result in the block and tells the library that the thread ended. The contexts are thread data of QBE, so each thread has its own copy.
+The compiler writes a start function for each type of function that runs in a thread: it writes the tags of the contexts of the new thread, keeps the stack where the handler of a crash runs, takes the arguments from the block, calls the function, leaves the result in the block and tells the library that the thread ended. The start function belongs to the library, so the chain of calls leaves it out. The contexts are thread data of QBE, so each thread has its own copy.
 
 `print` formats all its values into one line and writes that line at once, so the lines of two threads never mix. A file has a lock for writing, that a write takes after the value is formatted, so an `operator +=` that prints never waits for its own lock, and another one for reading, so a thread that waits to read a file or a connection doesn't stop the ones that write.
 
@@ -808,6 +834,29 @@ And it gives up on a function that is too much for it. It still shows what it fo
 
 The checker skips the trusted functions that no untrusted code needs, so trusting code also makes `-memory` faster. The compiler itself is all trusted.
 
+## Debugging
+`-debug` puts DWARF in the program, what gdb and lldb read to show its variables, its types, the chain of calls with the line of each call, and to step line by line
+```sh
+flagc main.flg -o main -debug
+gdb ./main
+```
+- each file is a compile unit, and each function has its name, the line where it's declared and its code. The instances of a generic share its name, so `break sort` stops in all of them
+- the parameters and the variables are in their slot of the stack, inside the blocks of code where they are visible, so the `i` of one loop and the `i` of the next are two variables
+- the variables at the root of a file are global variables, and the contexts are thread-local variables, so the debugger shows the ones of the thread it stops in. On Linux for arm64 and riscv64 a context has no place in the DWARF: no relocation of those systems gives the place of thread data to it, gcc and clang leave it out too
+- numbers, `bool` and pointers are the types of C, and a `*u8` is a C string, so the `data` of a text shows the text, and what follows it too
+- a struct has its fields, a fat pointer is a struct with `data` and its fields, like `len`, `cap` and `arena`, a function value is a pointer to a function, and a `Thread[T]` is a struct with the address of its `block`
+- an enum is an enumeration with its variants, and their values are the tags of that compilation (see [Unions](#unions))
+- a tagged union is a struct with its `tag`, an enumeration of its members, and the member it holds as a variant part, like Rust does. gdb shows that member, lldb reads variant parts only in Rust code, so it may show only the tag
+- an untagged union is a union of its members
+
+The compile units say they are C, that's how both debuggers print a value: `{x = 3, y = 4}`.
+
+The program changes so that what the debugger reads stays true. Nothing is inlined (see [Inlining](#inlining)), every variable stays in its slot, QBE doesn't move it to a register or cut a small struct into pieces, and a parameter passed by its address, like a struct, gets a slot that holds that address. The blocks keep the order they have in the code, so a block of variables is one range of addresses. A program with `-debug` is a little slower and bigger, the compiler is 3 % bigger with it, and it compiles 9 % faster, there is no inlined code for QBE and the assembler.
+
+On macOS the linker leaves the DWARF in the object file, so `-debug` assembles the program into `program.o`, links it, runs `dsymutil`, that writes `program.dSYM` next to the program, and removes the object unless `-keep`. A `dsymutil` that cannot run is an error: `cannot run dsymutil: ..., -debug on macOS keeps the DWARF in main.dSYM with dsymutil`.
+
+On Windows gdb and lldb read the DWARF too. The debugger of Visual Studio reads PDB, which flagc doesn't write.
+
 ## Calling C
 ### extern
 An `extern` block declares C functions and says which library they come from. `"c"` is the C library, and any other name is linked with `-lname`
@@ -945,7 +994,7 @@ error: the line ends here, ':' goes here
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with fourteen changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with eighteen changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
@@ -953,7 +1002,13 @@ Three more keep long chains from growing with their square. The dominators of a 
 
 The twelfth is for the contexts, that are thread data. `amd64_win` takes thread data: it goes in the section `.tls$`, and its address is the block of the thread in the table at `gs:88`, at `_tls_index`, plus the place of the symbol in it. And on Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. On macOS that also fixes the address of thread data given as an argument of a call, whose call to the runtime broke the arguments already in their registers. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1 % more when it only checks.
 
-The thirteenth and the fourteenth come with the inlining. A small slot of the stack, of 32 bytes or less, whose address only reaches loads, stores, blits and additions of constants, is cut into one slot for each piece that is read or written, before `promote`, which then keeps the pieces in registers. That's how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, a store of a constant is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, so no path reads it undefined. `qbe -w` keeps every slot whole. And rv64 copies a constant, or a value on the stack, into a temporary on the stack through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
+The thirteenth and the fourteenth come with the inlining. A small slot of the stack, of 32 bytes or less, whose address only reaches loads, stores, blits and additions of constants, is cut into one slot for each piece that is read or written, before `promote`, which then keeps the pieces in registers. That's how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, a store of a constant is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, so no path reads it undefined. `qbe -g` keeps every slot whole, for the debugger. And rv64 copies a constant, or a value on the stack, into a temporary on the stack through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
+
+The last four are for the chain of calls and for the debugger. On x86_64 every function keeps its frame pointer, as on arm64 and rv64. Each function ends with the label `.L<name>.end`, `L<name>.end` on macOS and Windows, which gives the table of functions and the DWARF its end. The instruction `%r =l frame` gives the frame pointer of the function. And `qbe -g` builds for a debugger
+- `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and that keeps it in memory, whole
+- `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it
+- the blocks keep the order of the IL, and one is not merged into the block before it, so a scope is one range of code
+- each function has its `.cfi` in `.debug_frame`, and its first `.loc` before its prologue
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware

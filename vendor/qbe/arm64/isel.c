@@ -226,6 +226,11 @@ sel(Ins i, Fn *fn)
 		emiti(i);
 		return;
 	}
+	if (i.op == Odbgslot) {
+		i.arg[0] = SLOT(fn->tmp[i.arg[0].val].slot);
+		emiti(i);
+		return;
+	}
 	if (i.op != Onop) {
 		emiti(i);
 		iarg = curi->arg; /* fixarg() can change curi */

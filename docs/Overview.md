@@ -897,12 +897,19 @@ age := index_of(names, "zoe") iferror 0
 port := parse_int(text) ifnull 8080
 ```
 ### When the program fails
-Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened and where
+Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened, where, and the functions of yours that led there
 ```
 flag: index 5 is out of bounds, length 3
   --> main.flg:12:11
+  in parse_line, main.flg:9
+  in load, main.flg:20
+  in main, main.flg:31
 ```
 `assert` checks a condition, and it can take a message: `assert(total > 0, "the total cannot be empty")`.
+
+A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own.
+
+To look inside the program while it runs, build it with `-debug` and run it in gdb or lldb, they show your variables with their types and stop at the lines you choose (see [Debugging](Reference.md#debugging)). With `-debug` nothing is inlined, so every function has its line.
 
 ## Modules
 When you compile you give the compiler a list of files or folders, compiling a folder is equivalent to compiling every `.flg` file inside the folder, including the files inside other folders. The code of all the files is compiled together, so all the files have access to all the functions, types and constants in the other files.
@@ -1065,6 +1072,7 @@ flagc run main.flg -- first second
 - `-o` the name of the program (`a.out` if you don't give one, `a.exe` on Windows, with `run` the program is removed after it runs unless you give one)
 - `-check` only checks the code, without building the program
 - `-memory` checks the memory (see [Memory safety](#memory-safety))
+- `-debug` builds the program for gdb and lldb (see [Debugging](Reference.md#debugging))
 - `-target` builds for another system, like `-target windows-x86_64` (see [Platforms](Reference.md#platforms))
 - anything else goes to the C compiler, that only assembles and links the program, for example `-lm` to link a library or `-static`
 

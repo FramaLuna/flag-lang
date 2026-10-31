@@ -57,9 +57,43 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 }
 
 void
-emitfnlnk(char *n, Lnk *l, FILE *f)
+emitfnlnk(Fn *fn, FILE *f)
 {
-	emitlnk(n, l, SecText, f);
+	Blk *b;
+	Ins *i;
+
+	emitlnk(fn->name, &fn->lnk, SecText, f);
+	if (!dbginfo)
+		return;
+	fputs("\t.cfi_startproc\n", f);
+	/* the prologue takes the line of the code after it */
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++)
+			if (i->op == Odbgloc) {
+				emitdbgloc(i->arg[0].val, i->arg[1].val, f);
+				return;
+			}
+}
+
+void
+emitdbgmark(Ins *i, Fn *fn, FILE *f)
+{
+	fprintf(f, "%smark%d:\n", T.asloc, fn->dbgmark[i->arg[0].val]);
+	fn->dbgmark[i->arg[0].val] = -1;
+}
+
+void
+emitfnend(Fn *fn, FILE *f)
+{
+	uint n;
+
+	/* the marks of a last block that died */
+	for (n=0; n<fn->ndbgmark; n++)
+		if (fn->dbgmark[n] != -1)
+			fprintf(f, "%smark%d:\n", T.asloc, fn->dbgmark[n]);
+	fprintf(f, "%s%s.end:\n", T.asloc, fn->name);
+	if (dbginfo)
+		fputs("\t.cfi_endproc\n", f);
 }
 
 void

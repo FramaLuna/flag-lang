@@ -9,6 +9,7 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Built for Data-Oriented Design (lots of features for data structure definitions)
 - Manual memory management with `defer`, no garbage collector, and arenas that release everything at once, with the same lists, text and maps
 - Optional Memory-safety at comptime using -memory flag (makes compiling slower)
+- Runtime errors and crashes print the chain of calls of your code, and `-debug` builds for gdb and lldb
 - Errors as values that can carry data, handled with `try`, `trust`, `iferror` or a `switch`, and a dropped error doesn't compile
 - Tagged unions, narrowed by `is` and by the cases of a `switch`, and fat pointers built into the syntax
 - Structs compare and hash themselves, so they work as map keys
