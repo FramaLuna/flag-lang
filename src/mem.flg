@@ -10,7 +10,7 @@ AGED = 1 << 63
 
 EXACT = 4096
 FAR = EXACT + 1
-DEPTH = 3
+HOPS = 3
 VISITS = 30
 ROUNDS = 20
 
@@ -812,7 +812,7 @@ func analyze(f: usize) -> bool:
     for k in 0..sum.ids.len:
         c := mem.fn.cells[sum.ids[k]]
         owner := usize(c.owner)
-        if owner < SLOTS and mem.fn.outer[owner] and mem.fn.objs[owner].depth < DEPTH:
+        if owner < SLOTS and mem.fn.outer[owner] and mem.fn.objs[owner].depth < HOPS:
             was := mem.index[child(owner, c.off, c.stride)]
             if was is u32 and sum.marks.killed[usize(was)]:
                 fresh := objects(sum.aims[k].live) and mem.fn.heaps
@@ -1099,13 +1099,7 @@ func visit(block: usize):
             mem.marks.made = mem.marks.made or blocks and mem.fn.outer
             sweep()
             out := Target{live = objects(first.live), must = first.must}
-            unset := first.live[NOWHERE] or blank(first)
-            if unset and single(blocks) and not empty(blocks and mem.fn.heaps and first.must):
-                mem.marks.live = mem.marks.live or blocks
-            elif unset:
-                h := birth((u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), pos = o.pos, from = "realloc"})
-                out.live = out.live or bit(h)
-                out.must = out.must or bit(h)
+            reborn(first, blocks, ptr(out), (u64(i) << 16) or SITE, Obj{kind = Heap, site = usize(i), pos = o.pos, from = "realloc"})
             if empty(out.live):
                 out.live = bit(NOWHERE)
             define(o.to, out)
@@ -1671,7 +1665,7 @@ func initial(owner: usize, off: i32, stride: i32, member: u32) -> Target:
         return initial(owner, off, stride, 0)
     x := mem.fn.objs[owner]
     c: usize = OUTSIDE
-    if x.depth < DEPTH:
+    if x.depth < HOPS:
         c = object(child(owner, off, stride) or (u64(member) << 49), Obj{kind = Entry, parent = owner, off = off, stride = stride, member = member, root = x.root, depth = x.depth + 1, many = mem.fn.many[owner] or off == ANY or stride != 0})
     return Target{live = bit(c), must = bit(c)}
 
@@ -1731,6 +1725,17 @@ func object(key: u64, x: Obj) -> usize:
     if x.arena:
         mem.fn.arenas = mem.fn.arenas or bit(n)
     return n
+
+func reborn(was: Target, blocks: Set, out: *Target, key: u64, given: Obj) -> usize:
+    unset := was.live[NOWHERE] or blank(was)
+    if unset and single(blocks) and not empty(blocks and mem.fn.heaps and was.must):
+        mem.marks.live = mem.marks.live or blocks
+    elif unset:
+        h := birth(key, given)
+        out.live = out.live or bit(h)
+        out.must = out.must or bit(h)
+        return h
+    return NONE
 
 func birth(key: u64, given: Obj) -> usize:
     r := object(key, given)
@@ -1974,21 +1979,15 @@ func binding(x: usize) -> Target:
             home.member = ob.member
         out = fetch(home)
     if ob.kind == Entry and mem.fns[g].sum.marks.made[x]:
-        refs := objects(out.live)
-        unset := out.live[NOWHERE] or blank(out)
-        if unset and single(refs) and not empty(refs and mem.fn.heaps and out.must):
-            mem.marks.live = mem.marks.live or refs
-        elif unset:
-            name: &strview
-            if ob.root > 0 and ob.root <= usize(o.count):
-                name = mem.fn.names[mem.args[usize(o.first) + ob.root - 1].temp]
-            key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
-            if home.off != ANY and home.stride == 0 and sole(home) != NONE:
-                key = (child(sole(home), home.off, 0) xor FIELD) or PLACE
-            h := birth(key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.who, name = name})
+        name: &strview
+        if ob.root > 0 and ob.root <= usize(o.count):
+            name = mem.fn.names[mem.args[usize(o.first) + ob.root - 1].temp]
+        key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
+        if home.off != ANY and home.stride == 0 and sole(home) != NONE:
+            key = (child(sole(home), home.off, 0) xor FIELD) or PLACE
+        h := reborn(out, objects(out.live), ptr(out), key, Obj{kind = Heap, site = usize(mem.call), pos = o.pos, from = mem.who, name = name})
+        if h != NONE:
             mem.fn.objs[h].strict = mem.fn.objs[h].strict or mem.fns[g].strict
-            out.live = out.live or bit(h)
-            out.must = out.must or bit(h)
         out.live = objects(out.live)
     mem.binds[x] = out
     mem.bound = mem.bound or bit(x)
