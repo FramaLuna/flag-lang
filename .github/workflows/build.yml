@@ -34,6 +34,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y -qq gdb > /dev/null; }
       - run: ./build.sh package
+      - if: runner.os == 'Linux'
+        run: ./build.sh sanitize
       - run: ./test.sh build/flagc 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
       - if: failure()
         run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log

@@ -35,7 +35,7 @@ objects=""
 header=$(ls -t vendor/qbe/*.h vendor/qbe/*/*.h | head -1)
 for src in vendor/qbe/*.c vendor/qbe/*/*.c; do
     obj=build/objects/$(echo "${src#vendor/qbe/}" | tr / _ | sed 's/\.c$/.o/')
-    [ "$obj" -nt "$src" ] && [ "$obj" -nt build/objects/config.h ] && [ "$obj" -nt "$header" ] || $cc -std=c99 -O2 -w -Ibuild/objects -Dmain=qbe_main -c "$src" -o "$obj"
+    [ "$obj" -nt "$src" ] && [ "$obj" -nt build/objects/config.h ] && [ "$obj" -nt "$header" ] || $cc -std=c99 -O2 -w -fwrapv -Ibuild/objects -Dmain=qbe_main -c "$src" -o "$obj"
     objects="$objects $obj"
 done
 printf 'int qbe_main(int, char **);\nint main(int argc, char **argv) { return qbe_main(argc, argv); }\n' > build/embed/qbe.c
@@ -95,6 +95,16 @@ if [ "${1:-}" = seed ]; then
     done
 elif ! cmp -s build/flagc.ssa boot/$system.ssa; then
     echo "boot/$system.ssa is older than src: ./build.sh seed refreshes it"
+fi
+if [ "${1:-}" = sanitize ]; then
+    $cc -std=c99 -O1 -g -w -fwrapv -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/objects vendor/qbe/*.c vendor/qbe/*/*.c -o build/qbe-sanitized
+    for target in amd64_sysv amd64_apple amd64_win arm64 arm64_apple rv64; do
+        for seed in boot/*.ssa; do
+            ASAN_OPTIONS=detect_leaks=0 build/qbe-sanitized -t $target -o /dev/null $seed
+            ASAN_OPTIONS=detect_leaks=0 build/qbe-sanitized -g -t $target -o /dev/null $seed
+        done
+    done
+    echo "qbe: no memory errors and no undefined behavior on the seeds, for every target"
 fi
 if [ "${1:-}" = package ]; then
     name=flag-$version-$system-$machine
