@@ -15,6 +15,8 @@ EMPTYARRAY = 15
 EMPTYMAP = 16
 ITERATIONEND = 17
 
+HEAD = 16 # core's Started, then the result of a thread
+BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thread[null] when it returns nothing"
 DEEP = 500
 LONG = 64000000
 STEP = 256
@@ -300,6 +302,10 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         id := comp.type_ids[tok.text]
         if id is usize and id >= NULL and id <= ITERATIONEND:
             return id
+    if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
+        if args.len != 1 or args[0].type == VOID:
+            return fail(BARE_THREAD, tok.at)
+        return thread_of(try concrete(args[0].type, tok.at))
     if node.module.len == 0 and tok.text == "array":
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
             return fail("array expects an element type and a count: array[i32, 4]", tok.at)
@@ -314,6 +320,10 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         other := try named(tok.text, node.module, tok.at)
         if other != 0 and comp.nodes[comp.syms[other].node].kind == Constant:
             return fail(tok.text + " is a constant, not a type", tok.at)
+        if other != 0 and comp.nodes[comp.syms[other].node].kind == Var:
+            return fail(tok.text + " is a variable, not a type", tok.at)
+        if node.module.len == 0 and tok.text == "Thread":
+            return fail(BARE_THREAD, tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
@@ -476,6 +486,14 @@ func array_of(elem: usize, count: usize) -> usize:
     if id is usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
+
+func thread_of(result: usize) -> usize:
+    key: &str = "Thread["
+    key += comp.types[result].name + "]"
+    id := comp.type_ids[view(key)]
+    if id is usize:
+        return id
+    return add_type(Type{kind = Thread, name = view(key), size = 8, align = 8, elem = result})
 
 func func_of(taken: &list[usize], ret: usize) -> usize:
     key: &str = "func("

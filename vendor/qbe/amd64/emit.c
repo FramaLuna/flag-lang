@@ -196,7 +196,7 @@ emitcon(Con *con, E *e)
 		l = str(con->sym.id);
 		p = l[0] == '"' ? "" : T.assym;
 		if (con->sym.type == SThr) {
-			assert(!T.apple);
+			assert(!T.apple && !T.windows);
 			fprintf(e->f, "%%fs:%s%s@tpoff", p, l);
 		} else {
 			assert((con->sym.type & ~SExt) == SGlo);
@@ -414,7 +414,7 @@ emitins(Ins i, E *e)
 {
 	Ref r;
 	int64_t val;
-	int o, t0;
+	int o, t0, br;
 	Ins ineg;
 	Con *con;
 	char *sym;
@@ -551,8 +551,39 @@ emitins(Ins i, E *e)
 				regtoa(i.to.val, SLong));
 			break;
 		}
+		if (T.windows && con->sym.type == SThr) {
+			/* the block of this thread is entry
+			 * _tls_index of the table at gs:88,
+			 * one more register is borrowed on
+			 * the stack and the flags are kept
+			 */
+			br = i.to.val == RAX ? RCX : RAX;
+			fprintf(e->f,
+				"\tpushq %%%s\n"
+				"\tmovl _tls_index(%%rip), %%%s\n"
+				"\tmovq %%gs:88, %%%s\n"
+				"\tmovq (%%%s,%%%s,8), %%%s\n"
+				"\tpopq %%%s\n"
+				"\tleaq %s%s@SECREL32(%%%s), %%%s\n",
+				regtoa(br, SLong),
+				regtoa(br, SWord),
+				regtoa(i.to.val, SLong),
+				regtoa(i.to.val, SLong),
+				regtoa(br, SLong),
+				regtoa(i.to.val, SLong),
+				regtoa(br, SLong),
+				sym[0] == '"' ? "" : T.assym, sym,
+				regtoa(i.to.val, SLong),
+				regtoa(i.to.val, SLong));
+			if (con->bits.i)
+				fprintf(e->f, "\tleaq %"PRId64"(%%%s), %%%s\n",
+					con->bits.i,
+					regtoa(i.to.val, SLong),
+					regtoa(i.to.val, SLong));
+			break;
+		}
 		if (T.windows && con->sym.type != SGlo)
-			die("extern/thread unsupported on amd64_win");
+			die("extern unsupported on amd64_win");
 		switch (con->sym.type) {
 		case SThr:
 			/* derive the symbol address from the TCB

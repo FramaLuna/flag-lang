@@ -38,6 +38,10 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 			pfx, n, sfx
 		);
 	}
+	if (T.windows && l->thread) {
+		l->sec = ".tls$";
+		l->secf = "\"dw\"";
+	}
 	if (l->sec) {
 		fprintf(f, ".section %s", l->sec);
 		if (l->secf)

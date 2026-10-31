@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 (not released yet)
+
+A release about threads: a program uses every core with two words, `parallel` and `wait`, and keeps what Flag checks, the types, the errors that can't be dropped and `-memory`.
+
+New
+- `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own or an error to handle. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends
+- A thread you keep must be read, a function that can fail can't run alone, and `-memory` warns about a thread never waited, waited twice or used after `wait`, about a pointer to a local variable that leaves with a thread, and about using what you sent through a channel
+- `Lock`, that works at zero and is taken with `with lock(x.lock):`, `Channel[T, N]`, a bounded queue that lives where you declare it, with `send`, `receive`, `close` and `for v in c`, and `cores()`
+- Variables at the root of a file, `count: i32` or `names: array[&strview, 3] = ["a", "b", "c"]`, shared by every function and every thread. They start at zero or at a value the compiler knows, in the data of the program, so a table that never changes is not built again each time
+- `examples/threads.flg`, the Mandelbrot set drawn by a thread for each processor, and primes counted by workers that share a channel
+
+Changed
+- A `context` belongs to each thread: a new thread starts with its contexts at zero and its own scratch memory, freed when it ends
+- `parallel` and `wait` are keywords
+- `print` formats all its values into one line and writes it at once, so the lines of two threads never mix. An `eprint` inside the `+=` of a value now comes out before the line that prints that value, and `write(f, value)` formats the value before the file takes it
+- Files can be used from any thread: each one has a lock for writing and another for reading, so a thread waiting to read a connection doesn't stop the ones that write
+- On Windows a context takes room in the program file, thread data of Windows keeps its zeros there
+- A Linux program links with `-lpthread`
+- QBE has a twelfth change: thread data on Windows, and the address of thread data read once per function on Windows and macOS
+
+Fixed
+- The `==` and `hash` that the compiler writes for a type could take the name of a function of the program, and the program didn't assemble
+- `-memory` warned that a call may free memory it also reads through another argument when both were memory of contexts, and no argument was involved
+
 ## 0.3.0
 
 A release about errors that say what happened and unions you handle with `switch`, with a standard library that is much faster and has one way to do each thing.

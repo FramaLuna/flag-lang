@@ -28,7 +28,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 
 ## core
 ### The program
-- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, and then it's `write(stdout, value)` for each one and `write(stdout, "\n")`
+- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
 - `eprint(values...)` the same to the error output
 - `panic(message: &strview)` writes `flag: <message>` and the place of the call to the error output, and ends the program with exit code 134
 - `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
@@ -48,7 +48,7 @@ What you write waits in the file and goes to the system in big pieces, so many s
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read
 - `create(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
-- `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`
+- `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
 - `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
@@ -104,6 +104,58 @@ Printing it says all of it, with the words of the system for the code: `cannot o
 
 A negative `code` is an error that has no errno: on Windows the errors of `rename` are the codes of the system.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
+
+### Threads
+`parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
+- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once
+- `cores() -> usize` how many processors the system has online, to split a job in as many threads
+- `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself
+  - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
+  - `close(held: Locked)` lets it go, `with` calls it
+- `Channel[$T, $$size]` a queue of up to `size` values between threads. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
+  - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
+  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
+  - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`
+  - `for v in c` receives until the channel is closed and empty
+
+The files of core, `print` included, work from any thread.
+
+```flag
+type Counter:
+    lock: Lock
+    count: i64
+
+counter: Counter
+
+func add(times: i32):
+    for i in 0..times:
+        with lock(counter.lock):
+            counter.count += 1
+
+func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+    for n in jobs:
+        send(results, n * n)
+    close(results)
+
+func main():
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..cores():
+        append(workers, parallel add(1000))
+    for w in workers:
+        wait w
+    print(counter.count) # 1000 for each core
+
+    jobs: Channel[i32, 8]
+    results: Channel[i32, 8]
+    t := parallel square_all(jobs, results)
+    for n in 1..4:
+        send(jobs, n)
+    close(jobs)
+    for r in results:
+        print(r) # 1, 4 and 9
+    wait t
+```
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours

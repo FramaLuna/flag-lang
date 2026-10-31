@@ -250,7 +250,7 @@ func operate(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
 
 func invoke(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
     names: &list[&strview]
-    return call(name, "", args, names, at)
+    return call(name, "", args, names, at, false)
 
 func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
     names: &list[&strview]
@@ -264,7 +264,7 @@ func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
     close_frame(saved)
     return ret
 
-func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize) -> Value|Fail:
+func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize, threaded: bool) -> Value|Fail:
     best := try choose(name, module, args, names, at)
     if best == 0 and args.len > 0:
         t := args[0].type
@@ -277,16 +277,11 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             return fail(comp.types[t].name + " has no hash, declare one for it: func hash(x: " + comp.types[t].name + ") -> u64", at)
         if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:
             ret: usize = BOOL
-            key: &str = "$eq."
+            label: &strview = "eq"
             if name == "hash":
                 ret = U64
-                key = "$hash."
-            key += t
-            id := comp.inst_ids[view(key)] ifnull comp.insts.len
-            if id == comp.insts.len:
-                append(comp.insts, Inst{0, view(key), comp.inst_binds.len, 1, ret, site(at), false, true, 0})
-                append(comp.inst_binds, Item{"$T", t, 0, false})
-                put(comp.inst_ids, view(key), id)
+                label = "hash"
+            id := written(label, t, ret, at)
             passes: &list[Pass]
             for a in args:
                 x := load(a).at
@@ -294,7 +289,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 if aggregate(t):
                     how = L
                 append(passes, Pass{how, x, is_number(x)})
-            return emit(global(view(key)), passes, ret, false, at)
+            return emit(global(comp.insts[id].name), passes, ret, false, at)
     if best == 0:
         seen := first_sym(name)
         while seen != 0 and not callable(seen, module, args, at):
@@ -383,6 +378,12 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 append(passes, Pass{D, op1(D, "exts", x), false})
             else:
                 append(passes, Pass{cls(v.type), x, is_number(x)})
+    if threaded and foreign:
+        return fail("parallel cannot run " + name + ", it is called the way C calls: wrap it in a func that calls it", at)
+    if threaded and back.len > 0:
+        return fail(name + " takes x[i] where a pointer goes, and a thread could not put the copy back: pass a pointer to a variable", at)
+    if threaded:
+        return spawn(global(comp.insts[id].name), passes, func_of(taken, comp.insts[id].ret), at)
     result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
     while back.len > 0:
         element := back[back.len - 3:]
@@ -396,6 +397,60 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             return fail(name + " changes an element of " + comp.types[element[0].type].name + " through a pointer and put puts it back, but put gives " + comp.types[gives].name + " and a call cannot pass on an error: change a copy of the element and try put(x, i, v)", at)
         try invoke("put", three, at)
     return result
+
+func spawn(code: Arg, passes: &list[Pass], shape: usize, at: usize) -> Value|Fail:
+    ty := comp.types[shape]
+    start := HEAD + align_up(comp.types[ty.ret].size, 8)
+    size := start + 8
+    for k in 0..ty.count:
+        size += room(comp.items[ty.first + k].type)
+    args: &list[Value]
+    append(args, literal(false, size))
+    block := try runtime("spawn", args, at)
+    add(Ins{op = "storel", a = code, b = offset(block.at, start)})
+    used := start + 8
+    for k in 0..ty.count:
+        t := comp.items[ty.first + k].type
+        if aggregate(t):
+            blit(passes[k].arg, offset(block.at, used), t)
+        else:
+            store(t, Value{type = t, at = passes[k].arg}, offset(block.at, used))
+        used += room(t)
+    first := comp.body.len
+    store(ty.ret, try emit(code, passes, ty.ret, false, at), offset(block.at, HEAD))
+    for i in first..comp.body.len:
+        comp.body[i].ghost = true # the call as -memory sees it, in this thread
+    args.len = 0
+    append(args, block)
+    append(args, Value{type = pointer(BYTES), at = global(comp.insts[written("run", shape, VOID, at)].name)})
+    append(args, try place_of(at))
+    try runtime("launch", args, at)
+    result := ty.ret
+    if result == VOID:
+        result = NULL
+    return Value{type = thread_of(result), at = block.at}
+
+func runtime(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
+    v := try invoke(name, args, 0) # as core sees it, the runtime is priv
+    comp.body[-1].pos = at
+    return v
+
+func place_of(at: usize) -> Value|Fail:
+    return Value{type = try fat_type("strview", VOID, at), at = text_data(replace(view(location(at)), "\\", "\\\\")), mem = true, lit = true}
+
+func written(label: &strview, t: usize, ret: usize, at: usize) -> usize:
+    key: &str = label
+    key += "." + t
+    id := comp.inst_ids[view(key)]
+    if id is usize:
+        free(key)
+        return id
+    name: &str = "$"
+    name += label + "." + comp.insts.len
+    append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0})
+    append(comp.inst_binds, Item{"$T", t, 0, false})
+    put(comp.inst_ids, view(key), comp.insts.len - 1)
+    return comp.insts.len - 1
 
 func instantiate_for(f: usize, order: &list[usize], args: &list[Value], taken: *&list[usize], at: usize) -> usize|Fail:
     saved := open_frame()
@@ -583,6 +638,8 @@ func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
     ty := comp.types[t]
     if foreign and ty.kind == Func:
         return fail(ty.name + " cannot cross the C ABI, C takes the address of an export func: declare the parameter as *bytes and pass ptr(name)", at)
+    if foreign and ty.kind == Thread:
+        return fail(ty.name + " cannot cross the C ABI, a thread of Flag is waited only by Flag", at)
     if foreign and aggregate(t):
         return c_type(t, at)
     if foreign and ty.size == 1 and ty.kind == Int:
@@ -627,7 +684,7 @@ func c_type(t: usize, at: usize) -> u32|Fail:
             one += "s"
         elif cls(e) == D:
             one += "d"
-        elif cls(e) == L and k != Func:
+        elif cls(e) == L and k != Func and k != Thread:
             one += "l"
         elif numeric(e) or k == Ptr:
             one += "w"
@@ -735,6 +792,13 @@ func match(n: usize, v: Value) -> i64|Fail:
         return score
     if fat != (t.kind == Fat) and not spreads:
         return -1
+    if text(head) == "Thread" and comp.nodes[head].module.len == 0 and not fat and kids(head) > 0:
+        if t.kind != Thread or kids(head) != 1:
+            return -1
+        inner := try match(head + 1, Value{type = t.elem, at = v.at})
+        if inner < 0:
+            return -1
+        return inner + STEP
     if text(head) == "array" and comp.nodes[head].module.len == 0:
         if t.kind != Array or not try arg_fits(kid(head, 1), VOID, t.count):
             return -1
@@ -912,28 +976,8 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         append(args, v)
         return invoke("c_text", args, at)
     if (target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
-        found: usize = VOID
-        tied: usize = VOID
-        best: i64 = -1
-        for i in 0..target.count:
-            m := comp.items[target.first + i].type
-            score := accepts(m, v)
-            if score > best:
-                found = m
-                tied = VOID
-                best = score
-            elif score == best and score >= 0:
-                tied = m
-        if tied != VOID and v.lit:
-            shown: &str
-            if v.neg:
-                shown += "-"
-            if comp.types[v.type].kind == Float:
-                shown += v.f
-            else:
-                shown += v.n
-            return fail(shown + " fits more than one member of " + target.name + " equally, name its type: " + comp.types[found].name + "(" + shown + ")", at)
-        if found != VOID and tied == VOID:
+        found := try member_for(to, v, at)
+        if found != VOID:
             return convert(try convert(v, found, Arg{}, at), to, dest, at)
     if target.kind == Untagged and untagged_member(to, v.type):
         slot := alloc(to)
@@ -981,6 +1025,33 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         open_block(l_done)
         return Value{type = to, at = slot, mem = true}
     return fail("cannot assign " + from.name + " to " + target.name + ", and no operator = makes a " + target.name + " from it", at)
+
+func member_for(to: usize, v: Value, at: usize) -> usize|Fail:
+    target := comp.types[to]
+    found: usize = VOID
+    tied: usize = VOID
+    best: i64 = -1
+    for i in 0..target.count:
+        m := comp.items[target.first + i].type
+        score := accepts(m, v)
+        if score > best:
+            found = m
+            tied = VOID
+            best = score
+        elif score == best and score >= 0:
+            tied = m
+    if tied != VOID and v.lit:
+        shown: &str
+        if v.neg:
+            shown += "-"
+        if comp.types[v.type].kind == Float:
+            shown += v.f
+        else:
+            shown += v.n
+        return fail(shown + " fits more than one member of " + target.name + " equally, name its type: " + comp.types[found].name + "(" + shown + ")", at)
+    if tied != VOID:
+        return VOID
+    return found
 
 func spread(from: usize, to: usize) -> bool:
     target := comp.types[to]

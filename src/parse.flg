@@ -160,6 +160,8 @@ func parse() -> Fail?:
             comp.pos += 2
             try expr(1)
             finish(n)
+        elif t.kind == Name and after.text == ":":
+            try variable()
         elif sym.priv:
             return unexpected("priv expects a declaration after it")
         else:
@@ -571,11 +573,13 @@ func unary() -> Fail?:
     try deeper(here().at)
     defer comp.depth -= 1
     t := here()
-    if t.text == "-" or t.text == "not" or t.text == "try" or t.text == "trust":
+    if t.text == "-" or t.text == "not" or t.text == "try" or t.text == "trust" or t.text == "parallel" or t.text == "wait":
         n := begin(Unary, comp.pos)
         comp.pos += 1
         try unary()
         finish(n)
+        if t.text == "parallel" and comp.nodes[n + 1].kind != Call:
+            return fail("parallel goes before a call, it runs that call in a new thread: parallel f(x)", at_of(n + 1))
         return null
     start := comp.nodes.len
     name := comp.pos
@@ -825,7 +829,7 @@ func new_name(of_value: bool) -> Fail?:
 
 func reserved(word: &strview) -> bool:
     switch word:
-    case "if", "elif", "else", "while", "for", "in", "switch", "case", "break", "continue", "return", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "iferror", "ifnull", "true", "false", "null":
+    case "if", "elif", "else", "while", "for", "in", "switch", "case", "break", "continue", "return", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "wait", "iferror", "ifnull", "true", "false", "null":
         return true
     return false
 

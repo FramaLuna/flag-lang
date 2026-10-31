@@ -92,6 +92,7 @@ func(Fn *fn)
 		filldom(fn);
 		ssacheck(fn);
 	}
+	thronce(fn);
 	T.abi1(fn);
 	simpl(fn);
 	fillcfg(fn);

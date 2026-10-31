@@ -610,6 +610,7 @@ void ifconvert(Fn *fn);
 
 /* simpl.c */
 void simpl(Fn *);
+void thronce(Fn *);
 
 /* live.c */
 void liveon(BSet *, Blk *, Blk *);

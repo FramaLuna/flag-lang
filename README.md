@@ -12,7 +12,8 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Errors as values that can carry data, handled with `try`, `trust`, `iferror` or a `switch`, and a dropped error doesn't compile
 - Tagged unions, narrowed by `is` and by the cases of a `switch`, and fat pointers built into the syntax
 - Structs compare and hash themselves, so they work as map keys
-- Automatic context management across functions with the `context` keyword
+- Automatic context management across functions with the `context` keyword, a context for each thread
+- Threads with `parallel f(x)` and `wait t`, a `Lock` that works at zero and bounded `Channel`s
 - Generics support
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures

@@ -1,0 +1,34 @@
+type Counter:
+    lock: Lock
+    count: i64
+
+counter: Counter
+
+func add(times: i32):
+    for i in 0..times:
+        with lock(counter.lock):
+            counter.count += 1
+
+func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+    for n in jobs:
+        send(results, n * n)
+    close(results)
+
+func main():
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..cores():
+        append(workers, parallel add(1000))
+    for w in workers:
+        wait w
+    print(counter.count) # 1000 for each core
+
+    jobs: Channel[i32, 8]
+    results: Channel[i32, 8]
+    t := parallel square_all(jobs, results)
+    for n in 1..4:
+        send(jobs, n)
+    close(jobs)
+    for r in results:
+        print(r) # 1, 4 and 9
+    wait t

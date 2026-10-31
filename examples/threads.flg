@@ -1,0 +1,74 @@
+# draws the Mandelbrot set with a band of rows for each processor,
+# and counts primes with workers that take numbers from a channel
+
+WIDTH = 72
+HEIGHT = 24
+
+func band(first: i32, last: i32) -> &str:
+    shades: &strview = " .:-=+*#%@"
+    out: &str
+    for row in first..last:
+        for column in 0..WIDTH:
+            x := -2.2 + 3.0 * f64(column) / f64(WIDTH)
+            y := -1.2 + 2.4 * f64(row) / f64(HEIGHT)
+            a := 0.0
+            b := 0.0
+            steps := 0
+            while steps < 99 and a * a + b * b < 4.0:
+                next := a * a - b * b + x
+                b = 2.0 * a * b + y
+                a = next
+                steps += 1
+            out += shades[steps / 10:steps / 10 + 1]
+        out += "\n"
+    return out
+
+type Total:
+    lock: Lock
+    primes: i32
+
+total: Total
+
+func prime(n: i32) -> bool:
+    if n < 2:
+        return false
+    d := 2
+    while d * d <= n:
+        if n % d == 0:
+            return false
+        d += 1
+    return true
+
+func count(numbers: *Channel[i32, 64]):
+    found := 0
+    for n in numbers:
+        if prime(n):
+            found += 1
+    with lock(total.lock):
+        total.primes += found
+
+func main():
+    bands: &list[Thread[&str]]
+    defer free(bands)
+    n := i32(cores())
+    for k in 0..n:
+        append(bands, parallel band(HEIGHT * k / n, HEIGHT * (k + 1) / n))
+    texts: &list[&str]
+    defer free(texts)
+    for b in bands:
+        append(texts, wait b)
+    for text in texts:
+        write(stdout, text)
+        free(text)
+
+    numbers: Channel[i32, 64]
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..n:
+        append(workers, parallel count(numbers))
+    for i in 0..100000:
+        send(numbers, i)
+    close(numbers)
+    for w in workers:
+        wait w
+    print(total.primes, " primes below 100000")

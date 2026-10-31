@@ -85,6 +85,17 @@ MYSECONDCONST = 2 + 2 + NUM # this computes at comptime to 6
 ```
 Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro.
 
+## File variables
+A variable at the root of a file is one value that every function sees. It starts at zero, or at a value the compiler knows: literals, constants, and structs and arrays of them
+```flag
+count: i32
+names: array[&strview, 3] = ["one", "two", "three"]
+
+func add():
+    count += 1
+```
+It lives as long as the program, and all the threads share it (see [Threads](#threads)).
+
 ## Operators
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers
 - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
@@ -647,7 +658,7 @@ The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_i
 ```flag
 print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
-`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
+`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -715,7 +726,7 @@ print(colors["red"], " ", colors.len)
 ```
 
 ## Contexts
-A context is global state, the fields start at zero and every function can use them
+A context is global state of each thread: the fields start at zero, every function can use them, and each thread has its own
 ```flag
 context app:
     depth: u32
@@ -724,6 +735,70 @@ context app:
 func deeper():
     app.depth += 1
 ```
+What all the threads share is a file variable (see [File variables](#file-variables)).
+
+## Threads
+`parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait t` waits for the thread to end and gives its result. A computation split in pieces
+```flag
+func sum(from: i64, to: i64) -> i64:
+    total: i64 = 0
+    for i in from..to:
+        total += i
+    return total
+
+func main():
+    pieces: &list[Thread[i64]]
+    defer free(pieces)
+    n := i64(cores()) # the processors of the system
+    for k in 0..n:
+        append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
+    total: i64 = 0
+    for p in pieces:
+        total += wait p
+    print(total)
+```
+The arguments are computed where you call and copied to the new thread, and the result can be anything a function returns, text you own or an error to handle. `done(t)` asks if the thread ended without waiting, like a game that loads its level while it keeps drawing
+```flag
+level := parallel load("castle.map")
+while not done(level):
+    draw_loading_screen()
+start(try wait level)
+```
+`parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends. A thread you keep must be waited, and a function that can fail can't run alone, its error would be lost.
+
+Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock` lets one thread at a time change them
+```flag
+type Visits:
+    lock: Lock
+    count: i64
+
+visits: Visits
+
+func visit():
+    with lock(visits.lock):
+        visits.count += 1
+```
+A `Channel[T, N]` passes values between threads, and waits when it's full or empty. It keeps the values inside itself, so it lives where you declare it
+```flag
+func worker(jobs: *Channel[&str, 16]):
+    for name in jobs: # until the channel is closed
+        print("working on ", name)
+        free(name)
+
+func main():
+    jobs: Channel[&str, 16]
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..4:
+        append(workers, parallel worker(jobs))
+    for name in ["a.txt", "b.txt", "c.txt"]:
+        owned: &str = name # a temporary of this thread can't go to another one
+        send(jobs, owned)
+    close(jobs)
+    for w in workers:
+        wait w
+```
+`print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, or a pointer to a local variable that goes to a thread that outlives the function. What the threads change at once in shared memory is yours to guard.
 
 ## Error handling
 ### The error type
@@ -817,7 +892,7 @@ priv func foo():
 In a file without a module, priv hides the name from every other file.
 
 ## The standard library
-The functions of text, lists, maps and files (`open`, `read_line`, `write`...) are always there. The rest comes in modules that you get with `use`, without adding files
+The functions of text, lists, maps, files (`open`, `read_line`, `write`...) and threads (`Lock`, `Channel`, `cores`) are always there. The rest comes in modules that you get with `use`, without adding files
 - `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading and writing JSON

@@ -122,9 +122,9 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 	}
 	else if (op != Ocall && hascon(r0, &c, fn)
 	&& c->type == CAddr && ((c->sym.type & SExt)
-	 || (T.apple && c->sym.type == SThr))) {
+	 || ((T.apple || T.windows) && c->sym.type == SThr))) {
 		r1 = newtmp("isel", Kl, fn);
-		if (c->bits.i) {
+		if (c->bits.i && !T.windows) {
 			r2 = newtmp("isel", Kl, fn);
 			cc = (Con){.type = CBits};
 			cc.bits.i = c->bits.i;
@@ -141,7 +141,8 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			emit(Oload, Kl, r3, r2, R);
 		}
 		cc = *c;
-		cc.bits.i = 0;
+		if (!T.windows)
+			cc.bits.i = 0;
 		r3 = newcon(&cc, fn);
 		emit(Oaddr, Kl, r2, r3, R);
 		if (rtype(r0) == RMem) {

@@ -1,0 +1,91 @@
+type Point:
+    x: i32
+    y: i32
+
+type Big:
+    values: array[i64, 40]
+
+type error Odd:
+    n: i32
+
+func square(x: i32) -> i32:
+    return x * x
+
+func sum(from: i64, to: i64) -> i64:
+    total: i64 = 0
+    for i in from..to:
+        total += i
+    return total
+
+func greet(name: &strview, times: i32) -> &str:
+    out: &str
+    for i in 0..times:
+        out += "hi " + name + " "
+    return out
+
+func moved(p: Point, by: i32) -> Point:
+    return Point{p.x + by, p.y + by}
+
+func filled(n: i64) -> Big:
+    b: Big
+    for i in 0..40:
+        b.values[i] = n * i64(i)
+    return b
+
+func half(n: i32) -> i32|Odd:
+    if n % 2 != 0:
+        return Odd{n}
+    return n / 2
+
+func biggest(a: $T, b: $T) -> $T:
+    if a < b:
+        return b
+    return a
+
+func where_from(place: &strview = @here()) -> &strview:
+    return place
+
+func bump(n: *i32):
+    n.* += 1
+
+func count(items: &slice[i32]) -> usize:
+    return items.len
+
+func main():
+    a := parallel square(7)
+    b := parallel sum(0, 1000000)
+    print(wait a, " ", wait b)
+    c := parallel greet("ana", 2)
+    text := wait c
+    print(text)
+    free(text)
+    d := parallel moved(Point{1, 2}, 10)
+    print(wait d)
+    e := parallel filled(3)
+    big := wait e
+    print(big.values[0], " ", big.values[39])
+    for n in [4, 5]:
+        h := parallel half(n)
+        got := wait h
+        switch got:
+        case i32:
+            print("half ", got)
+        case Odd:
+            print("odd ", got.n)
+    g := parallel biggest(2.5, 1.5)
+    print(wait g)
+    steps: array[func(i32) -> i32, 1] = [square]
+    s := parallel steps[0](9)
+    print(wait s)
+    w := parallel where_from()
+    print(ends_with(wait w, "thread_results.flg:80:19"))
+    n: i32 = 1
+    k := parallel bump(n)
+    wait k
+    print(n)
+    numbers: &list[i32]
+    defer free(numbers)
+    append(numbers, 1)
+    append(numbers, 2)
+    l := parallel count(numbers)
+    print(wait l)

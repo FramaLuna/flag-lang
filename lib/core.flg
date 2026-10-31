@@ -18,7 +18,7 @@ priv extern "c":
     func open(path: cstr, flags: i32, ...) -> i32
     func close(fd: i32) -> i32
     func isatty(fd: i32) -> i32
-    func poll(fds: *bytes, count: u64, wait: i32) -> i32
+    func poll(fds: *bytes, count: u64, timeout: i32) -> i32
     func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
     func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
@@ -30,6 +30,29 @@ priv extern "c":
     func __error() -> *i32
     func _errno() -> *i32
     func FormatMessageA(flags: u32, source: *bytes, code: u32, language: u32, into: *u8, size: u32, arguments: *bytes) -> u32
+    func pthread_create(thread: *usize, attributes: *bytes, run: *bytes, argument: *bytes) -> i32
+    func pthread_join(thread: usize, result: *bytes) -> i32
+    func pthread_detach(thread: usize) -> i32
+    func pthread_attr_init(attributes: *bytes) -> i32
+    func pthread_attr_setstacksize(attributes: *bytes, size: usize) -> i32
+    func pthread_attr_destroy(attributes: *bytes) -> i32
+    func pthread_mutex_lock(mutex: *bytes) -> i32
+    func pthread_mutex_unlock(mutex: *bytes) -> i32
+    func pthread_cond_wait(condition: *bytes, mutex: *bytes) -> i32
+    func pthread_cond_broadcast(condition: *bytes) -> i32
+    func os_unfair_lock_lock(lock: *u32)
+    func os_unfair_lock_unlock(lock: *u32)
+    func sysconf(name: i32) -> i64
+    func CreateThread(attributes: *bytes, stack: usize, run: *bytes, argument: *bytes, flags: u32, id: *u32) -> usize
+    func WaitForSingleObject(handle: usize, milliseconds: u32) -> u32
+    func CloseHandle(handle: usize) -> i32
+    func AcquireSRWLockExclusive(lock: *bytes)
+    func ReleaseSRWLockExclusive(lock: *bytes)
+    func SleepConditionVariableSRW(condition: *bytes, lock: *bytes, milliseconds: u32, flags: u32) -> i32
+    func WakeAllConditionVariable(condition: *bytes)
+    func GetActiveProcessorCount(group: u16) -> u32
+
+extern "pthread" where @linux():
 
 priv extern "ws2_32" where @windows():
     func WSAGetLastError() -> i32
@@ -915,6 +938,232 @@ operator +=(s: *&str, p: Padded[$T]):
     for k in count..-p.width:
         add_byte(s, ' ')
 
+type Lock:
+    room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
+    owner: *bytes
+    depth: usize
+
+type Locked:
+    lock: *Lock
+
+func lock(l: *Lock) -> Locked:
+    if l.owner != me():
+        take(l)
+        l.owner = me()
+    l.depth += 1
+    return Locked{l}
+
+func close(held: Locked):
+    l := held.lock
+    l.depth -= 1
+    if l.depth == 0:
+        l.owner = usize(0) as *bytes
+        give(l)
+
+priv func me() -> *bytes:
+    return ptr(scratch_space) as *bytes # each thread has its own
+
+priv func take(l: *Lock) where not @windows():
+    sign(ptr(l.room[0]), 0x32aa_aba7)
+    pthread_mutex_lock(ptr(l.room) as *bytes)
+
+priv func take(l: *Lock) where @windows():
+    AcquireSRWLockExclusive(ptr(l.room) as *bytes)
+
+priv func give(l: *Lock) where not @windows():
+    pthread_mutex_unlock(ptr(l.room) as *bytes)
+
+priv func give(l: *Lock) where @windows():
+    ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
+
+priv signing: u32 # an os_unfair_lock, valid at zero
+
+# at zero they are ready, but on macOS their initializer is a signature and zeros
+priv func sign(first: *u64, signature: u64) where @macos():
+    if first.* == 0:
+        os_unfair_lock_lock(ptr(signing))
+        if first.* == 0:
+            first.* = signature
+        os_unfair_lock_unlock(ptr(signing))
+
+priv func sign(first: *u64, signature: u64) where not @macos():
+    return
+
+priv type Condition:
+    room: array[u64, 6] # a pthread_cond_t or a CONDITION_VARIABLE
+
+priv func pause(c: *Condition, l: *Lock):
+    depth := l.depth
+    l.owner = usize(0) as *bytes
+    l.depth = 0
+    rest(c, l)
+    l.owner = me()
+    l.depth = depth
+
+priv func rest(c: *Condition, l: *Lock) where not @windows():
+    sign(ptr(c.room[0]), 0x3cb0_b1bb)
+    pthread_cond_wait(ptr(c.room) as *bytes, ptr(l.room) as *bytes)
+
+priv func rest(c: *Condition, l: *Lock) where @windows():
+    SleepConditionVariableSRW(ptr(c.room) as *bytes, ptr(l.room) as *bytes, 0xffff_ffff, 0)
+
+priv func wake(c: *Condition) where not @windows():
+    sign(ptr(c.room[0]), 0x3cb0_b1bb)
+    pthread_cond_broadcast(ptr(c.room) as *bytes)
+
+priv func wake(c: *Condition) where @windows():
+    WakeAllConditionVariable(ptr(c.room) as *bytes)
+
+priv type Started: # the start of the block of a thread, the result goes after it
+    handle: usize
+    done: bool
+    alone: bool
+
+priv type Threads:
+    lock: Lock
+    changed: Condition
+    running: usize
+
+priv threads: Threads
+
+priv STACK = 8 << 20
+
+priv func spawn(size: usize) -> *bytes:
+    block := calloc(1, size)
+    if block as usize == 0:
+        out_of_memory()
+    return block
+
+priv func launch(block: *bytes, run: *bytes, place: &strview):
+    with lock(threads.lock):
+        threads.running += 1
+    if not started(block as *Started, run):
+        panic("cannot start a thread, the system refuses one more", place)
+
+priv func started(t: *Started, run: *bytes) -> bool where not @windows():
+    attributes: array[u64, 8]
+    pthread_attr_init(ptr(attributes) as *bytes)
+    pthread_attr_setstacksize(ptr(attributes) as *bytes, STACK)
+    failed := pthread_create(ptr(t.handle), ptr(attributes) as *bytes, run, t as *bytes)
+    pthread_attr_destroy(ptr(attributes) as *bytes)
+    return failed == 0
+
+priv func started(t: *Started, run: *bytes) -> bool where @windows():
+    t.handle = CreateThread(usize(0) as *bytes, STACK, run, t as *bytes, 0x10000, usize(0) as *u32) # STACK_SIZE_PARAM_IS_A_RESERVATION
+    return t.handle != 0
+
+priv func finished(block: *bytes):
+    for b in scratch_space.blocks:
+        free(ptr(b.*))
+    free(scratch_space.blocks)
+    free(printing.line)
+    t := block as *Started
+    alone := false
+    with lock(threads.lock):
+        t.done = true
+        alone = t.alone
+        threads.running -= 1
+        wake(threads.changed)
+    if alone:
+        free(block)
+
+priv func join(block: *bytes, place: &strview):
+    if block as usize == 0:
+        panic("wait of a thread that was never started", place)
+    wait_for((block as *Started).handle)
+
+priv func wait_for(handle: usize) where not @windows():
+    pthread_join(handle, usize(0) as *bytes)
+
+priv func wait_for(handle: usize) where @windows():
+    WaitForSingleObject(handle, 0xffff_ffff)
+    CloseHandle(handle)
+
+priv func detach(block: *bytes):
+    t := block as *Started
+    let_go(t.handle)
+    done := false
+    with lock(threads.lock):
+        done = t.done
+        t.alone = true
+    if done:
+        free(block)
+
+priv func let_go(handle: usize) where not @windows():
+    pthread_detach(handle)
+
+priv func let_go(handle: usize) where @windows():
+    CloseHandle(handle)
+
+priv func settle():
+    with lock(threads.lock):
+        while threads.running > 0:
+            pause(threads.changed, threads.lock)
+
+func done(t: Thread[$T]) -> bool:
+    with lock(threads.lock):
+        return (t as *Started).done
+
+func cores() -> usize where @linux():
+    return usize(sysconf(84)) # _SC_NPROCESSORS_ONLN
+
+func cores() -> usize where @macos():
+    return usize(sysconf(58)) # _SC_NPROCESSORS_ONLN
+
+func cores() -> usize where @windows():
+    return usize(GetActiveProcessorCount(0xffff)) # ALL_PROCESSOR_GROUPS
+
+type Channel[$T, $$size]:
+    lock: Lock
+    filled: Condition
+    emptied: Condition
+    first: usize
+    len: usize
+    closed: bool
+    items: array[$T, $$size]
+
+func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()):
+    with lock(c.lock):
+        while c.len == $$size and not c.closed:
+            pause(c.emptied, c.lock)
+        if c.closed:
+            panic("send on a closed channel", place)
+        c.items[(c.first + c.len) % $$size] = v
+        c.len += 1
+        wake(c.filled)
+
+func receive(c: *Channel[$T, $$size]) -> $T|null:
+    r := Receiving[$T, $$size]{c}
+    v := next(ptr(r))
+    if v is IterationEnd:
+        return null
+    return v
+
+func close(c: *Channel[$T, $$size]):
+    with lock(c.lock):
+        c.closed = true
+        wake(c.filled)
+        wake(c.emptied)
+
+priv type Receiving[$T, $$size]:
+    channel: *Channel[$T, $$size]
+
+func iter(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
+    return Receiving[$T, $$size]{c}
+
+func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd:
+    c := r.channel
+    with lock(c.lock):
+        while c.len == 0 and not c.closed:
+            pause(c.filled, c.lock)
+        if c.len == 0:
+            return IterationEnd
+        v := c.items[c.first]
+        c.first = (c.first + 1) % $$size
+        c.len -= 1
+        wake(c.emptied)
+        return v
+
 type File:
     fd: i32
 
@@ -939,6 +1188,8 @@ operator +=(s: *&str, e: FsError):
         s.* += ": " + reason(e.code)
 
 priv type Stream:
+    writing: Lock
+    reading: Lock
     fd: i32
     open: bool
     socket: bool
@@ -949,34 +1200,55 @@ priv type Stream:
     received: &str
     given: usize
 
-priv context io:
+priv type Streams:
+    lock: Lock
     streams: &list[*Stream]
     last: i32
+
+# a stream is locked for reading before it is locked for writing, and nothing else is locked while io.lock is held
+priv io: Streams
+
+priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
+
+# each thread keeps the streams of stdin, stdout and stderr, so print doesn't lock the table
+priv context cached:
+    standard: array[*Stream?, 3]
 
 priv func stream(f: File, place: &strview = @here()) -> *Stream:
     if f.fd < 0:
         panic("File{" + f.fd + "} is not an open file", place)
-    if io.streams.len == 0:
-        atexit(ptr(flag_exit))
-    while io.streams.len <= usize(f.fd):
-        append(io.streams, usize(0) as *Stream)
-    if io.streams[usize(f.fd)] as usize == 0:
-        io.streams[usize(f.fd)] = heap(Stream{fd = f.fd})
-    s := io.streams[usize(f.fd)]
-    if not s.open:
-        s.open = true
-        s.fd = f.fd
-        recognize(s)
-        s.by_lines = not s.socket and (f.fd == 2 or isatty(f.fd) != 0)
+    if f.fd < 3:
+        known := cached.standard[f.fd]
+        if known is *Stream and known.open:
+            return known
+    with lock(io.lock):
+        if io.streams.len == 0:
+            atexit(ptr(flag_exit))
+        while io.streams.len <= usize(f.fd):
+            append(io.streams, usize(0) as *Stream)
+        if io.streams[usize(f.fd)] as usize == 0:
+            io.streams[usize(f.fd)] = heap(Stream{fd = f.fd})
+        s := io.streams[usize(f.fd)]
+        if not s.open:
+            s.open = true
+            s.fd = f.fd
+            recognize(s)
+            s.by_lines = not s.socket and (f.fd == 2 or isatty(f.fd) != 0)
+            if f.fd < 3:
+                s.path = standard_paths[f.fd]
         if f.fd < 3:
-            names := ["the standard input", "the standard output", "the error output"]
-            s.path = names[f.fd]
-    return s
+            cached.standard[f.fd] = s
+        return s
 
 func flush():
-    for s in io.streams:
-        if s as usize != 0:
-            drain(s)
+    with scratch():
+        all: &slice[*Stream]
+        with lock(io.lock):
+            all = temp(io.streams)
+        for s in all:
+            if s as usize != 0:
+                with lock(s.writing):
+                    drain(s)
 
 priv export func flag_exit():
     flush()
@@ -1001,25 +1273,48 @@ priv func opened(path: &strview, mode: usize, action: &strview) -> File|FsError:
     stream(f).path = path
     return f
 
+# print formats its line here, and a print inside the += of a value adds its own after it
+priv context printing:
+    line: &str
+
+priv func line() -> *&str:
+    return ptr(printing.line)
+
+priv func print_line(f: File, from: usize):
+    write(f, printing.line[from:])
+    printing.line.len = from
+
 func write(f: File, value: $T, place: &strview = @here()):
+    with scratch():
+        write(f, "" + value, place) # formatted before the lock, its += may print
+
+func write(f: File, text: &strview, place: &strview = @here()):
     s := stream(f, place)
     if (f.fd == 1 or f.fd == 2) and io.last != f.fd:
-        drain(stream(File{3 - f.fd})) # stdout and stderr keep the order of the calls
-        io.last = f.fd
-    s.unsent += value
-    if s.unsent.len >= 65536 or s.by_lines and find(s.unsent, "\n") is usize:
-        drain(s)
-        if s.unsent.cap > 131072:
-            free(s.unsent) # after a big text the stream keeps only its usual room
+        other := stream(File{3 - f.fd})
+        switched := false
+        with lock(io.lock):
+            switched = io.last != f.fd
+            io.last = f.fd
+        if switched:
+            with lock(other.writing):
+                drain(other) # stdout and stderr keep the order of the calls
+    with lock(s.writing):
+        s.unsent += text
+        if s.unsent.len >= 65536 or s.by_lines and contains(text, "\n"):
+            drain(s)
+            if s.unsent.cap > 131072:
+                free(s.unsent) # after a big text the stream keeps only its usual room
 
 func flush(f: File, place: &strview = @here()) -> FsError?:
     s := stream(f, place)
-    drain(s)
-    if s.failed == 0:
-        return null
-    failed := FsError{s.failed, "write", temp(s.path)}
-    s.failed = 0
-    return failed
+    with lock(s.writing):
+        drain(s)
+        if s.failed == 0:
+            return null
+        failed := FsError{s.failed, "write", temp(s.path)}
+        s.failed = 0
+        return failed
 
 priv func drain(s: *Stream):
     sent: usize = 0
@@ -1034,43 +1329,45 @@ priv func drain(s: *Stream):
 
 func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize|FsError:
     s := stream(f, place)
-    if s.given == s.received.len:
-        s.given = 0
-        s.received.len = 0
-        if size >= 65536:
-            return receive(s, into, size) # straight into yours, without a copy
-        try receive(s, s.received, 65536)
-    taken := s.received.len - s.given
-    if taken > size:
-        taken = size
-    into.* += s.received[s.given:s.given + taken]
-    s.given += taken
-    return taken
+    with lock(s.reading):
+        if s.given == s.received.len:
+            s.given = 0
+            s.received.len = 0
+            if size >= 65536:
+                return receive(s, into, size) # straight into yours, without a copy
+            try receive(s, s.received, 65536)
+        taken := s.received.len - s.given
+        if taken > size:
+            taken = size
+        into.* += s.received[s.given:s.given + taken]
+        s.given += taken
+        return taken
 
 func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
     s := stream(f, place)
-    checked: usize = 0
-    while true:
-        line: &strview
-        line = (ptr(s.received.*) as usize + s.given) as *bytes
-        line.len = s.received.len - s.given
-        end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
-        if end as usize != 0:
-            line.len = end as usize - ptr(line.*) as usize @trust
-            s.given += line.len + 1
-            if line.len > 0 and line[-1] == '\r':
-                line.len -= 1
-            return temp(line)
-        checked = line.len
-        if s.given > 0:
-            memmove(ptr(s.received.*), ptr(line.*), line.len)
-            s.received.len = line.len
-            s.given = 0
-        if try receive(s, s.received, 65536) == 0:
-            s.given = s.received.len
-            if s.received.len == 0:
-                return null
-            return temp(view(s.received))
+    with lock(s.reading):
+        checked: usize = 0
+        while true:
+            line: &strview
+            line = (ptr(s.received.*) as usize + s.given) as *bytes
+            line.len = s.received.len - s.given
+            end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
+            if end as usize != 0:
+                line.len = end as usize - ptr(line.*) as usize @trust
+                s.given += line.len + 1
+                if line.len > 0 and line[-1] == '\r':
+                    line.len -= 1
+                return temp(line)
+            checked = line.len
+            if s.given > 0:
+                memmove(ptr(s.received.*), ptr(line.*), line.len)
+                s.received.len = line.len
+                s.given = 0
+            if try receive(s, s.received, 65536) == 0:
+                s.given = s.received.len
+                if s.received.len == 0:
+                    return null
+                return temp(view(s.received))
 
 priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
     flush() # what you wrote goes out before the program waits for an answer
@@ -1095,15 +1392,17 @@ priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|
 
 func close(f: File, place: &strview = @here()):
     s := stream(f, place)
-    drain(s)
-    release(s)
-    s.open = false
-    s.failed = 0
-    s.path.len = 0
-    s.received.len = 0
-    s.given = 0
-    if s.received.cap > 131072:
-        free(s.received) # after a long line the stream keeps only its usual room
+    with lock(s.reading):
+        with lock(s.writing):
+            drain(s)
+            release(s)
+            s.open = false
+            s.failed = 0
+            s.path.len = 0
+            s.received.len = 0
+            s.given = 0
+            if s.received.cap > 131072:
+                free(s.received) # after a long line the stream keeps only its usual room
 
 func errno() -> i32 where @linux():
     return __errno_location().*
@@ -1144,8 +1443,8 @@ priv func failure(s: *Stream, writing: bool) -> i32 where not @windows():
         events: i32 = 1 # POLLIN
         if writing:
             events = 4 # POLLOUT
-        wait := array[i32, 2]{s.fd, events} # a struct pollfd
-        poll(ptr(wait) as *bytes, 1, -1)
+        polled := array[i32, 2]{s.fd, events} # a struct pollfd
+        poll(ptr(polled) as *bytes, 1, -1)
         return 0
     if code == 4: # EINTR
         return 0

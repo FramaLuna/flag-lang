@@ -122,3 +122,129 @@ simpl(Fn *fn)
 			idup(b, curi, &insb[NIns]-curi);
 	}
 }
+
+/* where reading the address of thread data
+ * costs a call (apple) or a lookup in a table
+ * (windows), read it once per function, after
+ * the parameters, and keep it in a temporary
+ */
+
+static Sym *thrsym;
+static Ref *thrtmp;
+static uint nthr;
+static Ins *thrins;
+static uint nthrins;
+
+static Ref
+thrbase(Ref r, Ref *off, Fn *fn)
+{
+	Con *c;
+	uint n;
+
+	*off = R;
+	if (rtype(r) != RCon)
+		return R;
+	c = &fn->con[r.val];
+	if (c->type != CAddr || c->sym.type != SThr)
+		return R;
+	for (n=0; n<nthr; n++)
+		if (thrsym[n].id == c->sym.id)
+			break;
+	if (n == nthr) {
+		vgrow(&thrsym, ++nthr);
+		vgrow(&thrtmp, nthr);
+		thrsym[n] = c->sym;
+		thrtmp[n] = newtmp("thr", Kl, fn);
+	}
+	if (c->bits.i)
+		*off = getcon(c->bits.i, fn);
+	return thrtmp[n];
+}
+
+static Ref
+thrstart(Ref r, Fn *fn)
+{
+	Ref b, off, t;
+
+	b = thrbase(r, &off, fn);
+	if (req(b, R) || req(off, R))
+		return b;
+	t = newtmp("thr", Kl, fn);
+	addins(&thrins, &nthrins, &(Ins){.op = Oadd, .cls = Kl, .to = t, .arg = {b, off}});
+	return t;
+}
+
+void
+thronce(Fn *fn)
+{
+	Blk *b;
+	Ins *i, in, *first;
+	Phi *p;
+	Ref r, off[2], t[2];
+	Con c;
+	uint n, x;
+
+	if (!T.apple && !T.windows)
+		return;
+	thrsym = vnew(0, sizeof thrsym[0], PFn);
+	thrtmp = vnew(0, sizeof thrtmp[0], PFn);
+	thrins = vnew(0, sizeof thrins[0], PFn);
+	nthr = 0;
+	nthrins = 0;
+	for (b=fn->start; b; b=b->link) {
+		for (p=b->phi; p; p=p->link)
+			for (n=0; n<p->narg; n++) {
+				r = thrstart(p->arg[n], fn);
+				if (!req(r, R))
+					p->arg[n] = r;
+			}
+		r = thrstart(b->jmp.arg, fn);
+		if (!req(r, R))
+			b->jmp.arg = r;
+		curi = &insb[NIns];
+		for (i=&b->ins[b->nins]; i!=b->ins;) {
+			in = *--i;
+			for (x=0; x<2; x++) {
+				t[x] = R;
+				if (isarg(in.op)) {
+					/* the arguments of a call stay together */
+					r = thrstart(in.arg[x], fn);
+					if (!req(r, R))
+						in.arg[x] = r;
+					continue;
+				}
+				r = thrbase(in.arg[x], &off[x], fn);
+				if (req(r, R))
+					continue;
+				in.arg[x] = r;
+				if (!req(off[x], R)) {
+					t[x] = r;
+					in.arg[x] = newtmp("thr", Kl, fn);
+				}
+			}
+			emiti(in);
+			for (x=0; x<2; x++)
+				if (!req(t[x], R))
+					emit(Oadd, Kl, in.arg[x], t[x], off[x]);
+		}
+		idup(b, curi, &insb[NIns]-curi);
+	}
+	if (nthr == 0)
+		return;
+	b = fn->start;
+	for (first=b->ins; first<&b->ins[b->nins] && ispar(first->op); first++)
+		;
+	curi = &insb[NIns];
+	for (i=&b->ins[b->nins]; i!=first;)
+		emiti(*--i);
+	for (n=nthrins; n>0; n--)
+		emiti(thrins[n-1]);
+	for (n=nthr; n>0; n--) {
+		c = (Con){.type = CAddr, .sym = thrsym[n-1]};
+		emit(Ocopy, Kl, thrtmp[n-1], newcon(&c, fn), R);
+	}
+	for (i=first; i!=b->ins;)
+		emiti(*--i);
+	idup(b, curi, &insb[NIns]-curi);
+	filluse(fn);
+}

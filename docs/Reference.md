@@ -14,7 +14,8 @@ This is the reference of the language
 - [Iteration](#iteration)
 - [Control flow](#control-flow)
 - [Errors](#errors)
-- [Constants and contexts](#constants-and-contexts)
+- [Constants, file variables and contexts](#constants-file-variables-and-contexts)
+- [Threads](#threads)
 - [Modules](#modules)
 - [Memory](#memory)
 - [The memory checker](#the-memory-checker)
@@ -112,7 +113,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 These words are the language, so nothing you declare can have one as its name, not a variable, a parameter, a constant, a function, a type, a field or a module
 ```
 if elif else while for in switch case break continue return defer with pass
-and or xor not is as try trust iferror ifnull true false null
+and or xor not is as try trust parallel wait iferror ifnull true false null
 ```
 ```
 error: 'return' is a keyword of the language, it cannot be used as a name
@@ -128,7 +129,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 | `bool`, `i8`, `u8` | 1 |
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
-| `i64`, `u64`, `usize`, `f64`, pointers, function values | 8 |
+| `i64`, `u64`, `usize`, `f64`, pointers, function values, `Thread[T]` | 8 |
 | void types, `null`, `IterationEnd` | 0 |
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
@@ -164,7 +165,7 @@ A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` t
 
 The tag says which member the union holds. It comes from the id the type has inside that compilation, so it can change when you change the program, don't save it to a file. The tag of `null` is always 0.
 
-An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, and a `context` is filled when the program starts, before `main`. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
+An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a file variable without a value before `main`. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
@@ -220,7 +221,7 @@ From the loosest to the tightest
 9. `*`, `/`, `%`
 10. `as`
 
-The unary operators (`-`, `not`, `try`, `trust`) are tighter than all of them. So `not x == 3` is `(not x) == 3`, write `x != 3` or `not (x == 3)`. And `x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
+The unary operators (`-`, `not`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them. So `not x == 3` is `(not x) == 3`, write `x != 3` or `not (x == 3)`. And `x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
 
 ## Conversions
 ### Implicit ones
@@ -298,7 +299,7 @@ A call sees the functions of its own module, the global ones (from files without
 ### Arguments
 The arguments fill the parameters in order, and named arguments fill their parameter. After a named argument the rest must be named too, and a parameter can't be filled twice.
 
-A default value is computed at the call, every time it's used. It can use constants, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
+A default value is computed at the call, every time it's used. It can use constants, file variables, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
 ```flag
 func pick(a: i32 = 1, b: i32) -> i32:
     return a * 10 + b
@@ -374,7 +375,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
 | `{k: v}` | `put` |
-| `print(x)` | `write(stdout, x)`, that formats with `+=` |
+| `print(a, b)` | formats the values with `+=` into one line, and `write(stdout, line)` |
 | `"a" + x`, `s += x` | `operator +=(s: *&str, x: T)` |
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
@@ -538,6 +539,9 @@ These stop the program, and write the message to the error output
 | `flag: call of an empty function value` | 134 |
 | `flag: an argument is an empty function value` | 134 |
 | `flag: File{-1} is not an open file` | 134 |
+| `flag: send on a closed channel` | 134 |
+| `flag: wait of a thread that was never started` | 134 |
+| `flag: cannot start a thread, the system refuses one more` | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
 
@@ -547,7 +551,7 @@ A negative index counts from the end, `l[-1]` is the last element, and it's an e
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
-## Constants and contexts
+## Constants, file variables and contexts
 ### Constants
 A constant goes at the root of a file. Arithmetic between literals is done by the compiler and the result is still a literal, so it takes the type of where you use it
 ```flag
@@ -562,8 +566,58 @@ Any other expression is written again where you use the constant, like a macro, 
 
 A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`.
 
+### File variables
+A variable at the root of a file, `name: T` or `name: T = value`, is one value that every function and every thread of the program shares. It starts at zero, or at a value that the compiler knows: numbers, `true` and `false`, characters, text literals, constants, `null` and enum variants, the name of a function, `ptr` of another file variable, and struct and array literals of them. The value is checked like the one of a local declaration, with the same conversions, and it goes in the data of the program, so it's there before `main`. Anything that would have to run is an error, nothing runs before `main` to compute it
+```flag
+limit: i32 = 10
+names: array[&strview, 3] = ["one", "two", "three"]
+origin: Point = {0, 0}
+handler: func(i32) -> i32 = twice
+count: i32
+```
+```
+error: a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs
+```
+A text literal doesn't go to a `&str`, so a file variable of text you own starts empty and `main` gives it its text. A table that never changes is a file variable too, so it's not built again every time a function uses it.
+
+Who sees it follows the module rules, like a function: `priv` keeps it in its module, and from another module it's `module.name`. A local variable or a parameter with the same name hides it. A file variable that holds a function is called by its name, `handler(3)`. It's not narrowed by `is` or a `case`, like a field: copy it to a local variable first. It's not a type, `x: count` is `count is a variable, not a type`.
+
+The threads share the file variables and nothing protects them, so what more than one thread changes goes behind a `Lock` (see [Threads](#threads)).
+
 ### Contexts
-A context is one global value with its fields at zero. A union without `null` inside it gets its tag when the program starts, before `main` (see [Unions](#unions)), so a context takes no room in the program file however big it is. C code that runs before `main`, like a constructor in a C file you link, would see those unions without their tag. A context has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Who can see it follows the module rules, like a type.
+A context is a value of each thread, with its fields at zero, that every function sees. Each thread has its own: a new thread starts with every context at zero and doesn't see what the thread that started it wrote there. That's why the scratch memory (see [Memory](#memory)) and the random numbers of `math` belong to the thread that uses them. A union without `null` inside it gets its tag when the thread starts, the first one before `main` (see [Unions](#unions)), so a context takes no room in the program file however big it is, except on Windows, which keeps the zeros of thread data in the file. C code that runs before `main`, like a constructor in a C file you link, would see those unions without their tag. A context has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`, an address that is good while that thread runs. Who can see it follows the module rules, like a type.
+
+## Threads
+`parallel f(x)` runs the call `f(x)` in a new thread and gives a `Thread[T]`, where `T` is what `f` returns, `Thread[null]` when it returns nothing. `wait t` waits for that thread to end and gives its `T`, and `done(t)` says if it ended, without waiting
+```flag
+func sum(from: i64, to: i64) -> i64:
+    total: i64 = 0
+    for i in from..to:
+        total += i
+    return total
+
+func main():
+    a := parallel sum(0, 500000)
+    b := parallel sum(500000, 1000000)
+    print(wait a + wait b)
+```
+- `parallel` goes before a call and nothing else: `parallel goes before a call, it runs that call in a new thread: parallel f(x)`. The call is chosen like any other, with its overloads, generics, defaults, `@here()` and the address that a `*T` parameter takes, and its arguments are computed in the thread that starts it and copied to the new one. A function value runs too, `parallel steps[i](x)`. A builtin like `print` or a conversion, and a C function, don't run in a thread: wrap them in a func
+- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else is `wait expects a thread on its right, and i32 is not one`
+- A local variable that keeps a thread and that nothing reads doesn't compile: `t keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own`
+- `parallel f(x)` alone on its line starts a thread that nobody waits for. Its function can't fail, nothing would see the error: `this thread runs alone and nothing would see an error of i32|Bad, which its function gives: keep the thread and wait for it, t := parallel f(x)`
+- `Thread[T]` is 8 bytes, the address of a block on the heap where the thread finds its arguments and leaves its result. `wait` frees the block, so a thread is waited once, and one that nobody waits is a block that is never freed, `-memory` tells you. The block of a thread that runs alone is freed when it ends. A `Thread` that never got a thread, like a field at zero, stops the program when it's waited: `flag: wait of a thread that was never started`
+- Every thread ends before the program does: when `main` returns, the program waits for the threads that still run and then writes what waits in the files. `exit()` in any thread ends all of them, and a runtime error in any thread ends the program with its message and its place, like in `main`
+- Each thread has 8 MiB of stack, on every system
+- Each thread has its own contexts, at zero when it starts, and its own scratch memory, freed when the thread ends. So a temporary never goes from one thread to another: give the other thread text you own, a `&str`
+- File variables are shared and nothing protects them, guard what two threads change with a `Lock`. `-memory` doesn't look for two threads that use the same memory at once
+
+`Lock`, `Channel[T, N]`, `done` and `cores` are in the library (see [Threads](Library.md#threads)).
+
+On Linux and macOS a thread is a `pthread`, and a `Lock` and the waits of a `Channel` are a `pthread_mutex_t` and a `pthread_cond_t`. On Windows they are `CreateThread`, an `SRWLOCK` and a `CONDITION_VARIABLE`. They all work at zero, so a `Lock` or a `Channel` needs no setup: on macOS, where the zero of a mutex is not ready, the library writes the signature of its initializer the first time. A Linux program links with `-lpthread`, that is empty on a recent C library.
+
+The compiler writes a start function for each type of function that runs in a thread: it writes the tags of the contexts of the new thread, takes the arguments from the block, calls the function, leaves the result in the block and tells the library that the thread ended. The contexts are thread data of QBE, so each thread has its own copy.
+
+`print` formats all its values into one line and writes that line at once, so the lines of two threads never mix. A file has a lock for writing, that a write takes after the value is formatted, so an `operator +=` that prints never waits for its own lock, and another one for reading, so a thread that waits to read a file or a connection doesn't stop the ones that write.
 
 ## Modules
 - `module name` goes in the first line and `use` goes before the first declaration. A file doesn't `use` its own module, it already sees it
@@ -612,6 +666,7 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 - temporaries used after their `with scratch():` ended: `kept points to memory that may be freed already`
 - a pointer to a local variable that leaves its function: `a pointer to buf cannot leave name, buf lives on its stack`
 - a function that frees one argument and reads another that may be the same memory, like `t += t`: `this call may free memory that it also reads through another argument`
+- threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, and `done(t)` after `wait t` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it. `send` of a `Channel` gives what the value points to to the thread that receives it, so it's not yours to free any more, and using it after is using memory that may be freed already
 
 A message names your variable when there is one, and says `this memory` when there is none. It names a function only when you wrote the call: `drop cannot release path, it is temporary memory: a with scratch() block releases it`. The calls the compiler writes for you, for `print`, `+`, `for` or a conversion, are never named.
 
@@ -673,7 +728,7 @@ func main():
 
 These give warnings that are not real
 - freeing in `if c:` and again in `if not c:` warns that it may be freed already and that it may never be freed
-- linked lists and trees whose nodes are allocated in a loop or by a recursive function. It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others, and a node freed through a pointer that may be either of them is not surely freed
+- linked lists and trees whose nodes are allocated in a loop or by a recursive function. It sees all the memory that one line allocates in a loop as two blocks, the newest one and all the others, and a node freed through a pointer that may be either of them is not surely freed. The threads started in a loop are the same, so freeing the text that each one gave, as you wait them one by one, can warn: put what they give in a list, `append(texts, wait t)`, and free it from there, like `examples/threads.flg`
 - a pointer that may point to one of several fields, when you store or free through it
 - a union that a generic function copies, like `append` putting it in a list: inside the function it is only a value of type `$T`, so the checker mixes what the members hold, and after `if t is &str:` on an element taken back, `free(t)` can warn that it is not on the heap
 - memory given to a C function that keeps it or frees it warns that it is never freed, a C function is taken as one that only reads what it gets. A call through a function value is taken the same way
@@ -839,11 +894,13 @@ error: the line ends here, ':' goes here
 - a folder is a test with all its files
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with eleven changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with twelve changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it probes the stack for functions with more than 4 KiB of locals, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
 Three more keep long chains from growing with their square. The dominators of a block are found from its last predecessor to its first, so the end of an `elif` chain meets them one step at a time. The walk that fills the dominance frontier stops at a block that already has it. And the constants of a function are found through a hash instead of a search. 20000 `elif` took 38 s and take 8 s, a switch of 20000 cases 34 s and 7.6 s, a `case` with 20000 values 15.6 s and 0.3 s, and an array literal of 50000 numbers 9.3 s and 0.8 s.
+
+The twelfth is for the contexts, that are thread data. `amd64_win` takes thread data: it goes in the section `.tls$`, and its address is the block of the thread in the table at `gs:88`, at `_tls_index`, plus the place of the symbol in it. And on Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. On macOS that also fixes the address of thread data given as an argument of a call, whose call to the runtime broke the arguments already in their registers. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1 % more when it only checks.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
@@ -851,5 +908,7 @@ Things that work in a way that may surprise you, so be aware
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
+- `receive` of a `Channel` gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in channel`, that ends only when it's closed
+- A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know), and it misses the element mistakes of [Elements](#elements)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy

@@ -1,0 +1,17 @@
+func worker(jobs: *Channel[&str, 16]):
+    for name in jobs: # until the channel is closed
+        print("working on ", name)
+        free(name)
+
+func main():
+    jobs: Channel[&str, 16]
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..4:
+        append(workers, parallel worker(jobs))
+    for name in ["a.txt", "b.txt", "c.txt"]:
+        owned: &str = name # a temporary of this thread can't go to another one
+        send(jobs, owned)
+    close(jobs)
+    for w in workers:
+        wait w
