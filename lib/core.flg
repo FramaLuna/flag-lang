@@ -6,11 +6,36 @@ extern "c":
     func memcpy(to: *bytes, from: *bytes, size: usize) -> *bytes
     func memmove(to: *bytes, from: *bytes, size: usize) -> *bytes
     func memcmp(a: *bytes, b: *bytes, size: usize) -> i32
+    func memchr(at: *bytes, byte: i32, size: usize) -> *bytes
     func strlen(s: cstr) -> usize
-    func write(fd: i32, at: *bytes, size: usize) -> i64
     func exit(code: i32)
     func snprintf(into: *u8, size: usize, format: cstr, ...) -> i32
     func strtod(text: cstr, end: *bytes) -> f64
+
+priv extern "c":
+    func read(fd: i32, at: *bytes, size: usize) -> i32
+    func write(fd: i32, at: *bytes, size: usize) -> i32
+    func open(path: cstr, flags: i32, ...) -> i32
+    func close(fd: i32) -> i32
+    func isatty(fd: i32) -> i32
+    func poll(fds: *bytes, count: u64, wait: i32) -> i32
+    func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
+    func atexit(callback: *bytes) -> i32
+    func _exit(code: i32)
+    func strerror(code: i32) -> cstr
+    func gai_strerror(code: i32) -> cstr
+    func __errno_location() -> *i32
+    func __error() -> *i32
+    func _errno() -> *i32
+    func FormatMessageA(flags: u32, source: *bytes, code: u32, language: u32, into: *u8, size: u32, arguments: *bytes) -> u32
+
+priv extern "ws2_32" where @windows():
+    func WSAGetLastError() -> i32
+    func closesocket(fd: i64) -> i32
+
+type Integer = i8|i16|i32|i64|u8|u16|u32|u64|usize
 
 func heap(v: $T) -> *$T:
     p := malloc(sizeof($T)) as *$T
@@ -18,6 +43,9 @@ func heap(v: $T) -> *$T:
         out_of_memory()
     p.* = v
     return p
+
+func free(p: *$T):
+    free(p as *bytes)
 
 func panic(message: &strview, place: &strview = @here()):
     eprint("flag: ", message)
@@ -34,27 +62,25 @@ func cstr(text: &strview) -> cstr:
     return ptr(temp(text).*) as *u8
 
 func out_of_memory():
-    eprint("flag: out of memory")
+    message: &strview = "flag: out of memory\n"
+    write(2, ptr(message.*), message.len)
     exit(9)
 
-func out_of_bounds(i: $I, len: usize, place: &strview = @here()) where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func out_of_bounds(i: $I, len: usize, place: &strview = @here()) where $I is Integer:
     panic("index " + i + " is out of bounds, length " + len, place)
 
-func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) where $I is Integer:
     panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
 
-func natural(i: $I, len: usize) -> usize where $I is i8|i16|i32|i64:
-    if i >= 0:
-        return usize(i)
-    return len + usize(i) # wraps into the length, or stays past it
-
-func natural(i: $I, len: usize) -> usize where $I is u8|u16|u32|u64|usize:
+func natural(i: $I, len: usize) -> usize where $I is Integer:
+    if i < 0:
+        return len + usize(i) # wraps into the length, or stays past it
     return usize(i)
 
 type fatptr slice[$T]:
     len: usize
 
-func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is Integer:
     first := natural(from, s.len)
     last := natural(to, s.len)
     if first > last or last > s.len:
@@ -64,31 +90,31 @@ func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice
     out.len = last - first
     return out
 
-priv type walk[$T]:
+priv type Walk[$T]:
     base: *bytes
     len: usize
     i: usize
 
-func next(w: *walk[$T]) -> $T|IterationEnd:
+func next(w: *Walk[$T]) -> $T|IterationEnd:
     if w.i >= w.len:
         return IterationEnd
     p := (w.base as usize + w.i * sizeof($T)) as *$T
     w.i += 1
     return p.*
 
-operator +(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+operator +(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] + b[i]
     return out
 
-operator -(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+operator -(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] - b[i]
     return out
 
-operator *(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64:
+operator *(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] * b[i]
@@ -100,7 +126,7 @@ operator /(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is
         out[i] = a[i] / b[i]
     return out
 
-operator /(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator /(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         if b[i] == 0:
@@ -108,7 +134,7 @@ operator /(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) ->
         out[i] = a[i] / b[i]
     return out
 
-operator %(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator %(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         if b[i] == 0:
@@ -116,31 +142,31 @@ operator %(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) ->
         out[i] = a[i] % b[i]
     return out
 
-operator and(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator and(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] and b[i]
     return out
 
-operator or(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator or(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] or b[i]
     return out
 
-operator xor(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator xor(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] xor b[i]
     return out
 
-operator <<(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator <<(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] << b[i]
     return out
 
-operator >>(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+operator >>(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
     out: array[$T, $$n]
     for i in 0..$$n:
         out[i] = a[i] >> b[i]
@@ -156,19 +182,35 @@ type fatptr list[$T]:
     len: usize
     cap: usize
 
+func reserve(l: *&list[$T], want: usize):
+    if want <= l.cap:
+        return
+    cap := l.cap * 2
+    if cap < want:
+        cap = want
+    if cap < 8:
+        cap = 8
+    grown := realloc(ptr(l.*.*), cap * sizeof($T))
+    if grown as usize == 0 and sizeof($T) > 0:
+        out_of_memory()
+    l.* = grown
+    l.cap = cap
+
 func append(l: *&list[$T], v: $T):
     if l.len == l.cap:
-        cap := l.cap * 2
-        if cap < 8:
-            cap = 8
-        grown := realloc(ptr(l.*.*), cap * sizeof($T))
-        if grown as usize == 0 and sizeof($T) > 0:
-            out_of_memory()
-        l.* = grown
-        l.cap = cap
+        reserve(l, l.len + 1)
     p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
     p.* = v
     l.len += 1
+
+func append(l: *&list[$T], items: &slice[$T]):
+    if ptr(items.*) as usize - ptr(l.*.*) as usize < l.cap * sizeof($T):
+        with scratch():
+            append(l, temp(items))
+        return
+    reserve(l, l.len + items.len)
+    memcpy((ptr(l.*.*) as usize + l.len * sizeof($T)) as *bytes, ptr(items.*), items.len * sizeof($T))
+    l.len += items.len
 
 func pop(l: *&list[$T]) -> $T|null:
     if l.len == 0:
@@ -177,7 +219,7 @@ func pop(l: *&list[$T]) -> $T|null:
     p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
     return p.*
 
-func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
     n := natural(at, l.len)
     if n > l.len:
         out_of_bounds(at, l.len, place)
@@ -186,7 +228,7 @@ func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is
     memmove((first as usize + sizeof($T)) as *bytes, first, (l.len - 1 - n) * sizeof($T))
     l[n] = v
 
-func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
     n := natural(at, l.len)
     if n >= l.len:
         out_of_bounds(at, l.len, place)
@@ -236,6 +278,9 @@ func reverse(items: &slice[$T]):
     for i in 0..items.len / 2:
         swap(items, i, items.len - 1 - i)
 
+func clear(l: *&list[$T]):
+    l.len = 0
+
 func free(l: *&list[$T]):
     free(ptr(l.*.*))
     l.* = usize(0) as *bytes
@@ -271,8 +316,8 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
             s[j] = v
         return
     half := s.len / 2
-    merge_sort(s[0:half], spare, before)
-    merge_sort(s[half:s.len], spare, before)
+    merge_sort(s[:half], spare, before)
+    merge_sort(s[half:], spare, before)
     if not before(s[half], s[half - 1]):
         return
     memcpy(ptr(spare.*), ptr(s.*), half * sizeof($T))
@@ -288,14 +333,16 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
             i += 1
         k += 1
 
-func swap(s: &slice[$T], i: usize, j: usize, place: &strview = @here()):
-    if i >= s.len:
+func swap(s: &slice[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
+    a := natural(i, s.len)
+    b := natural(j, s.len)
+    if a >= s.len:
         out_of_bounds(i, s.len, place)
-    if j >= s.len:
+    if b >= s.len:
         out_of_bounds(j, s.len, place)
-    kept := s[i]
-    s[i] = s[j]
-    s[j] = kept
+    kept := s[a]
+    s[a] = s[b]
+    s[b] = kept
 
 type fatptr strview:
     len: usize
@@ -317,13 +364,19 @@ func view(c: cstr) -> &strview:
         out.len = strlen(c)
     return out
 
+func view(bytes: &slice[u8]) -> &strview:
+    out: &strview
+    out = ptr(bytes.*)
+    out.len = bytes.len
+    return out
+
 func items(s: &strview) -> &slice[u8]:
     out: &slice[u8]
     out = ptr(s.*)
     out.len = s.len
     return out
 
-func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
     first := natural(from, v.len)
     last := natural(to, v.len)
     if first > last or last > v.len:
@@ -331,58 +384,6 @@ func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview
     out: &strview
     out = (ptr(v.*) as usize + first) as *bytes
     out.len = last - first
-    return out
-
-priv type chars:
-    rest: &strview
-
-func iter(v: &strview) -> chars:
-    c: chars
-    c.rest = v
-    return c
-
-func next(c: *chars) -> &strview|IterationEnd:
-    if c.rest.len == 0:
-        return IterationEnd
-    bytes := items(c.rest)
-    width := char_width(bytes[0])
-    whole := width <= bytes.len
-    for k in 1..width:
-        whole = whole and (bytes[k] and 0xC0) == 0x80
-    if not whole:
-        width = 1
-    out := c.rest[0:width]
-    c.rest = c.rest[width:c.rest.len]
-    return out
-
-priv func char_width(lead: u8) -> usize:
-    if lead < 0xC0 or lead >= 0xF8:
-        return 1
-    if lead < 0xE0:
-        return 2
-    if lead < 0xF0:
-        return 3
-    return 4
-
-priv type chars_back:
-    rest: &strview
-
-func reverse_iter(v: &strview) -> chars_back:
-    c: chars_back
-    c.rest = v
-    return c
-
-func next(c: *chars_back) -> &strview|IterationEnd:
-    if c.rest.len == 0:
-        return IterationEnd
-    bytes := items(c.rest)
-    start := bytes.len - 1
-    while start > 0 and bytes.len - start < 4 and (bytes[start] and 0xC0) == 0x80:
-        start -= 1
-    if char_width(bytes[start]) != bytes.len - start:
-        start = bytes.len - 1
-    out := c.rest[start:c.rest.len]
-    c.rest = c.rest[0:start]
     return out
 
 func reserve(s: *&str, want: usize):
@@ -532,12 +533,31 @@ func parse_hex(s: &strview) -> u64|null:
         n = n * 16 + digit
     return n
 
-func find(s: &strview, part: &strview) -> usize|null:
+func find(s: &strview, part: &strview) -> usize|null: @trust
+    if part.len == 0:
+        return 0
+    first := i32(part[0])
+    at: usize = 0
+    while at + part.len <= s.len:
+        hit := memchr((ptr(s.*) as usize + at) as *bytes, first, s.len - part.len + 1 - at)
+        if hit as usize == 0:
+            return null
+        at = hit as usize - ptr(s.*) as usize
+        if memcmp(hit, ptr(part.*), part.len) == 0:
+            return at
+        at += 1
+    return null
+
+func find_last(s: &strview, part: &strview) -> usize|null: @trust
     if part.len > s.len:
         return null
-    for i in 0..s.len - part.len + 1:
-        if s[i:i + part.len] == part:
-            return i
+    if part.len == 0:
+        return s.len
+    first := part[0]
+    for at in reverse 0..s.len - part.len + 1:
+        hit := (ptr(s.*) as usize + at) as *u8
+        if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
+            return at
     return null
 
 func contains(s: &strview, part: &strview) -> bool:
@@ -545,65 +565,81 @@ func contains(s: &strview, part: &strview) -> bool:
 
 func replace(s: &strview, old: &strview, new: &strview) -> &strview:
     out: &str
+    defer free(out)
     rest := s
     cut := find(rest, old)
     while cut is usize and old.len > 0:
-        out += rest[0:cut]
+        out += rest[:cut]
         out += new
-        rest = rest[cut + old.len:rest.len]
+        rest = rest[cut + old.len:]
         cut = find(rest, old)
     out += rest
-    result := temp(out)
-    free(out)
-    return result
+    return temp(out)
 
 func join(parts: &slice[$T], separator: &strview) -> &strview:
     out: &str
+    defer free(out)
     for i, part in parts:
         if i > 0:
             out += separator
         out += part
-    result := temp(out)
-    free(out)
-    return result
+    return temp(out)
 
 func lower(s: &strview) -> &strview:
     out := temp(s)
-    for i in 0..out.len:
-        if items(out)[i] >= 'A' and items(out)[i] <= 'Z':
-            items(out)[i] += 32
+    bytes := items(out)
+    for i in 0..bytes.len:
+        if bytes[i] >= 'A' and bytes[i] <= 'Z':
+            bytes[i] += 32
     return out
 
 func upper(s: &strview) -> &strview:
     out := temp(s)
-    for i in 0..out.len:
-        if items(out)[i] >= 'a' and items(out)[i] <= 'z':
-            items(out)[i] -= 32
+    bytes := items(out)
+    for i in 0..bytes.len:
+        if bytes[i] >= 'a' and bytes[i] <= 'z':
+            bytes[i] -= 32
     return out
 
 func starts_with(s: &strview, head: &strview) -> bool:
-    return s.len >= head.len and s[0:head.len] == head
+    return s.len >= head.len and s[:head.len] == head
 
 func ends_with(s: &strview, tail: &strview) -> bool:
-    return s.len >= tail.len and s[s.len - tail.len:s.len] == tail
+    return s.len >= tail.len and s[s.len - tail.len:] == tail
 
 func trim(s: &strview) -> &strview:
     return trim_end(trim_start(s))
 
 func trim_start(s: &strview) -> &strview:
+    bytes := items(s)
     first: usize = 0
-    while first < s.len and blank(items(s)[first]):
+    while first < bytes.len and blank(bytes[first]):
         first += 1
-    return s[first:s.len]
+    return s[first:]
 
 func trim_end(s: &strview) -> &strview:
-    last := s.len
-    while last > 0 and blank(items(s)[last - 1]):
+    bytes := items(s)
+    last := bytes.len
+    while last > 0 and blank(bytes[last - 1]):
         last -= 1
-    return s[0:last]
+    return s[:last]
 
 priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
+
+func words(s: &strview) -> &slice[&strview]:
+    found: &list[&strview]
+    defer free(found)
+    bytes := items(s)
+    at: usize = 0
+    while at < bytes.len:
+        start := at
+        while at < bytes.len and not blank(bytes[at]):
+            at += 1
+        if at > start:
+            append(found, s[start:at])
+        at += 1
+    return temp(found)
 
 func split(s: &strview, separator: &strview) -> &slice[&strview]:
     count: usize = 1
@@ -611,7 +647,7 @@ func split(s: &strview, separator: &strview) -> &slice[&strview]:
     cut := find(rest, separator)
     while cut is usize and separator.len > 0:
         count += 1
-        rest = rest[cut + separator.len:rest.len]
+        rest = rest[cut + separator.len:]
         cut = find(rest, separator)
     parts: &slice[&strview]
     parts = temp(count * sizeof(&strview))
@@ -619,8 +655,8 @@ func split(s: &strview, separator: &strview) -> &slice[&strview]:
     rest = s
     for k in 0..count - 1:
         at := trust find(rest, separator)
-        parts[k] = rest[0:at]
-        rest = rest[at + separator.len:rest.len]
+        parts[k] = rest[:at]
+        rest = rest[at + separator.len:]
     parts[count - 1] = rest
     return parts
 
@@ -649,8 +685,15 @@ func parse_int(s: &strview) -> i64|null:
     return i64(n)
 
 func parse_float(s: &strview) -> f64|null:
-    if s.len == 0 or items(s)[0] <= ' ':
+    word := s
+    if starts_with(word, "-") or starts_with(word, "+"):
+        word = word[1:]
+    if word.len == 0:
         return null
+    if word != "inf" and word != "nan":
+        for b in items(word):
+            if (b < '0' or b > '9') and b != '.' and b != 'e' and b != 'E' and b != '-' and b != '+':
+                return null # only decimal, strtod would read 0x10 and infinity too
     with scratch():
         text := cstr(s)
         end := text
@@ -662,12 +705,11 @@ func parse_float(s: &strview) -> f64|null:
 operator +=(s: *&str, n: usize):
     digits: array[u8, 20]
     i: usize = 20
-    v := n
     while true:
         i -= 1
-        digits[i] = u8(v % 10) + '0'
-        v = v / 10
-        if v == 0:
+        digits[i] = u8(n % 10) + '0'
+        n = n / 10
+        if n == 0:
             break
     out: &strview
     out = (ptr(digits) as usize + i) as *bytes
@@ -722,41 +764,64 @@ priv func float_text(s: *&str, f: f64, single: bool):
             name = "-inf"
         s.* += name
         return
-    buf: array[u8, 40]
+    digits: i32 = 15
+    most: i32 = 17
+    smallest := 2.2250738585072014e-308
+    if single:
+        digits = 6
+        most = 9
+        smallest = 1.1754943508222875e-38
+    if f < smallest and f > 0.0 - smallest:
+        digits = 1 # a subnormal number holds fewer digits
+    # shortest digits that read back: round, then cut the zeros
+    buf: array[u8, 32]
     at := ptr(buf) as *u8
     out: &strview
     out = ptr(buf) as *bytes
-    digits: i32 = 1
-    out.len = usize(snprintf(at, 40, "%.*e", digits - 1, f))
-    while digits < 17 and strtod(at, usize(0) as *bytes) != f and not (single and f32(strtod(at, usize(0) as *bytes)) == f32(f)):
+    out.len = usize(snprintf(at, 32, "%#.*e", digits - 1, f))
+    while digits < most:
+        back := strtod(at, usize(0) as *bytes)
+        if back == f or single and f32(back) == f32(f):
+            break
         digits += 1
-        out.len = usize(snprintf(at, 40, "%.*e", digits - 1, f))
+        out.len = usize(snprintf(at, 32, "%#.*e", digits - 1, f))
+    lead := usize(buf[0] == '-')
+    mark := lead + usize(digits) + 1
     exponent: i32 = 0
-    mark: usize = 0
-    for i in 0..out.len:
-        if buf[i] == 'e':
-            mark = i
-            for j in i + 2..out.len:
-                exponent = exponent * 10 + i32(buf[j]) - '0'
-            if buf[i + 1] == '-':
-                exponent = 0 - exponent
+    for i in mark + 2..out.len:
+        exponent = exponent * 10 + i32(buf[i] - '0')
+    if buf[mark + 1] == '-':
+        exponent = 0 - exponent
+    last := mark
+    while buf[last - 1] == '0':
+        last -= 1
+    buf[lead + 1] = buf[lead]
+    shown := out[lead + 1:last]
+    s.* += out[:lead]
     if exponent < -4 or exponent >= 16:
-        size := exponent
-        sign: &strview = "+"
+        s.* += shown[:1]
+        if shown.len > 1:
+            s.* += "." + shown[1:]
+        sign: &strview = "e+"
         if exponent < 0:
-            size = 0 - exponent
-            sign = "-"
-        s.* += out[0:mark] + "e" + sign
-        if size < 10:
+            sign = "e-"
+            exponent = 0 - exponent
+        s.* += sign
+        if exponent < 10:
             s.* += "0"
-        s.* += size
-        return
-    decimals := digits - 1 - exponent
-    if decimals < 0:
-        decimals = 0
-    out.len = usize(snprintf(at, 40, "%.*f", decimals, f))
-    s.* += out
-    if decimals == 0:
+        s.* += exponent
+    elif exponent < 0:
+        s.* += "0."
+        for k in 0..-exponent - 1:
+            add_byte(s, '0')
+        s.* += shown
+    elif shown.len > usize(exponent) + 1:
+        point := usize(exponent) + 1
+        s.* += shown[:point] + "." + shown[point:]
+    else:
+        s.* += shown
+        for k in shown.len..usize(exponent) + 1:
+            add_byte(s, '0')
         s.* += ".0"
 
 operator +=(s: *&str, items: &slice[$T]):
@@ -799,16 +864,21 @@ operator +=(s: *&str, f: Fixed):
         out: &strview
         out = temp(room)
         out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
-        if tie and items(out)[out.len - 1] % 2 == 1:
+        if tie and out[-1] % 2 == 1:
             bits.* += 2
             out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
+        if out[0] == '-' and strtod(ptr(out.*) as *u8, usize(0) as *bytes) == 0.0:
+            out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
 
 type Hex:
     value: u64
 
-func hex(value: u64) -> Hex:
-    return Hex{value}
+func hex(value: $I) -> Hex where $I is Integer:
+    bits := u64(value)
+    if sizeof($I) < 8:
+        bits = bits and (u64(1) << u64(sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
+    return Hex{bits}
 
 operator +=(s: *&str, h: Hex):
     digits: &strview = "0123456789abcdef"
@@ -817,7 +887,7 @@ operator +=(s: *&str, h: Hex):
     v := h.value
     while true:
         i -= 1
-        buf[i] = items(digits)[usize(v and 15)]
+        buf[i] = digits[v and 15]
         v = v >> 4
         if v == 0:
             break
@@ -826,17 +896,315 @@ operator +=(s: *&str, h: Hex):
     out.len = 16 - i
     s.* += "0x" + out
 
-func write(fd: i32, text: &strview):
-    write(fd, ptr(text.*), text.len)
+type Padded[$T]:
+    value: $T
+    width: i32
 
-func arg_count() -> usize:
-    return usize(@argc())
+func pad(value: $T, width: i32) -> Padded[$T]:
+    return Padded[$T]{value, width}
 
-func arg(i: usize) -> &strview:
-    return view(((@argv() as usize + i * 8) as **u8).*)
+operator +=(s: *&str, p: Padded[$T]):
+    text := "" + p.value
+    count: i32 = 0
+    for c in text:
+        count += 1
+    if p.width > 0:
+        for k in count..p.width:
+            add_byte(s, ' ')
+    s.* += text
+    for k in count..-p.width:
+        add_byte(s, ' ')
+
+type File:
+    fd: i32
+
+stdin = File{0}
+stdout = File{1}
+stderr = File{2}
+
+TIMED_OUT = -10060 # the Windows code, negative like every code that is not errno
+
+type error FsError:
+    code: i32
+    action: &strview
+    path: &strview
+
+operator +=(s: *&str, e: FsError):
+    s.* += "cannot " + e.action
+    if e.path.len > 0:
+        s.* += " " + e.path
+    if e.code == TIMED_OUT:
+        s.* += ": the timeout ran out"
+    else:
+        s.* += ": " + reason(e.code)
+
+priv type Stream:
+    fd: i32
+    open: bool
+    socket: bool
+    by_lines: bool
+    failed: i32
+    path: &str
+    unsent: &str
+    received: &str
+    given: usize
+
+priv context io:
+    streams: &list[*Stream]
+    last: i32
+
+priv func stream(f: File, place: &strview = @here()) -> *Stream:
+    if f.fd < 0:
+        panic("File{" + f.fd + "} is not an open file", place)
+    if io.streams.len == 0:
+        atexit(ptr(flag_exit))
+    while io.streams.len <= usize(f.fd):
+        append(io.streams, usize(0) as *Stream)
+    if io.streams[usize(f.fd)] as usize == 0:
+        io.streams[usize(f.fd)] = heap(Stream{fd = f.fd})
+    s := io.streams[usize(f.fd)]
+    if not s.open:
+        s.open = true
+        s.fd = f.fd
+        recognize(s)
+        s.by_lines = not s.socket and (f.fd == 2 or isatty(f.fd) != 0)
+        if f.fd < 3:
+            names := ["the standard input", "the standard output", "the error output"]
+            s.path = names[f.fd]
+    return s
+
+func flush():
+    for s in io.streams:
+        if s as usize != 0:
+            drain(s)
+
+priv export func flag_exit():
+    flush()
+    lost := flush(stdout)
+    if lost is FsError:
+        eprint("flag: ", lost)
+        _exit(1)
+
+func open(path: &strview) -> File|FsError:
+    return opened(path, 0, "open")
+
+func create(path: &strview, append: bool = false) -> File|FsError:
+    return opened(path, 1 + usize(append), "create")
+
+priv func opened(path: &strview, mode: usize, action: &strview) -> File|FsError:
+    flags := open_flags()
+    f := File{-1}
+    with scratch():
+        f.fd = open(cstr(path), flags[mode], flags[3])
+    if f.fd < 0:
+        return FsError{errno(), action, path}
+    stream(f).path = path
+    return f
+
+func write(f: File, value: $T, place: &strview = @here()):
+    s := stream(f, place)
+    if (f.fd == 1 or f.fd == 2) and io.last != f.fd:
+        drain(stream(File{3 - f.fd})) # stdout and stderr keep the order of the calls
+        io.last = f.fd
+    s.unsent += value
+    if s.unsent.len >= 65536 or s.by_lines and find(s.unsent, "\n") is usize:
+        drain(s)
+        if s.unsent.cap > 131072:
+            free(s.unsent) # after a big text the stream keeps only its usual room
+
+func flush(f: File, place: &strview = @here()) -> FsError?:
+    s := stream(f, place)
+    drain(s)
+    if s.failed == 0:
+        return null
+    failed := FsError{s.failed, "write", temp(s.path)}
+    s.failed = 0
+    return failed
+
+priv func drain(s: *Stream):
+    sent: usize = 0
+    while sent < s.unsent.len:
+        n := transfer(s, (ptr(s.unsent.*) as usize + sent) as *bytes, s.unsent.len - sent, true)
+        if n is FsError:
+            if s.failed == 0:
+                s.failed = n.code
+            break
+        sent += n
+    s.unsent.len = 0
+
+func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize|FsError:
+    s := stream(f, place)
+    if s.given == s.received.len:
+        s.given = 0
+        s.received.len = 0
+        if size >= 65536:
+            return receive(s, into, size) # straight into yours, without a copy
+        try receive(s, s.received, 65536)
+    taken := s.received.len - s.given
+    if taken > size:
+        taken = size
+    into.* += s.received[s.given:s.given + taken]
+    s.given += taken
+    return taken
+
+func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
+    s := stream(f, place)
+    checked: usize = 0
+    while true:
+        line: &strview
+        line = (ptr(s.received.*) as usize + s.given) as *bytes
+        line.len = s.received.len - s.given
+        end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
+        if end as usize != 0:
+            line.len = end as usize - ptr(line.*) as usize @trust
+            s.given += line.len + 1
+            if line.len > 0 and line[-1] == '\r':
+                line.len -= 1
+            return temp(line)
+        checked = line.len
+        if s.given > 0:
+            memmove(ptr(s.received.*), ptr(line.*), line.len)
+            s.received.len = line.len
+            s.given = 0
+        if try receive(s, s.received, 65536) == 0:
+            s.given = s.received.len
+            if s.received.len == 0:
+                return null
+            return temp(view(s.received))
+
+priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
+    flush() # what you wrote goes out before the program waits for an answer
+    reserve(into, into.len + size)
+    got := try transfer(s, (ptr(into.*.*) as usize + into.len) as *bytes, size, false)
+    into.len += got
+    return got
+
+priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|FsError:
+    part := size
+    if part > 1 << 30:
+        part = 1 << 30 # macOS refuses 2 GiB in one call, and Windows counts in an i32
+    while true:
+        n := moved(s, at, part, writing)
+        if n >= 0:
+            return usize(n)
+        code := failure(s, writing)
+        if code != 0 and writing:
+            return FsError{code, "write", temp(s.path)}
+        if code != 0:
+            return FsError{code, "read", temp(s.path)}
+
+func close(f: File, place: &strview = @here()):
+    s := stream(f, place)
+    drain(s)
+    release(s)
+    s.open = false
+    s.failed = 0
+    s.path.len = 0
+    s.received.len = 0
+    s.given = 0
+    if s.received.cap > 131072:
+        free(s.received) # after a long line the stream keeps only its usual room
+
+func errno() -> i32 where @linux():
+    return __errno_location().*
+
+func errno() -> i32 where @macos():
+    return __error().*
+
+func errno() -> i32 where @windows():
+    return _errno().*
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @linux():
+    if not writing:
+        return read(s.fd, at, size)
+    if s.socket:
+        return send(i64(s.fd), at, size, 0x4000) # MSG_NOSIGNAL, a closed peer is an error and not a signal
+    return write(s.fd, at, size)
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @macos():
+    if writing:
+        return write(s.fd, at, size) # net sets SO_NOSIGPIPE on its sockets
+    return read(s.fd, at, size)
+
+priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @windows():
+    if s.socket and writing:
+        return send(i64(s.fd), at, size, 0)
+    if s.socket:
+        return recv(i64(s.fd), at, size, 0)
+    if writing:
+        return write(s.fd, at, size)
+    return read(s.fd, at, size)
+
+priv func failure(s: *Stream, writing: bool) -> i32 where not @windows():
+    code := errno()
+    blocked := code == 11 or code == 35 # EAGAIN, 11 on Linux and 35 on macOS, where the other number is not an error of read or write
+    if blocked and s.socket:
+        return TIMED_OUT
+    if blocked:
+        events: i32 = 1 # POLLIN
+        if writing:
+            events = 4 # POLLOUT
+        wait := array[i32, 2]{s.fd, events} # a struct pollfd
+        poll(ptr(wait) as *bytes, 1, -1)
+        return 0
+    if code == 4: # EINTR
+        return 0
+    return code
+
+priv func failure(s: *Stream, writing: bool) -> i32 where @windows():
+    if s.socket:
+        return 0 - WSAGetLastError()
+    return errno()
+
+priv func recognize(s: *Stream) where not @windows():
+    address: array[u8, 128]
+    size: u32 = 128
+    s.socket = getsockname(i64(s.fd), ptr(address) as *bytes, ptr(size)) == 0
+
+priv func recognize(s: *Stream) where @windows():
+    s.socket = s.fd >= 8192 # net gives a socket as File{8192 + handle}, past every descriptor of the C runtime, so the numbers never meet
+    if s.socket:
+        s.fd -= 8192
+
+priv func release(s: *Stream) where not @windows():
+    close(s.fd)
+
+priv func release(s: *Stream) where @windows():
+    if s.socket:
+        closesocket(i64(s.fd))
+    else:
+        close(s.fd)
+
+priv func open_flags() -> array[i32, 4] where @linux():
+    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
+
+priv func open_flags() -> array[i32, 4] where @macos():
+    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
+
+priv func open_flags() -> array[i32, 4] where @windows():
+    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
+
+priv func reason(code: i32) -> &strview where @linux():
+    if code < 0:
+        return view(gai_strerror(code))
+    return view(strerror(code))
+
+priv func reason(code: i32) -> &strview where @macos():
+    if code < 0:
+        return view(gai_strerror(0 - code))
+    return view(strerror(code))
+
+priv func reason(code: i32) -> &strview where @windows():
+    if code >= 0:
+        return view(strerror(code))
+    text: array[u8, 512]
+    size := FormatMessageA(0x1200, usize(0) as *bytes, u32(0 - code), 0, ptr(text) as *u8, 512, usize(0) as *bytes)
+    out: &strview
+    out = ptr(text) as *bytes
+    out.len = usize(size)
+    return trim_end(out) + " (" + (0 - code) + ")"
 
 type entry[$K, $V]:
-    used: bool
     key: $K
     value: $V
 
@@ -851,7 +1219,7 @@ func hash(s: &strview) -> u64:
         h = (h xor u64(b)) * 0x100_0000_01b3
     return h
 
-func hash(n: $T) -> u64 where $T is i8|i16|i32|i64|u8|u16|u32|u64|usize:
+func hash(n: $T) -> u64 where $T is Integer:
     h := u64(n) * 0x9e37_79b9_7f4a_7c15 # 2^64 over the golden ratio
     return h xor (h >> 32)
 
@@ -863,79 +1231,92 @@ func hash(f: f64) -> u64:
 func hash(f: f32) -> u64:
     return hash(f64(f))
 
-func hash(v: $T) -> u64 where not ($T is i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64):
-    bytes: &strview
-    bytes = ptr(v) as *bytes
-    bytes.len = sizeof($T)
-    return hash(bytes)
+priv type Slot[$K, $V]:
+    hash: u64
+    key: $K
+    value: $V
 
-priv func table(m: &map[$K, $V]) -> &slice[entry[$K, $V]]:
-    out: &slice[entry[$K, $V]]
+priv func slots(m: &map[$K, $V]) -> &slice[Slot[$K, $V]]:
+    out: &slice[Slot[$K, $V]]
     out = ptr(m.*)
     out.len = m.cap
     return out
 
+priv func kept_hash(key: $K) -> u64:
+    return hash(key) or 0x8000_0000_0000_0000 # 0 marks a free slot
+
 priv func locate(m: &map[$K, $V], key: $K) -> usize:
-    entries := table(m)
-    i := usize(hash(key)) and m.cap - 1
-    while entries[i].used and entries[i].key != key:
+    table := slots(m)
+    h := kept_hash(key)
+    i := usize(h) and m.cap - 1
+    while table[i].hash != 0 and (table[i].hash != h or table[i].key != key):
         i = (i + 1) and m.cap - 1
     return i
 
 func put(m: *&map[$K, $V], key: $K, value: $V):
+    put(m, key).* = value
+
+priv func put(m: *&map[$K, $V], key: $K) -> *$V:
     if (m.len + 1) * 2 > m.cap:
-        old := table(m.*)
+        old := slots(m.*)
         cap := m.cap * 2
         if cap < 16:
             cap = 16
-        grown := calloc(cap, sizeof(entry[$K, $V]))
+        grown := calloc(cap, sizeof(Slot[$K, $V]))
         if grown as usize == 0:
             out_of_memory()
         m.* = grown
         m.cap = cap
-        m.len = 0
-        for e in old:
-            if e.used:
-                put(m, e.key, e.value)
+        table := slots(m.*)
+        for s in old:
+            if s.hash != 0:
+                j := usize(s.hash) and cap - 1
+                while table[j].hash != 0:
+                    j = (j + 1) and cap - 1
+                table[j] = s
         free(ptr(old.*))
     i := locate(m.*, key)
-    if not table(m.*)[i].used:
+    table := slots(m.*)
+    if table[i].hash == 0:
+        table[i] = Slot[$K, $V]{hash = kept_hash(key), key = key}
         m.len += 1
-    table(m.*)[i] = entry[$K, $V]{true, key, value}
-
-func get(m: &map[$K, $V], key: $K) -> $V|null:
-    if m.cap == 0:
-        return null
-    e := table(m)[locate(m, key)]
-    if e.used:
-        return e.value
-    return null
-
-func contains(m: &map[$K, $V], key: $K) -> bool:
-    return m.cap > 0 and table(m)[locate(m, key)].used
+    return ptr(table[i].value)
 
 func at(m: &map[$K, $V], key: $K) -> $V|null:
-    return get(m, key)
+    if m.cap == 0:
+        return null
+    table := slots(m)
+    i := locate(m, key)
+    if table[i].hash == 0:
+        return null
+    return table[i].value
+
+func contains(m: &map[$K, $V], key: $K) -> bool:
+    return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func remove(m: *&map[$K, $V], key: $K) -> $V|null:
-    if not contains(m.*, key):
+    if m.cap == 0:
         return null
+    table := slots(m.*)
     hole := locate(m.*, key)
-    value := table(m.*)[hole].value
+    if table[hole].hash == 0:
+        return null
+    value := table[hole].value
     j := hole
-    while table(m.*)[(j + 1) and m.cap - 1].used:
+    while table[(j + 1) and m.cap - 1].hash != 0:
         j = (j + 1) and m.cap - 1
-        home := usize(hash(table(m.*)[j].key)) and m.cap - 1
+        home := usize(table[j].hash) and m.cap - 1
         if j > hole and (home <= hole or home > j) or j < hole and home <= hole and home > j:
-            table(m.*)[hole] = table(m.*)[j]
+            table[hole] = table[j]
             hole = j
-    table(m.*)[hole].used = false
+    table[hole].hash = 0
     m.len -= 1
     return value
 
 func clear(m: *&map[$K, $V]):
-    for i in 0..m.cap:
-        table(m.*)[i].used = false
+    table := slots(m.*)
+    for i in 0..table.len:
+        table[i].hash = 0
     m.len = 0
 
 func free(m: *&map[$K, $V]):
@@ -944,18 +1325,19 @@ func free(m: *&map[$K, $V]):
     m.len = 0
     m.cap = 0
 
-priv type pairs[$K, $V]:
-    entries: &slice[entry[$K, $V]]
+priv type Pairs[$K, $V]:
+    table: &slice[Slot[$K, $V]]
     i: usize
 
-func iter(m: &map[$K, $V]) -> pairs[$K, $V]:
-    return pairs[$K, $V]{table(m), 0}
+func iter(m: &map[$K, $V]) -> Pairs[$K, $V]:
+    return Pairs[$K, $V]{slots(m), 0}
 
-func next(p: *pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
-    while p.i < p.entries.len:
+func next(p: *Pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
+    while p.i < p.table.len:
         p.i += 1
-        if p.entries[p.i - 1].used:
-            return p.entries[p.i - 1]
+        s := p.table[p.i - 1]
+        if s.hash != 0:
+            return entry[$K, $V]{s.key, s.value}
     return IterationEnd
 
 operator +=(s: *&str, m: &map[$K, $V]):
@@ -986,17 +1368,14 @@ func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
         return MapFull
     if i == m.len:
         m.len += 1
-    m.entries[i] = entry[$K, $V]{true, key, value}
+    m.entries[i] = entry[$K, $V]{key, value}
     return null
 
-func get(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
     i := place(m, key)
     if i == m.len:
         return null
     return m.entries[i].value
-
-func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
-    return get(m, key)
 
 func contains(m: *fixmap[$K, $V, $$max], key: $K) -> bool:
     return place(m, key) < m.len
@@ -1014,11 +1393,23 @@ func remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
 func clear(m: *fixmap[$K, $V, $$max]):
     m.len = 0
 
-func iter(m: *fixmap[$K, $V, $$max]) -> walk[entry[$K, $V]]:
-    w: walk[entry[$K, $V]]
-    w.base = ptr(m.entries) as *bytes
-    w.len = m.len
-    return w
+func iter(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
+    return Walk[entry[$K, $V]]{ptr(m.entries) as *bytes, m.len, 0}
+
+operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
+    if a.len != b.len:
+        return false
+    for i in 0..a.len:
+        k := place(b, a.entries[i].key)
+        if k == b.len or b.entries[k].value != a.entries[i].value:
+            return false
+    return true
+
+func hash(m: *fixmap[$K, $V, $$max]) -> u64:
+    h: u64 = 0
+    for i in 0..m.len:
+        h += hash(m.entries[i].key) * 31 + hash(m.entries[i].value) # a sum, so the order of the entries doesn't count
+    return h
 
 operator +=(s: *&str, m: *fixmap[$K, $V, $$max]):
     s.* += "{"

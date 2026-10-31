@@ -1,0 +1,19 @@
+use fs
+
+extern "c":
+    func dup2(from: i32, to: i32) -> i32
+
+func main():
+    path := "build/tests/io_flush_reports_once.txt"
+    _ = write_file(path, "")
+    reader := trust open(path)
+    write(reader, "lost\n")
+    print(flush(reader))
+    print(flush(reader))
+    writer := trust create(path)
+    dup2(writer.fd, reader.fd)
+    write(reader, "kept\n")
+    print(flush(reader))
+    close(reader)
+    close(writer)
+    print(read_file(path))

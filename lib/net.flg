@@ -1,5 +1,4 @@
 module net
-use math
 
 priv extern "c":
     func socket(family: i32, kind: i32, protocol: i32) -> i32
@@ -11,117 +10,186 @@ priv extern "c":
     func setsockopt(fd: i64, level: i32, name: i32, value: *bytes, size: u32) -> i32
     func getaddrinfo(host: cstr, service: cstr, hints: *bytes, found: **bytes) -> i32
     func freeaddrinfo(found: *bytes)
-    func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
-    func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
-    func signal(number: i32, handler: *bytes) -> *bytes
+    func fcntl(fd: i64, command: i32, ...) -> i32
     func close(fd: i64) -> i32
+    func SetHandleInformation(handle: i64, mask: u32, flags: u32) -> i32
 
 priv extern "ws2_32" where @windows():
     func WSAStartup(version: u16, into: *bytes) -> i32
+    func WSAGetLastError() -> i32
     func closesocket(fd: i64) -> i32
 
-type error enum NetError = CannotResolve|CannotConnect|CannotListen|CannotAccept|CannotSend|CannotReceive
-
 type Socket:
-    fd: i64
+    fd: i32
+
+type Server:
+    fd: i32
+
+type error NetError:
+    code: i32
+    action: &strview
+    address: &strview
+
+operator +=(s: *&str, e: NetError):
+    s.* += FsError{e.code, e.action, e.address} # a connection fails in the words of a file
 
 func connect(host: &strview, port: u16) -> Socket|NetError:
-    prepare()
+    start()
     hints: array[i32, 12]
     hints[2] = 1
     found: *bytes
+    code: i32 = 0
     with scratch():
-        if getaddrinfo(cstr(host), cstr("" + port), ptr(hints) as *bytes, ptr(found)) != 0:
-            return CannotResolve
-    out: Socket|NetError = CannotConnect
+        code = getaddrinfo(cstr(host), cstr("" + port), ptr(hints) as *bytes, ptr(found))
+    if code != 0:
+        if code > 0:
+            code = 0 - code # getaddrinfo's codes go negative, apart from errno
+        return NetError{code, "connect to", host + ":" + port}
+    failed: NetError
     entry := found
-    while entry as usize != 0 and out is NetError:
+    while entry as usize != 0:
         fields := entry as *array[i32, 4]
         fd := i64(socket(fields.*[1], fields.*[2], fields.*[3]))
         address := ((entry as usize + address_in_info()) as **bytes).*
         size := ((entry as usize + 16) as *u32).*
+        if fd >= 0:
+            prepare(fd)
         if fd >= 0 and connect(fd, address, size) == 0:
-            out = Socket{fd}
-        elif fd >= 0:
-            close(Socket{fd})
+            freeaddrinfo(found)
+            return Socket{i32(fd)}
+        failed = NetError{failure(), "connect to", host + ":" + port}
+        if fd >= 0:
+            dispose(fd)
         entry = ((entry as usize + 40) as **bytes).*
     freeaddrinfo(found)
-    return out
+    return failed
 
-func listen(port: u16) -> Socket|NetError:
-    prepare()
+func listen(port: u16) -> Server|NetError:
+    start()
     fd := i64(socket(2, 1, 0))
-    if fd < 0:
-        return CannotListen
-    yes: i32 = 1
-    reuse_address(fd, ptr(yes) as *bytes)
     address := inet_address()
     address[2] = u8(port >> 8)
     address[3] = u8(port and 255)
-    if bind(fd, ptr(address) as *bytes, 16) != 0 or listen(fd, 64) != 0:
-        close(Socket{fd})
-        return CannotListen
-    return Socket{fd}
+    if fd >= 0:
+        prepare(fd)
+    if fd < 0 or bind(fd, ptr(address) as *bytes, 16) != 0 or listen(fd, 64) != 0:
+        failed := NetError{failure(), "listen on port", "" + port}
+        if fd >= 0:
+            dispose(fd)
+        return failed
+    return Server{i32(fd)}
 
-func accept(server: Socket) -> Socket|NetError:
-    fd := i64(accept(server.fd, usize(0) as *bytes, usize(0) as *u32))
+func accept(server: Server) -> Socket|NetError:
+    fd := i64(accept(i64(server.fd), usize(0) as *bytes, usize(0) as *u32))
     if fd < 0:
-        return CannotAccept
-    return Socket{fd}
+        return NetError{failure(), "accept a connection", ""}
+    prepare(fd)
+    return Socket{i32(fd)}
 
-func port(s: Socket) -> u16:
+func port(server: Server) -> u16:
     address: array[u8, 128]
     size: u32 = 128
-    if getsockname(s.fd, ptr(address) as *bytes, ptr(size)) != 0:
-        return 0
+    getsockname(i64(server.fd), ptr(address) as *bytes, ptr(size))
     return u16(address[2]) << 8 or u16(address[3])
 
-func send(s: Socket, text: &strview) -> CannotSend?:
-    done: usize = 0
-    while done < text.len:
-        wrote := send(s.fd, (ptr(text.*) as usize + done) as *bytes, min(text.len - done, 65536), 0)
-        if wrote <= 0:
-            return CannotSend
-        done += usize(wrote)
+func close(server: Server):
+    dispose(i64(server.fd))
+
+func write(s: Socket, value: $T, place: &strview = @here()):
+    write(file(s), value, place)
+
+func read(s: Socket, into: *&str, size: usize, place: &strview = @here()) -> usize|NetError:
+    got := read(file(s), into, size, place)
+    if got is FsError:
+        return NetError{got.code, got.action, got.path}
+    return got
+
+func read_line(s: Socket, place: &strview = @here()) -> &strview|null|NetError:
+    line := read_line(file(s), place)
+    if line is FsError:
+        return NetError{line.code, line.action, line.path}
+    return line
+
+func flush(s: Socket, place: &strview = @here()) -> NetError?:
+    failed := flush(file(s), place)
+    if failed is FsError:
+        return NetError{failed.code, failed.action, failed.path}
     return null
 
-func receive(s: Socket) -> &str|CannotReceive:
-    out: &str
-    reserve(out, 65536)
-    got := recv(s.fd, ptr(out.*), out.cap, 0)
-    if got < 0:
-        free(out)
-        return CannotReceive
-    out.len = usize(got)
-    return out
+func close(s: Socket, place: &strview = @here()):
+    close(file(s), place)
 
-func close(s: Socket) where not @windows():
-    close(s.fd)
+priv func file(s: Socket) -> File where not @windows():
+    return File{s.fd}
 
-func close(s: Socket) where @windows():
-    closesocket(s.fd)
+priv func file(s: Socket) -> File where @windows():
+    return File{8192 + s.fd} # core reads a File past the 8192 descriptors of the C runtime as a socket
 
-priv func prepare() where not @windows():
-    signal(13, usize(1) as *bytes)
+func timeout(s: Socket, seconds: f64) where @linux():
+    wait := timeval(seconds)
+    setsockopt(i64(s.fd), 1, 20, ptr(wait) as *bytes, 16)
+    setsockopt(i64(s.fd), 1, 21, ptr(wait) as *bytes, 16)
 
-priv func prepare() where @windows():
+func timeout(s: Socket, seconds: f64) where @macos():
+    wait := timeval(seconds)
+    setsockopt(i64(s.fd), 65535, 0x1006, ptr(wait) as *bytes, 16)
+    setsockopt(i64(s.fd), 65535, 0x1005, ptr(wait) as *bytes, 16)
+
+func timeout(s: Socket, seconds: f64) where @windows():
+    wait: u32 = 0
+    if seconds > 0.0:
+        wait = u32(seconds * 1000.0) + 1 # in milliseconds, rounded up so it is never 0, forever
+    setsockopt(i64(s.fd), 65535, 0x1006, ptr(wait) as *bytes, 4)
+    setsockopt(i64(s.fd), 65535, 0x1005, ptr(wait) as *bytes, 4)
+
+priv func timeval(seconds: f64) -> array[i64, 2]:
+    micros: i64 = 0
+    if seconds > 0.0:
+        micros = i64(seconds * 1000000.0) + 1 # rounded up so it is never 0, forever
+    return [micros / 1000000, micros % 1000000]
+
+priv func start() where not @windows():
+    return
+
+priv func start() where @windows():
     data: array[u8, 408]
     WSAStartup(514, ptr(data) as *bytes)
+
+priv func prepare(fd: i64) where @linux():
+    yes: i32 = 1
+    fcntl(fd, 2, 1) # close on exec
+    setsockopt(fd, 1, 2, ptr(yes) as *bytes, 4) # SO_REUSEADDR
+    setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY, what you flush goes at once
+
+priv func prepare(fd: i64) where @macos():
+    yes: i32 = 1
+    fcntl(fd, 2, 1) # close on exec
+    setsockopt(fd, 65535, 4, ptr(yes) as *bytes, 4) # SO_REUSEADDR
+    setsockopt(fd, 65535, 0x1022, ptr(yes) as *bytes, 4) # SO_NOSIGPIPE, a closed peer is an error and not a signal
+    setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY
+
+priv func prepare(fd: i64) where @windows():
+    yes: i32 = 1
+    SetHandleInformation(fd, 1, 0) # not inherited by the programs you run
+    setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY
+
+priv func failure() -> i32 where not @windows():
+    return errno()
+
+priv func failure() -> i32 where @windows():
+    return 0 - WSAGetLastError()
+
+priv func dispose(fd: i64) where not @windows():
+    close(fd)
+
+priv func dispose(fd: i64) where @windows():
+    closesocket(fd)
 
 priv func address_in_info() -> usize where @linux():
     return 24
 
 priv func address_in_info() -> usize where @macos() or @windows():
     return 32
-
-priv func reuse_address(fd: i64, yes: *bytes) where @linux():
-    setsockopt(fd, 1, 2, yes, 4)
-
-priv func reuse_address(fd: i64, yes: *bytes) where @macos():
-    setsockopt(fd, 65535, 4, yes, 4)
-
-priv func reuse_address(fd: i64, yes: *bytes) where @windows():
-    return
 
 priv func inet_address() -> array[u8, 16] where @linux() or @windows():
     return array[u8, 16]{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}

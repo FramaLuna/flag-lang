@@ -5,6 +5,7 @@ type enum Kind:
 
 type Node:
     kind: Kind
+    escaped: bool
     from: usize
     to: usize
     size: usize
@@ -13,34 +14,49 @@ type Document:
     text: &strview
     nodes: &list[Node]
 
-type error NotJson
+type error NotJson:
+    reason: &strview
+    line: usize
+    column: usize
+
+operator +=(s: *&str, e: NotJson):
+    s.* += "not JSON at line " + e.line + ", column " + e.column + ": " + e.reason
 
 func parse(text: &strview) -> Document|NotJson:
     nodes: &list[Node]
-    end := value(text, 0, nodes, 0)
-    if end is null or skip(text, end) != text.len:
+    end := value(text, skip(items(text), 0), nodes, 0)
+    if end is usize and skip(items(text), end) < text.len:
+        end = wrong(text, skip(items(text), end), "expected the end of the text after the value")
+    if end is NotJson:
         free(nodes)
-        return NotJson
+        return end
     return Document{text, nodes}
 
-func free(d: Document):
+func free(d: *Document):
     free(d.nodes)
 
 func get(d: Document, at: usize|null, path: &strview) -> usize|null:
     found := at
+    rest := path
     with scratch():
-        for key in split(path, "."):
-            if found is null or d.nodes[found].kind != Object:
-                return null
+        while found is usize and d.nodes[found].kind == Object:
+            cut := find(items(rest), '.') ifnull rest.len
+            name := rest[:cut]
             object := found
             found = null
             c := object + 1
             while c < object + d.nodes[object].size and found is null:
-                if text(d, c) == key:
+                key := d.text[d.nodes[c].from + 1:d.nodes[c].to - 1]
+                if d.nodes[c].escaped:
+                    key = trust text(d, c)
+                if key == name:
                     found = c + 1
                 c += 1
                 c += d.nodes[c].size
-    return found
+            if cut == rest.len:
+                return found
+            rest = rest[cut + 1:]
+    return null
 
 priv type Children:
     d: Document
@@ -60,7 +76,7 @@ func next(c: *Children) -> usize|IterationEnd:
     if c.at >= c.end:
         return IterationEnd
     if c.object:
-        c.at += c.d.nodes[c.at].size
+        c.at += 1
     value := c.at
     c.at += c.d.nodes[c.at].size
     return value
@@ -77,11 +93,13 @@ func item(d: Document, at: usize|null, index: usize) -> usize|null:
             return c
     return null
 
-func key(d: Document, at: usize|null, index: usize) -> &strview:
-    value := item(d, at, index)
-    if value is null or kind(d, at) != Object:
+func key(d: Document, at: usize|null) -> &strview:
+    if at is null or at == 0 or d.nodes[at - 1].kind != Text:
         return ""
-    return text(d, value - 1)
+    b := items(d.text)
+    if b[skip(b, d.nodes[at - 1].to)] != ':':
+        return ""
+    return trust text(d, at - 1)
 
 func kind(d: Document, at: usize|null) -> Kind:
     if at is null:
@@ -108,170 +126,197 @@ func boolean(d: Document, at: usize|null) -> bool|null:
         return null
     return raw(d, at) == "true"
 
-func text(d: Document, at: usize|null) -> &strview:
+func text(d: Document, at: usize|null) -> &strview|null:
     if at is null or d.nodes[at].kind != Text:
-        return ""
-    s := d.text[d.nodes[at].from + 1:d.nodes[at].to - 1]
-    if find(items(s), '\\') is null:
-        return temp(s)
+        return null
+    from := d.nodes[at].from + 1
+    to := d.nodes[at].to - 1
+    if not d.nodes[at].escaped:
+        return temp(d.text[from:to])
+    b := items(d.text)
     out: &str
-    i: usize = 0
-    while i < s.len:
-        if items(s)[i] == '\\':
-            e := trust escape(s, i)
+    defer free(out)
+    i := from
+    while i < to:
+        if b[i] == '\\':
+            out += d.text[from:i]
+            e := trust escape(d.text, i)
             add_char(out, e.code)
             i += e.size
+            from = i
         else:
-            add_byte(out, items(s)[i])
             i += 1
-    result := temp(out)
-    free(out)
-    return result
+    out += d.text[from:to]
+    return temp(out)
 
-func quoted(out: *&str, text: &strview):
+type Quoted:
+    text: &strview
+
+func quoted(text: &strview) -> Quoted:
+    return Quoted{text}
+
+operator +=(s: *&str, q: Quoted):
     digits: &strview = "0123456789abcdef"
-    out.* += "\""
-    i: usize = 0
-    while i < text.len:
-        run := i
-        while run < text.len and items(text)[run] >= ' ' and items(text)[run] != '"' and items(text)[run] != '\\':
-            run += 1
-        out.* += text[i:run]
-        i = run
-        if i < text.len:
-            b := items(text)[i]
-            if b == '"' or b == '\\':
-                out.* += "\\" + text[i:i + 1]
-            elif b == '\n':
-                out.* += "\\n"
-            elif b == '\t':
-                out.* += "\\t"
-            else:
-                out.* += "\\u00" + digits[usize(b) / 16:usize(b) / 16 + 1] + digits[usize(b) % 16:usize(b) % 16 + 1]
-            i += 1
-    out.* += "\""
+    s.* += "\""
+    from: usize = 0
+    for i, c in items(q.text):
+        if c < ' ' or c == '"' or c == '\\':
+            s.* += q.text[from:i]
+            from = i + 1
+            switch c:
+            case '\n':
+                s.* += "\\n"
+            case '\r':
+                s.* += "\\r"
+            case '\t':
+                s.* += "\\t"
+            case '"', '\\':
+                s.* += "\\" + q.text[i:i + 1]
+            case:
+                s.* += "\\u00" + digits[c >> 4:(c >> 4) + 1] + digits[c and 15:(c and 15) + 1]
+    s.* += q.text[from:] + "\""
 
 priv type Escape:
     code: u32
     size: usize
 
-priv func escape(s: &strview, at: usize) -> Escape?:
-    if at + 2 > s.len:
-        return null
+priv func escape(s: &strview, at: usize) -> Escape|NotJson:
+    if at + 1 == s.len:
+        return wrong(s, at, "this string never closes")
     names: &strview = "\"\\/bfnrt"
     codes: &strview = "\"\\/\x08\x0c\n\r\t"
-    simple := find(items(names), items(s)[at + 1])
+    simple := find(items(names), s[at + 1])
     if simple is usize:
-        return Escape{u32(items(codes)[simple]), 2}
-    if items(s)[at + 1] != 'u' or at + 6 > s.len:
-        return null
-    code := parse_hex(s[at + 2:at + 6])
-    if code is null:
-        return null
+        return Escape{u32(codes[simple]), 2}
+    if s[at + 1] != 'u':
+        return wrong(s, at, "unknown escape, the escapes are \\\" \\\\ \\/ \\b \\f \\n \\r \\t and \\u00e9")
+    code := try unicode(s, at)
     if code < 0xD800 or code >= 0xE000:
-        return Escape{u32(code), 6}
-    if code >= 0xDC00 or at + 12 > s.len or s[at + 6:at + 8] != "\\u":
-        return null
-    low := parse_hex(s[at + 8:at + 12])
-    if low is null or low < 0xDC00 or low >= 0xE000:
-        return null
-    return Escape{u32(0x10000 + (code - 0xD800) * 0x400 + low - 0xDC00), 12}
+        return Escape{code, 6}
+    pair := "a surrogate goes in a pair, \\ud800 to \\udbff and then \\udc00 to \\udfff"
+    if code >= 0xDC00 or not starts_with(s[at + 6:], "\\u"):
+        return wrong(s, at, pair)
+    low := try unicode(s, at + 6)
+    if low < 0xDC00 or low >= 0xE000:
+        return wrong(s, at, pair)
+    return Escape{0x10000 + (code - 0xD800) * 0x400 + low - 0xDC00, 12}
 
-priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) -> usize|null:
+priv func unicode(s: &strview, at: usize) -> u32|NotJson:
+    if at + 6 <= s.len:
+        code := parse_hex(s[at + 2:at + 6])
+        if code is u64:
+            return u32(code)
+    return wrong(s, at, "\\u expects four hexadecimal digits: \\u00e9")
+
+priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) -> usize|NotJson:
     b := items(s)
-    at := skip(s, start)
-    if at >= s.len or depth > 512:
-        return null
+    at := start
+    if at == b.len:
+        return wrong(s, at, "expected a value")
+    if depth > 512:
+        return wrong(s, at, "this value is inside more than 512 arrays and objects")
     n := nodes.len
-    append(nodes, Node{Nothing, at, at, 1})
+    append(nodes, Node{Nothing, false, at, at, 1})
     c := b[at]
-    if c == '{' or c == '[':
+    if c == '[' or c == '{':
         close: u8 = ']'
         nodes[n].kind = Array
         if c == '{':
             close = '}'
             nodes[n].kind = Object
-        at = skip(s, at + 1)
-        if at < s.len and b[at] == close:
+        at = skip(b, at + 1)
+        if at < b.len and b[at] == close:
             at += 1
         else:
             while true:
                 if c == '{':
-                    name := nodes.len
-                    after := value(s, at, nodes, depth + 1)
-                    if after is null or nodes[name].kind != Text:
-                        return null
-                    at = skip(s, after)
-                    if at >= s.len or b[at] != ':':
-                        return null
-                    at += 1
-                next := value(s, at, nodes, depth + 1)
-                if next is null:
-                    return null
-                at = skip(s, next)
-                if at < s.len and b[at] == ',':
-                    at += 1
-                elif at < s.len and b[at] == close:
+                    if at == b.len or b[at] != '"':
+                        return wrong(s, at, "expected a key in quotes")
+                    at = skip(b, try value(s, at, nodes, depth + 1))
+                    if at == b.len or b[at] != ':':
+                        return wrong(s, at, "expected ':' after the key")
+                    at = skip(b, at + 1)
+                at = skip(b, try value(s, at, nodes, depth + 1))
+                if at < b.len and b[at] == close:
                     at += 1
                     break
-                else:
-                    return null
+                if at == b.len or b[at] != ',':
+                    if c == '{':
+                        return wrong(s, at, "expected ',' or '}'")
+                    return wrong(s, at, "expected ',' or ']'")
+                at = skip(b, at + 1)
     elif c == '"':
         nodes[n].kind = Text
         at += 1
-        while at < s.len and b[at] != '"':
-            if b[at] < ' ':
-                return null
-            if b[at] == '\\':
-                e := escape(s, at)
-                if e is null:
-                    return null
-                at += e.size
+        while at < b.len:
+            c = b[at]
+            if c == '"':
+                break
+            if c == '\\':
+                nodes[n].escaped = true
+                at += (try escape(s, at)).size
+            elif c < ' ':
+                return wrong(s, at, "a string cannot hold a control byte, write it as an escape: \\n, \\t, \\u001f")
             else:
                 at += 1
-        if at >= s.len:
-            return null
+        if at == b.len:
+            return wrong(s, nodes[n].from, "this string never closes")
         at += 1
     elif c == '-' or c >= '0' and c <= '9':
         nodes[n].kind = Number
         if c == '-':
             at += 1
-        end := digits(s, at)
-        if end == at or end > at + 1 and b[at] == '0':
-            return null
+        end := skip_digits(b, at)
+        if end == at:
+            return wrong(s, at, "a number expects digits")
+        if end > at + 1 and b[at] == '0':
+            return wrong(s, at, "a number cannot start with 0 followed by more digits")
         at = end
-        if at < s.len and b[at] == '.':
-            end = digits(s, at + 1)
+        if at < b.len and b[at] == '.':
+            end = skip_digits(b, at + 1)
             if end == at + 1:
-                return null
+                return wrong(s, end, "a number expects digits after its '.'")
             at = end
-        if at < s.len and (b[at] == 'e' or b[at] == 'E'):
+        if at < b.len and (b[at] == 'e' or b[at] == 'E'):
             at += 1
-            if at < s.len and (b[at] == '+' or b[at] == '-'):
+            if at < b.len and (b[at] == '+' or b[at] == '-'):
                 at += 1
-            end = digits(s, at)
+            end = skip_digits(b, at)
             if end == at:
-                return null
+                return wrong(s, at, "an exponent expects digits")
             at = end
-    elif starts_with(s[at:s.len], "true"):
-        nodes[n].kind = Boolean
-        at += 4
-    elif starts_with(s[at:s.len], "false"):
-        nodes[n].kind = Boolean
-        at += 5
-    elif starts_with(s[at:s.len], "null"):
-        at += 4
     else:
-        return null
+        word: &strview = "null"
+        if c == 't':
+            word = "true"
+            nodes[n].kind = Boolean
+        elif c == 'f':
+            word = "false"
+            nodes[n].kind = Boolean
+        if not starts_with(s[at:], word):
+            return wrong(s, at, "expected a value")
+        at += word.len
     nodes[n].to = at
     nodes[n].size = nodes.len - n
     return at
 
-priv func skip(s: &strview, start: usize) -> usize:
-    return s.len - trim_start(s[start:s.len]).len
+priv func wrong(s: &strview, at: usize, reason: &strview) -> NotJson:
+    line: usize = 1
+    start: usize = 0
+    for i, c in items(s[:at]):
+        if c == '\n':
+            line += 1
+            start = i + 1
+    return NotJson{reason, line, at - start + 1}
 
-priv func digits(s: &strview, start: usize) -> usize:
-    at := start
-    while at < s.len and items(s)[at] >= '0' and items(s)[at] <= '9':
+priv func skip(b: &slice[u8], start: usize) -> usize:
+    for at in start..b.len:
+        c := b[at]
+        if c > ' ' or c != ' ' and c != '\n' and c != '\r' and c != '\t':
+            return at
+    return b.len
+
+priv func skip_digits(b: &slice[u8], at: usize) -> usize:
+    while at < b.len and b[at] >= '0' and b[at] <= '9':
         at += 1
     return at

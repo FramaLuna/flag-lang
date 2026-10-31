@@ -264,6 +264,7 @@ struct Blk {
 
 	Blk *idom;
 	Blk *dom, *dlink;
+	uint dpre, dend;
 	Blk **fron;
 	uint nfron;
 	int depth;
@@ -401,6 +402,8 @@ struct Fn {
 	Tmp *tmp;
 	Con *con;
 	Mem *mem;
+	int *conh;
+	int nconh;
 	int ntmp;
 	int ncon;
 	int nmem;

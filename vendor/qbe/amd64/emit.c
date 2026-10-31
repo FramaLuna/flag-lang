@@ -345,8 +345,15 @@ Next:
 			fputc(')', e->f);
 			break;
 		case RCon:
+			off = e->fn->con[ref.val];
+			if (off.type == CBits)
+			switch (sz) {
+			case SWord: off.bits.i = (int32_t)off.bits.i; break;
+			case SShort: off.bits.i = (int16_t)off.bits.i; break;
+			case SByte: off.bits.i = (int8_t)off.bits.i; break;
+			}
 			fputc('$', e->f);
-			emitcon(&e->fn->con[ref.val], e);
+			emitcon(&off, e);
 			break;
 		default:
 			die("unreachable");

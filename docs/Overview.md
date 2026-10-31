@@ -159,7 +159,7 @@ packed type Header:
     kind: u8
     size: u64 # starts at byte 1, and the struct takes 9 bytes instead of 16
 ```
-Structured types are values, assigning them or passing them to a function copies them.
+Structured types are values, assigning them or passing them to a function copies them. `==` compares them field by field, unless you declare your own (see [Operator overloading](#operator-overloading))
 ### Aliases
 An alias is another name for a type, the two names are the same type
 ```flag
@@ -178,7 +178,7 @@ type Num = i32|f32
 ```flag
 found: usize? = null
 ```
-You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if))
+You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if)), or with the cases of a `switch` (see [Switch](#switch))
 ```flag
 n: Num = 3
 if n is i32:
@@ -247,9 +247,9 @@ func main():
     bump(c) # the same, a '*Counter' parameter takes a Counter variable and gets its address
     h := heap(Counter{10}) # heap copies a value to the heap and gives you a '*Counter'
     h.n += 1
-    free(h as *bytes)
+    free(h)
 ```
-When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary.
+When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &slice[i32] = ptr([1, 2, 3])` is a slice you can keep using.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
 
@@ -282,7 +282,7 @@ type fatptr ring[$T]:
 ### Passing them to functions
 When you pass a fat pointer to a function, the function gets a copy of it. The elements are shared, but if the function makes the copy grow, the original does not see it.
 
-To let a function change the fat pointer itself, declare the parameter as `*&something`. You still call it passing the fat pointer, the compiler passes `ptr(something)` for you like with any pointer (see [Pointers](#pointers)). Indexing works through the pointer, like fields
+To let a function change the fat pointer itself, declare the parameter as `*&something`. You still call it passing the fat pointer, the compiler passes `ptr(something)` for you like with any pointer (see [Pointers](#pointers)). Indexing and `for` work through the pointer, like fields
 ```flag
 func add_two(l: *&list[i32]):
     append(l, 2)
@@ -351,7 +351,7 @@ for element in iterable:
 for index, element in iterable:
     print(index, " ", element)
 ```
-To iterate over a range you can do (the end is not included):
+To iterate over a range you can do (the end is not included). The `i` counts the loop, so you can read it but not assign it
 ```flag
 for i in 0..10:
     print(i)
@@ -369,7 +369,7 @@ for element in reverse iterable:
 for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
-With `for index, element in reverse iterable` the index still counts 0, 1, 2... from the first element you get.
+With `for index, element in reverse iterable` the index still counts 0, 1, 2... from the first element you get. The index and the variable of a range count the loop, so they cannot be assigned.
 
 You can make your own types iterable. `for` calls `iter` with your value and then `next` with a pointer to what `iter` gave, until `next` gives `IterationEnd`. `reverse` calls `reverse_iter` instead of `iter`
 ```flag
@@ -403,13 +403,22 @@ case 1..10, 100:
 case:
     print("other")
 ```
-It also works with text and with unions of void types, and a switch over a union must handle every type or have a default
+It also works with text. Over a union the cases name its types, and inside each case the variable has those types, like after an `is`. A switch over a union must handle every type or have a default, and the default gets the types that are left
 ```flag
+type enum Color = Red|Green|Blue
+type Shape = Circle|Square|null
+
 switch color:
 case Red:
     print("red")
 case Green, Blue:
     print("not red")
+
+switch shape:
+case Circle:
+    print("a circle of radius ", shape.r)
+case:
+    print("not a circle") # shape is Square|null here
 ```
 ### break, continue
 `break` leaves the loop and `continue` goes to the next round
@@ -436,20 +445,21 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove(path)` drops it on purpose.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
-type File:
-    fd: i32
+type Door:
+    room: i32
 
-func close(f: File):
-    print("closed ", f.fd)
+func close(d: Door):
+    print("closed ", d.room)
 
 func main():
-    with File{7}:
-        print("using the file")
+    with Door{7}:
+        print("inside the room")
 ```
+A `close` that can return an error doesn't go in a `with`, the error would be lost, so call it yourself.
 
 ## Functions
 ```flag
@@ -629,14 +639,15 @@ for i in 0..1000000:
     with scratch():
         print("line " + i)
 ```
-Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it.
+Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
 ### Printing
-`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals and `hex` an integer in hexadecimal
+`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals, `hex` an integer in hexadecimal and `pad` fills a width with spaces
 ```flag
-print(fixed(3.14159, 2), " ", hex(255)) # 3.14 0xff
+print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
+`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -686,14 +697,14 @@ A `&map[K, V]` is a hash map, you can start it empty or with a literal
 ages := {"bo": 25} # &map[&strview, i32]
 defer free(ages)
 ages["ana"] = 30 # the same as put(ages, "ana", 30)
-age := ages["ana"] # i32|null, the same as get(ages, "ana")
+age := ages["ana"] # i32|null, null when there is no ana
 if age is i32:
     print("ana is ", age)
-ages["bo"] = (ages["bo"] ifnull 0) + 1
+ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. The keys can be numbers, text, `bool`, enums, pointers or anything that has `==` and `hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -716,7 +727,7 @@ func deeper():
 
 ## Error handling
 ### The error type
-An error is a void type declared with `type error`, and a function that can fail returns it in a union
+An error is a type declared with `type error`, and a function that can fail returns it in a union
 ```flag
 type error NotFound
 type error enum FileError = CannotOpen|CannotRead
@@ -727,12 +738,26 @@ func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
             return i
     return NotFound
 ```
-You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `try`, `trust`, or you ignore it on purpose with `_ =`
+An error can also carry data, it's declared with fields like a struct, and narrowing it gives you its fields
+```flag
+type error BadLine:
+    line: usize
+    why: &strview
+
+func check(line: usize, text: &strview) -> BadLine?:
+    if text.len > 80:
+        return BadLine{line, "too long"}
+    return null
+```
+You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `trust`, or you ignore it on purpose with `_ =`
 ```flag
 got := index_of(names, "ana")
 if got is usize:
     print("found at ", got)
 _ = index_of(names, "bo")
+problem := check(3, line)
+if problem is BadLine:
+    print("line ", problem.line, ": ", problem.why)
 ```
 ### try operator
 `try` gives you the value, and if there is an error it returns it from the function, so the function must return that error too
@@ -792,11 +817,11 @@ priv func foo():
 In a file without a module, priv hides the name from every other file.
 
 ## The standard library
-The functions of text, lists and maps are always there. The rest comes in modules that you get with `use`, without adding files
-- `fs`, files and folders
+The functions of text, lists, maps and files (`open`, `read_line`, `write`...) are always there. The rest comes in modules that you get with `use`, without adding files
+- `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
-- `json`, reading JSON
-- `net`, TCP sockets
+- `json`, reading and writing JSON
+- `net`, TCP connections
 - `math`, `sqrt`, `sin`, `min`, random numbers...
 - `utf8`, characters of UTF-8 text
 - `bits`, sets of numbers as bits
@@ -813,9 +838,9 @@ func main() -> i32:
     if names.len < 2:
         eprint("usage: lines file")
         return 1
-    text := read_text_file(names[1])
+    text := read_file(names[1])
     if text is FsError:
-        eprint("cannot read ", names[1], ": ", text)
+        eprint(text) # cannot open notes.txt: No such file or directory
         return 1
     defer free(text)
     lines := 0
@@ -823,6 +848,25 @@ func main() -> i32:
         if b == '\n':
             lines += 1
     print(lines, " lines")
+    return 0
+```
+A file can also be read line by line, with `open` and `read_line`. Each line is temporary, so the loop releases it with `with scratch():`, and a file of any size runs in the same memory
+```flag
+use os
+
+func main() -> i32:
+    input := open(args()[1])
+    if input is FsError:
+        eprint(input)
+        return 1
+    with input:
+        while true:
+            with scratch():
+                line := read_line(input)
+                if line is &strview:
+                    print(line.len)
+                else:
+                    break
     return 0
 ```
 Every function is in the [Library](Library.md).
@@ -876,6 +920,7 @@ It is optional because it makes the compilation slower.
 ```sh
 flagc main.flg -o main -memory
 ```
+It sees the elements of a list, an array or a map as one, so freeing them in a loop and then the list is clean, and freeing only some of them is not reported (see [Elements](Reference.md#elements)). It follows the member a union holds, so `if result is Bad: return` and then freeing what the other member holds is clean.
 ### @trust @check
 `@trust` hides the warnings of the code you already checked. At the end of a line it covers that line and the block it opens, and on a line of its own it covers everything after it at that indentation, so at the top of a file it covers all the file
 ```flag

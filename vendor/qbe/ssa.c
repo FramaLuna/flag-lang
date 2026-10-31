@@ -139,8 +139,8 @@ phiins(Fn *fn)
 			defb = fn->tmp[t].bid;
 			use = fn->tmp[t].use;
 			for (n=fn->tmp[t].nuse; n--; use++)
-				ok &= use->bid == defb;
-			if (ok || defb == fn->start->id)
+				ok &= dom(fn->rpo[defb], fn->rpo[use->bid]);
+			if (ok)
 				continue;
 		}
 		bszero(u);

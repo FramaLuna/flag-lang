@@ -1,0 +1,61 @@
+type Pos:
+    x: i32
+    y: i32
+
+type Player:
+    pos: Pos
+    name: &str
+
+func grow(m: *&map[i32, Player]) -> i32:
+    for i in 200..300:
+        m[i].pos.y = 1
+    return 5
+
+func main():
+    counts: &map[&strview, i32]
+    defer free(counts)
+    for word in split("a b a c b a", " "):
+        counts[word] += 1
+    print(counts["a"], " ", counts["b"], " ", counts["c"], " ", counts.len)
+    totals: &map[i32, &list[i32]]
+    for i in 0..10:
+        list: &list[i32] = totals[i % 3] ifnull []
+        append(list, i)
+        totals[i % 3] = list
+    for k in 0..3:
+        print(k, " ", totals[k])
+    for e in totals:
+        free(e.value)
+    free(totals)
+    many: &map[i64, i64]
+    defer free(many)
+    for i in 0..1000:
+        many[i64(i)] = i64(i) * 2
+    sum: i64 = 0
+    for e in many:
+        sum += e.value - e.key
+    for i in 0..500:
+        _ = remove(many, i64(i) * 2)
+    print(sum, " ", many.len, " ", many[3], " ", many[4])
+    players: &map[i32, Player]
+    players[7].pos.x += 3
+    players[7].pos.y = 4
+    players[7].name += "ana"
+    players[7].name += "!"
+    for i in 0..100:
+        players[i].pos.x += 1
+    print(players[7], " ", players.len, " ", contains(players, 100))
+    players[1000].pos.x += grow(players) # the right side runs first, the map grows before the place is taken
+    print(players[1000], " ", players.len)
+    for e in players:
+        free(e.value.name)
+    free(players)
+    pairs: &map[&strview, &map[&strview, i32]]
+    last: &strview = ""
+    for w in words("a b a b a c"):
+        pairs[last][w] += 1
+        last = w
+    print(pairs[""], " ", pairs["a"], " ", pairs["b"])
+    for e in pairs:
+        free(e.value)
+    free(pairs)

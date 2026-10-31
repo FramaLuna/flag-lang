@@ -1,0 +1,28 @@
+use os
+
+extern "c":
+    func fcntl(fd: i32, command: i32, ...) -> i32
+
+func nonblocking(fd: i32) where @linux():
+    fcntl(fd, 4, fcntl(fd, 3) or 0x800) # F_SETFL, F_GETFL and O_NONBLOCK
+
+func nonblocking(fd: i32) where @macos():
+    fcntl(fd, 4, fcntl(fd, 3) or 4)
+
+func nonblocking(fd: i32) where @windows():
+    pass
+
+func main():
+    if args().len > 1:
+        nonblocking(1)
+        for i in 0..200000:
+            print("line ", i)
+        return
+    text: &str
+    defer free(text)
+    code := output(ptr([args()[0], "child"]), text)
+    lines := 0
+    for b in items(text):
+        if b == '\n':
+            lines += 1
+    print(code, " ", lines, " ", ends_with(text, "line 199999\n"))

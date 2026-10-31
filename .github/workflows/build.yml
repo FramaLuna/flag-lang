@@ -2,7 +2,6 @@ name: build
 
 on:
   push:
-    branches: [main, "release-*"]
     tags: ["v*"]
   pull_request:
 
@@ -33,7 +32,9 @@ jobs:
       - if: runner.os == 'Windows'
         run: echo "CC=gcc" >> "$GITHUB_ENV"
       - run: ./build.sh package
-      - run: ./test.sh build/flagc
+      - run: ./test.sh build/flagc 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
+      - if: failure()
+        run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log
       - uses: actions/upload-artifact@v7
         with:
           name: flag-${{ runner.os }}

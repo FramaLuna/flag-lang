@@ -9,34 +9,39 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Built for Data-Oriented Design (lots of features for data structure definitions)
 - Manual memory management with `defer`, no garbage collector
 - Optional Memory-safety at comptime using -memory flag (makes compiling slower)
-- Errors as values, with `trust` and `try` for error handling
-- Built-in syntax for tagged unions and fat pointers
+- Errors as values that can carry data, handled with `try`, `trust`, `iferror` or a `switch`, and a dropped error doesn't compile
+- Tagged unions, narrowed by `is` and by the cases of a `switch`, and fat pointers built into the syntax
+- Structs compare and hash themselves, so they work as map keys
 - Automatic context management across functions with the `context` keyword
 - Generics support
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures
 - ABI FFI to interop with other languages (both ways)
+- A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP and raylib
 - QBE backend for really fast compilation, for example, the compiler builds itself in about a second
 - Support for Linux, macOS and Windows
 
 ## Quick Code Example
 
 ```flag
-type error NotFound
+type error NotFound:
+    name: &strview
 
-func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
+func index_of(names: &slice[&strview], name: &strview) -> usize|NotFound:
     for i, n in names:
         if n == name:
             return i
-    return NotFound
+    return NotFound{name}
 
-func main() -> i32:
-    names: &list[&strview]
-    defer free(names)
-    append(names, "bob")
-    append(names, "alice")
-    print(index_of(names, "alice"), " ", index_of(names, "ada"))
-    return 0
+func main():
+    names := ["bob", "alice"]
+    for name in ["alice", "ada"]:
+        found := index_of(ptr(names), name)
+        switch found:
+        case usize:
+            print(name, " is at ", found)
+        case NotFound:
+            print("there is no ", found.name)
 ```
 
 ## Status
@@ -54,16 +59,16 @@ Except for the lexer which is the base of the code style, all the code in the co
 
 ## Installation
 
-Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.2.0-linux-x86_64.tar.gz`, `flag-0.2.0-macos-arm64.tar.gz` or `flag-0.2.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
+Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.3.0-linux-x86_64.tar.gz`, `flag-0.3.0-macos-arm64.tar.gz` or `flag-0.3.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
 
 ```sh
-tar -xzf flag-0.2.0-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.2.0-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.3.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.3.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
 `flagc` is a single file, the standard library is inside it. You also need a C compiler, see [Requirements](#requirements).
-- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.2.0-macos-arm64/bin/flagc`
+- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.3.0-macos-arm64/bin/flagc`
 - On Windows, unpack it the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell
 
 For errors, hover and go to definition in your editor, see [flag-lsp](https://github.com/FramaLuna/flag-lsp).

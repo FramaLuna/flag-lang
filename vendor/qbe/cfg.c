@@ -135,6 +135,18 @@ inter(Blk *b1, Blk *b2)
 	return b1;
 }
 
+static uint
+domnum(Blk *b, uint n)
+{
+	Blk *d;
+
+	b->dpre = n++;
+	for (d=b->dom; d; d=d->dlink)
+		n = domnum(d, n);
+	b->dend = n;
+	return n;
+}
+
 void
 filldom(Fn *fn)
 {
@@ -152,7 +164,7 @@ filldom(Fn *fn)
 		for (n=1; n<fn->nblk; n++) {
 			b = fn->rpo[n];
 			d = 0;
-			for (p=0; p<b->npred; p++)
+			for (p=b->npred; p-->0;)
 				if (b->pred[p]->idom
 				||  b->pred[p] == fn->start)
 					d = inter(d, b->pred[p]);
@@ -168,17 +180,14 @@ filldom(Fn *fn)
 			b->dlink = d->dom;
 			d->dom = b;
 		}
+	domnum(fn->start, 0);
 }
 
 int
 sdom(Blk *b1, Blk *b2)
 {
 	assert(b1 && b2);
-	if (b1 == b2)
-		return 0;
-	while (b2->id > b1->id)
-		b2 = b2->idom;
-	return b1 == b2;
+	return b1->dpre < b2->dpre && b2->dpre < b1->dend;
 }
 
 int
@@ -187,19 +196,20 @@ dom(Blk *b1, Blk *b2)
 	return b1 == b2 || sdom(b1, b2);
 }
 
-static void
+static int
 addfron(Blk *a, Blk *b)
 {
 	uint n;
 
 	for (n=0; n<a->nfron; n++)
 		if (a->fron[n] == b)
-			return;
+			return 0;
 	if (!a->nfron)
 		a->fron = vnew(++a->nfron, sizeof a->fron[0], PFn);
 	else
 		vgrow(&a->fron, ++a->nfron);
 	a->fron[a->nfron-1] = b;
+	return 1;
 }
 
 /* fill the dominance frontier */
@@ -212,11 +222,11 @@ fillfron(Fn *fn)
 		b->nfron = 0;
 	for (b=fn->start; b; b=b->link) {
 		if (b->s1)
-			for (a=b; !sdom(a, b->s1); a=a->idom)
-				addfron(a, b->s1);
+			for (a=b; !sdom(a, b->s1) && addfron(a, b->s1); a=a->idom)
+				;
 		if (b->s2)
-			for (a=b; !sdom(a, b->s2); a=a->idom)
-				addfron(a, b->s2);
+			for (a=b; !sdom(a, b->s2) && addfron(a, b->s2); a=a->idom)
+				;
 	}
 }
 
@@ -378,6 +388,16 @@ reachrec(Blk *b, Blk *to)
 	return 0;
 }
 
+static void
+unvisit(Blk *b)
+{
+	if (b && b->visit) {
+		b->visit = 0;
+		unvisit(b->s1);
+		unvisit(b->s2);
+	}
+}
+
 /* Blk.visit needs to be clear at entry */
 int
 reaches(Fn *fn, Blk *b, Blk *to)
@@ -386,8 +406,7 @@ reaches(Fn *fn, Blk *b, Blk *to)
 
 	assert(to);
 	r = reachrec(b, to);
-	for (b=fn->start; b; b=b->link)
-		b->visit = 0;
+	unvisit(b);
 	return r;
 }
 
@@ -396,8 +415,12 @@ reaches(Fn *fn, Blk *b, Blk *to)
 int
 reachesnotvia(Fn *fn, Blk *b, Blk *to, Blk *excl)
 {
+	int r;
+
 	excl->visit = 1;
-	return reaches(fn, b, to);
+	r = reaches(fn, b, to);
+	excl->visit = 0;
+	return r;
 }
 
 int

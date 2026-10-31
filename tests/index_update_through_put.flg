@@ -1,0 +1,50 @@
+type Counted:
+    values: array[i32, 4]
+    reads: i32
+    puts: i32
+    places: i32
+
+func at(c: Counted, i: &strview) -> i32|null:
+    return null
+
+func put(c: *Counted, i: &strview, v: i32):
+    c.puts += 1
+
+func put(c: *Counted, i: &strview) -> *i32:
+    c.places += 1
+    return ptr(c.values[i.len])
+
+type Plain:
+    value: i32
+    puts: i32
+
+func at(p: Plain, i: &strview) -> i32:
+    return p.value
+
+func put(p: *Plain, i: &strview, v: i32):
+    p.value = v
+    p.puts += 1
+
+func main():
+    counts: &map[&strview, i32]
+    for w in ["a", "b", "a", "c", "a"]:
+        counts[w] += 1
+    counts["b"] *= 10
+    print(counts["a"] ifnull 0, " ", counts["b"] ifnull 0, " ", counts["c"] ifnull 0, " ", counts.len)
+    texts: &map[i32, &str]
+    texts[1] += "one"
+    texts[1] += " more"
+    texts[2] += "two"
+    print(texts[1] ifnull "", "|", texts[2] ifnull "")
+    maybe: &map[&strview, i32?]
+    maybe["x"] = null
+    maybe["x"] += 5
+    maybe["y"] += 2
+    print(maybe["x"] ifnull 0, " ", maybe["y"] ifnull 0)
+    c: Counted
+    c["ab"] += 7
+    c["ab"] += 1
+    print(c.values[2], " ", c.puts, " ", c.places)
+    p := Plain{3, 0}
+    p["x"] += 4
+    print(p.value, " ", p.puts)

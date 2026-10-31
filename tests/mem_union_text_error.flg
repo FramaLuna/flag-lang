@@ -1,0 +1,35 @@
+type error E:
+    reason: &strview
+    at: usize
+
+func make(fail: bool) -> &str|E:
+    if fail:
+        return E{"bad", 3}
+    out: &str = "data"
+    return out
+
+func show(fail: bool):
+    t := make(fail)
+    switch t:
+    case E:
+        print(t.reason)
+    case &str:
+        print(t)
+        free(t)
+
+func passed(fail: bool) -> E?:
+    t := try make(fail)
+    print(t)
+    free(t)
+    return null
+
+func main():
+    for i in 0..4:
+        t := make(i % 2 == 0)
+        if t is E:
+            print(t.reason)
+            continue
+        print(t)
+        free(t)
+    show(true)
+    _ = passed(false)

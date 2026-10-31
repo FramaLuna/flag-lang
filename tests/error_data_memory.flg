@@ -1,0 +1,25 @@
+type error Bad:
+    why: &str
+
+func check(n: i32) -> i32|Bad:
+    if n < 0:
+        why: &str = "negative " + n
+        return Bad{why}
+    return n
+
+func twice(n: i32) -> i32|Bad:
+    v := try check(n)
+    return v * 2
+
+func main():
+    r := twice(-1)
+    switch r:
+    case Bad:
+        print(r.why)
+        free(r.why)
+    case i32:
+        print(r)
+    s := twice(-2)
+    if s is Bad:
+        print(s.why)
+        free(s.why)

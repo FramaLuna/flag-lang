@@ -1,0 +1,55 @@
+type Counter:
+    hits: i32
+    name: &strview
+
+operator +(a: Counter, b: Counter) -> Counter:
+    return Counter{a.hits + b.hits, b.name}
+
+type Grid:
+    cells: array[i32, 4]
+
+func at(g: *Grid, i: i32) -> i32:
+    return g.cells[i]
+
+func put(g: *Grid, i: i32, v: i32):
+    g.cells[i] = v
+
+func count() -> i32:
+    print("right side first")
+    return 2
+
+func main():
+    m: &map[&strview, i32]
+    defer free(m)
+    for w in ["a", "b", "a", "c", "a"]:
+        m[w] += 1
+    m["b"] *= 10
+    m["z"] -= 4
+    print(m["a"], " ", m["b"], " ", m["c"], " ", m["z"])
+    texts: &map[i32, &str]
+    defer free(texts)
+    texts[1] += "hello"
+    texts[1] += " world"
+    print(texts[1])
+    for e in texts:
+        free(e.value)
+    floats: &map[i32, f64]
+    defer free(floats)
+    floats[3] += 1.5
+    floats[3] /= 2.0
+    print(floats[3])
+    counters: &map[i32, Counter]
+    defer free(counters)
+    counters[1] += Counter{2, "two"}
+    counters[1] += Counter{3, "three"}
+    print(counters[1])
+    g: Grid
+    g[2] += 5
+    g[2] *= count()
+    print(g.cells)
+    fixed: fixmap[i32, i32, 2]
+    _ = put(fixed, 1, 0)
+    l: &list[i32] = heap([1, 2])
+    defer free(l)
+    l[0] += 10
+    print(l)

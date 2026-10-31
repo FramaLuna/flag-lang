@@ -3,19 +3,21 @@ module bits
 type Bits[$$words]:
     words: array[u64, $$words]
 
-func at(b: *Bits[$$w], i: usize, place: &strview = @here()) -> bool:
-    if i >= $$w * 64:
+func at(b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
+    n := usize(i)
+    if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
-    return ((b.words[i / 64] >> u64(i % 64)) and 1) != 0
+    return ((b.words[n / 64] >> u64(n % 64)) and 1) != 0
 
-func put(b: *Bits[$$w], i: usize, on: bool, place: &strview = @here()):
-    if i >= $$w * 64:
+func put(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
+    n := usize(i)
+    if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
-    one := u64(1) << u64(i % 64)
+    one := u64(1) << u64(n % 64)
     if on:
-        b.words[i / 64] = b.words[i / 64] or one
+        b.words[n / 64] = b.words[n / 64] or one
     else:
-        b.words[i / 64] = b.words[i / 64] and (one xor 0xffff_ffff_ffff_ffff)
+        b.words[n / 64] = b.words[n / 64] and (one xor 0xffff_ffff_ffff_ffff)
 
 operator or(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
@@ -40,12 +42,6 @@ operator -(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     for i in 0..$$w:
         out.words[i] = a.words[i] and (b.words[i] xor 0xffff_ffff_ffff_ffff)
     return out
-
-operator ==(a: *Bits[$$w], b: *Bits[$$w]) -> bool:
-    for i in 0..$$w:
-        if a.words[i] != b.words[i]:
-            return false
-    return true
 
 func complement(b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]

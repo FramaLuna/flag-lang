@@ -1,0 +1,22 @@
+use json
+
+func main():
+    texts := ["", "  ", "[1, 2", "[1 2]", "{\"a\" 1}", "{\"a\": 1,}", "{a: 1}", "[1,]", "{\"a\": 1} x", "\"open", "\"tab\there\"", "\"\\x\"", "\"\\u12g4\"", "\"\\ud83d\"", "\"\\ude00\"", "-", "01", "1.", "1e+", "tru", "{\n  \"a\": [\n    1,\n    nul\n  ]\n}"]
+    for text in texts:
+        d := parse(text)
+        if d is NotJson:
+            print(d.line, ":", d.column, " ", d)
+        else:
+            print("parsed ", text)
+            free(d)
+    d := parse("[[[[1]]]]")
+    if d is Document:
+        print(d.nodes.len)
+        free(d)
+    deep: &str
+    defer free(deep)
+    for i in 0..600:
+        deep += "["
+    wrong := parse(deep)
+    if wrong is NotJson:
+        print(wrong)
