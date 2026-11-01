@@ -110,7 +110,7 @@ A negative `code` is an error that has no errno: on Windows the errors of `renam
 `parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
 - `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
 - `cores() -> usize` how many processors the system has online, to split a job in as many threads
-- `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself
+- `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
   - `close(held: Locked)` lets it go, `with` calls it
 - `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes

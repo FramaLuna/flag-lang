@@ -6,12 +6,13 @@ A release about threads, arenas, speed and failing well: a program uses every co
 
 New
 - `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own, an error to handle or a temporary, that `wait` takes into the scratch of the thread that waits. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements
-- A thread you keep must be read, a function that can fail can't run alone, and `-memory` warns about a thread never waited, waited twice or used after `wait`, about a pointer to a local variable that leaves with a thread, and about using what you sent through a channel
+- A thread you keep must be read, a function that can fail can't run alone, and `-memory` warns about a thread never waited, waited twice or used after `wait`, about a pointer to a local variable that leaves with a thread, also one that runs alone outside `main` or one sent through a channel, about a temporary that its `with scratch():` may release while a thread still uses it, and about using what you sent through a channel. `send` gives what the value owns, not its views
 - `Lock`, that works at zero and is taken with `with lock(x.lock):`, `Channel[T, N]`, a bounded queue of at least one value that lives where you declare it, with `send`, `receive`, `close` and `for v in c`, and `cores()`
 - Variables at the root of a file, `count: i32` or `names: array[&strview, 3] = ["a", "b", "c"]`, shared by every function and every thread. They start at zero or at a value the compiler knows, in the data of the program, so a table that never changes is not built again each time. One cannot have the name of a function of its module, like a constant
 - `Arena`, a struct of core that starts empty and gives out pieces of big blocks. `arena(a, v)` copies a value into it and gives a pointer, like `heap(v)`, `arena(a, "text")` gives a `&str`, and `arena(a, [])`, `arena(a, [1, 2])`, `arena(a, {})` and `arena(a, {k: v})` build a list or a map that lives in the arena, with the type of the place where they land. `free(a)` releases everything and `clear(a)` releases everything and keeps the blocks, for the memory of each frame. A small allocation takes 76 instructions in an arena, and 400 with `heap` and `free`
 - A `&str`, `&list` or `&map` that lives in an arena grows there, a text or a list in its place when it's the last piece of the block, and its `free` leaves it empty without releasing anything, so a function that frees what it gets works with any list
 - `-memory` knows arenas: what lives in one is not a leak, using it after `free` or `clear` of its arena warns like a temporary after its `with scratch():`, also through a function, `free` of a pointer from an arena says `free cannot release boss, it lives in level, free(level) releases it`, and an arena that is never freed is a leak
+- `-memory` warns about a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct, and about a function of yours that takes one by value: `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it`
 - `memset` with the C functions of core
 - `inline func` and `inline operator` replace every direct call with the body of the function, whatever its size, also in each instance of a generic one. A recursive function, the `main` that starts the program, an `export` function and a C function cannot be `inline`, and the error of a recursive one points to the call that leads back
 - A runtime error writes the chain of calls after its place, one line for each function of yours with the line where it's declared: `in parse_line, main.flg:9`. The library is left out, a function called again and again is one line with the count, after 20 lines the rest is counted, and an error in a thread writes the chain of that thread. When two threads fail at once, one report comes out whole
@@ -23,6 +24,7 @@ New
 Changed
 - A `context` belongs to each thread: a new thread starts with its contexts at zero and its own scratch memory, and the random numbers of `math` start again in each one
 - `parallel` and `wait` are keywords
+- `-memory` names the fields you wrote, `free cannot release level.boss`, where it named only the variable, `level`
 - `print` formats all its values into one line and writes it at once, so the lines of two threads never mix. An `eprint` inside the `+=` of a value now comes out before the line that prints that value, and `write(f, value)` formats the value before the file takes it
 - Files can be used from any thread: each one has a lock for writing and another for reading, so a thread waiting to read a connection doesn't stop the ones that write. A read, `flush()`, `exit` and a crash leave a file that another thread is writing to that thread, so a thread stuck sending stops nobody else
 - On Windows a context takes room in the program file, thread data of Windows keeps its zeros there
@@ -46,6 +48,8 @@ Fixed
 - The `==` and `hash` that the compiler writes for a type, and the data of a text literal, could take the name of a function of the program, like `sv`, and the program didn't assemble
 - A constant that names another constant read the local variable with that name where it was used
 - `-memory` warned that a call may free memory it also reads through another argument when both were memory of contexts, and no argument was involved
+- `-memory` took a field that comes after an array in a struct for an element of the array, and warned about memory that was fine
+- `-memory` warned that memory may be freed already when an element freed in a loop was also kept in a heap block, like the text that each thread of a list gives, freed as you wait them one by one
 - QBE for riscv64 stopped with `unimplemented` when a constant or a value on the stack went into a temporary that lives on the stack
 - On Windows a function of Flag that C calls, like a callback, could change the floats that the C around it kept in `xmm6` to `xmm15`, which Windows has every function keep
 

@@ -1,0 +1,27 @@
+func show(s: &strview):
+    print(s)
+
+func worker(c: *Channel[&strview, 4]):
+    for v in c:
+        print(v)
+
+func work(n: i32) -> &strview:
+    return "n=" + n
+
+func main():
+    for i in 0..3:
+        with scratch():
+            t := parallel show("number " + i)
+            wait t
+    for i in 0..3:
+        with scratch():
+            c: Channel[&strview, 4]
+            t := parallel worker(c)
+            send(c, "temp " + i)
+            close(c)
+            wait t
+    u: Thread[&strview]
+    with scratch():
+        u = parallel work(1)
+    s := wait u
+    print(s)

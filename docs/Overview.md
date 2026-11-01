@@ -842,7 +842,7 @@ func main():
     for w in workers:
         wait w
 ```
-`print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, or a pointer to a local variable that goes to a thread that outlives the function. What the threads change at once in shared memory is yours to guard.
+`print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it. What the threads change at once in shared memory is yours to guard.
 
 ## Error handling
 ### The error type

@@ -1852,7 +1852,11 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             try invoke("out_of_bounds", bounds, tok.at)
             terminate("hlt", Arg{})
             open_block(l_in)
-        spot = Value{type = elem, at = op(L, "add", addr, times(i, comp.types[elem].size)), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
+        scaled := times(i, comp.types[elem].size)
+        count: u32 = 0
+        if array and comp.types[t].count <= 0xffff_ffff:
+            count = u32(comp.types[t].count) # -memory keeps the elements of an array apart from what follows it
+        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
     else:
         args: &list[Value]
         if array:

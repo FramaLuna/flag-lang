@@ -1,0 +1,15 @@
+func worker(jobs: *Channel[&strview, 8]) -> i32:
+    n := 0
+    for w in jobs:
+        n += i32(w.len)
+    return n
+
+func main():
+    line: &str = "alpha beta gamma delta"
+    jobs: Channel[&strview, 8]
+    t := parallel worker(jobs)
+    for w in words(line):
+        send(jobs, w)
+    close(jobs)
+    print(wait t)
+    free(line)

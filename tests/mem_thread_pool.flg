@@ -1,0 +1,37 @@
+type Pool:
+    jobs: Channel[&str, 16]
+    lock: Lock
+    served: i32
+    log: &list[&str]
+
+func worker(p: *Pool, n: i32) -> i32:
+    mine := 0
+    for path in p.jobs:
+        line: &str = "worker "
+        line += n
+        line += " served " + path
+        with lock(p.lock):
+            p.served += 1
+            append(p.log, line)
+        free(path)
+        mine += 1
+    return mine
+
+func main():
+    pool: Pool
+    workers: &list[Thread[i32]]
+    defer free(workers)
+    for n in 0..4:
+        append(workers, parallel worker(pool, i32(n)))
+    for i in 0..20:
+        path: &str = "/page/"
+        path += i
+        send(pool.jobs, path)
+    close(pool.jobs)
+    total := 0
+    for w in workers:
+        total += wait w
+    print(total, " ", pool.served, " ", pool.log.len)
+    for l in pool.log:
+        free(l)
+    free(pool.log)
