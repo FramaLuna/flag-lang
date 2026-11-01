@@ -226,7 +226,10 @@ func dwarf() -> &str:
                     out += "\t.byte 4\n"
                     for m in members(t):
                         uleb(out, ENUMERATOR_DIE)
-                        asciz(out, comp.types[m].name)
+                        if comp.types[m].size == 0:
+                            asciz(out, comp.types[m].name)
+                        else:
+                            asciz(out, "(" + comp.types[m].name + ")") # an enumerator Point would hide the type Point from gdb
                         uleb(out, m - 1)
                     out += "\t.byte 0\n"
                 case:
