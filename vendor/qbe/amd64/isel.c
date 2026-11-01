@@ -122,9 +122,9 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 	}
 	else if (op != Ocall && hascon(r0, &c, fn)
 	&& c->type == CAddr && ((c->sym.type & SExt)
-	 || (T.apple && c->sym.type == SThr))) {
+	 || ((T.apple || T.windows) && c->sym.type == SThr))) {
 		r1 = newtmp("isel", Kl, fn);
-		if (c->bits.i) {
+		if (c->bits.i && !T.windows) {
 			r2 = newtmp("isel", Kl, fn);
 			cc = (Con){.type = CBits};
 			cc.bits.i = c->bits.i;
@@ -139,9 +139,11 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			emit(Ocall, 0, R, r3, CALL(17));
 			emit(Ocopy, Kl, TMP(RDI), r2, R);
 			emit(Oload, Kl, r3, r2, R);
+			fn->leaf = 0;
 		}
 		cc = *c;
-		cc.bits.i = 0;
+		if (!T.windows)
+			cc.bits.i = 0;
 		r3 = newcon(&cc, fn);
 		emit(Oaddr, Kl, r2, r3, R);
 		if (rtype(r0) == RMem) {
@@ -420,7 +422,13 @@ sel(Ins i, Num *tn, Fn *fn)
 	case_Oload:
 		seladdr(&i.arg[0], tn, fn);
 		goto Emit;
+	case Odbgslot:
+		i.arg[0] = SLOT(rslot(i.arg[0], fn));
+		emiti(i);
+		break;
 	case Odbgloc:
+	case Odbgmark:
+	case Oframe:
 	case Ocall:
 	case Osalloc:
 	case Ocopy:
@@ -922,7 +930,12 @@ amd64_isel(Fn *fn)
 					assert(a+1 < p->narg);
 				fixarg(&p->arg[a], p->cls, 0, fn);
 			}
-		memset(num, 0, n * sizeof num[0]);
+		/* anumber() reads only the arguments
+		 * of b, and sets what b defines */
+		for (i=b->ins; i<&b->ins[b->nins]; i++)
+			for (a=0; a<2; a++)
+				if (rtype(i->arg[a]) == RTmp)
+					num[i->arg[a].val] = (Num){0};
 		anumber(num, b, fn->con);
 		seljmp(b, fn);
 		for (i=&b->ins[b->nins]; i!=b->ins;) {

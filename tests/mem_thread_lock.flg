@@ -1,0 +1,17 @@
+type Counter:
+    lock: Lock
+    names: &list[&str]
+
+func add(c: *Counter, name: &strview):
+    owned: &str = name
+    with lock(c.lock):
+        append(c.names, owned)
+
+func main():
+    c: Counter
+    t := parallel add(c, "one")
+    add(c, "two")
+    wait t
+    for name in c.names:
+        free(name)
+    free(c.names)

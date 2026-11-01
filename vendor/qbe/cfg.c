@@ -79,6 +79,30 @@ porec(Blk *b, uint *npo)
 	b->id = (*npo)++;
 }
 
+/* the marks of a dead block go to the start of the
+ * block after it, so with -g they keep their place */
+static void
+keepmarks(Blk *b)
+{
+	Ins *i, *j, *ins;
+	uint n;
+
+	ins = vnew(0, sizeof ins[0], PFn);
+	n = 0;
+	for (i=j=b->ins; i<&b->ins[b->nins]; i++)
+		if (i->op == Odbgmark)
+			addins(&ins, &n, i);
+		else
+			*j++ = *i;
+	b->nins = j - b->ins;
+	if (n && b->link) {
+		for (i=b->link->ins; i<&b->link->ins[b->link->nins]; i++)
+			addins(&ins, &n, i);
+		b->link->ins = ins;
+		b->link->nins = n;
+	}
+}
+
 static void
 fillrpo(Fn *f)
 {
@@ -91,6 +115,7 @@ fillrpo(Fn *f)
 	vgrow(&f->rpo, f->nblk);
 	for (p=&f->start; (b=*p);) {
 		if (b->id == -1u) {
+			keepmarks(b);
 			*p = b->link;
 		} else {
 			b->id = f->nblk-b->id-1;
@@ -292,14 +317,8 @@ lca(Blk *b1, Blk *b2)
 		return b2;
 	if (!b2)
 		return b1;
-	while (b1->depth > b2->depth)
+	while (!dom(b1, b2))
 		b1 = b1->idom;
-	while (b2->depth > b1->depth)
-		b2 = b2->idom;
-	while (b1 != b2) {
-		b1 = b1->idom;
-		b2 = b2->idom;
-	}
 	return b1;
 }
 
@@ -543,7 +562,9 @@ simplcfg(Fn *fn)
 			if (b->id == -1u)
 				continue;
 			j = &jmp[b->id];
-			if (j->type == Jjmp && j->s1->npred == 1) {
+			/* with -g a block stays where it is,
+			 * so a scope stays one range of code */
+			if (j->type == Jjmp && j->s1->npred == 1 && !dbginfo) {
 				assert(!j->s1->phi);
 				addbins(&b->ins, &b->nins, j->s1);
 				empty[b->id] &= empty[j->s1->id];

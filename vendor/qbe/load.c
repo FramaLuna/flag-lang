@@ -217,7 +217,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
 	Slice sl1;
 	Blk *bp;
 	bits msk1, msks;
-	int off, cls, cls1, op, sz, ld;
+	int off, end, cls, cls1, op, sz, ld;
 	uint np, oldl, oldt;
 	Ref r, r1;
 	Phi *p;
@@ -297,9 +297,11 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
 				off = -off;
 				msk1 = (MASK(sz) << 8*off) & msks;
 				op = Oshl;
+				end = off + sz;
 			} else {
 				msk1 = (MASK(sz) >> 8*off) & msks;
 				op = Oshr;
+				end = sz - off;
 			}
 			if ((msk1 & msk) == 0)
 				continue;
@@ -316,7 +318,7 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
 				r1 = getcon(8*off, curf);
 				r = iins(cls1, op, r, r1, il);
 			}
-			if ((msk1 & msk) != msk1 || off + sz < sl.sz)
+			if ((msk1 & msk) != msk1 || end < sl.sz)
 				mask(cls, &r, msk1 & msk, il);
 			if ((msk & ~msk1) != 0) {
 				r1 = def(sl, msk & ~msk1, b, i, il);

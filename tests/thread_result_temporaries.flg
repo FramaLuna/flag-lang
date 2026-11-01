@@ -1,0 +1,29 @@
+func name(n: i32) -> &strview:
+    return temp("worker " + n)
+
+func unreadable(path: &strview) -> usize|FsError:
+    f := try create(path)
+    defer close(f)
+    s: &str
+    defer free(s)
+    return read(f, s, 100) # its error keeps a temporary copy of the path
+
+func main():
+    a := parallel name(7)
+    b := parallel unreadable("build/tests/thread_result_temporaries.txt")
+    shown := wait a
+    failed := wait b
+    junk: &str
+    defer free(junk)
+    for i in 0..200000:
+        add_byte(junk, 'X')
+    print(shown)
+    if failed is FsError:
+        print(failed.action, " ", failed.path)
+    for i in 0..1000:
+        with scratch():
+            t := parallel name(i32(i))
+            kept := wait t
+            if kept != "worker " + i:
+                print("wrong ", kept)
+    print("done")

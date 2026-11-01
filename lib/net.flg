@@ -126,21 +126,21 @@ priv func file(s: Socket) -> File where @windows():
     return File{8192 + s.fd} # core reads a File past the 8192 descriptors of the C runtime as a socket
 
 func timeout(s: Socket, seconds: f64) where @linux():
-    wait := timeval(seconds)
-    setsockopt(i64(s.fd), 1, 20, ptr(wait) as *bytes, 16)
-    setsockopt(i64(s.fd), 1, 21, ptr(wait) as *bytes, 16)
+    limit := timeval(seconds)
+    setsockopt(i64(s.fd), 1, 20, ptr(limit) as *bytes, 16)
+    setsockopt(i64(s.fd), 1, 21, ptr(limit) as *bytes, 16)
 
 func timeout(s: Socket, seconds: f64) where @macos():
-    wait := timeval(seconds)
-    setsockopt(i64(s.fd), 65535, 0x1006, ptr(wait) as *bytes, 16)
-    setsockopt(i64(s.fd), 65535, 0x1005, ptr(wait) as *bytes, 16)
+    limit := timeval(seconds)
+    setsockopt(i64(s.fd), 65535, 0x1006, ptr(limit) as *bytes, 16)
+    setsockopt(i64(s.fd), 65535, 0x1005, ptr(limit) as *bytes, 16)
 
 func timeout(s: Socket, seconds: f64) where @windows():
-    wait: u32 = 0
+    limit: u32 = 0
     if seconds > 0.0:
-        wait = u32(seconds * 1000.0) + 1 # in milliseconds, rounded up so it is never 0, forever
-    setsockopt(i64(s.fd), 65535, 0x1006, ptr(wait) as *bytes, 4)
-    setsockopt(i64(s.fd), 65535, 0x1005, ptr(wait) as *bytes, 4)
+        limit = u32(seconds * 1000.0) + 1 # in milliseconds, rounded up so it is never 0, forever
+    setsockopt(i64(s.fd), 65535, 0x1006, ptr(limit) as *bytes, 4)
+    setsockopt(i64(s.fd), 65535, 0x1005, ptr(limit) as *bytes, 4)
 
 priv func timeval(seconds: f64) -> array[i64, 2]:
     micros: i64 = 0

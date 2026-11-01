@@ -44,12 +44,12 @@ filllive(Fn *f)
 	BSet u[1], v[1];
 	Mem *ma;
 
-	bsinit(u, f->ntmp);
-	bsinit(v, f->ntmp);
+	bsinit(u);
+	bsinit(v);
 	for (b=f->start; b; b=b->link) {
-		bsinit(b->in, f->ntmp);
-		bsinit(b->out, f->ntmp);
-		bsinit(b->gen, f->ntmp);
+		bsinit(b->in);
+		bsinit(b->out);
+		bsinit(b->gen);
 	}
 	chg = 1;
 Again:

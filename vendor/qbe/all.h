@@ -75,6 +75,7 @@ enum {
 struct BSet {
 	uint nt;
 	bits *t;
+	uint *w;
 };
 
 struct Ref {
@@ -268,6 +269,7 @@ struct Blk {
 	Blk **fron;
 	uint nfron;
 	int depth;
+	Blk *odom; /* closest dominator in fewer loops */
 
 	Blk **pred;
 	uint npred;
@@ -419,6 +421,8 @@ struct Fn {
 	char leaf;
 	char *name;
 	Lnk lnk;
+	int *dbgmark; /* -1 once emitted */
+	uint ndbgmark;
 };
 
 struct Typ {
@@ -473,6 +477,7 @@ struct Dat {
 /* main.c */
 extern Target T;
 extern char debug['Z'+1];
+extern char dbginfo;
 
 /* util.c */
 typedef enum {
@@ -519,7 +524,7 @@ int isconbits(Fn *fn, Ref r, int64_t *v);
 void salloc(Ref, Ref, Fn *);
 void dumpts(BSet *, Tmp *, FILE *);
 void runmatch(uchar *, Num *, Ref, Ref *);
-void bsinit(BSet *, uint);
+void bsinit(BSet *);
 void bszero(BSet *);
 uint bscount(BSet *);
 void bsset(BSet *, uint);
@@ -530,13 +535,7 @@ void bsinter(BSet *, BSet *);
 void bsdiff(BSet *, BSet *);
 int bsequal(BSet *, BSet *);
 int bsiter(BSet *, int *);
-
-static inline int
-bshas(BSet *bs, uint elt)
-{
-	assert(elt < bs->nt * NBit);
-	return (bs->t[elt/NBit] & BIT(elt%NBit)) != 0;
-}
+int bshas(BSet *, uint);
 
 /* parse.c */
 extern Op optab[NOp];
@@ -569,6 +568,7 @@ void simplcfg(Fn *);
 /* mem.c */
 void promote(Fn *);
 void coalesce(Fn *);
+void chop(Fn *);
 
 /* alias.c */
 void fillalias(Fn *);
@@ -610,6 +610,7 @@ void ifconvert(Fn *fn);
 
 /* simpl.c */
 void simpl(Fn *);
+void thronce(Fn *);
 
 /* live.c */
 void liveon(BSet *, Blk *, Blk *);
@@ -623,7 +624,10 @@ void spill(Fn *);
 void rega(Fn *);
 
 /* emit.c */
-void emitfnlnk(char *, Lnk *, FILE *);
+void emitfnlnk(Fn *, FILE *);
+void emitfnend(Fn *, FILE *);
+int probing(Fn *, uint64_t);
+void emitdbgmark(Ins *, Fn *, FILE *);
 void emitdat(Dat *, FILE *);
 void emitdbgfile(char *, FILE *);
 void emitdbgloc(uint, uint, FILE *);

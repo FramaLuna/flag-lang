@@ -375,6 +375,8 @@ phieq(Phi *pa, Phi *pb)
 	uint n;
 
 	assert(pa->narg == pb->narg);
+	if (pa->cls != pb->cls)
+		return 0;
 	for (n=0; n<pa->narg; n++) {
 		r = phiarg(pb, pa->blk[n]);
 		if (!req(pa->arg[n], r))

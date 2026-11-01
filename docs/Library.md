@@ -20,6 +20,7 @@ Each function is written with its parameters and what it returns, and `$I` is an
 What a function gives you is
 - **yours** when you own it and release it with `free`
 - **temporary** when it lives in the scratch memory, until the `with scratch():` around the call ends (see [Temporary memory](Reference.md#temporary-memory)). Copy it to a `&str` to keep it
+- **in the arena** when it lives in the `Arena` you passed, until `free` or `clear` of the arena (see [Arenas](#arenas))
 - **a view** when it points inside what you passed, so it lives as long as that
 
 A function that can fail gives its errors in a union, and each module says which error types it has.
@@ -28,9 +29,9 @@ The functions that take an index or a `File` also have a last parameter `place: 
 
 ## core
 ### The program
-- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, and then it's `write(stdout, value)` for each one and `write(stdout, "\n")`
+- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
 - `eprint(values...)` the same to the error output
-- `panic(message: &strview)` writes `flag: <message>` and the place of the call to the error output, and ends the program with exit code 134
+- `panic(message: &strview)` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
 - `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
 - `exit(code: i32)` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
@@ -43,16 +44,16 @@ What you write waits in the file and goes to the system in big pieces, so many s
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
 
-`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush`.
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it. A file that another thread is writing at that moment is left to that thread: a read, `flush()`, the end of the program, a runtime error and a crash write what waits in the other files and don't wait for it, so a thread stuck sending to a client that doesn't read stops nobody else.
 
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read
 - `create(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
-- `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`
+- `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
 - `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
-- `flush()` writes now what waits in every file
+- `flush()` writes now what waits in every file that no other thread is writing at that moment
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
 
@@ -105,12 +106,64 @@ Printing it says all of it, with the words of the system for the code: `cannot o
 A negative `code` is an error that has no errno: on Windows the errors of `rename` are the codes of the system.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
 
+### Threads
+`parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
+- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
+- `cores() -> usize` how many processors the system has online, to split a job in as many threads
+- `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
+  - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
+  - `close(held: Locked)` lets it go, `with` calls it
+- `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
+  - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
+  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
+  - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`
+  - `for v in c` receives until the channel is closed and empty
+
+The files of core, `print` included, work from any thread.
+
+```flag
+type Counter:
+    lock: Lock
+    count: i64
+
+counter: Counter
+
+func add(times: i32):
+    for i in 0..times:
+        with lock(counter.lock):
+            counter.count += 1
+
+func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+    for n in jobs:
+        send(results, n * n)
+    close(results)
+
+func main():
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..cores():
+        append(workers, parallel add(1000))
+    for w in workers:
+        wait w
+    print(counter.count) # 1000 for each core
+
+    jobs: Channel[i32, 8]
+    results: Channel[i32, 8]
+    t := parallel square_all(jobs, results)
+    for n in 1..4:
+        send(jobs, n)
+    close(jobs)
+    for r in results:
+        print(r) # 1, 4 and 9
+    wait t
+```
+
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
-- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list or a map frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself
+- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c))
 - `sizeof(T)` the size of a type in bytes, as an integer literal
-- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
+- `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
 - `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
 ### Temporary memory
@@ -118,6 +171,17 @@ A negative `code` is an error that has no errno: on Windows the errors of `renam
 - `temp(size: usize) -> *bytes` that many bytes of temporary memory
 - `temp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
 - `temp(items: &slice[$T]) -> &slice[$T]` a temporary copy of the elements, to return what you built in a list that you free
+
+### Arenas
+An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, like a list, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
+- `arena(a: *Arena, v: $T) -> *$T` a copy of the value, like `heap`, in the arena
+- `arena(a: *Arena, text: &strview) -> &str` a copy of the text, in the arena
+- `arena(a, [...])` and `arena(a, {...})` the list or the map of the literal, in the arena, with the type of the place where it lands: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
+- `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
+- `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
+- `count`, `used` and `blocks` are its fields: the blocks in use, the bytes used in the last one, and every block it has
+
+An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
 
 ### Lists and slices
 A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
@@ -134,7 +198,7 @@ On lists
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
 - `clear(l: *&list[$T])` removes every element and keeps the memory
-- `free(l: *&list[$T])` releases the list and leaves it empty. The elements are not released, free them first when they own memory
+- `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
 
 On slices, so also on lists
 - `find(items: &slice[$T], v: $T) -> usize|null` the index of the first element `== v`
@@ -168,7 +232,7 @@ Building a `&str`
 - `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
 - `reserve(s: *&str, want: usize)` makes room for `want` bytes, so the appends until then don't allocate
 - `view(s: &str) -> &strview` a view of the text
-- `free(s: *&str)` releases the text and leaves it empty
+- `free(s: *&str)` releases the text and leaves it empty, and in an arena it only leaves it empty
 
 Searching and cutting
 - `find(s: &strview, part: &strview) -> usize|null` the byte index of the first `part`
@@ -213,7 +277,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
-- `free(m: *&map[$K, $V])` releases the map and leaves it empty. The keys and values are not released, free them first when they own memory
+- `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
 - `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
 - `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
 
@@ -410,8 +474,8 @@ It links the C math library.
 - `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
 
 ### Random numbers
-They are the same sequence on every run until you call `seed`, and they are not for secrets.
-- `seed(n: u64)` starts the sequence from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
+They are the same sequence on every run until you call `seed`, and they are not for secrets. Each thread has its own sequence, and a new thread starts it from the beginning, like the program does, whatever `main` seeded: threads that draw numbers call `seed` each one, with a different number, or they all draw the same ones.
+- `seed(n: u64)` starts the sequence of this thread from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
 - `random() -> f64` from 0 to 1, without the 1
 - `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included, in either order
 
@@ -443,7 +507,7 @@ func main():
 - `for n in b` gives the numbers from the smallest, and `print` writes `{3, 70}`
 
 ## ring
-A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest.
+A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest. It always lives in the heap, an arena doesn't make one.
 ```flag
 use ring
 

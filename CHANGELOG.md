@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.0
+
+A release about threads, arenas, speed and failing well: a program uses every core with two words, `parallel` and `wait`, memory can be released all at once, with the same lists, text and maps as always, small functions and structs cost what they cost in C, and a program that fails says the chain of calls that led there. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.
+
+New
+- `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, `wait t` waits for it and gives what `f` returned, and `done(t)` asks without waiting. The call is chosen like any other, the arguments are copied to the new thread, and the result can be text you own, an error to handle or a temporary, that `wait` takes into the scratch of the thread that waits. `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements
+- A thread you keep must be read, a function that can fail can't run alone, and `-memory` warns about a thread never waited, waited twice or used after `wait`, about a pointer to a local variable that leaves with a thread, also one that runs alone outside `main` or one sent through a channel, about a temporary that its `with scratch():` may release while a thread still uses it, and about using what you sent through a channel. `send` gives what the value owns, not its views
+- `Lock`, that works at zero and is taken with `with lock(x.lock):`, `Channel[T, N]`, a bounded queue of at least one value that lives where you declare it, with `send`, `receive`, `close` and `for v in c`, and `cores()`
+- Variables at the root of a file, `count: i32` or `names: array[&strview, 3] = ["a", "b", "c"]`, shared by every function and every thread. They start at zero or at a value the compiler knows, in the data of the program, so a table that never changes is not built again each time. One cannot have the name of a function of its module, like a constant
+- `Arena`, a struct of core that starts empty and gives out pieces of big blocks. `arena(a, v)` copies a value into it and gives a pointer, like `heap(v)`, `arena(a, "text")` gives a `&str`, and `arena(a, [])`, `arena(a, [1, 2])`, `arena(a, {})` and `arena(a, {k: v})` build a list or a map that lives in the arena, with the type of the place where they land. `free(a)` releases everything and `clear(a)` releases everything and keeps the blocks, for the memory of each frame. A small allocation takes 76 instructions in an arena, and 400 with `heap` and `free`
+- A `&str`, `&list` or `&map` that lives in an arena grows there, a text or a list in its place when it's the last piece of the block, and its `free` leaves it empty without releasing anything, so a function that frees what it gets works with any list
+- `-memory` knows arenas: what lives in one is not a leak, using it after `free` or `clear` of its arena warns like a temporary after its `with scratch():`, also through a function, `free` of a pointer from an arena says `free cannot release boss, it lives in level, free(level) releases it`, and an arena that is never freed is a leak
+- `-memory` warns about a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct, and about a function of yours that takes one by value: `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it`
+- `memset` with the C functions of core
+- `inline func` and `inline operator` replace every direct call with the body of the function, whatever its size, also in each instance of a generic one. A recursive function, the `main` that starts the program, an `export` function and a C function cannot be `inline`, and the error of a recursive one points to the call that leads back
+- A runtime error writes the chain of calls after its place, one line for each function of yours with the line where it's declared: `in parse_line, main.flg:9`. The library is left out, a function called again and again is one line with the count, after 20 lines the rest is counted, and an error in a thread writes the chain of that thread. When two threads fail at once, one report comes out whole
+- A crash says what happened and writes the chain too: `flag: invalid memory access at 0x0`, `flag: stack overflow`, `flag: illegal instruction` and `flag: arithmetic error`, in any thread, also inside a function of C like `strlen`. On Linux and macOS a signal handler runs on a stack that each thread keeps for it, and on Windows a vectored exception handler. It asks for no memory and waits for no lock, so a crash inside `malloc` is told too. The exit code is 128 plus the signal, or the code of the exception on Windows
+- `-debug` puts DWARF in the program, for gdb and lldb: the variables in their blocks, the types (structs, enums, tagged unions as variant parts, fat pointers, threads, function values), the variables of the files, the contexts as thread-local variables, the lines and the frames, and the names of your structs, enums and aliases as typedefs. A function that takes or returns a struct, a union, an array or a fat pointer is marked `DW_CC_nocall`, it doesn't pass them like C, so gdb doesn't call it. `break panic` stops at a runtime error. Nothing is inlined in it. On macOS it runs `dsymutil` and leaves `program.dSYM`
+- `examples/threads.flg`, the Mandelbrot set drawn by a thread for each processor, and primes counted by workers that share a channel
+- `examples/arena.flg`, the enemies of a level and the memory of each frame in two arenas
+
+Changed
+- A `context` belongs to each thread: a new thread starts with its contexts at zero and its own scratch memory, and the random numbers of `math` start again in each one
+- `parallel` and `wait` are keywords
+- `-memory` names the fields you wrote, `free cannot release level.boss`, where it named only the variable, `level`
+- `print` formats all its values into one line and writes it at once, so the lines of two threads never mix. An `eprint` inside the `+=` of a value now comes out before the line that prints that value, and `write(f, value)` formats the value before the file takes it
+- Files can be used from any thread: each one has a lock for writing and another for reading, so a thread waiting to read a connection doesn't stop the ones that write. A read, `flush()`, `exit` and a crash leave a file that another thread is writing to that thread, so a thread stuck sending stops nobody else
+- On Windows a context takes room in the program file, thread data of Windows keeps its zeros there
+- A Linux program links with `-lpthread`
+- `&str`, `&list` and `&map` take 32 bytes: a fourth word, `arena`, says where their memory lives, zero for the heap. The views, `&strview` and `&slice`, stay at 16
+- The scratch memory of the temporaries is an `Arena`
+- Every function keeps a frame pointer, on x86_64 too, so the chain can be read: a program is about 1 % bigger
+- A function whose frame can go past a page of stack touches each page as it lowers the stack, on Linux and macOS as on Windows, so a stack overflow always stops at the guard page and is reported. A frame bigger than the 4 KiB guard of a thread jumped over it, into the stack of another thread
+- QBE has twenty more changes, thirty-one in all: thread data on Windows, its address read once per function on Windows and macOS, and the thread data that starts at zero kept out of the file on macOS, small slots cut into pieces that live in registers, a fix for riscv64, six for the chain of calls and the debugger, six that keep a long function linear, and five fixes of QBE itself
+- Building the compiler takes 32 % more instructions: most of it is the work QBE and the assembler do on the inlined code, and the rest is the code of threads, arenas and the debugger. The compiler that comes out is faster, it checks the sources of 0.3 with 7 % fewer instructions
+
+Faster
+- A direct call to a small function is replaced by its body when the program is written, after `-memory`, so the warnings still name your functions. The parameters are still copies, a runtime error keeps its place, the stack doesn't grow, and a function whose calls were all inlined is not written to the program. A function with more than 4 KiB of variables is not inlined on its own, they would take room in the frame of every caller, and into a recursive function, whose every level keeps them, one with more than 32 bytes
+- Small structs live in registers: QBE cuts a slot of 32 bytes or less whose address stays in the function into its pieces. `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop of 100 million rounds runs in 0.11 s, it took 0.69 s, as fast as C with `-O2`
+- A struct or array literal that gives its values in order puts its small values, numbers, `bool` and enums, together in words of 8 bytes and writes each word at once, so a copy reads it from one write and doesn't wait: a loop that appends `V{x, y}` of two `f32` to a list takes half the time, with two `i32` 2.5 times less, and `json` parses 4 % faster
+- A constant whose value the compiler knows, an array or a struct of literals, of enum variants or of other such constants, is kept once in the read-only data of the program, and every use reads it: a lookup in `TABLE = [3, 1, 4, 1, 5, 9, 2, 6]` in a loop is 2.8 times faster
+- Text literals with the same text share their data, and `print` no longer builds `stdout` on the stack, so long functions compile much faster: 20000 `elif`, or a switch of 20000 cases, take 5 times fewer instructions
+- A long function compiles in a time and a memory that grow with its length. QBE keeps in a set of temporaries only its words that are not zero, where the sets of each block had a bit for every temporary of the function, and three of its walks no longer climb the whole dominator tree, as deep as a chain of `elif`. 20000 `elif` with a `print` each compile in 1.6 s and 0.4 GB, they took 8.1 s and 1.1 GB, and on a value known only when the program runs, 20000 compile in 2.8 s and 0.5 GB where 5000 took 4.9 s and 2.2 GB. A temporary defined in several places finds its phis through its definitions, not every instruction of the function, so 6000 copies of a struct in a row compile in 0.37 s
+
+Fixed
+- The `==` and `hash` that the compiler writes for a type, and the data of a text literal, could take the name of a function of the program, like `sv`, and the program didn't assemble
+- A constant that names another constant read the local variable with that name where it was used
+- `-memory` warned that a call may free memory it also reads through another argument when both were memory of contexts, and no argument was involved
+- `-memory` took a field that comes after an array in a struct for an element of the array, and warned about memory that was fine
+- `-memory` warned that memory may be freed already when an element freed in a loop was also kept in a heap block, like the text that each thread of a list gives, freed as you wait them one by one
+- QBE for riscv64 stopped with `unimplemented` when a constant or a value on the stack went into a temporary that lives on the stack
+- On Windows a function of Flag that C calls, like a callback, could change the floats that the C around it kept in `xmm6` to `xmm15`, which Windows has every function keep
+
 ## 0.3.0
 
 A release about errors that say what happened and unions you handle with `switch`, with a standard library that is much faster and has one way to do each thing.

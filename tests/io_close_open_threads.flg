@@ -1,0 +1,23 @@
+use net
+
+func sockets(server: *Server):
+    for i in 0..300:
+        s := trust connect("127.0.0.1", port(server.*))
+        peer := trust accept(server.*)
+        close(peer)
+        close(s) # its number goes back to the system, and the other thread can get it
+
+func main():
+    server := trust listen(0)
+    parallel sockets(server)
+    lost := 0
+    for i in 0..300:
+        with scratch():
+            path := "build/tests/io_close_open_threads." + i % 4
+            f := trust create(path)
+            s: &str
+            got := read(f, s, 1)
+            if got is FsError and got.path != path:
+                lost += 1
+            close(f)
+    print(lost, " files took the state of a closed socket")

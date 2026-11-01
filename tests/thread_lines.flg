@@ -1,0 +1,29 @@
+use os
+
+func talk(id: i32, count: i32):
+    for i in 0..count:
+        print("thread ", id, " says line ", i, " of ", count, " and nothing else")
+
+func main():
+    if args().len > 1:
+        for id in 0..8:
+            parallel talk(id, 300)
+        return
+    out: &str
+    defer free(out)
+    me: &list[&strview]
+    defer free(me)
+    append(me, args()[0])
+    append(me, "talk")
+    _ = output(me, out)
+    whole := 0
+    broken := 0
+    for line in split(view(out), "\n"):
+        if line.len == 0:
+            continue
+        parts := words(line)
+        if parts.len == 10 and parts[0] == "thread" and parts[2] == "says" and parts[9] == "else":
+            whole += 1
+        else:
+            broken += 1
+    print(whole, " whole lines, ", broken, " broken")

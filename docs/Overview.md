@@ -83,7 +83,18 @@ MYCONST = "hello"
 NUM = 2
 MYSECONDCONST = 2 + 2 + NUM # this computes at comptime to 6
 ```
-Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro.
+Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro. A constant array or struct of literals, like `TABLE = [3, 1, 4, 1, 5]`, is kept once in the data of the program and every use reads it there (see [Constants](Reference.md#constants)).
+
+## File variables
+A variable at the root of a file is one value that every function sees. It starts at zero, or at a value the compiler knows: literals, constants, and structs and arrays of them
+```flag
+count: i32
+names: array[&strview, 3] = ["one", "two", "three"]
+
+func add():
+    count += 1
+```
+It lives as long as the program, and all the threads share it (see [Threads](#threads)).
 
 ## Operators
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers
@@ -271,7 +282,7 @@ A fat pointer starts empty, you don't need to create it, just use it
 a: &list[i32]
 append(a, 1)
 ```
-The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&slice` is expected.
+The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&slice` is expected.
 
 You can declare your own fat pointers with `type fatptr`
 ```flag
@@ -621,6 +632,21 @@ When a function has overloads or is generic, give its name to a variable with th
 
 There are no closures: a function cannot use the variables of the place where you took its name, so pass what it needs as an argument (see [Function values](Reference.md#function-values) for the exact rules).
 
+### Inline
+The compiler replaces a call to a small function with the body of the function, so small helpers and operators cost nothing. `inline` asks for it at every call, whatever the size
+```flag
+type V:
+    x: f64
+    y: f64
+
+inline operator +(a: V, b: V) -> V:
+    return V{a.x + b.x, a.y + b.y}
+
+inline func scale(v: V, k: f64) -> V:
+    return V{v.x * k, v.y * k}
+```
+A recursive function, the `main` that starts the program and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
+
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.
 ```flag
@@ -647,7 +673,7 @@ The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_i
 ```flag
 print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
-`write(stdout, x)` writes one value without the new line. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
+`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit`, stops with an error like an index out of bounds or crashes. A signal like Ctrl-C loses what waits (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -714,8 +740,37 @@ if put(colors, "green", 0x00ff00) is MapFull:
 print(colors["red"], " ", colors.len)
 ```
 
+## Arenas
+An `Arena` is memory that you release all at once. It gives out pieces of big blocks, so allocating is cheap, and `free` of the arena releases everything in it
+```flag
+type Enemy:
+    hp: i32
+
+func main():
+    level: Arena # starts empty, like a list
+    defer free(level) # releases all of it
+    boss := arena(level, Enemy{hp = 100}) # a *Enemy in level, like heap(v)
+    enemies: &list[Enemy] = arena(level, []) # an empty list that lives in level
+    append(enemies, Enemy{hp = 10}) # grows in level
+    name: &str = arena(level, "boss") # text that lives in level
+    name += " final" # grows in level too
+    counts: &map[&strview, i32] = arena(level, {"orc": 2})
+    print(boss.hp, " ", enemies.len, " ", name, " ", counts)
+```
+A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` and a list you declare use the heap, like always.
+
+`clear(a)` releases everything and keeps the blocks to use them again, which is what the memory of one frame of a game wants
+```flag
+frame: Arena
+defer free(frame)
+while running:
+    clear(frame)
+    visible: &list[*Enemy] = arena(frame, []) # this frame only
+```
+The scratch memory of the temporaries is an arena too, the one `with scratch():` marks, and each thread has its own. An arena you make is not shared between [threads](#threads) without a `Lock`. The rules are in [Arenas](Reference.md#arenas).
+
 ## Contexts
-A context is global state, the fields start at zero and every function can use them
+A context is global state of each thread: the fields start at zero, every function can use them, and each thread has its own
 ```flag
 context app:
     depth: u32
@@ -724,6 +779,70 @@ context app:
 func deeper():
     app.depth += 1
 ```
+What all the threads share is a file variable (see [File variables](#file-variables)).
+
+## Threads
+`parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait t` waits for the thread to end and gives its result. A computation split in pieces
+```flag
+func sum(from: i64, to: i64) -> i64:
+    total: i64 = 0
+    for i in from..to:
+        total += i
+    return total
+
+func main():
+    pieces: &list[Thread[i64]]
+    defer free(pieces)
+    n := i64(cores()) # the processors of the system
+    for k in 0..n:
+        append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
+    total: i64 = 0
+    for p in pieces:
+        total += wait p
+    print(total)
+```
+The arguments are computed where you call and copied to the new thread, and the result can be anything a function returns, text you own, an error to handle or a temporary: `wait` takes the temporaries of the thread into the ones of the thread that waits, as if a call had made them. `done(t)` asks if the thread ended without waiting, like a game that loads its level while it keeps drawing
+```flag
+level := parallel load("castle.map")
+while not done(level):
+    draw_loading_screen()
+start(try wait level)
+```
+`parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements, so the thread can use what `main` keeps. A thread you keep must be read, by `wait` or `done`, and `-memory` warns about one that is never waited. A function that can fail can't run alone, its error would be lost.
+
+Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock` lets one thread at a time change them
+```flag
+type Visits:
+    lock: Lock
+    count: i64
+
+visits: Visits
+
+func visit():
+    with lock(visits.lock):
+        visits.count += 1
+```
+A `Channel[T, N]` passes values between threads, and waits when it's full or empty. It keeps the values inside itself, so it lives where you declare it
+```flag
+func worker(jobs: *Channel[&str, 16]):
+    for name in jobs: # until the channel is closed
+        print("working on ", name)
+        free(name)
+
+func main():
+    jobs: Channel[&str, 16]
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..4:
+        append(workers, parallel worker(jobs))
+    for name in ["a.txt", "b.txt", "c.txt"]:
+        owned: &str = name # the worker frees what it gets, so it gets text it owns
+        send(jobs, owned)
+    close(jobs)
+    for w in workers:
+        wait w
+```
+`print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it. What the threads change at once in shared memory is yours to guard.
 
 ## Error handling
 ### The error type
@@ -778,12 +897,19 @@ age := index_of(names, "zoe") iferror 0
 port := parse_int(text) ifnull 8080
 ```
 ### When the program fails
-Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened and where
+Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened, where, and the functions of yours that led there
 ```
 flag: index 5 is out of bounds, length 3
   --> main.flg:12:11
+  in parse_line, main.flg:9
+  in load, main.flg:20
+  in main, main.flg:31
 ```
 `assert` checks a condition, and it can take a message: `assert(total > 0, "the total cannot be empty")`.
+
+A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own.
+
+To look inside the program while it runs, build it with `-debug` and run it in gdb or lldb, they show your variables with their types and stop at the lines you choose (see [Debugging](Reference.md#debugging)). With `-debug` nothing is inlined, so every function has its line.
 
 ## Modules
 When you compile you give the compiler a list of files or folders, compiling a folder is equivalent to compiling every `.flg` file inside the folder, including the files inside other folders. The code of all the files is compiled together, so all the files have access to all the functions, types and constants in the other files.
@@ -817,7 +943,7 @@ priv func foo():
 In a file without a module, priv hides the name from every other file.
 
 ## The standard library
-The functions of text, lists, maps and files (`open`, `read_line`, `write`...) are always there. The rest comes in modules that you get with `use`, without adding files
+The functions of text, lists, maps, files (`open`, `read_line`, `write`...) and threads (`Lock`, `Channel`, `cores`) are always there. The rest comes in modules that you get with `use`, without adding files
 - `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading and writing JSON
@@ -913,7 +1039,8 @@ Compiling with `-memory` checks the memory of your program at compile time, and 
 - memory that is never freed
 - memory freed twice
 - memory used after it was freed or after a list grew and moved it
-- temporaries used after their `with scratch():` ended
+- temporaries used after their `with scratch():` ended, and memory of an arena used after `free` or `clear` of it
+- `free` of a pointer that lives in an arena, and an arena that is never freed
 - pointers to the stack of a function that leave it
 
 It is optional because it makes the compilation slower.
@@ -945,6 +1072,7 @@ flagc run main.flg -- first second
 - `-o` the name of the program (`a.out` if you don't give one, `a.exe` on Windows, with `run` the program is removed after it runs unless you give one)
 - `-check` only checks the code, without building the program
 - `-memory` checks the memory (see [Memory safety](#memory-safety))
+- `-debug` builds the program for gdb and lldb (see [Debugging](Reference.md#debugging))
 - `-target` builds for another system, like `-target windows-x86_64` (see [Platforms](Reference.md#platforms))
 - anything else goes to the C compiler, that only assembles and links the program, for example `-lm` to link a library or `-static`
 

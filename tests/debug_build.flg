@@ -1,0 +1,64 @@
+type Point:
+    x: i32
+    y: i32
+
+type Big:
+    cells: array[i64, 20]
+
+type enum Color:
+    Red, Green, Blue
+
+type error Missing
+
+context app:
+    count: i32
+    last: Color
+
+func area(p: Point, scale: f64) -> f64:
+    total := f64(p.x * p.y) * scale
+    return total
+
+func sum(b: Big) -> i64:
+    total: i64 = 0
+    for c in b.cells:
+        total += c
+    return total
+
+func first(items: &slice[$T]) -> $T|Missing:
+    if items.len == 0:
+        return Missing
+    return items[0]
+
+func twice(f: func(i32) -> i32, n: i32) -> i32:
+    return f(f(n))
+
+func next_one(n: i32) -> i32:
+    return n + 1
+
+func main():
+    p := Point{3, 4}
+    b: Big
+    for i in 0..20:
+        b.cells[i] = i64(i)
+    words: &list[&strview]
+    defer free(words)
+    append(words, "hola")
+    append(words, "chau")
+    for i, w in words:
+        app.count += 1
+        k := i * 2
+        print(w, " ", k)
+    for i in 0..2:
+        k := i + 10
+        print(k)
+    counts: &map[&strview, i32]
+    defer free(counts)
+    counts["a"] = 1
+    for e in counts:
+        print(e.key, " ", e.value)
+    maybe: i32|null = 5
+    bits: i32||f32 = 7
+    c: Color = Green
+    app.last = c
+    print(area(p, 2.0), " ", sum(b), " ", maybe, " ", bits as i32, " ", c, " ", app)
+    print(first(words) iferror "none", " ", twice(next_one, 1))

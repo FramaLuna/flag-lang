@@ -1,0 +1,22 @@
+type error TooBig:
+    value: i32
+
+func check(x: i32) -> i32|TooBig:
+    if x > 100:
+        return TooBig{x}
+    return x * 2
+
+func bump(r: i32|TooBig) -> i32|TooBig:
+    return try r + 1
+
+func sum(a: i32, b: i32) -> i32|TooBig:
+    return try check(a) + try check(b)
+
+func main():
+    print(bump(check(1)), " ", bump(check(500)))
+    print(sum(1, 2))
+    print(sum(1, 200))
+    r := bump(check(300))
+    if r is TooBig:
+        print("too big: ", r.value)
+    print(bump(5) iferror -1)

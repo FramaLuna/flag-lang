@@ -1,0 +1,16 @@
+type Pool:
+    jobs: Channel[i32, 4]
+    served: i32
+
+func worker(c: *Channel[i32, 4]):
+    for v in c:
+        print(v)
+
+func main():
+    pool: Pool
+    t := parallel worker(pool.jobs)
+    send(pool.jobs, 1)
+    copy := pool
+    close(pool.jobs)
+    wait t
+    print(copy.served)

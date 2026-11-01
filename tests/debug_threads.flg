@@ -1,0 +1,34 @@
+type Counter:
+    lock: Lock
+    count: i64
+
+counter: Counter
+limit: i32 = 7
+names: array[&strview, 2] = ["a", "b"]
+
+context frame:
+    depth: i32
+
+func work(level: *Arena, n: i32) -> i64:
+    frame.depth += 1
+    values: &list[i64] = arena(level, [])
+    for i in 0..n:
+        append(values, i64(i))
+    text: &str = arena(level, "made")
+    jobs: Channel[i32, 4]
+    send(jobs, n)
+    total: i64 = 0
+    for v in values:
+        total += v
+    with lock(counter.lock):
+        counter.count += total
+    return total + i64(text.len) + i64(trust receive(jobs))
+
+func main():
+    level: Arena
+    defer free(level)
+    t := parallel work(level, 10)
+    other: Arena
+    defer free(other)
+    u := parallel work(other, 20)
+    print(wait t, " ", wait u, " ", counter.count, " ", limit, " ", names)

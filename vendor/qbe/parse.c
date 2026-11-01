@@ -708,6 +708,26 @@ parseline(PState ps)
 		} else
 			arg[1] = INT(0);
 		goto Ins;
+	case Odbgslot:
+		op = t;
+		k = Kw;
+		r = R;
+		arg[0] = parseref();
+		expect(Tcomma);
+		expect(Tint);
+		arg[1] = INT(tokval.num);
+		if (arg[1].val != tokval.num)
+			err("slot number too big");
+		goto Ins;
+	case Odbgmark:
+		op = t;
+		k = Kw;
+		r = R;
+		expect(Tint);
+		vgrow(&curf->dbgmark, ++curf->ndbgmark);
+		curf->dbgmark[curf->ndbgmark-1] = tokval.num;
+		arg[0] = INT(curf->ndbgmark-1);
+		goto Ins;
 	}
 	if (op == Tcall) {
 		curf->leaf = 0;
@@ -825,8 +845,8 @@ typecheck(Fn *fn)
 	BSet pb[1], ppb[1];
 
 	fillpreds(fn);
-	bsinit(pb, fn->nblk);
-	bsinit(ppb, fn->nblk);
+	bsinit(pb);
+	bsinit(ppb);
 	for (b=fn->start; b; b=b->link) {
 		for (p=b->phi; p; p=p->link)
 			fn->tmp[p->to.val].cls = p->cls;
@@ -915,6 +935,8 @@ parsefn(Lnk *lnk)
 	curi = insb;
 	curf = alloc(sizeof *curf);
 	curf->ntmp = 0;
+	curf->dbgmark = vnew(0, sizeof curf->dbgmark[0], PFn);
+	curf->ndbgmark = 0;
 	curf->ncon = 2;
 	curf->tmp = vnew(curf->ntmp, sizeof curf->tmp[0], PFn);
 	curf->con = vnew(curf->ncon, sizeof curf->con[0], PFn);

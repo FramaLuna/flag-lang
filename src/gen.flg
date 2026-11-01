@@ -1,4 +1,6 @@
 @trust
+UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
+
 func gen_program(check: bool) -> Fail?:
     none: &list[Item]
     for k in 1..comp.syms.len:
@@ -11,15 +13,13 @@ func gen_program(check: bool) -> Fail?:
             if lib != "c" and not contains(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
                 append(comp.libs, lib)
     comp.choosing = false
-    contexts: &list[usize]
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         kind := comp.nodes[d].kind
         if (kind == Struct or kind == Fat or kind == Context or kind == Alias) and not generic(d):
             t := try make_type(k, none, kind == Fat, comp.tokens[comp.nodes[d].tok].at)
             if kind == Context:
-                comp.data += "data $ctx." + comp.types[t].name + " = align 8 { z " + room(t) + " }\n"
-                append(contexts, t)
+                comp.data += "thread data $ctx." + comp.types[t].name + " = align 8 { z " + room(t) + " }\n"
     s := first_sym("main")
     while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0):
         s = comp.syms[s].next
@@ -27,8 +27,12 @@ func gen_program(check: bool) -> Fail?:
         eprint(ERR, "this program has no func main() to start from")
         return Fail
     entry: usize = 0
+    comp.settler = NONE
     if s != 0:
         entry = try instantiate(comp.syms[s].node, 0)
+        for n in comp.nodes:
+            if n.kind == Unary and comp.tokens[n.tok].text == "parallel":
+                comp.settler = entry
     if s != 0 and comp.insts[entry].ret != VOID and not integer(comp.insts[entry].ret):
         return fail("main cannot return " + comp.types[comp.insts[entry].ret].name + ", it returns nothing or an integer, the exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
     for k in 1..comp.syms.len:
@@ -45,12 +49,36 @@ func gen_program(check: bool) -> Fail?:
             if others != 0:
                 return fail("an export function cannot be overloaded, its name is the symbol other languages call", at)
             try instantiate(f, 0)
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Var:
+            v := try shared(d)
+            t := v.type
+            if comp.types[t].kind == Bytes:
+                return fail("variable " + text(d) + " needs a size, bytes is a run of unknown length", comp.tokens[comp.nodes[d].tok].at)
+            held: &str
+            if kids(d) == 1:
+                zeros(held, comp.types[t].size)
+            else:
+                given := node_end(d + 1)
+                body := comp.body.len
+                slots := comp.slots.len
+                try assign(alloc(t), t, try value(given, t), at_of(given)) # checked like a local, the code is dropped
+                unknown := try image(t, given, held)
+                if unknown != 0:
+                    return fail(UNKNOWN, at_of(unknown))
+                comp.body.len = body
+                comp.slots.len = slots
+                comp.held.len = 0
+            zeros(held, room(t) - comp.types[t].size)
+            comp.data += "data " + comp.globals[usize(v.at.n)] + " = align 8 { " + held + "}\n"
     done := try gen_from(0)
     reached := comp.types.len
     funcs := comp.procs.len
     code := comp.code.len
     passes := comp.passes.len
     mentions := comp.mentions.len
+    scopes := comp.scopes.len
     data := comp.data.len
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
@@ -93,11 +121,83 @@ func gen_program(check: bool) -> Fail?:
             if owned:
                 return fail("for over " + shown + " belongs to the language, " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
-    comp.procs.len = funcs
+    ids: &map[&strview, usize]
+    for k in 0..comp.procs.len:
+        put(ids, comp.procs[k].name, k)
+    calls: &list[&list[usize]]
+    for p in comp.procs:
+        callees: &list[usize]
+        for i in comp.code[p.code:p.end]:
+            g := callee(i, ids)
+            if g < comp.procs.len:
+                append(callees, g)
+        append(calls, callees)
+    visits: &list[usize]
+    lows: &list[usize]
+    stacked: &list[bool]
+    for p in comp.procs:
+        append(visits, 0)
+        append(lows, 0)
+        append(stacked, false)
+    stack: &list[usize]
+    path: &list[usize]
+    edges: &list[usize]
+    order: &list[usize]
+    for root in 0..comp.procs.len:
+        if visits[root] == 0:
+            append(path, root)
+            append(edges, 0)
+        while path.len > 0:
+            v := path[-1]
+            if visits[v] == 0:
+                visits[v] = order.len + stack.len + 1
+                lows[v] = visits[v]
+                append(stack, v)
+                stacked[v] = true
+            if edges[-1] < calls[v].len:
+                w := calls[v][edges[-1]]
+                edges[-1] += 1
+                if visits[w] == 0:
+                    append(path, w)
+                    append(edges, 0)
+                elif stacked[w] and visits[w] < lows[v]:
+                    lows[v] = visits[w]
+                continue
+            path.len -= 1
+            edges.len -= 1
+            if path.len > 0 and lows[v] < lows[path[-1]]:
+                lows[path[-1]] = lows[v]
+            if lows[v] == visits[v]:
+                first := order.len
+                while stacked[v]:
+                    w := trust pop(stack)
+                    stacked[w] = false
+                    append(order, w)
+                cycle := order.len - first > 1 or contains(calls[v], v)
+                for m in order[first:]:
+                    comp.procs[m].recursive = cycle
+                    f := comp.procs[m].node
+                    if cycle and declared_inline(f):
+                        shown := text(f)
+                        if comp.tokens[comp.nodes[f].tok - 1].text == "operator":
+                            shown = "operator " + shown
+                        for c in order[first:]:
+                            for i in comp.code[comp.procs[c].code:comp.procs[c].end]:
+                                if i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == comp.procs[m].name:
+                                    failed := fail(shown + " is inline and recursive, inlining it would never end: declare it without inline", comp.tokens[comp.nodes[f].tok].at)
+                                    note("this call leads back to " + shown, i.pos)
+                                    return failed
+    procs: &list[Proc]
+    for k in order:
+        if k < funcs:
+            append(procs, comp.procs[k])
+    comp.procs = procs
     comp.code.len = code
     comp.passes.len = passes
     comp.mentions.len = mentions
+    comp.scopes.len = scopes
     comp.data.len = data
+    clear(comp.stored)
     comp.reached = reached
     if check:
         return null
@@ -111,8 +211,8 @@ func gen_program(check: bool) -> Fail?:
     append(comp.passes, Pass{L, argv, false})
     add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
     add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
-    for t in contexts:
-        stamp(t, global("$ctx." + comp.types[t].name), 0)
+    stamp_start(true)
+    add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
     if comp.system == "windows":
         for fd in 0..3:
             modes := comp.passes.len
@@ -148,6 +248,7 @@ func gen_from(from: usize) -> usize|Fail:
         comp.vars.len = 0
         comp.defers.len = 0
         comp.loops.len = 0
+        comp.scope = 0
         comp.live = true
         comp.inst = i
         saved := open_frame()
@@ -158,6 +259,34 @@ func gen_from(from: usize) -> usize|Fail:
         if f != 0:
             comp.at = comp.tokens[comp.nodes[f].tok].at
         made := open_proc(inst.name, f, i, inst.export)
+        if f == 0 and inst.ret == VOID:
+            shape := comp.types[comp.binds[-1].type]
+            block := temp()
+            append(comp.passes, Pass{L, block, false})
+            stamp_start(false)
+            args: &list[Value]
+            try invoke("guard_stack", args, 0)
+            start := HEAD + align_up(comp.types[shape.ret].size, 8)
+            passes: &list[Pass]
+            used := start + 8
+            for k in 0..shape.count:
+                p := comp.items[shape.first + k].type
+                if comp.types[p].kind == Fat or big(p):
+                    append(passes, Pass{L, offset(block, used), false})
+                elif aggregate(p):
+                    append(passes, Pass{cls(p), offset(block, used), false})
+                else:
+                    x := load(Value{type = p, at = offset(block, used), mem = true}).at
+                    append(passes, Pass{cls(p), x, is_number(x)})
+                used += room(p)
+            store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at), offset(block, HEAD))
+            append(args, Value{type = pointer(BYTES), at = block})
+            append(args, truth(pointers(shape.ret) != 0))
+            try invoke("finished", args, 0)
+            terminate("ret", int_arg(0))
+            close_proc(made, L, 1)
+            close_frame(saved)
+            continue
         if f == 0:
             t := comp.binds[-1].type
             ty := comp.types[t]
@@ -274,7 +403,7 @@ func gen_from(from: usize) -> usize|Fail:
             if comp.passes[made.params + k].cls < AGG:
                 comp.vars[k].addr = alloc(given.type)
                 store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
-            mention(given.name, comp.vars[k].addr)
+            mention(given.name, comp.vars[k].addr, given.type, given.tok)
         name := text(f)
         first: usize = VOID
         second: usize = VOID
@@ -341,7 +470,27 @@ func brief(name: &strview) -> &strview:
     return name
 
 func open_proc(name: &strview, node: usize, inst: usize, export: bool) -> Proc:
-    return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, node = node, inst = inst, export = export}
+    return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, scopes = comp.scopes.len, node = node, inst = inst, export = export}
+
+func proc_name(f: Proc) -> &str:
+    inst := comp.insts[f.inst]
+    name: &str
+    if f.node == 0 and inst.ret == BOOL:
+        name += "operator == of " + comp.types[comp.inst_binds[inst.binds].type].name
+    elif f.node == 0 and inst.ret == U64:
+        name += "hash of " + comp.types[comp.inst_binds[inst.binds].type].name
+    elif f.node == 0:
+        name += "start of a thread that runs a " + comp.types[comp.inst_binds[inst.binds].type].name
+    else:
+        if comp.tokens[comp.nodes[f.node].tok].kind != Name or reserved(text(f.node)):
+            name += "operator "
+        name += text(f.node)
+    return name
+
+func declared_at(f: Proc) -> usize:
+    if f.node == 0:
+        return comp.insts[f.inst].at
+    return comp.tokens[comp.nodes[f.node].tok].at
 
 func close_proc(made: Proc, cls: u32, count: usize):
     made.cls = cls
@@ -354,6 +503,7 @@ func close_proc(made: Proc, cls: u32, count: usize):
     made.end = comp.code.len
     made.last = comp.temps
     made.mentioned = comp.mentions.len
+    made.scoped = comp.scopes.len
     append(comp.procs, made)
     comp.slots.len = 0
     comp.spare.len = 0
@@ -367,6 +517,9 @@ func params(f: usize) -> usize:
         count += 1
         c = node_end(c)
     return count
+
+func declared_inline(f: usize) -> bool:
+    return f != 0 and comp.tokens[comp.nodes[f].tok - 2].text == "inline"
 
 func result(f: usize) -> usize|Fail:
     c := kid(f, params(f))
@@ -408,7 +561,7 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
             name += "op"
         name += "." + comp.insts.len
     library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, false})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
@@ -445,13 +598,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
             return fail(tok.text + " cannot take its type from an empty literal, write the type: " + tok.text + example, tok.at)
         if comp.types[t].kind == Bytes:
             return fail("variable " + tok.text + " needs a size, bytes is a run of unknown length", tok.at)
-        slot := alloc(t)
-        mention(tok.text, slot)
+        slot := alloc(t, true)
+        mention(tok.text, slot, t, node.tok)
         if c == node_end(n) or v.type != t:
             zero(t, slot)
         if c < node_end(n):
             try assign(slot, t, v, at_of(c))
-        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, fails(t)})
+        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, must_read(t)})
         if noted(tok.at):
             mark(node.tok, described(tok.text, t))
         return none
@@ -495,6 +648,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         while part < node_end(n) and comp.nodes[part].kind == If:
             cond := part + 1
             yes := node_end(cond)
+            comp.at = at_of(part)
             c := try condition(cond)
             l_yes := label()
             l_no := label()
@@ -658,6 +812,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 f := comp.syms[found].node
                 taken: &list[usize]
                 id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
+                comp.insts[id].valued = true
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
@@ -681,13 +836,15 @@ func gen(n: usize, want: usize) -> Value|Fail:
         k := comp.nodes[comp.syms[s].node].kind
         if k == Constant:
             return constant(s, want, tok.at)
+        if k == Var:
+            return shared(comp.syms[s].node)
         args: &list[Item]
         if k == Void:
             return Value{type = try make_type(s, args, false, tok.at)}
         if k != Context:
             return fail(tok.text + " is a type that carries data, so its name alone is not a value", tok.at)
         t := try make_type(s, args, false, tok.at)
-        return Value{type = t, at = global("$ctx." + comp.types[t].name), mem = true, place = true}
+        return Value{type = t, at = global("thread $ctx." + comp.types[t].name), mem = true, place = true}
     case Literal:
         if tok.kind == Int:
             return literal(false, try int_value(tok.text, tok.at))
@@ -697,7 +854,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
     case Named:
         return value(n + 1, want)
     case Call:
-        return called(n)
+        return called(n, want, false)
     case Brace, Fill:
         t := struct_in(want)
         c := n + 1
@@ -730,6 +887,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return fail(ty.name + " holds " + counted(filled.len, "element", "elements") + " but this literal gives " + counted(given, "value", "values"), tok.at)
             if given != filled.len:
                 return fail(ty.name + " has " + counted(filled.len, "field", "fields") + " but this literal gives " + counted(given, "value", "values"), tok.at)
+        word := Arg{}
+        last: usize = 0
         i: usize = 0
         while c < node_end(n):
             if (comp.nodes[c].kind == Named) != named:
@@ -747,7 +906,31 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     if field.n < g.n + comp.types[g.type].size and g.n < field.n + comp.types[field.type].size:
                         return fail("field " + field.name + " cannot be filled, " + g.name + " already fills the storage they share", at_of(c))
                 append(filled, field)
-            try assign(offset(slot, filled[i].n), filled[i].type, try value(c, filled[i].type), at_of(c))
+            f := filled[i]
+            size := comp.types[f.type].size
+            v := try value(c, f.type)
+            at := f.n / 8 * 8
+            if not named and at >= last and packs(f, at):
+                v = try convert(v, f.type, Arg{}, at_of(c))
+                bits := load(v).at
+                if comp.types[f.type].kind == Union:
+                    bits = tag(v)
+                elif comp.types[f.type].kind == Float:
+                    bits = op1(W, "cast", bits)
+                if size < 4:
+                    bits = op(W, "and", bits, int_arg(i64((1 << (8 * size)) - 1)))
+                bits = op1(L, "extuw", bits)
+                if f.n > at:
+                    bits = op(L, "shl", bits, int_arg(i64(8 * (f.n - at))))
+                if word.kind != Empty:
+                    bits = op(L, "or", word, bits)
+                word = bits
+                if i + 1 == filled.len or not packs(filled[i + 1], at):
+                    store(U64, Value{type = U64, at = word}, offset(slot, at)) # the whole word, so a copy of it reads one store
+                    word = Arg{}
+            else:
+                try assign(offset(slot, f.n), f.type, v, at_of(c))
+                last = f.n + size
             i += 1
             c = node_end(c)
         return Value{type = t, at = slot, mem = true}
@@ -765,7 +948,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if f.name == tok.text:
                     if noted(tok.at):
                         mark(comp.nodes[field_node(t, f.name)].tok, described(f.name, f.type))
-                    return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place}
+                    return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place, lit = base.lit and aggregate(f.type)}
         if comp.tokens[node.tok + 1].text == "(":
             return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
         how: &strview
@@ -782,61 +965,112 @@ func gen(n: usize, want: usize) -> Value|Fail:
     case Binary, Unary:
         return operation(n, want)
     case:
-        t := struct_in(want)
-        hint := comp.types[t]
-        fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
-        if node.size == 1 and (hint.kind == Struct or hint.kind == Array):
-            slot := alloc(t)
-            zero(t, slot)
-            return Value{type = t, at = slot, mem = true}
-        if node.size == 1 and node.kind == Items:
-            return Value{type = EMPTYARRAY}
-        if node.size == 1:
-            return Value{type = EMPTYMAP}
-        want_key: usize = VOID
-        want_value: usize = VOID
-        if node.kind == Items and hint.kind == Array and hint.count == kids(n):
-            want_value = hint.elem
-        if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
-            want_key = comp.items[hint.args].type
-            want_value = comp.items[hint.args + 1].type
-        keys: &list[Value]
-        values: &list[Value]
-        c := n + 1
-        while c < node_end(n):
-            if node.kind == Pairs:
-                append(keys, try value(c, want_key))
-                c = node_end(c)
-            append(values, try value(c, want_value))
+        return collection(n, want, 0)
+
+func collection(n: usize, want: usize, arena: usize) -> Value|Fail:
+    node := comp.nodes[n]
+    tok := comp.tokens[node.tok]
+    t := struct_in(want)
+    hint := comp.types[t]
+    fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
+    shape: &strview = "map"
+    example: &strview = "x: &map[&strview, i32] = arena(a, {})"
+    if node.kind == Items:
+        shape = "list"
+        example = "x: &list[i32] = arena(a, [])"
+    given: Value
+    at := tok.at
+    owned := false
+    if arena != 0:
+        given = try value(arena, VOID)
+        at = at_of(arena)
+        fitting: &list[usize]
+        for m in members(want):
+            if comp.types[m].kind == Fat and text(comp.types[m].decl) == shape:
+                append(fitting, m)
+        owned = fitting.len == 1
+        if owned:
+            t = fitting[0]
+            hint = comp.types[t]
+    if node.size == 1 and arena != 0 and not owned and want != VOID:
+        return fail("this empty " + shape + " lives in an arena as a &" + shape + ", which cannot land in " + comp.types[want].name, tok.at)
+    if node.size == 1 and arena != 0 and not owned:
+        return fail("this empty " + shape + " lives in an arena and gets its type from where it lands, and nothing here gives a &" + shape + ": " + example, tok.at)
+    if node.size == 1 and (owned or hint.kind == Struct or hint.kind == Array):
+        return placed(t, given, at)
+    if node.size == 1 and node.kind == Items:
+        return Value{type = EMPTYARRAY}
+    if node.size == 1:
+        return Value{type = EMPTYMAP}
+    want_key: usize = VOID
+    want_value: usize = VOID
+    if node.kind == Items and hint.kind == Array and hint.count == kids(n):
+        want_value = hint.elem
+    if node.kind == Items and owned:
+        want_value = element(t)
+    if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
+        want_key = comp.items[hint.args].type
+        want_value = comp.items[hint.args + 1].type
+    keys: &list[Value]
+    values: &list[Value]
+    c := n + 1
+    while c < node_end(n):
+        if node.kind == Pairs:
+            append(keys, try value(c, want_key))
             c = node_end(c)
-        if want_value == VOID:
-            want_value = try common(values, tok.at)
-        if node.kind == Items:
-            t = array_of(want_value, values.len)
-            slot := alloc(t)
-            zero(t, slot)
-            for i in 0..values.len:
-                try assign(offset(slot, i * comp.types[want_value].size), want_value, values[i], tok.at)
-            return Value{type = t, at = slot, mem = true}
-        if fixed and keys.len > comp.items[hint.args + 2].n:
-            return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
-        if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
-            map := first_sym("map")
-            while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
-                map = comp.syms[map].next
-            args: &list[Item]
-            append(args, Item{name = "", type = try common(keys, tok.at)})
-            append(args, Item{name = "", type = want_value})
-            t = try make_type(map, args, true, tok.at)
-        slot := alloc(t)
-        zero(t, slot)
-        for i in 0..keys.len:
-            pair: &list[Value]
-            append(pair, Value{type = t, at = slot, mem = true})
-            append(pair, keys[i])
-            append(pair, values[i])
-            try invoke("put", pair, tok.at)
-        return Value{type = t, at = slot, mem = true}
+        append(values, try value(c, want_value))
+        c = node_end(c)
+    if want_value == VOID:
+        want_value = try common(values, tok.at)
+    if node.kind == Items:
+        whole := try placed(array_of(want_value, values.len), Value{}, tok.at)
+        for i in 0..values.len:
+            try assign(offset(whole.at, i * comp.types[want_value].size), want_value, values[i], tok.at)
+        if arena == 0:
+            return whole
+        if not owned:
+            t = try fat_type("list", want_value, tok.at)
+        list := try placed(t, given, at)
+        args: &list[Value]
+        append(args, list)
+        append(args, try convert(address(whole), try fat_type("slice", want_value, tok.at), Arg{}, tok.at))
+        try invoke("append", args, tok.at)
+        return list
+    if fixed and keys.len > comp.items[hint.args + 2].n:
+        return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
+    if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
+        map := first_sym("map")
+        while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
+            map = comp.syms[map].next
+        args: &list[Item]
+        append(args, Item{name = "", type = try common(keys, tok.at)})
+        append(args, Item{name = "", type = want_value})
+        t = try make_type(map, args, true, tok.at)
+    made := try placed(t, given, at)
+    for i in 0..keys.len:
+        pair: &list[Value]
+        append(pair, made)
+        append(pair, keys[i])
+        append(pair, values[i])
+        try invoke("put", pair, tok.at)
+    return made
+
+func placed(t: usize, arena: Value, at: usize) -> Value|Fail:
+    made := Value{type = t, at = alloc(t), mem = true}
+    zero(t, made.at)
+    if arena.type == VOID:
+        return made
+    for i in 0..comp.types[t].count:
+        f := comp.items[comp.types[t].first + i]
+        if f.name == "arena":
+            given := arena
+            if comp.types[f.type].elem == given.type:
+                given = address(given)
+            if given.type != f.type:
+                return fail("arena(a, ...) expects the Arena it allocates in, or a pointer to one, but got " + comp.types[arena.type].name, at)
+            store(f.type, given, offset(made.at, f.n))
+            return made
+    return fail(comp.types[t].name + " has no field arena to remember one, so it cannot live in an arena", at)
 
 func iterate(n: usize) -> Fail?:
     node := comp.nodes[n]
@@ -857,6 +1091,7 @@ func iterate(n: usize) -> Fail?:
     if range and counter != 0:
         return fail("a for over a range cannot count, the number it gives is already the index", comp.tokens[comp.nodes[counter].tok].at)
     before := comp.vars.len
+    outer := open_scope()
     l_head := label()
     l_body := label()
     l_step := label()
@@ -920,12 +1155,12 @@ func iterate(n: usize) -> Fail?:
             branch(op(W, cmp_name("cslt", t), current, stop), l_body, l_exit)
             open_block(l_body)
         if range:
-            mention(tok.text, slot)
+            mention(tok.text, slot, t, node.tok)
             append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
         else:
-            place := alloc(elem)
+            place := alloc(elem, true)
             store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
-            mention(tok.text, place)
+            mention(tok.text, place, elem, node.tok)
             append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
             round := current
@@ -933,7 +1168,7 @@ func iterate(n: usize) -> Fail?:
                 round = op(L, "sub", op(L, "sub", load(end).at, int_arg(1)), current)
             count := alloc(USIZE)
             store(USIZE, Value{type = USIZE, at = round}, count)
-            mention(text(counter), count)
+            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         if backward:
             append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
@@ -969,7 +1204,7 @@ func iterate(n: usize) -> Fail?:
         open_block(l_head)
         if counter != 0:
             store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
-            mention(text(counter), count)
+            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         item: usize = VOID
         place := Arg{}
@@ -1021,7 +1256,7 @@ func iterate(n: usize) -> Fail?:
                 next = op(L, "sub", i, size)
                 here = op(L, "add", addr, next)
             store(USIZE, Value{type = USIZE, at = next}, slot)
-            place = alloc(item)
+            place = alloc(item, true)
             add(Ins{op = "storel", a = here, b = place})
             store(USIZE, Value{type = USIZE, at = size}, offset(place, 8))
         else:
@@ -1038,15 +1273,17 @@ func iterate(n: usize) -> Fail?:
             branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
             place = payload(got.at, item)
-        mention(tok.text, place)
+        mention(tok.text, place, item, node.tok)
         append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
     try statements(node_end(subject))
+    comp.at = tok.at
     if (range or elem != VOID) and not backward:
         jump(l_step)
         open_block(l_step)
         store(t, Value{type = t, at = op(cls(t), "add", load(Value{type = t, at = slot, mem = true}).at, int_arg(1))}, slot)
     jump(l_head)
+    close_scope(outer)
     comp.loops.len -= 1
     try forget(before)
     open_block(l_exit)
@@ -1069,6 +1306,7 @@ func cases(n: usize) -> Fail?:
     c := node_end(n + 1)
     while c < node_end(n):
         at := comp.tokens[comp.nodes[c].tok].at
+        comp.at = at
         comp.pos = comp.nodes[c].tok + 1
         if fallback != 0 and peek(":"):
             return fail("a switch has one default case, this is a second one", at)
@@ -1162,7 +1400,7 @@ func cases(n: usize) -> Fail?:
         try join(ends, lives, tok.at)
     return null
 
-func called(n: usize) -> Value|Fail:
+func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     none: Value
@@ -1176,7 +1414,11 @@ func called(n: usize) -> Value|Fail:
             callee = held(lookup(tok.text), tok.at)
     else:
         s := try named(tok.text, node.module, tok.at)
-        if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
+        if s != 0 and comp.nodes[comp.syms[s].node].kind == Var:
+            v := try shared(comp.syms[s].node)
+            if func_in(v.type) != VOID:
+                callee = v
+        elif s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
             f := first_sym(tok.text)
             while f != 0 and not (comp.nodes[comp.syms[f].node].kind == Func and visible(f, node.module, tok.at)):
                 f = comp.syms[f].next
@@ -1188,6 +1430,8 @@ func called(n: usize) -> Value|Fail:
         if shape.kind != Func:
             hint: &strview
             if func_in(callee.type) != VOID and callee.place:
+                hint = ": copy it to a variable and narrow that with is first"
+            if func_in(callee.type) != VOID and callee.place and lookup(tok.text) != 0:
                 hint = ": narrow it with is first"
             return fail("only a function value can be called, this is " + shape.name + hint, tok.at)
         if count != shape.count:
@@ -1206,6 +1450,8 @@ func called(n: usize) -> Value|Fail:
                 return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
             append(passes, try hand(given, to, false, at_of(c)))
             c = node_end(c)
+        if threaded:
+            return spawn(code, passes, callee.type, tok.at)
         return emit(code, passes, shape.ret, false, tok.at)
     name := tok.text
     target: usize = VOID
@@ -1224,6 +1470,8 @@ func called(n: usize) -> Value|Fail:
         target = try make_type(s, args, false, tok.at)
     conversion := kids(n) == 1 and target != VOID
     if conversion or tok.kind == Builtin or node.module.len == 0 and (name == "sizeof" or name == "ptr" or name == "print" or name == "eprint" or name == "can_assign"):
+        if threaded:
+            return fail("parallel runs a function in a new thread, and " + name + " is not one: wrap it in a func", tok.at)
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Named:
@@ -1256,17 +1504,15 @@ func called(n: usize) -> Value|Fail:
                     v = Value{type = v.type, at = slot, mem = true}
                 append(parts, v)
                 c = node_end(c)
+            line := Value{type = try fat_type("str", VOID, tok.at), at = load(try runtime("line", values, tok.at)).at, mem = true, place = true}
+            append(values, to)
+            append(values, load(Value{type = USIZE, at = offset(line.at, 8), mem = true}))
             c = n + 1
             for part in parts:
-                values.len = 0
-                append(values, to)
-                append(values, part)
-                try invoke("write", values, at_of(c))
+                try put_text(line, part, at_of(c))
                 c = node_end(c)
-            values.len = 0
-            append(values, to)
-            append(values, Value{type = try fat_type("strview", VOID, tok.at), at = text_data("\\n"), mem = true})
-            try invoke("write", values, tok.at)
+            try put_words(line, "\\n", tok.at)
+            try runtime("print_line", values, tok.at) # one line at a time, so two threads never mix theirs
             return none
         platform := name == "@linux" or name == "@macos" or name == "@windows" or name == "@x86_64" or name == "@arm64" or name == "@riscv64"
         if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@compile_error" and not platform:
@@ -1290,7 +1536,7 @@ func called(n: usize) -> Value|Fail:
             site := tok.at
             if comp.site != 0:
                 site = comp.site
-            return Value{type = try fat_type("strview", VOID, tok.at), at = text_data(replace(view(location(site)), "\\", "\\\\")), mem = true, lit = true}
+            return place_of(site)
         if name == "sizeof":
             return literal(false, comp.types[try resolve(n + 1)].size)
         if name == "ptr":
@@ -1307,6 +1553,10 @@ func called(n: usize) -> Value|Fail:
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
+    if name == "arena" and node.module.len == 0 and kids(n) == 2 and (comp.nodes[kid(n, 1)].kind == Items or comp.nodes[kid(n, 1)].kind == Pairs):
+        if threaded:
+            return fail("parallel runs a function in a new thread, and arena of a literal is not one: wrap it in a func", tok.at)
+        return collection(kid(n, 1), want, n + 1)
     c := n + 1
     while c < node_end(n):
         label: &strview
@@ -1322,7 +1572,7 @@ func called(n: usize) -> Value|Fail:
         append(values, try value(c, VOID))
         comp.passed = 0
         c = node_end(c)
-    return call(name, node.module, values, names, tok.at)
+    return call(name, node.module, values, names, tok.at, threaded)
 
 func operation(n: usize, want: usize) -> Value|Fail:
     node := comp.nodes[n]
@@ -1330,8 +1580,27 @@ func operation(n: usize, want: usize) -> Value|Fail:
     none: Value
     if node.kind == Unary:
         o := tok.text
+        if o == "parallel":
+            return called(n + 1, VOID, true)
         v := try value(n + 1, VOID)
         t := comp.types[v.type]
+        if o == "wait":
+            if t.kind != Thread:
+                return fail("wait expects a thread on its right, and " + t.name + " is not one: t := parallel f(x)", tok.at)
+            args: &list[Value]
+            append(args, Value{type = pointer(BYTES), at = load(v).at})
+            append(args, try place_of(tok.at))
+            try runtime("join", args, tok.at)
+            args.len = 1
+            result := none
+            here := comp.at
+            comp.at = tok.at # -memory reports the copy where join is
+            if t.elem != NULL:
+                result = Value{type = t.elem, at = alloc(t.elem), mem = true}
+                store(t.elem, Value{type = t.elem, at = offset(args[0].at, HEAD), mem = true}, result.at)
+            comp.at = here
+            try invoke("free", args, tok.at)
+            return result
         if o == ".*":
             if t.kind == Fat:
                 return Value{type = BYTES, at = op1(L, "loadl", v.at), mem = true, place = true}
@@ -1384,7 +1653,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
             try leave(Value{type = failed, at = payload(v.at, failed), mem = true}, tok.at)
             open_block(l_ok)
             absent(v.at, v.type, rest)
-        return Value{type = kept, at = payload(v.at, kept), mem = true, place = v.place}
+        return Value{type = kept, at = payload(v.at, kept), mem = true, place = v.place, lit = v.lit and aggregate(kept)}
     o := tok.text
     left := n + 1
     right := node_end(left)
@@ -1416,7 +1685,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         if untagged_member(to, v.type) or untagged_member(v.type, to):
             return convert(v, to, Arg{}, tok.at)
         if from.kind == Union and within(to, v.type):
-            return Value{type = to, at = payload(v.at, to), mem = true, place = v.place}
+            return Value{type = to, at = payload(v.at, to), mem = true, place = v.place, lit = v.lit and aggregate(to)}
         if from.size == dest.size and not aggregate(v.type) and not aggregate(to) and from.kind != Void and dest.kind != Void:
             x := load(v).at
             if (from.kind == Float) != (dest.kind == Float):
@@ -1425,7 +1694,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
         if from.kind == Union or dest.kind == Union:
             return fail("cannot reinterpret " + from.name + " as " + dest.name + ", a union is read only as one of its members or as a narrower union", tok.at)
         if from.size == dest.size and aggregate(v.type) and aggregate(to):
-            return Value{type = to, at = v.at, mem = v.mem, place = v.place}
+            return Value{type = to, at = v.at, mem = v.mem, place = v.place, lit = v.lit}
         return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
     if o == "..":
         return fail("a range goes in a for header or a case label, nothing else reads it", tok.at)
@@ -1583,11 +1852,15 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             try invoke("out_of_bounds", bounds, tok.at)
             terminate("hlt", Arg{})
             open_block(l_in)
-        spot = Value{type = elem, at = op(L, "add", addr, times(i, comp.types[elem].size)), mem = true, place = base.place or not array}
+        scaled := times(i, comp.types[elem].size)
+        count: u32 = 0
+        if array and comp.types[t].count <= 0xffff_ffff:
+            count = u32(comp.types[t].count) # -memory keeps the elements of an array apart from what follows it
+        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
     else:
         args: &list[Value]
         if array:
-            whole := address(Value{type = t, at = addr, mem = true, place = base.place})
+            whole := address(Value{type = t, at = addr, mem = true, place = base.place, lit = base.lit})
             if kids(n) == 3:
                 whole = try convert(whole, try fat_type("slice", comp.types[t].elem, tok.at), Arg{}, tok.at)
             append(args, whole)
@@ -1969,6 +2242,8 @@ func keep(before: usize, back: usize, ends: *&list[Local]) -> bool|Fail:
 
 func forget(before: usize) -> Fail?:
     for i in before..comp.vars.len:
+        if comp.vars[i].unread and comp.types[comp.vars[i].type].kind == Thread:
+            return fail(comp.vars[i].name + " keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own", comp.tokens[comp.vars[i].tok].at)
         if comp.vars[i].unread:
             return fail(comp.vars[i].name + " can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =", comp.tokens[comp.vars[i].tok].at)
     comp.vars.len = before
@@ -1991,6 +2266,9 @@ func struct_in(t: usize) -> usize:
         if comp.types[m].kind == Struct:
             found = m
     return found
+
+func must_read(t: usize) -> bool:
+    return fails(t) or comp.types[t].kind == Thread
 
 func fails(t: usize) -> bool:
     for m in members(t):
@@ -2021,14 +2299,169 @@ func constant(s: usize, want: usize, at: usize) -> Value|Fail:
     d := comp.syms[s].node
     if contains(comp.resolving, d):
         return fail(comp.syms[s].name + " refers to itself, a constant cannot be computed from itself", at)
+    inner := false
+    for r in comp.resolving:
+        inner = inner or comp.nodes[r].kind == Constant
+    first := comp.body.len
+    slots := comp.slots.len
+    held := comp.held.len
     append(comp.resolving, d)
+    aside := set_aside(0) # the value sees the constants it names, not the variables where it is read
     v := value(d + 1, want)
+    put_back(0, aside)
     comp.resolving.len -= 1
     if v is Fail:
         note(comp.syms[s].name + " is read here", at)
         return Fail
     v.place = false
-    return v
+    if inner or not aggregate(v.type) or v.at.kind != Temp:
+        return v
+    end := comp.body.len
+    data: &str = "{ "
+    if try image(v.type, d + 1, data) != 0:
+        comp.body.len = end
+        return v
+    zeros(data, room(v.type) - comp.types[v.type].size)
+    data += "}"
+    for k in comp.held[held:]:
+        if k < slots:
+            append(comp.spare, k)
+    comp.held.len = held
+    comp.slots.len = slots
+    comp.body.len = first
+    id := comp.stored[view(data)] ifnull i64(comp.globals.len)
+    if id == i64(comp.globals.len):
+        name: &str = "$flag.const."
+        name += id
+        global(view(name))
+        put(comp.stored, view(data), id)
+        if comp.system == "linux":
+            comp.data += "section \".data.rel.ro\" "
+        elif comp.system == "windows":
+            comp.data += "section \".rdata\" \"dr\" "
+        comp.data += "data " + name + " = align 8 " + data + "\n" # macOS takes no quoted section, there it stays in data
+    return Value{type = v.type, at = Arg{Global, id}, mem = true, lit = true}
+
+func shared(d: usize) -> Value|Fail:
+    return Value{type = try resolve(d + 1), at = global("$var." + text(d) + "." + d), mem = true, place = true}
+
+func image(t: usize, n: usize, out: *&str) -> usize|Fail: # the node of a part that is computed, or 0
+    while n != 0 and comp.nodes[n].kind == Name:
+        s := try named(text(n), comp.nodes[n].module, at_of(n))
+        if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
+            break
+        n = comp.syms[s].node + 1
+    ty := comp.types[t]
+    if n == 0 and not tagged(t):
+        zeros(out, ty.size)
+        return 0
+    kind: NodeKind = Var # no node, the value is zero
+    if n != 0:
+        kind = comp.nodes[n].kind
+    quoted := kind == Literal and comp.tokens[comp.nodes[n].tok].kind == Str
+    if ty.kind == Union:
+        member := ty.start
+        if kind == Brace:
+            member = try resolve(n + 1)
+        elif kind == Fill:
+            member = struct_in(t)
+        elif quoted:
+            member = try fat_type("strview", VOID, at_of(n))
+        elif n != 0:
+            v := try value(n, t)
+            member = v.type
+            if not contains(members(t), member):
+                member = try member_for(t, v, at_of(n))
+        if not contains(members(t), member):
+            return n
+        out.* += "w " + (member - 1) + ", "
+        if ty.size > 4:
+            zeros(out, 4)
+            unknown := try image(member, n, out)
+            if unknown != 0:
+                return unknown
+            zeros(out, ty.size - 8 - comp.types[member].size)
+        return 0
+    if ty.kind == Struct and (n == 0 or kind == Brace or kind == Fill):
+        given: &list[usize]
+        defer free(given)
+        for i in 0..ty.count:
+            append(given, usize(0))
+        c := n + 1
+        if kind == Brace:
+            c = node_end(n + 1)
+        next: usize = 0
+        while n != 0 and c < node_end(n):
+            if comp.nodes[c].kind == Named:
+                f: usize = 0
+                while comp.items[ty.first + f].name != text(c):
+                    f += 1
+                given[f] = c + 1
+            else:
+                while comp.items[ty.first + next].shared:
+                    next += 1
+                given[next] = c
+                next += 1
+            c = node_end(c)
+        offset: usize = 0
+        for i in 0..ty.count:
+            field := comp.items[ty.first + i]
+            if not field.shared:
+                filler := i
+                for j in 0..ty.count:
+                    if given[j] != 0 and comp.items[ty.first + j].n == field.n:
+                        filler = j
+                inner := comp.items[ty.first + filler].type
+                zeros(out, field.n - offset)
+                unknown := try image(inner, given[filler], out)
+                if unknown != 0:
+                    return unknown
+                zeros(out, comp.types[field.type].size - comp.types[inner].size)
+                offset = field.n + comp.types[field.type].size
+        zeros(out, ty.size - offset)
+        return 0
+    if ty.kind == Array and (n == 0 or kind == Items or kind == Brace):
+        c := n + 1
+        if kind == Brace:
+            c = node_end(n + 1)
+        for i in 0..ty.count:
+            element: usize = 0
+            if n != 0:
+                element = c
+                c = node_end(c)
+            unknown := try image(ty.elem, element, out)
+            if unknown != 0:
+                return unknown
+        return 0
+    if quoted and ty.name == "&strview":
+        id := comp.globals[usize(text_data(text(n)[1:text(n).len - 1]).n)][9:]
+        out.* += "l $flag.str." + id + ", l " + comp.texts[trust parse_int(id)] + ", "
+        return 0
+    if ty.size == 0:
+        return 0
+    v := try convert(try value(n, t), t, Arg{}, at_of(n))
+    known := v.at.kind == Const or v.at.kind == Single or v.at.kind == Double or v.at.kind == Global and not v.mem and not starts_with(comp.globals[usize(v.at.n)], "thread ")
+    if aggregate(t) or not known:
+        return n
+    letter: &strview = "l"
+    if v.at.kind == Single:
+        letter = "s"
+    elif v.at.kind == Double:
+        letter = "d"
+    elif ty.size == 1:
+        letter = "b"
+    elif ty.size == 2:
+        letter = "h"
+    elif ty.size == 4:
+        letter = "w"
+    out.* += letter + " "
+    put_arg(out, v.at, 0)
+    out.* += ", "
+    return 0
+
+func zeros(out: *&str, count: usize):
+    if count > 0:
+        out.* += "z " + count + ", "
 
 func truth(b: bool) -> Value:
     if b:
@@ -2103,6 +2536,21 @@ func stamp(t: usize, addr: Arg, at: usize):
         jump(l_head)
         open_block(l_done)
 
+func stamp_start(program: bool):
+    none: &list[Item]
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Context:
+            t := trust make_type(k, none, false, 0)
+            stamp(t, global("thread $ctx." + comp.types[t].name), 0)
+        elif comp.nodes[d].kind == Var and kids(d) == 1 and program:
+            v := trust shared(d)
+            stamp(v.type, v.at, 0)
+
+func packs(f: Item, at: usize) -> bool:
+    size := comp.types[f.type].size
+    return size < 8 and f.n + size <= at + 8 and (numeric(f.type) or f.type == BOOL or comp.types[f.type].kind == Union)
+
 func set_tag(t: usize, member: usize, addr: Arg):
     name: &strview = "storew"
     if comp.types[t].size > 4:
@@ -2135,6 +2583,8 @@ func leave(v: Value, at: usize) -> Fail?:
     return null
 
 func unwind(from: usize, staying: usize) -> Fail?:
+    if staying == 0:
+        try settle()
     kept := comp.vars.len
     comp.leaving = comp.loops.len
     comp.staying = staying
@@ -2142,6 +2592,13 @@ func unwind(from: usize, staying: usize) -> Fail?:
     comp.leaving = 0
     comp.staying = 0
     comp.vars.len = kept
+    return null
+
+# main waits for the threads that run alone before its deferred statements, so they can use all it keeps
+func settle() -> Fail?:
+    if comp.inst == comp.settler:
+        nothing: &list[Value]
+        try invoke("settle", nothing, 0)
     return null
 
 func run_defers(from: usize) -> Fail?:
@@ -2162,7 +2619,7 @@ func run_defers(from: usize) -> Fail?:
             try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it")
         if comp.nodes[d.node].kind == Assign and local_of(d.node + 1) != 0:
             kept := declaration(text(d.node + 1))
-            comp.vars[kept].unread = fails(comp.vars[kept].type)
+            comp.vars[kept].unread = must_read(comp.vars[kept].type)
         for k in stays..comp.vars.len:
             append(aside, comp.vars[k])
         put_back(d.visible, aside)
@@ -2190,6 +2647,7 @@ func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
 
 func statements(n: usize) -> Fail?:
     defers := comp.defers.len
+    outer := open_scope()
     c := n + 1
     while c < node_end(n):
         if not comp.live:
@@ -2197,10 +2655,30 @@ func statements(n: usize) -> Fail?:
         comp.at = at_of(c)
         try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
         c = node_end(c)
+    if comp.live and outer == 0:
+        try settle()
     if comp.live:
         try run_defers(defers)
     comp.defers.len = defers
+    close_scope(outer)
     return null
+
+func open_scope() -> usize:
+    outer := comp.scope
+    append(comp.scopes, outer)
+    comp.scope = comp.scopes.len
+    if comp.debug:
+        append(comp.body, Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope))})
+    return outer
+
+func close_scope(outer: usize):
+    if comp.debug:
+        mark := Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope + 1))}
+        if comp.live:
+            append(comp.body, mark)
+        else:
+            insert(comp.body, comp.body.len - 1, mark) # before the jump that left the block, so it stays inside
+    comp.scope = outer
 
 func statement(n: usize, dropped: &strview) -> Fail?:
     start := comp.held.len
@@ -2208,7 +2686,14 @@ func statement(n: usize, dropped: &strview) -> Fail?:
     while comp.held.len > start:
         append(comp.spare, trust pop(comp.held))
     o := text(n)
-    if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
+    if comp.nodes[n].kind == Unary and o == "parallel":
+        if fails(comp.types[v.type].elem):
+            return fail("this thread runs alone and nothing would see an error of " + comp.types[comp.types[v.type].elem].name + ", which its function gives: keep the thread and wait for it, t := parallel f(x)", at_of(n))
+        args: &list[Value]
+        append(args, Value{type = pointer(BYTES), at = v.at})
+        try runtime("detach", args, at_of(n))
+        return null
+    if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust" and o != "wait":
         hint: &strview
         if o == "==":
             hint = ", an assignment is written with one ="
@@ -2282,7 +2767,7 @@ func payload(addr: Arg, t: usize) -> Arg:
 func absent(addr: Arg, t: usize, here: &list[usize]):
     for m in members(t):
         if not contains(here, m) and pointers(m) != 0:
-            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, member = u32(m)})
+            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, ghost = true, member = u32(m)})
 
 func times(count: Arg, size: usize) -> Arg:
     if size == 1:
@@ -2402,21 +2887,21 @@ func blit(from: Arg, to: Arg, t: usize):
 
 func pointers(t: usize) -> u64:
     ty := comp.types[t]
-    if ty.kind == Ptr or ty.kind == Fat or ty.kind == Func:
+    if ty.kind == Ptr or ty.kind == Func or ty.kind == Thread:
         return 1
     if ty.size < 8:
         return 0
-    mask: u64 = 0
+    mask := u64(ty.kind == Fat)
     if ty.kind == Array:
         inner := pointers(ty.elem)
         i: usize = 0
         while inner != 0 and i < ty.count and i * comp.types[ty.elem].size < 512:
             mask = mask or words(inner, i * comp.types[ty.elem].size / 8)
             i += 1
-    elif ty.kind == Struct or ty.kind == Union or ty.kind == Untagged:
+    elif ty.kind == Struct or ty.kind == Fat or ty.kind == Union or ty.kind == Untagged:
         for i in 0..ty.count:
             item := comp.items[ty.first + i]
-            if ty.kind == Struct:
+            if ty.kind == Struct or ty.kind == Fat:
                 mask = mask or words(pointers(item.type), item.n / 8)
             elif ty.kind == Union:
                 mask = mask or words(pointers(item.type), 1)
@@ -2455,9 +2940,9 @@ func address(v: Value) -> Value:
         comp.held.len = 0 # a pointer to a temporary keeps every slot held now
     return Value{type = pointer(v.type), at = at}
 
-func alloc(t: usize) -> Arg:
+func alloc(t: usize, variable: bool = false) -> Arg:
     size := i64(room(t))
-    if size > 8 and comp.types[t].kind != Union: # small slots live in registers, unions are copied whole
+    if size > 8 and comp.types[t].kind != Union and not variable: # small slots live in registers, unions are copied whole, a variable names its slot
         for i in 0..comp.spare.len:
             s := comp.spare[i]
             if comp.slots[s].a.n == size:
@@ -2476,9 +2961,23 @@ func room(t: usize) -> usize:
     return size
 
 func text_data(raw: &strview) -> Arg:
-    id := comp.strings
-    comp.strings += 1
-    comp.data += "data $str." + id + " = { "
+    key: &str = "\""
+    key += raw
+    found := comp.stored[view(key)]
+    if found is i64:
+        return Arg{Global, found}
+    id := comp.texts.len
+    comp.data += "data $flag.str." + id + " = { "
+    length := text_bytes(comp.data, raw)
+    comp.data += "b 0 }\ndata $flag.sv." + id + " = { l $flag.str." + id + ", l " + length + " }\n" # the data of the compiler is in flag., a function is name.number
+    append(comp.texts, length)
+    name: &str = "$flag.sv."
+    name += id
+    made := global(view(name))
+    put(comp.stored, view(key), made.n)
+    return made
+
+func text_bytes(into: *&str, raw: &strview) -> usize:
     bytes := items(raw)
     length: usize = 0
     quoted := false
@@ -2492,19 +2991,16 @@ func text_data(raw: &strview) -> Arg:
                 i += 2
         if b >= ' ' and b <= '~' and b != '"' and b != '\\':
             if not quoted:
-                comp.data += "b \""
+                into.* += "b \""
                 quoted = true
-            add_byte(comp.data, b)
+            add_byte(into, b)
         else:
             if quoted:
-                comp.data += "\", "
+                into.* += "\", "
                 quoted = false
-            comp.data += "b " + usize(b) + ", "
+            into.* += "b " + usize(b) + ", "
         length += 1
         i += 1
     if quoted:
-        comp.data += "\", "
-    comp.data += "b 0 }\ndata $sv." + id + " = { l $str." + id + ", l " + length + " }\n"
-    name: &str = "$sv."
-    name += id
-    return global(view(name))
+        into.* += "\", "
+    return length

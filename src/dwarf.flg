@@ -1,0 +1,400 @@
+@trust
+use os
+
+UNIT_DIE = 1
+FUNCTION_DIE = 2
+PROCEDURE_DIE = 3
+PARAMETER_DIE = 4
+VARIABLE_DIE = 5
+BLOCK_DIE = 6
+GLOBAL_DIE = 7
+BASE_DIE = 8
+POINTER_DIE = 9
+ADDRESS_DIE = 10
+STRUCT_DIE = 11
+MEMBER_DIE = 12
+ARRAY_DIE = 13
+COUNT_DIE = 14
+ENUM_DIE = 15
+ENUMERATOR_DIE = 16
+UNION_DIE = 17
+VARIANTS_DIE = 18
+VARIANT_DIE = 19
+FUNCTION_TYPE_DIE = 20
+PROCEDURE_TYPE_DIE = 21
+ARGUMENT_DIE = 22
+TYPEDEF_DIE = 23
+LEAF = 32 # added to the code of a kind with children, it is the same kind without them
+
+# DWARF 4 for the procs QBE wrote, appended to the assembly: the assembler resolves the offsets of the slots and the marks
+func dwarf() -> &str:
+    out: &str
+    local := label_prefix()
+    out += section("debug_abbrev") + local + "debug_abbrev:\n"
+    abbreviation(out, ptr([UNIT_DIE, 0x11, 1, 0x25, 0x08, 0x13, 0x05, 0x03, 0x08, 0x1b, 0x08, 0x10, 0x17, 0, 0])) # compile unit: producer, language, name, comp_dir, stmt_list
+    abbreviation(out, ptr([FUNCTION_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0x36, 0x0b, 0, 0])) # subprogram: name, decl_file, decl_line, type, low_pc, high_pc, frame_base, calling_convention
+    abbreviation(out, ptr([PROCEDURE_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0x36, 0x0b, 0, 0]))
+    abbreviation(out, ptr([PARAMETER_DIE, 0x05, 0, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x02, 0x18, 0, 0])) # name, decl_file, decl_line, type, location
+    abbreviation(out, ptr([VARIABLE_DIE, 0x34, 0, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x02, 0x18, 0, 0]))
+    abbreviation(out, ptr([BLOCK_DIE, 0x0b, 1, 0x11, 0x01, 0x12, 0x06, 0, 0])) # low_pc, high_pc
+    abbreviation(out, ptr([GLOBAL_DIE, 0x34, 0, 0x03, 0x08, 0x49, 0x10, 0x02, 0x18, 0, 0])) # name, type, location
+    abbreviation(out, ptr([BASE_DIE, 0x24, 0, 0x03, 0x08, 0x3e, 0x0b, 0x0b, 0x0b, 0, 0])) # name, encoding, byte_size
+    abbreviation(out, ptr([POINTER_DIE, 0x0f, 0, 0x0b, 0x0b, 0x49, 0x10, 0, 0])) # byte_size, type
+    abbreviation(out, ptr([ADDRESS_DIE, 0x0f, 0, 0x0b, 0x0b, 0, 0]))
+    abbreviation(out, ptr([STRUCT_DIE, 0x13, 1, 0x03, 0x08, 0x0b, 0x0f, 0, 0])) # name, byte_size
+    abbreviation(out, ptr([MEMBER_DIE, 0x0d, 0, 0x03, 0x08, 0x49, 0x10, 0x38, 0x0f, 0, 0])) # name, type, data_member_location
+    abbreviation(out, ptr([ARRAY_DIE, 0x01, 1, 0x49, 0x10, 0, 0])) # type
+    abbreviation(out, ptr([COUNT_DIE, 0x21, 0, 0x37, 0x0f, 0, 0])) # subrange: count
+    abbreviation(out, ptr([ENUM_DIE, 0x04, 1, 0x03, 0x08, 0x0b, 0x0b, 0, 0])) # name, byte_size
+    abbreviation(out, ptr([ENUMERATOR_DIE, 0x28, 0, 0x03, 0x08, 0x1c, 0x0f, 0, 0])) # name, const_value
+    abbreviation(out, ptr([UNION_DIE, 0x17, 1, 0x03, 0x08, 0x0b, 0x0f, 0, 0]))
+    abbreviation(out, ptr([VARIANTS_DIE, 0x33, 1, 0x15, 0x10, 0, 0])) # variant part: discr
+    abbreviation(out, ptr([VARIANT_DIE, 0x19, 1, 0x16, 0x0f, 0, 0])) # discr_value
+    abbreviation(out, ptr([FUNCTION_TYPE_DIE, 0x15, 1, 0x27, 0x19, 0x49, 0x10, 0, 0])) # subroutine type: prototyped, type
+    abbreviation(out, ptr([PROCEDURE_TYPE_DIE, 0x15, 1, 0x27, 0x19, 0, 0]))
+    abbreviation(out, ptr([ARGUMENT_DIE, 0x05, 0, 0x49, 0x10, 0, 0]))
+    abbreviation(out, ptr([TYPEDEF_DIE, 0x16, 0, 0x03, 0x08, 0x49, 0x10, 0, 0])) # name, type
+    out += "\t.byte 0\n"
+    out += section("debug_line") + local + "debug_line:\n"
+    out += section("debug_info") + local + "debug_info:\n"
+    procs := comp.procs[:-1] # the last one is the main of C
+    needed: &list[bool]
+    numbers: &list[usize] # of each file in the line table, the order of its first dbgfile
+    units: &list[bool]
+    for file in 0..comp.files.len:
+        append(numbers, 0)
+        append(units, false)
+    numbered: usize = 0
+    for f in procs:
+        if numbers[f.file] == 0:
+            numbered += 1
+            numbers[f.file] = numbered
+        units[f.file] = true
+        needs(comp.insts[f.inst].ret, needed)
+        for k in f.mentions..f.mentioned:
+            needs(comp.mentions[k].type, needed)
+    for t in 0..comp.reached:
+        if context(t):
+            units[file_of(comp.tokens[comp.nodes[comp.types[t].decl].tok].at)] = true
+            needs(t, needed)
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Var:
+            v := trust shared(d)
+            units[file_of(comp.tokens[comp.nodes[d].tok].at)] = true
+            needs(v.type, needed)
+    frame: usize = 6 # the DWARF number of rbp, x29 and fp
+    if comp.machine == "arm64":
+        frame = 29
+    elif comp.machine == "riscv64":
+        frame = 8
+    first := true
+    for file in 0..comp.files.len:
+        if not units[file]:
+            continue
+        unit := local + "unit" + file
+        out += unit + ":\n\t.long " + unit + ".end-" + unit + ".start\n" + unit + ".start:\n\t.short 4\n"
+        out += section_offset(local + "debug_abbrev", "debug_abbrev") + "\t.byte 8\n"
+        uleb(out, UNIT_DIE)
+        asciz(out, "flagc " + view(flag_version()))
+        out += "\t.short 0x0c\n" # C99, how gdb and lldb print the values of Flag
+        asciz(out, view(comp.files[file].path))
+        asciz(out, current_dir())
+        out += section_offset(local + "debug_line", "debug_line")
+        none: &list[Item]
+        for k in 1..comp.syms.len:
+            d := comp.syms[k].node
+            if first and (comp.nodes[d].kind == Struct or comp.nodes[d].kind == Alias) and not generic(d):
+                t := trust make_type(k, none, false, 0)
+                if t < needed.len and needed[t]:
+                    uleb(out, TYPEDEF_DIE) # the language is C, where a struct is named struct Point, and gdb takes the first of a typedef and an enumerator with its name
+                    asciz(out, comp.syms[k].name)
+                    out += reference(local + "type" + t)
+        for t in 0..needed.len:
+            if first and needed[t]:
+                ty := comp.types[t]
+                here := local + "type" + t
+                out += here + ":\n"
+                switch ty.kind:
+                case Bool, Int, Uint, Float:
+                    uleb(out, BASE_DIE)
+                    asciz(out, ty.name)
+                    encoding: usize = 0x04 # DW_ATE_float
+                    if ty.kind == Bool:
+                        encoding = 0x02
+                    elif ty.kind == Int:
+                        encoding = 0x05
+                    elif t == U8:
+                        encoding = 0x08 # unsigned char, so the text behind a *u8 shows
+                    elif ty.kind == Uint:
+                        encoding = 0x07
+                    out += "\t.byte " + encoding + "\n\t.byte " + ty.size + "\n"
+                case Thread:
+                    uleb(out, STRUCT_DIE)
+                    asciz(out, ty.name)
+                    uleb(out, 8)
+                    uleb(out, MEMBER_DIE)
+                    asciz(out, "block")
+                    out += reference(local + "type" + pointer(BYTES))
+                    uleb(out, 0)
+                    out += "\t.byte 0\n"
+                case Ptr:
+                    if ty.elem == BYTES:
+                        uleb(out, ADDRESS_DIE)
+                        out += "\t.byte 8\n"
+                    else:
+                        uleb(out, POINTER_DIE)
+                        out += "\t.byte 8\n" + reference(local + "type" + ty.elem)
+                case Func:
+                    uleb(out, POINTER_DIE)
+                    out += "\t.byte 8\n" + reference(here + ".signature")
+                    out += here + ".signature:\n"
+                    leaf := LEAF * usize(ty.count == 0)
+                    if ty.ret == VOID:
+                        uleb(out, PROCEDURE_TYPE_DIE + leaf)
+                    else:
+                        uleb(out, FUNCTION_TYPE_DIE + leaf)
+                        out += reference(local + "type" + ty.ret)
+                    for i in 0..ty.count:
+                        uleb(out, ARGUMENT_DIE)
+                        out += reference(local + "type" + comp.items[ty.first + i].type)
+                    if leaf == 0:
+                        out += "\t.byte 0\n"
+                case Array:
+                    uleb(out, ARRAY_DIE)
+                    out += reference(local + "type" + ty.elem)
+                    uleb(out, COUNT_DIE)
+                    uleb(out, ty.count)
+                    out += "\t.byte 0\n"
+                case Struct, Fat:
+                    uleb(out, STRUCT_DIE)
+                    asciz(out, ty.name)
+                    uleb(out, ty.size)
+                    if ty.kind == Fat:
+                        uleb(out, MEMBER_DIE)
+                        asciz(out, "data")
+                        out += reference(local + "type" + data_pointer(t))
+                        uleb(out, 0)
+                    for i in 0..ty.count:
+                        field := comp.items[ty.first + i]
+                        uleb(out, MEMBER_DIE)
+                        asciz(out, field.name)
+                        out += reference(local + "type" + field.type)
+                        uleb(out, field.n)
+                    out += "\t.byte 0\n"
+                case Untagged:
+                    uleb(out, UNION_DIE)
+                    asciz(out, ty.name)
+                    uleb(out, ty.size)
+                    for i in 0..ty.count:
+                        m := comp.items[ty.first + i].type
+                        uleb(out, MEMBER_DIE)
+                        asciz(out, comp.types[m].name)
+                        out += reference(local + "type" + m)
+                        uleb(out, 0)
+                    out += "\t.byte 0\n"
+                case Union:
+                    if ty.size > 4:
+                        uleb(out, STRUCT_DIE)
+                        asciz(out, ty.name)
+                        uleb(out, ty.size)
+                        out += here + ".tag:\n"
+                        uleb(out, MEMBER_DIE)
+                        asciz(out, "tag")
+                        out += reference(here + ".tags")
+                        uleb(out, 0)
+                        uleb(out, VARIANTS_DIE)
+                        out += reference(here + ".tag")
+                        for m in members(t):
+                            if comp.types[m].size == 0:
+                                uleb(out, VARIANT_DIE + LEAF)
+                                uleb(out, m - 1)
+                            else:
+                                uleb(out, VARIANT_DIE)
+                                uleb(out, m - 1)
+                                uleb(out, MEMBER_DIE)
+                                asciz(out, comp.types[m].name)
+                                out += reference(local + "type" + m)
+                                uleb(out, 8)
+                                out += "\t.byte 0\n"
+                        out += "\t.byte 0\n\t.byte 0\n" + here + ".tags:\n"
+                    uleb(out, ENUM_DIE)
+                    if ty.decl != 0:
+                        asciz(out, text(ty.decl))
+                    else:
+                        asciz(out, ty.name)
+                    out += "\t.byte 4\n"
+                    for m in members(t):
+                        uleb(out, ENUMERATOR_DIE)
+                        if comp.types[m].size == 0:
+                            asciz(out, comp.types[m].name)
+                        else:
+                            asciz(out, "(" + comp.types[m].name + ")") # an enumerator Point would hide the type Point from gdb
+                        uleb(out, m - 1)
+                    out += "\t.byte 0\n"
+                case:
+                    uleb(out, STRUCT_DIE + LEAF)
+                    asciz(out, ty.name)
+                    uleb(out, 0)
+        first = false
+        for t in 0..comp.reached:
+            if context(t) and file_of(comp.tokens[comp.nodes[comp.types[t].decl].tok].at) == file:
+                uleb(out, GLOBAL_DIE)
+                asciz(out, comp.types[t].name)
+                out += reference(local + "type" + t)
+                symbol := symbol_prefix() + "ctx." + comp.types[t].name
+                if comp.system == "linux" and comp.machine != "x86_64":
+                    out += "\t.byte 0\n" # no relocation of arm64 or rv64 gives the place of thread data to the DWARF, gcc and clang leave it out too
+                elif comp.system == "linux":
+                    out += "\t.byte 10\n\t.byte 0x0e\n\t.quad " + symbol + "@dtpoff\n\t.byte 0x9b\n" # DW_OP_const8u, DW_OP_form_tls_address
+                else:
+                    out += "\t.byte 10\n\t.byte 0x0e\n\t.quad " + symbol + "\n\t.byte 0x9b\n"
+        for k in 1..comp.syms.len:
+            d := comp.syms[k].node
+            if comp.nodes[d].kind == Var and file_of(comp.tokens[comp.nodes[d].tok].at) == file:
+                v := trust shared(d)
+                uleb(out, GLOBAL_DIE)
+                asciz(out, text(d))
+                out += reference(local + "type" + v.type)
+                out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol_prefix() + comp.globals[usize(v.at.n)][1:] + "\n" # DW_OP_addr
+        for f in procs:
+            if f.file == file:
+                inst := comp.insts[f.inst]
+                start := symbol_prefix() + f.name[1:]
+                leaf := LEAF * usize(f.mentioned == f.mentions)
+                if inst.ret == VOID:
+                    uleb(out, PROCEDURE_DIE + leaf)
+                else:
+                    uleb(out, FUNCTION_DIE + leaf)
+                asciz(out, view(proc_name(f)))
+                uleb(out, numbers[file])
+                uleb(out, line_of(declared_at(f)))
+                if inst.ret != VOID:
+                    out += reference(local + "type" + inst.ret)
+                out += "\t.quad " + start + "\n\t.long " + local + f.name[1:] + ".end-" + start + "\n"
+                out += "\t.byte 2\n\t.byte " + (0x70 + frame) + "\n\t.byte 0\n" # DW_OP_breg
+                aggregates := aggregate(inst.ret)
+                for k in f.mentions..f.mentioned:
+                    aggregates = aggregates or comp.mentions[k].scope == 0 and aggregate(comp.mentions[k].type)
+                convention: usize = 1 # DW_CC_normal
+                if aggregates and not f.export:
+                    convention = 3 # DW_CC_nocall, QBE does not pass a struct like C
+                out += "\t.byte " + convention + "\n"
+                used: &list[bool]
+                for s in f.scopes..f.scoped:
+                    append(used, false)
+                for k in f.mentions..f.mentioned:
+                    s := comp.mentions[k].scope
+                    while s > f.scopes and not used[s - 1 - f.scopes]:
+                        used[s - 1 - f.scopes] = true
+                        s = comp.scopes[s - 1]
+                scope_dies(out, f, 0, used, numbers[file])
+                if leaf == 0:
+                    out += "\t.byte 0\n"
+        out += "\t.byte 0\n" + unit + ".end:\n"
+    return out
+
+# the variables of a scope, and its inner scopes as blocks: a scope that opens the body of the function is the function itself
+func scope_dies(out: *&str, f: Proc, scope: usize, used: &list[bool], file: usize):
+    local := label_prefix()
+    for k in f.mentions..f.mentioned:
+        m := comp.mentions[k]
+        if m.scope == scope:
+            if scope == 0:
+                uleb(out, PARAMETER_DIE)
+            else:
+                uleb(out, VARIABLE_DIE)
+            asciz(out, m.name)
+            uleb(out, file)
+            uleb(out, line_of(comp.tokens[m.tok].at))
+            out.* += reference(local + "type" + m.type)
+            # DW_OP_fbreg 0, DW_OP_const4s with the offset of the slot, DW_OP_plus: gas writes a .sleb128 of a symbol as unsigned
+            out.* += "\t.byte " + (8 + usize(m.pointer != 0)) + "\n\t.byte 0x91\n\t.byte 0\n\t.byte 0x0d\n\t.long " + local + "slot" + k + "\n\t.byte 0x22\n"
+            if m.pointer != 0:
+                out.* += "\t.byte 0x06\n" # DW_OP_deref, the slot holds the address of the variable
+    for s in f.scopes + 1..f.scoped + 1:
+        if comp.scopes[s - 1] == scope and used[s - 1 - f.scopes]:
+            body := scope == 0
+            if not body:
+                uleb(out, BLOCK_DIE)
+                out.* += "\t.quad " + local + "mark" + (2 * s) + "\n\t.long " + local + "mark" + (2 * s + 1) + "-" + local + "mark" + (2 * s) + "\n"
+            scope_dies(out, f, s, used, file)
+            if not body:
+                out.* += "\t.byte 0\n"
+
+func needs(t: usize, needed: *&list[bool]):
+    while needed.len <= t:
+        append(needed, false) # data_pointer can make a type
+    if t == VOID or t == BYTES or needed[t]:
+        return
+    needed[t] = true
+    ty := comp.types[t]
+    if ty.kind == Ptr or ty.kind == Array:
+        needs(ty.elem, needed)
+    if ty.kind == Func:
+        needs(ty.ret, needed)
+    if ty.kind == Fat:
+        needs(data_pointer(t), needed)
+    if ty.kind == Thread:
+        needs(pointer(BYTES), needed)
+    if ty.kind == Func or ty.kind == Struct or ty.kind == Fat or ty.kind == Union or ty.kind == Untagged:
+        for i in 0..ty.count:
+            needs(comp.items[ty.first + i].type, needed)
+
+func data_pointer(fat: usize) -> usize:
+    if element(fat) == VOID:
+        return pointer(BYTES)
+    return pointer(element(fat))
+
+func context(t: usize) -> bool:
+    return comp.types[t].decl != 0 and comp.nodes[comp.types[t].decl].kind == Context
+
+func section(name: &strview) -> &str:
+    out: &str
+    if comp.system == "macos":
+        out += "\t.section __DWARF,__" + name + ",regular,debug\n"
+    elif comp.system == "windows":
+        out += "\t.section ." + name + ",\"dr\"\n"
+    else:
+        out += "\t.section ." + name + ",\"\",@progbits\n"
+    return out
+
+func section_offset(label: &strview, section: &strview) -> &str:
+    out: &str
+    if comp.system == "macos":
+        out += "\t.long " + label + "-" + label_prefix() + section + "\n"
+    elif comp.system == "windows":
+        out += "\t.secrel32 " + label + "\n"
+    else:
+        out += "\t.long " + label + "\n"
+    return out
+
+func reference(label: &strview) -> &str:
+    return section_offset(label, "debug_info")
+
+func symbol_prefix() -> &strview:
+    if comp.system == "macos":
+        return "_"
+    return ""
+
+func abbreviation(out: *&str, values: &slice[i32]):
+    for n in values:
+        uleb(out, usize(n))
+    if values[2] == 1:
+        uleb(out, usize(values[0] + LEAF))
+        uleb(out, usize(values[1]))
+        uleb(out, 0)
+        for n in values[3:]:
+            uleb(out, usize(n))
+
+func uleb(out: *&str, n: usize):
+    out.* += "\t.uleb128 " + n + "\n"
+
+func asciz(out: *&str, s: &strview):
+    out.* += "\t.asciz \""
+    for b in items(s):
+        if b < ' ' or b > '~' or b == '"' or b == '\\':
+            out.* += "\\" + usize(b >> 6) + usize(b >> 3 and 7) + usize(b and 7) # octal
+        else:
+            add_byte(out, b)
+    out.* += "\"\n"

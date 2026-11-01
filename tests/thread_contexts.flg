@@ -1,0 +1,31 @@
+type enum Mode = Idle|Busy
+
+context state:
+    mode: Mode
+    count: i32
+
+func work(n: i32) -> &str:
+    state.count += n
+    out: &str
+    keep := ""
+    for i in 0..1000:
+        with scratch():
+            text := "piece " + i
+            if i == 999:
+                out += text
+        keep = "made in this thread's scratch " + n
+    out += ", count " + state.count + ", mode " + state.mode + ", " + keep
+    return out
+
+func main():
+    state.count = 100
+    state.mode = Busy
+    threads: &list[Thread[&str]]
+    defer free(threads)
+    for k in 0..4:
+        append(threads, parallel work(k))
+    for t in threads:
+        text := wait t
+        print(text)
+        free(text)
+    print("main: count ", state.count, ", mode ", state.mode)

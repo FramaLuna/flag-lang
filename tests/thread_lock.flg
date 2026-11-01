@@ -1,0 +1,27 @@
+type Counter:
+    lock: Lock
+    count: i64
+
+counter: Counter
+
+func add(times: i32, by: i64):
+    for i in 0..times:
+        with lock(counter.lock):
+            counter.count += by
+
+func nested(c: *Counter):
+    with lock(c.lock):
+        with lock(c.lock):
+            c.count += 1000
+
+func main():
+    workers: &list[Thread[null]]
+    defer free(workers)
+    for k in 0..8:
+        append(workers, parallel add(100000, 1))
+    for w in workers:
+        wait w
+    print(counter.count)
+    local: Counter
+    nested(local)
+    print(local.count)

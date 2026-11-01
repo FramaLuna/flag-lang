@@ -1,0 +1,28 @@
+use os
+
+func dive(n: i64) -> i64:
+    room: array[i64, 4096]
+    room[0] = n
+    return dive(n + 1) + room[0]
+
+func start() -> i64:
+    return dive(0)
+
+func rest() -> i64:
+    sleep(1.0)
+    return 0
+
+func main():
+    if args().len > 1:
+        t := parallel start()
+        under := parallel rest()
+        print(wait t)
+        print(wait under)
+    text: &str
+    defer free(text)
+    code := output(executable() + " dive 2>&1", text) iferror -1
+    lines := split(view(text), "\n")
+    print(lines[0])
+    print(starts_with(lines[1], "  in dive, tests/thread_stack_big_frame.flg:3, ") and ends_with(lines[1], " times"))
+    print(lines[2])
+    print(code != 0)

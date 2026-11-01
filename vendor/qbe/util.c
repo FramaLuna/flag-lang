@@ -583,12 +583,16 @@ salloc(Ref rt, Ref rs, Fn *fn)
 	}
 }
 
+/* a set keeps, by increasing index w,
+ * its words t that are not zero, and
+ * always the first one, of registers
+ */
 void
-bsinit(BSet *bs, uint n)
+bsinit(BSet *bs)
 {
-	n = (n + NBit-1) / NBit;
-	bs->nt = n;
-	bs->t = alloc(n * sizeof bs->t[0]);
+	bs->nt = 1;
+	bs->t = vnew(1, sizeof bs->t[0], PFn);
+	bs->w = vnew(1, sizeof bs->w[0], PFn);
 }
 
 MAKESURE(NBit_is_64, NBit == 64);
@@ -630,6 +634,43 @@ firstbit(bits b)
 	return n;
 }
 
+/* first word with an index of w or more */
+static uint
+bsfind(BSet *bs, uint w)
+{
+	uint lo, hi, m;
+
+	if (w < bs->nt && bs->w[w] == w)
+		return w; /* no word missing up to w */
+	lo = 0;
+	hi = bs->nt;
+	while (lo < hi) {
+		m = (lo + hi) / 2;
+		if (bs->w[m] < w)
+			lo = m + 1;
+		else
+			hi = m;
+	}
+	return lo;
+}
+
+static bits
+bsword(BSet *bs, uint w)
+{
+	uint n;
+
+	n = bsfind(bs, w);
+	if (n < bs->nt && bs->w[n] == w)
+		return bs->t[n];
+	return 0;
+}
+
+int
+bshas(BSet *bs, uint elt)
+{
+	return (bsword(bs, elt/NBit) & BIT(elt%NBit)) != 0;
+}
+
 uint
 bscount(BSet *bs)
 {
@@ -641,50 +682,116 @@ bscount(BSet *bs)
 	return n;
 }
 
-static inline uint
-bsmax(BSet *bs)
-{
-	return bs->nt * NBit;
-}
-
 void
 bsset(BSet *bs, uint elt)
 {
-	assert(elt < bsmax(bs));
-	bs->t[elt/NBit] |= BIT(elt%NBit);
+	uint n, w;
+
+	w = elt/NBit;
+	n = bsfind(bs, w);
+	if (n == bs->nt || bs->w[n] != w) {
+		vgrow(&bs->t, bs->nt+1);
+		vgrow(&bs->w, bs->nt+1);
+		memmove(&bs->t[n+1], &bs->t[n], (bs->nt-n) * sizeof bs->t[0]);
+		memmove(&bs->w[n+1], &bs->w[n], (bs->nt-n) * sizeof bs->w[0]);
+		bs->t[n] = 0;
+		bs->w[n] = w;
+		bs->nt++;
+	}
+	bs->t[n] |= BIT(elt%NBit);
 }
 
 void
 bsclr(BSet *bs, uint elt)
 {
-	assert(elt < bsmax(bs));
-	bs->t[elt/NBit] &= ~BIT(elt%NBit);
+	uint n, w;
+
+	w = elt/NBit;
+	n = bsfind(bs, w);
+	if (n == bs->nt || bs->w[n] != w)
+		return;
+	bs->t[n] &= ~BIT(elt%NBit);
+	if (n != 0 && !bs->t[n]) {
+		bs->nt--;
+		memmove(&bs->t[n], &bs->t[n+1], (bs->nt-n) * sizeof bs->t[0]);
+		memmove(&bs->w[n], &bs->w[n+1], (bs->nt-n) * sizeof bs->w[0]);
+	}
 }
 
-#define BSOP(f, op)                           \
-	void                                  \
-	f(BSet *a, BSet *b)                   \
-	{                                     \
-		uint i;                       \
-		                              \
-		assert(a->nt == b->nt);       \
-		for (i=0; i<a->nt; i++)       \
-			a->t[i] op b->t[i];   \
+void
+bscopy(BSet *a, BSet *b)
+{
+	if (a->nt < b->nt) {
+		vgrow(&a->t, b->nt);
+		vgrow(&a->w, b->nt);
+	}
+	memcpy(a->t, b->t, b->nt * sizeof a->t[0]);
+	memcpy(a->w, b->w, b->nt * sizeof a->w[0]);
+	a->nt = b->nt;
+}
+
+void
+bsunion(BSet *a, BSet *b)
+{
+	uint i, j, n;
+
+	n = a->nt;
+	for (i=0, j=0; j<b->nt; j++) {
+		while (i < a->nt && a->w[i] < b->w[j])
+			i++;
+		if (i == a->nt || a->w[i] != b->w[j])
+			n++;
+	}
+	if (n > a->nt) {
+		vgrow(&a->t, n);
+		vgrow(&a->w, n);
+	}
+	/* merge from the end, in place */
+	i = a->nt;
+	a->nt = n;
+	while (j > 0) {
+		n--;
+		if (i > 0 && a->w[i-1] >= b->w[j-1]) {
+			i--;
+			a->w[n] = a->w[i];
+			a->t[n] = a->t[i];
+			if (a->w[n] == b->w[j-1])
+				a->t[n] |= b->t[--j];
+		} else {
+			j--;
+			a->w[n] = b->w[j];
+			a->t[n] = b->t[j];
+		}
+	}
+}
+
+#define BSOP(f, op)                                              \
+	void                                                     \
+	f(BSet *a, BSet *b)                                      \
+	{                                                        \
+		uint i, n;                                       \
+		                                                 \
+		for (i=0, n=0; i<a->nt; i++) {                   \
+			a->t[n] = a->t[i] op bsword(b, a->w[i]); \
+			a->w[n] = a->w[i];                       \
+			if (n == 0 || a->t[n])                   \
+				n++;                             \
+		}                                                \
+		a->nt = n;                                       \
 	}
 
-BSOP(bscopy, =)
-BSOP(bsunion, |=)
-BSOP(bsinter, &=)
-BSOP(bsdiff, &= ~)
+BSOP(bsinter, &)
+BSOP(bsdiff, & ~)
 
 int
 bsequal(BSet *a, BSet *b)
 {
 	uint i;
 
-	assert(a->nt == b->nt);
+	if (a->nt != b->nt)
+		return 0;
 	for (i=0; i<a->nt; i++)
-		if (a->t[i] != b->t[i])
+		if (a->t[i] != b->t[i] || a->w[i] != b->w[i])
 			return 0;
 	return 1;
 }
@@ -692,7 +799,8 @@ bsequal(BSet *a, BSet *b)
 void
 bszero(BSet *bs)
 {
-	memset(bs->t, 0, bs->nt * sizeof bs->t[0]);
+	bs->nt = 1;
+	bs->t[0] = 0;
 }
 
 /* iterates on a bitset, use as follows
@@ -708,18 +816,19 @@ bsiter(BSet *bs, int *elt)
 	uint t, i;
 
 	i = *elt;
-	t = i/NBit;
+	t = bsfind(bs, i/NBit);
 	if (t >= bs->nt)
 		return 0;
 	b = bs->t[t];
-	b &= ~(BIT(i%NBit) - 1);
+	if (bs->w[t] == i/NBit)
+		b &= ~(BIT(i%NBit) - 1);
 	while (!b) {
 		++t;
 		if (t >= bs->nt)
 			return 0;
 		b = bs->t[t];
 	}
-	*elt = NBit*t + firstbit(b);
+	*elt = NBit*bs->w[t] + firstbit(b);
 	return 1;
 }
 

@@ -314,6 +314,7 @@ emitins(Ins *i, Fn *fn, FILE *f)
 	char *rn;
 	int64_t s;
 	Con *con;
+	Ins ld;
 
 	switch (i->op) {
 	default:
@@ -345,8 +346,21 @@ emitins(Ins *i, Fn *fn, FILE *f)
 			switch (rtype(i->arg[0])) {
 			case RSlot:
 			case RCon:
-				die("unimplemented");
-				break;
+				/* through ft11, t6 may hold an address */
+				if (rtype(i->arg[0]) == RCon) {
+					loadcon(&fn->con[i->arg[0].val], T6, i->cls, f);
+					fprintf(f, "\tfmv.%c.x ft11, t6\n", KWIDE(i->cls) ? 'd' : 'w');
+				} else {
+					ld = (Ins){.op = Oload, .cls = KWIDE(i->cls) ? Kd : Ks, .to = TMP(FT11), .arg = {i->arg[0]}};
+					emitins(&ld, fn, f);
+				}
+				i->arg[0] = TMP(FT11);
+				i->arg[1] = i->to;
+				i->to = R;
+				i->op = KWIDE(i->cls) ? Ostored : Ostores;
+				i->cls = Kw;
+				fixmem(&i->arg[1], fn, f);
+				goto Table;
 			default:
 				assert(isreg(i->arg[0]));
 				i->arg[1] = i->to;
@@ -418,6 +432,16 @@ emitins(Ins *i, Fn *fn, FILE *f)
 	case Odbgloc:
 		emitdbgloc(i->arg[0].val, i->arg[1].val, f);
 		break;
+	case Odbgslot:
+		fprintf(f, ".set %sslot%d, %"PRId64"\n",
+			T.asloc, i->arg[1].val, slot(i->arg[0], fn));
+		break;
+	case Odbgmark:
+		emitdbgmark(i, fn, f);
+		break;
+	case Oframe:
+		emitf("mv %=, fp", i, fn, f);
+		break;
 	}
 }
 
@@ -448,6 +472,15 @@ emitins(Ins *i, Fn *fn, FILE *f)
 
 */
 
+static void
+lowersp(int n, FILE *f)
+{
+	if (n <= 2048)
+		fprintf(f, "\tadd sp, sp, -%d\n", n);
+	else
+		fprintf(f, "\tli t6, %d\n\tsub sp, sp, t6\n", n);
+}
+
 void
 rv64_emitfn(Fn *fn, FILE *f)
 {
@@ -456,7 +489,7 @@ rv64_emitfn(Fn *fn, FILE *f)
 	Blk *b, *s;
 	Ins *i, ii;
 
-	emitfnlnk(fn->name, &fn->lnk, f);
+	emitfnlnk(fn, f);
 
 	if (fn->vararg) {
 		/* TODO: only need space for registers
@@ -472,6 +505,15 @@ rv64_emitfn(Fn *fn, FILE *f)
 	fprintf(f, "\tsd fp, -16(sp)\n");
 	fprintf(f, "\tsd ra, -8(sp)\n");
 	fprintf(f, "\tadd fp, sp, -16\n");
+	if (dbginfo) {
+		off = 16 + fn->vararg * 64;
+		fprintf(f,
+			"\t.cfi_def_cfa fp, %d\n"
+			"\t.cfi_offset ra, -%d\n"
+			"\t.cfi_offset fp, -%d\n",
+			off, off - 8, off
+		);
+	}
 
 	frame = (16 + 4 * fn->slot + 15) & ~15;
 	for (pr=rv64_rclob; *pr>=0; pr++) {
@@ -480,17 +522,26 @@ rv64_emitfn(Fn *fn, FILE *f)
 	}
 	frame = (frame + 15) & ~15;
 
-	if (frame <= 2048)
-		fprintf(f,
-			"\tadd sp, sp, -%d\n",
-			frame
-		);
-	else
-		fprintf(f,
-			"\tli t6, %d\n"
-			"\tsub sp, sp, t6\n",
-			frame
-		);
+	if (!probing(fn, frame))
+		lowersp(frame, f);
+	else {
+		/* see probing() */
+		if (frame >= 4096)
+			fprintf(f,
+				"\tli t6, %d\n"
+				"1:\n"
+				"\tadd sp, sp, -2048\n"
+				"\tadd sp, sp, -2048\n"
+				"\tsd zero, 0(sp)\n"
+				"\tadd t6, t6, -1\n"
+				"\tbnez t6, 1b\n",
+				frame / 4096
+			);
+		if (frame % 4096) {
+			lowersp(frame % 4096, f);
+			fputs("\tsd zero, 0(sp)\n", f);
+		}
+	}
 	for (pr=rv64_rclob, off=0; *pr>=0; pr++) {
 		if (fn->reg & BIT(*pr)) {
 			fprintf(f,
@@ -498,6 +549,9 @@ rv64_emitfn(Fn *fn, FILE *f)
 				*pr < FT0 ? "sd" : "fsd",
 				rname[*pr], off
 			);
+			if (dbginfo)
+				fprintf(f, "\t.cfi_offset %s, %d\n",
+					rname[*pr], off - frame - fn->vararg * 64);
 			off += 8;
 		}
 	}
@@ -510,7 +564,7 @@ rv64_emitfn(Fn *fn, FILE *f)
 		lbl = 1;
 		switch (b->jmp.type) {
 		case Jhlt:
-			fprintf(f, "\tebreak\n");
+			fprintf(f, "\tunimp\n");
 			break;
 		case Jret0:
 			if (fn->dynalloc) {
@@ -536,13 +590,21 @@ rv64_emitfn(Fn *fn, FILE *f)
 					off += 8;
 				}
 			}
+			if (dbginfo)
+				fputs("\t.cfi_remember_state\n", f);
 			fprintf(f,
 				"\tadd sp, fp, %d\n"
 				"\tld ra, 8(fp)\n"
-				"\tld fp, 0(fp)\n"
-				"\tret\n",
+				"\tld fp, 0(fp)\n",
 				16 + fn->vararg * 64
 			);
+			if (dbginfo)
+				fputs("\t.cfi_def_cfa sp, 0\n"
+					"\t.cfi_restore ra\n"
+					"\t.cfi_restore fp\n", f);
+			fputs("\tret\n", f);
+			if (dbginfo)
+				fputs("\t.cfi_restore_state\n", f);
 			break;
 		case Jjmp:
 		Jmp:
@@ -575,5 +637,6 @@ rv64_emitfn(Fn *fn, FILE *f)
 		}
 	}
 	id0 += fn->nblk;
+	emitfnend(fn, f);
 	elf_emitfnfin(fn->name, f);
 }

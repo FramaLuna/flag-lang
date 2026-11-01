@@ -45,6 +45,13 @@ promote(Fn *fn)
 			}
 			goto Skip;
 		}
+		/* a float widened by the load needs a cast first */
+		if (KBASE(k) == 1)
+			for (u=t->use; u<&t->use[t->nuse]; u++) {
+				l = u->u.ins;
+				if (isload(l->op) && l->op != Oload && l->cls == Kl)
+					goto Skip;
+			}
 		/* get rid of the alloc and replace uses */
 		*i = (Ins){.op = Onop};
 		t->ndef--;
@@ -67,7 +74,7 @@ promote(Fn *fn)
 				switch(l->op) {
 				case Oloadsw:
 				case Oloaduw:
-					if (k == Kl)
+					if (l->cls == Kl)
 						goto Extend;
 					/* fall through */
 				case Oload:
@@ -159,7 +166,8 @@ load(Ref r, bits x, int ip, Fn *fn, Slot *sl)
 	Slot *s;
 
 	if (slot(&s, &off, r, fn, sl)) {
-		s->l |= x << off;
+		/* a read out of the slot reads all of it */
+		s->l |= 0 <= off && off < NBit ? x << off : -1;
 		s->l &= s->m;
 		if (s->l)
 			radd(&s->r, ip);
@@ -175,7 +183,8 @@ store(Ref r, bits x, int ip, Ins *i, Fn *fn, Slot *sl)
 	if (slot(&s, &off, r, fn, sl)) {
 		if (s->l) {
 			radd(&s->r, ip);
-			s->l &= ~(x << off);
+			if (0 <= off && off < NBit)
+				s->l &= ~(x << off);
 		} else {
 			vgrow(&s->st, ++s->nst);
 			s->st[s->nst-1].ip = ip;
@@ -485,4 +494,447 @@ coalesce(Fn *fn)
 	for (s=sl; s<&sl[nsl]; s++)
 		vfree(s->st);
 	vfree(sl);
+}
+
+/* cut a small slot whose address only reaches
+ * loads, stores, blits and constant offsets
+ * into one slot per piece, so promote() can
+ * turn the pieces into temporaries
+ */
+
+enum { ChopMax = 32 };
+
+typedef struct Chop Chop;
+typedef struct Blit Blit;
+
+struct Chop {
+	int sz;
+	int bad;
+	char *cut; /* a piece starts or ends here */
+	char *rd;
+	char *wr;
+	int *cls;  /* -1 if unknown, 4 marks a class only read */
+	Ref *to;
+	int *blits; /* the ones that copy from or to it */
+	int nblit;
+};
+
+struct Blit {
+	int k, m;
+	int64_t off[2];
+	int64_t sz;
+};
+
+static Chop *chops;
+static int *chopof;
+static int64_t *offof;
+static int nofs;
+
+static int
+reach(int t, int c, int64_t off, Fn *fn)
+{
+	Use *u;
+	Ins *i;
+	Ref r;
+
+	chopof[t] = c + 1;
+	offof[t] = off;
+	for (u=fn->tmp[t].use; u<&fn->tmp[t].use[fn->tmp[t].nuse]; u++) {
+		if (u->type != UIns)
+			return 0;
+		i = u->u.ins;
+		if (isload(i->op) && req(i->arg[0], TMP(t)))
+			continue;
+		if (isstore(i->op) && req(i->arg[1], TMP(t)) && !req(i->arg[0], TMP(t)))
+			continue;
+		if (i->op == Oblit0 && !req(i->arg[0], i->arg[1]))
+			continue;
+		if (i->op != Oadd || rtype(i->to) != RTmp || fn->tmp[i->to.val].ndef != 1)
+			return 0;
+		r = req(i->arg[0], TMP(t)) ? i->arg[1] : i->arg[0];
+		if (rtype(r) != RCon || fn->con[r.val].type != CBits)
+			return 0;
+		if (!reach(i->to.val, c, off + fn->con[r.val].bits.i, fn))
+			return 0;
+	}
+	return 1;
+}
+
+static int
+chopat(Ref r, int64_t *off)
+{
+	int c;
+
+	if (rtype(r) != RTmp || r.val >= nofs || !chopof[r.val])
+		return -1;
+	c = chopof[r.val] - 1;
+	if (chops[c].bad)
+		return -1;
+	*off = offof[r.val];
+	return c;
+}
+
+/* a blit gives each side the cuts of the other,
+ * and returns the sides that changed as bits */
+static int
+cutblit(Blit *bl)
+{
+	Chop *c, *c1;
+	int64_t o;
+	int grew;
+
+	c = &chops[bl->k];
+	c1 = &chops[bl->m];
+	grew = 0;
+	if (c->bad || c1->bad)
+		return 0;
+	for (o=0; o<=bl->sz; o++)
+		if (c->cut[bl->off[0]+o] != c1->cut[bl->off[1]+o]) {
+			grew |= c->cut[bl->off[0]+o] ? 2 : 1;
+			c->cut[bl->off[0]+o] = c1->cut[bl->off[1]+o] = 1;
+		}
+	return grew;
+}
+
+/* a piece with no class takes the one of the
+ * piece on the other side, as only read */
+static int
+clsblit(Blit *bl)
+{
+	Chop *c, *c1;
+	int64_t o;
+	int grew, *k, *k1;
+
+	c = &chops[bl->k];
+	c1 = &chops[bl->m];
+	grew = 0;
+	if (c->bad || c1->bad)
+		return 0;
+	for (o=0; o<bl->sz; o++) {
+		k = &c->cls[bl->off[0]+o];
+		k1 = &c1->cls[bl->off[1]+o];
+		if (c->cut[bl->off[0]+o] && (*k < 0) != (*k1 < 0)) {
+			if (*k < 0) {
+				*k = *k1 | 4;
+				grew |= 1;
+			} else {
+				*k1 = *k | 4;
+				grew |= 2;
+			}
+		}
+	}
+	return grew;
+}
+
+/* run f on every blit, and again on the blits
+ * of a slot that it changed, until none does */
+static void
+carry(Blit *blits, int nblit, int f(Blit *))
+{
+	Chop *c;
+	int *q, *queued, *b, h, n, j, x, side;
+
+	q = vnew(nblit, sizeof q[0], PFn);
+	queued = vnew(nblit, sizeof queued[0], PFn);
+	for (j=0; j<nblit; j++) {
+		q[j] = j;
+		queued[j] = 1;
+	}
+	for (h=0, n=nblit; n; n--) {
+		j = q[h];
+		h = (h + 1) % nblit;
+		queued[j] = 0;
+		x = f(&blits[j]);
+		for (side=0; side<2; side++) {
+			if (!(x & BIT(side)))
+				continue;
+			c = &chops[side ? blits[j].m : blits[j].k];
+			for (b=c->blits; b<&c->blits[c->nblit]; b++)
+				if (!queued[*b]) {
+					queued[*b] = 1;
+					q[(h + n - 1) % nblit] = *b;
+					n++;
+				}
+		}
+	}
+}
+
+/* the next cut after p, and a piece ends with the slot */
+static int
+chopnext(Chop *c, int p)
+{
+	while (++p < c->sz && !c->cut[p])
+		;
+	return p;
+}
+
+static int
+chopcls(int k, int sz)
+{
+	if (sz < 8)
+		return k == Ks && sz == 4 ? Ks : Kw;
+	return k == Kd ? Kd : Kl;
+}
+
+static int
+piececls(Chop *c, int p)
+{
+	if (c->cls[p] >= 0)
+		return c->cls[p] & 3;
+	return chopnext(c, p) - p < 8 ? Kw : Kl;
+}
+
+static int
+chopst(int k, int sz)
+{
+	switch (sz) {
+	case 1: return Ostoreb;
+	case 2: return Ostoreh;
+	case 4: return k == Ks ? Ostores : Ostorew;
+	default: return k == Kd ? Ostored : Ostorel;
+	}
+}
+
+/* the accesses of i, a blit reads and writes */
+static int
+chopuse(Ins *i, Ref r[2], int64_t sz[2], int wr[2])
+{
+	if (isload(i->op)) {
+		r[0] = i->arg[0];
+		sz[0] = loadsz(i);
+		wr[0] = 0;
+		return 1;
+	}
+	if (isstore(i->op)) {
+		r[0] = i->arg[1];
+		sz[0] = storesz(i);
+		wr[0] = 1;
+		return 1;
+	}
+	if (i->op == Oblit0) {
+		r[0] = i->arg[0];
+		r[1] = i->arg[1];
+		sz[0] = sz[1] = rsval((i+1)->arg[0]);
+		wr[0] = 0;
+		wr[1] = 1;
+		return 2;
+	}
+	return 0;
+}
+
+/* where a blit reads or writes the piece at rel */
+static Ref
+chopref(int k, int64_t off, Ref r, int64_t rel, Fn *fn)
+{
+	if (k >= 0)
+		return chops[k].to[off + rel];
+	if (rel == 0)
+		return r;
+	return newtmp("chop", Kl, fn);
+}
+
+void
+chop(Fn *fn)
+{
+	Blk *b;
+	Ins *i, *first;
+	Chop *c;
+	Blit *blits;
+	Ref r[2], src, dst, v;
+	int64_t sz[2], off[2], o, s, bits;
+	int wr[2], k, m, n, p, q, t, cl, hard, good, nchop, nblit, piece[ChopMax];
+
+	nofs = fn->ntmp;
+	chopof = vnew(nofs, sizeof chopof[0], PFn);
+	offof = vnew(nofs, sizeof offof[0], PFn);
+	memset(chopof, 0, nofs * sizeof chopof[0]);
+	chops = vnew(0, sizeof chops[0], PFn);
+	nchop = 0;
+	for (i=fn->start->ins; i<&fn->start->ins[fn->start->nins]; i++) {
+		if (!isalloc(i->op) || rtype(i->arg[0]) != RCon)
+			continue;
+		s = fn->con[i->arg[0].val].bits.i;
+		t = i->to.val;
+		if (s <= 0 || s > ChopMax || fn->tmp[t].ndef != 1)
+			continue;
+		vgrow(&chops, ++nchop);
+		c = &chops[nchop-1];
+		c->sz = s;
+		c->cut = vnew(s+1, 1, PFn);
+		c->rd = vnew(s, 1, PFn);
+		c->wr = vnew(s, 1, PFn);
+		c->cls = vnew(s, sizeof c->cls[0], PFn);
+		c->to = vnew(s, sizeof c->to[0], PFn);
+		c->blits = vnew(0, sizeof c->blits[0], PFn);
+		c->nblit = 0;
+		memset(c->cut, 0, s + 1);
+		memset(c->rd, 0, s);
+		memset(c->wr, 0, s);
+		for (p=0; p<s; p++)
+			c->cls[p] = -1;
+		c->bad = !reach(t, nchop-1, 0, fn);
+	}
+	if (!nchop)
+		return;
+	blits = vnew(0, sizeof blits[0], PFn);
+	nblit = 0;
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			n = chopuse(i, r, sz, wr);
+			for (m=0; m<n; m++) {
+				k = chopat(r[m], &off[m]);
+				if (k < 0)
+					continue;
+				c = &chops[k];
+				if (off[m] < 0 || sz[m] <= 0 || off[m] > c->sz - sz[m])
+					c->bad = 1;
+				else
+					c->cut[off[m]] = c->cut[off[m] + sz[m]] = 1;
+			}
+			if (n == 2 && (k = chopat(r[0], &off[0])) >= 0 && (m = chopat(r[1], &off[1])) >= 0) {
+				if (k == m) {
+					chops[k].bad = 1;
+					continue;
+				}
+				vgrow(&blits, ++nblit);
+				blits[nblit-1] = (Blit){k, m, {off[0], off[1]}, sz[0]};
+			}
+		}
+	for (n=0; n<nblit; n++)
+		for (m=0; m<2; m++) {
+			c = &chops[m ? blits[n].m : blits[n].k];
+			vgrow(&c->blits, ++c->nblit);
+			c->blits[c->nblit-1] = n;
+		}
+	carry(blits, nblit, cutblit);
+	for (c=chops; c<&chops[nchop]; c++)
+		if (!c->bad)
+			for (p=0; p<c->sz; p=q) {
+				if (!c->cut[p]) {
+					q = p + 1;
+					continue;
+				}
+				q = chopnext(c, p);
+				for (s=8; s>q-p; s/=2)
+					;
+				if (s < q - p)
+					c->cut[q = p + s] = 1;
+			}
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			n = chopuse(i, r, sz, wr);
+			hard = n == 1 && !(wr[0] && rtype(i->arg[0]) == RCon && fn->con[i->arg[0].val].type == CBits);
+			for (m=0; m<n; m++) {
+				k = chopat(r[m], &o);
+				if (k < 0)
+					continue;
+				c = &chops[k];
+				for (p=o; p<o+sz[m]; p++) {
+					if (!c->cut[p])
+						continue;
+					if (hard && p != o)
+						c->bad = 1;
+					if (wr[m])
+						c->wr[p] = 1;
+					else
+						c->rd[p] = 1;
+				}
+				if (!hard || c->bad)
+					continue;
+				/* stores choose the class, loads
+				 * only when no store does */
+				if (isstore(i->op))
+					cl = chopcls(optab[i->op].argcls[0][0], sz[m]);
+				else
+					cl = chopcls(i->cls, sz[m]) | 4;
+				if (c->cls[o] < 0 || (c->cls[o] & 4) && !(cl & 4))
+					c->cls[o] = cl;
+				else if (!(cl & 4) && c->cls[o] != cl)
+					c->bad = 1;
+			}
+		}
+	carry(blits, nblit, clsblit);
+	good = 0;
+	for (c=chops; c<&chops[nchop]; c++)
+		if (!c->bad)
+			for (p=0; p<c->sz; p++)
+				if (c->cut[p] && (c->rd[p] || c->wr[p])) {
+					c->to[p] = newtmp("chop", Kl, fn);
+					good = 1;
+				}
+	if (!good)
+		return;
+	for (b=fn->start; b; b=b->link) {
+		for (first=b->ins; first<&b->ins[b->nins] && ispar(first->op); first++)
+			;
+		curi = &insb[NIns];
+		for (i=&b->ins[b->nins]; i!=first;) {
+			--i;
+			if (i->op == Oblit1) {
+				i--;
+				chopuse(i, r, sz, wr);
+				k = chopat(r[0], &off[0]);
+				m = chopat(r[1], &off[1]);
+				if (k < 0 && m < 0) {
+					emiti(*(i+1));
+					emiti(*i);
+					continue;
+				}
+				c = &chops[m >= 0 ? m : k];
+				o = off[m >= 0];
+				for (n=0, p=o; p<o+sz[0]; p=chopnext(c, p))
+					piece[n++] = p;
+				while (n--) {
+					p = piece[n];
+					s = chopnext(c, p) - p;
+					cl = piececls(c, p);
+					src = chopref(k, off[0], r[0], p - o, fn);
+					dst = chopref(m, off[1], r[1], p - o, fn);
+					v = newtmp("chop", cl, fn);
+					emit(chopst(cl, s), 0, R, v, dst);
+					if (m < 0 && p != o)
+						emit(Oadd, Kl, dst, r[1], getcon(p - o, fn));
+					emit(s == 1 ? Oloadub : s == 2 ? Oloaduh : Oload, cl, v, src, R);
+					if (k < 0 && p != o)
+						emit(Oadd, Kl, src, r[0], getcon(p - o, fn));
+				}
+				continue;
+			}
+			if ((isalloc(i->op) || i->op == Oadd) && chopat(i->to, &o) >= 0)
+				continue;
+			if (isload(i->op) && (k = chopat(i->arg[0], &o)) >= 0) {
+				emit(i->op, i->cls, i->to, chops[k].to[o], R);
+				continue;
+			}
+			if (isstore(i->op) && (k = chopat(i->arg[1], &o)) >= 0) {
+				c = &chops[k];
+				s = storesz(i);
+				if (chopnext(c, o) - o == s) {
+					emit(chopst(piececls(c, o), s), 0, R, i->arg[0], c->to[o]);
+					continue;
+				}
+				bits = fn->con[i->arg[0].val].bits.i;
+				for (p=o; p<o+s; p=q) {
+					q = chopnext(c, p);
+					v = getcon(q - p == 8 ? bits >> 8*(p-o) : bits >> 8*(p-o) & ((1ll << 8*(q-p)) - 1), fn);
+					emit(chopst(piececls(c, p), q - p), 0, R, v, c->to[p]);
+				}
+				continue;
+			}
+			emiti(*i);
+		}
+		/* a piece read before a path writes it reads zero */
+		if (b == fn->start)
+			for (c=chops; c<&chops[nchop]; c++)
+				for (p=0; p<c->sz; p++)
+					if (!c->bad && c->cut[p] && (c->rd[p] || c->wr[p])) {
+						s = chopnext(c, p) - p;
+						if (c->rd[p])
+							emit(chopst(piececls(c, p), s), 0, R, getcon(0, fn), c->to[p]);
+						emit(s <= 4 ? Oalloc4 : Oalloc8, Kl, c->to[p], getcon(s, fn), R);
+					}
+		while (i != b->ins)
+			emiti(*--i);
+		idup(b, curi, &insb[NIns]-curi);
+	}
 }

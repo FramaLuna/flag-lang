@@ -498,6 +498,16 @@ emitins(Ins *i, E *e)
 	case Odbgloc:
 		emitdbgloc(i->arg[0].val, i->arg[1].val, e->f);
 		break;
+	case Odbgslot:
+		fprintf(e->f, ".set %sslot%d, %"PRIu64"\n",
+			T.asloc, i->arg[1].val, slot(i->arg[0], e));
+		break;
+	case Odbgmark:
+		emitdbgmark(i, e->fn, e->f);
+		break;
+	case Oframe:
+		emitf("mov %=, x29", i, e);
+		break;
 	}
 }
 
@@ -562,7 +572,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 	e = &(E){.f = out, .fn = fn};
 	if (T.apple)
 		e->fn->lnk.align = 4;
-	emitfnlnk(e->fn->name, &e->fn->lnk, e->f);
+	emitfnlnk(e->fn, e->f);
 	fputs("\thint\t#34\n", e->f);
 	framelayout(e);
 
@@ -578,28 +588,39 @@ arm64_emitfn(Fn *fn, FILE *out)
 			"\tstp\tx29, x30, [sp, -%"PRIu64"]!\n",
 			e->frame + 16
 		);
-	else if (e->frame <= 4095)
+	else if (!probing(e->fn, e->frame))
 		fprintf(e->f,
 			"\tsub\tsp, sp, #%"PRIu64"\n"
 			"\tstp\tx29, x30, [sp, -16]!\n",
 			e->frame
 		);
-	else if (e->frame <= 65535)
-		fprintf(e->f,
-			"\tmov\tx16, #%"PRIu64"\n"
-			"\tsub\tsp, sp, x16\n"
-			"\tstp\tx29, x30, [sp, -16]!\n",
-			e->frame
-		);
-	else
-		fprintf(e->f,
-			"\tmov\tx16, #%"PRIu64"\n"
-			"\tmovk\tx16, #%"PRIu64", lsl #16\n"
-			"\tsub\tsp, sp, x16\n"
-			"\tstp\tx29, x30, [sp, -16]!\n",
-			e->frame & 0xFFFF, e->frame >> 16
-		);
+	else {
+		/* see probing(), the stp touches the last page */
+		if (e->frame >= 4096) {
+			fprintf(e->f, "\tmov\tx16, #%"PRIu64"\n", e->frame / 4096 & 0xFFFF);
+			if (e->frame / 4096 > 0xFFFF)
+				fprintf(e->f, "\tmovk\tx16, #%"PRIu64", lsl #16\n", e->frame / 4096 >> 16);
+			fputs("1:\n"
+				"\tsub\tsp, sp, #4096\n"
+				"\tstr\txzr, [sp]\n"
+				"\tsubs\tx16, x16, #1\n"
+				"\tb.ne\t1b\n", e->f);
+		}
+		if (e->frame % 4096)
+			fprintf(e->f, "\tsub\tsp, sp, #%"PRIu64"\n", e->frame % 4096);
+		fputs("\tstp\tx29, x30, [sp, -16]!\n", e->f);
+	}
 	fputs("\tmov\tx29, sp\n", e->f);
+	o = e->frame + 16;
+	if (e->fn->vararg && !T.apple)
+		o += 192;
+	if (dbginfo)
+		fprintf(e->f,
+			"\t.cfi_def_cfa x29, %"PRIu64"\n"
+			"\t.cfi_offset x29, -%"PRIu64"\n"
+			"\t.cfi_offset x30, -%"PRIu64"\n",
+			o, o, o - 8
+		);
 	s = (e->frame - e->padding) / 4;
 	for (r=arm64_rclob; *r>=0; r++)
 		if (e->fn->reg & BIT(*r)) {
@@ -607,6 +628,9 @@ arm64_emitfn(Fn *fn, FILE *out)
 			i = &(Ins){.arg = {TMP(*r), SLOT(s)}};
 			i->op = *r >= V0 ? Ostored : Ostorel;
 			emitins(i, e);
+			if (dbginfo)
+				fprintf(e->f, "\t.cfi_offset %s, %"PRId64"\n",
+					rname(*r, Kx), (int64_t)slot(SLOT(s), e) - (int64_t)o);
 		}
 
 	for (lbl=0, b=e->fn->start; b; b=b->link) {
@@ -617,7 +641,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 		lbl = 1;
 		switch (b->jmp.type) {
 		case Jhlt:
-			fprintf(e->f, "\tbrk\t#1000\n");
+			fprintf(e->f, "\tudf\t#0\n");
 			break;
 		case Jret0:
 			s = (e->frame - e->padding) / 4;
@@ -633,6 +657,8 @@ arm64_emitfn(Fn *fn, FILE *out)
 			o = e->frame + 16;
 			if (e->fn->vararg && !T.apple)
 				o += 192;
+			if (dbginfo)
+				fputs("\t.cfi_remember_state\n", e->f);
 			if (o <= 504)
 				fprintf(e->f,
 					"\tldp\tx29, x30, [sp], %"PRIu64"\n",
@@ -659,7 +685,13 @@ arm64_emitfn(Fn *fn, FILE *out)
 					"\tadd\tsp, sp, x16\n",
 					(o - 16) & 0xFFFF, (o - 16) >> 16
 				);
+			if (dbginfo)
+				fputs("\t.cfi_def_cfa sp, 0\n"
+					"\t.cfi_restore x29\n"
+					"\t.cfi_restore x30\n", e->f);
 			fprintf(e->f, "\tret\n");
+			if (dbginfo)
+				fputs("\t.cfi_restore_state\n", e->f);
 			break;
 		case Jjmp:
 		Jmp:
@@ -690,6 +722,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 		}
 	}
 	id0 += e->fn->nblk;
+	emitfnend(e->fn, e->f);
 	if (!T.apple)
 		elf_emitfnfin(fn->name, out);
 }

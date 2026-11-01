@@ -1,0 +1,34 @@
+use net
+use os
+
+func flood(s: Socket):
+    chunk: &str
+    defer free(chunk)
+    for i in 0..1000:
+        chunk += "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    while true:
+        write(s, chunk)
+        if flush(s) is NetError:
+            return
+
+func main() -> i32:
+    if args().len > 1:
+        server := trust listen(0)
+        quiet := trust connect("127.0.0.1", port(server))
+        flooded := trust accept(server)
+        parallel flood(flooded)
+        sleep(0.2)
+        print("waiting to be written")
+        if args()[1] == "crash":
+            p := usize(0) as *i32
+            p.* = 1
+        xs := [1, 2, 3]
+        print(xs[i32(args().len) + 1])
+        return 0
+    for how in ["crash", "panic"]:
+        program: &list[&strview]
+        append(program, executable())
+        append(program, how)
+        print((run(program) iferror 0) != 0)
+        free(program)
+    return 0

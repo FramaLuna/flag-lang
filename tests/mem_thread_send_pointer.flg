@@ -1,0 +1,16 @@
+type Job:
+    id: i32
+
+func worker(jobs: *Channel[*Job, 4]):
+    for j in jobs:
+        print(j.id)
+        free(j)
+
+func main():
+    jobs: Channel[*Job, 4]
+    w := parallel worker(jobs)
+    j := heap(Job{7})
+    send(jobs, j)
+    print(j.id)
+    close(jobs)
+    wait w

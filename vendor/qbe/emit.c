@@ -23,7 +23,9 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 	sfx = "";
 	if (T.apple && l->thread) {
 		l->sec = "__DATA";
-		l->secf = "__thread_data,thread_local_regular";
+		l->secf = s == SecBss
+			? "__thread_bss,thread_local_zerofill"
+			: "__thread_data,thread_local_regular";
 		sfx = "$tlv$init";
 		fputs(
 			".section __DATA,__thread_vars,"
@@ -37,6 +39,10 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 			"\t.quad %s%s%s\n\n",
 			pfx, n, sfx
 		);
+	}
+	if (T.windows && l->thread) {
+		l->sec = ".tls$";
+		l->secf = "\"dw\"";
 	}
 	if (l->sec) {
 		fprintf(f, ".section %s", l->sec);
@@ -53,9 +59,69 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 }
 
 void
-emitfnlnk(char *n, Lnk *l, FILE *f)
+emitfnlnk(Fn *fn, FILE *f)
 {
-	emitlnk(n, l, SecText, f);
+	Blk *b;
+	Ins *i;
+
+	emitlnk(fn->name, &fn->lnk, SecText, f);
+	if (!dbginfo)
+		return;
+	fputs("\t.cfi_startproc\n", f);
+	/* the prologue takes the first line, and the code
+	 * does not repeat it: a debugger that skips the
+	 * prologue stops at the next line */
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++)
+			if (i->op == Odbgloc) {
+				emitdbgloc(i->arg[0].val, i->arg[1].val, f);
+				i->op = Onop;
+				return;
+			}
+}
+
+void
+emitdbgmark(Ins *i, Fn *fn, FILE *f)
+{
+	fprintf(f, "%smark%d:\n", T.asloc, fn->dbgmark[i->arg[0].val]);
+	fn->dbgmark[i->arg[0].val] = -1;
+}
+
+/* whether a frame, with the stack the calls take
+ * below it, can reach past a page before the next
+ * access: then the prologue lowers the stack a page
+ * at a time and touches each one, so an overflow
+ * meets the guard page and not the memory below it */
+int
+probing(Fn *fn, uint64_t frame)
+{
+	Blk *b;
+	Ins *i;
+	int64_t area, most;
+
+	most = 0;
+	for (b=fn->start; b; b=b->link)
+		for (area=0, i=b->ins; i<&b->ins[b->nins]; i++)
+			if (i->op == Osalloc && rtype(i->arg[0]) == RCon) {
+				area += fn->con[i->arg[0].val].bits.i;
+				if (area > most)
+					most = area;
+			}
+	return frame + most + 16 > 4096;
+}
+
+void
+emitfnend(Fn *fn, FILE *f)
+{
+	uint n;
+
+	/* the marks of a last block that died */
+	for (n=0; n<fn->ndbgmark; n++)
+		if (fn->dbgmark[n] != -1)
+			fprintf(f, "%smark%d:\n", T.asloc, fn->dbgmark[n]);
+	fprintf(f, "%s%s.end:\n", T.asloc, fn->name);
+	if (dbginfo)
+		fputs("\t.cfi_endproc\n", f);
 }
 
 void

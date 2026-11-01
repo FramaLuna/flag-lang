@@ -188,6 +188,11 @@ sel(Ins i, Fn *fn)
 		selcmp(i, ck, cc, fn);
 		return;
 	}
+	if (i.op == Odbgslot) {
+		i.arg[0] = SLOT(fn->tmp[i.arg[0].val].slot);
+		emiti(i);
+		return;
+	}
 	if (i.op != Onop) {
 		emiti(i);
 		i0 = curi; /* fixarg() can change curi */

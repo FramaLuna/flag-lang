@@ -1,0 +1,14 @@
+func worker(c: *Channel[&strview, 4]) -> i32:
+    n := 0
+    for v in c:
+        n += i32(v.len)
+    return n
+
+func main():
+    c: Channel[&strview, 4]
+    t := parallel worker(c)
+    for i in 0..3:
+        with scratch():
+            send(c, "temp " + i)
+    close(c)
+    print(wait t)
