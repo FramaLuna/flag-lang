@@ -30,8 +30,9 @@ Changed
 - `&str`, `&list` and `&map` take 32 bytes: a fourth word, `arena`, says where their memory lives, zero for the heap. The views, `&strview` and `&slice`, stay at 16
 - The scratch memory of the temporaries is an `Arena`
 - Every function keeps a frame pointer, on x86_64 too, so the chain can be read: a program is about 1 % bigger
-- QBE has fourteen more changes, twenty-five in all: thread data on Windows, its address read once per function on Windows and macOS, and the thread data that starts at zero kept out of the file on macOS, small slots cut into pieces that live in registers, a fix for riscv64, six for the chain of calls and the debugger, and five that keep a long function linear
-- Building the compiler takes 36 % more instructions: most of it is the work QBE and the assembler do on the inlined code, and the rest is the code of threads, arenas and the debugger. The compiler that comes out is faster, it checks the sources of 0.3 with 7 % fewer instructions
+- A function whose frame can go past a page of stack touches each page as it lowers the stack, on Linux and macOS as on Windows, so a stack overflow always stops at the guard page and is reported. A frame bigger than the 4 KiB guard of a thread jumped over it, into the stack of another thread
+- QBE has twenty more changes, thirty-one in all: thread data on Windows, its address read once per function on Windows and macOS, and the thread data that starts at zero kept out of the file on macOS, small slots cut into pieces that live in registers, a fix for riscv64, six for the chain of calls and the debugger, six that keep a long function linear, and five fixes of QBE itself
+- Building the compiler takes 32 % more instructions: most of it is the work QBE and the assembler do on the inlined code, and the rest is the code of threads, arenas and the debugger. The compiler that comes out is faster, it checks the sources of 0.3 with 7 % fewer instructions
 
 Faster
 - A direct call to a small function is replaced by its body when the program is written, after `-memory`, so the warnings still name your functions. The parameters are still copies, a runtime error keeps its place, the stack doesn't grow, and a function whose calls were all inlined is not written to the program. A function with more than 4 KiB of variables is not inlined on its own, they would take room in the frame of every caller, and into a recursive function, whose every level keeps them, one with more than 32 bytes
@@ -39,13 +40,14 @@ Faster
 - A struct or array literal that gives its values in order puts its small values, numbers, `bool` and enums, together in words of 8 bytes and writes each word at once, so a copy reads it from one write and doesn't wait: a loop that appends `V{x, y}` of two `f32` to a list takes half the time, with two `i32` 2.5 times less, and `json` parses 4 % faster
 - A constant whose value the compiler knows, an array or a struct of literals, of enum variants or of other such constants, is kept once in the read-only data of the program, and every use reads it: a lookup in `TABLE = [3, 1, 4, 1, 5, 9, 2, 6]` in a loop is 2.8 times faster
 - Text literals with the same text share their data, and `print` no longer builds `stdout` on the stack, so long functions compile much faster: 20000 `elif`, or a switch of 20000 cases, take 5 times fewer instructions
-- A long function compiles in a time and a memory that grow with its length. QBE keeps in a set of temporaries only its words that are not zero, where the sets of each block had a bit for every temporary of the function, and three of its walks no longer climb the whole dominator tree, as deep as a chain of `elif`. 20000 `elif` with a `print` each compile in 1.6 s and 0.4 GB, they took 8.1 s and 1.1 GB, and on a value known only when the program runs, 20000 compile in 2.8 s and 0.5 GB where 5000 took 4.9 s and 2.2 GB
+- A long function compiles in a time and a memory that grow with its length. QBE keeps in a set of temporaries only its words that are not zero, where the sets of each block had a bit for every temporary of the function, and three of its walks no longer climb the whole dominator tree, as deep as a chain of `elif`. 20000 `elif` with a `print` each compile in 1.6 s and 0.4 GB, they took 8.1 s and 1.1 GB, and on a value known only when the program runs, 20000 compile in 2.8 s and 0.5 GB where 5000 took 4.9 s and 2.2 GB. A temporary defined in several places finds its phis through its definitions, not every instruction of the function, so 6000 copies of a struct in a row compile in 0.37 s
 
 Fixed
 - The `==` and `hash` that the compiler writes for a type, and the data of a text literal, could take the name of a function of the program, like `sv`, and the program didn't assemble
 - A constant that names another constant read the local variable with that name where it was used
 - `-memory` warned that a call may free memory it also reads through another argument when both were memory of contexts, and no argument was involved
 - QBE for riscv64 stopped with `unimplemented` when a constant or a value on the stack went into a temporary that lives on the stack
+- On Windows a function of Flag that C calls, like a callback, could change the floats that the C around it kept in `xmm6` to `xmm15`, which Windows has every function keep
 
 ## 0.3.0
 

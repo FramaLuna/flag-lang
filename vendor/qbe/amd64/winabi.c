@@ -34,12 +34,15 @@ struct ExtraAlloc {
 #define SHADOW_SPACE_SIZE 32
 
 int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
-                            XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7, XMM8,
-                            XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1};
-int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
+                            XMM1, XMM2,  XMM3,  XMM4,  XMM5, -1};
+/* a call keeps xmm6 to xmm15; they go first,
+ * so they are saved aligned */
+int amd64_winabi_rclob[] = {XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12,
+                            XMM13, XMM14, XMM15, RBX, R12, R13, R14, R15,
+                            RSI, RDI, -1};
 
 MAKESURE(winabi_arrays_ok,
-         sizeof amd64_winabi_rsave == (NGPS_WIN + NFPS + 1) * sizeof(int) &&
+         sizeof amd64_winabi_rsave == (NGPS_WIN + NFPS_WIN + 1) * sizeof(int) &&
              sizeof amd64_winabi_rclob == (NCLR_WIN + 1) * sizeof(int));
 
 // layout of call's second argument (RCall)

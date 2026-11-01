@@ -116,13 +116,13 @@ static void
 phiins(Fn *fn)
 {
 	BSet u[1], defs[1];
-	Blk *a, *b, **blist, **be, **bp;
-	Ins *i;
+	Blk *a, *b, **blist, **be, **bp, **db, **at;
+	Ins *i, **di;
 	Phi *p;
 	Use *use;
-	Ref r;
-	int t, nt, ok;
-	uint n, defb;
+	Ref *name;
+	int t, nt, ok, *of;
+	uint n, d, defb, *d0, *nd;
 	short k;
 
 	bsinit(u);
@@ -130,6 +130,27 @@ phiins(Fn *fn)
 	blist = emalloc(fn->nblk * sizeof blist[0]);
 	be = &blist[fn->nblk];
 	nt = fn->ntmp;
+	/* the definitions of each temporary and their
+	 * blocks, so it is not searched for in the others */
+	d0 = vnew(nt, sizeof d0[0], PHeap);
+	nd = vnew(nt, sizeof nd[0], PHeap);
+	for (t=Tmp0, n=0; t<nt; t++) {
+		d0[t] = n;
+		n += fn->tmp[t].ndef;
+	}
+	di = vnew(n, sizeof di[0], PHeap);
+	db = vnew(n, sizeof db[0], PHeap);
+	for (b=fn->start; b; b=b->link) {
+		b->visit = 0;
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			t = i->to.val;
+			if (rtype(i->to) == RTmp && t >= Tmp0) {
+				di[d0[t] + nd[t]] = i;
+				db[d0[t] + nd[t]++] = b;
+			}
+		}
+	}
+	of = vnew(0, sizeof of[0], PHeap);
 	for (t=Tmp0; t<nt; t++) {
 		fn->tmp[t].visit = 0;
 		if (fn->tmp[t].phi != 0)
@@ -146,32 +167,24 @@ phiins(Fn *fn)
 		bszero(u);
 		k = Kx;
 		bp = be;
-		for (b=fn->start; b; b=b->link) {
-			b->visit = 0;
-			r = R;
-			for (i=b->ins; i<&b->ins[b->nins]; i++) {
-				if (!req(r, R)) {
-					if (req(i->arg[0], TMP(t)))
-						i->arg[0] = r;
-					if (req(i->arg[1], TMP(t)))
-						i->arg[1] = r;
-				}
-				if (req(i->to, TMP(t))) {
-					if (!bshas(b->out, t)) {
-						r = refindex(t, fn);
-						i->to = r;
-					} else {
-						if (!bshas(u, b->id)) {
-							bsset(u, b->id);
-							*--bp = b;
-						}
-						if (clsmerge(&k, i->cls))
-							die("invalid input");
-					}
-				}
+		for (d=d0[t]; d<d0[t]+nd[t]; d++) {
+			b = db[d];
+			i = di[d];
+			if (!bshas(b->out, t)) {
+				/* dead at the end of its block, it gets
+				 * a name of its own, given below to the
+				 * uses that follow it there */
+				i->to = refindex(t, fn);
+				vgrow(&of, i->to.val - nt + 1);
+				of[i->to.val - nt] = t;
+				continue;
 			}
-			if (!req(r, R) && req(b->jmp.arg, TMP(t)))
-				b->jmp.arg = r;
+			if (!bshas(u, b->id)) {
+				bsset(u, b->id);
+				*--bp = b;
+			}
+			if (clsmerge(&k, i->cls))
+				die("invalid input");
 		}
 		bscopy(defs, u);
 		while (bp != be) {
@@ -180,7 +193,9 @@ phiins(Fn *fn)
 			bsclr(u, b->id);
 			for (n=0; n<b->nfron; n++) {
 				a = b->fron[n];
-				if (a->visit++ == 0)
+				if (a->visit == (uint)t)
+					continue;
+				a->visit = t;
 				if (bshas(a->in, t)) {
 					p = alloc(sizeof *p);
 					p->cls = k;
@@ -198,6 +213,33 @@ phiins(Fn *fn)
 			}
 		}
 	}
+	/* name[t] holds in the block at[t] */
+	name = vnew(nt, sizeof name[0], PHeap);
+	at = vnew(nt, sizeof at[0], PHeap);
+	for (b=fn->start; b; b=b->link) {
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			for (n=0; n<2; n++) {
+				t = i->arg[n].val;
+				if (rtype(i->arg[n]) == RTmp && t < nt && at[t] == b)
+					i->arg[n] = name[t];
+			}
+			if (rtype(i->to) == RTmp && i->to.val >= nt) {
+				t = of[i->to.val - nt];
+				name[t] = i->to;
+				at[t] = b;
+			}
+		}
+		t = b->jmp.arg.val;
+		if (rtype(b->jmp.arg) == RTmp && t < nt && at[t] == b)
+			b->jmp.arg = name[t];
+	}
+	vfree(at);
+	vfree(name);
+	vfree(of);
+	vfree(db);
+	vfree(di);
+	vfree(nd);
+	vfree(d0);
 	free(blist);
 }
 

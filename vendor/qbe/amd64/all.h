@@ -46,8 +46,9 @@ enum Amd64Reg {
 	NGPS_SYSV = R11 - RAX + 1,
 	NCLR_SYSV = R15 - RBX + 1,
 
-	NGPS_WIN = R11 - RAX + 1 - 2,  /* -2 for RDI/RDI */
-	NCLR_WIN = R15 - RBX + 1 + 2,  /* +2 for RDI/RDI */
+	NGPS_WIN = R11 - RAX + 1 - 2,  /* -2 for RSI/RDI */
+	NFPS_WIN = XMM5 - XMM0 + 1,
+	NCLR_WIN = R15 - RBX + 1 + 2 + 10,  /* +2 for RSI/RDI, +10 for XMM6-XMM15 */
 };
 MAKESURE(reg_not_tmp, XMM15 < (int)Tmp0);
 

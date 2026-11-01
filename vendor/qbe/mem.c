@@ -45,6 +45,13 @@ promote(Fn *fn)
 			}
 			goto Skip;
 		}
+		/* a float widened by the load needs a cast first */
+		if (KBASE(k) == 1)
+			for (u=t->use; u<&t->use[t->nuse]; u++) {
+				l = u->u.ins;
+				if (isload(l->op) && l->op != Oload && l->cls == Kl)
+					goto Skip;
+			}
 		/* get rid of the alloc and replace uses */
 		*i = (Ins){.op = Onop};
 		t->ndef--;
@@ -67,7 +74,7 @@ promote(Fn *fn)
 				switch(l->op) {
 				case Oloadsw:
 				case Oloaduw:
-					if (k == Kl)
+					if (l->cls == Kl)
 						goto Extend;
 					/* fall through */
 				case Oload:
@@ -159,7 +166,8 @@ load(Ref r, bits x, int ip, Fn *fn, Slot *sl)
 	Slot *s;
 
 	if (slot(&s, &off, r, fn, sl)) {
-		s->l |= x << off;
+		/* a read out of the slot reads all of it */
+		s->l |= 0 <= off && off < NBit ? x << off : -1;
 		s->l &= s->m;
 		if (s->l)
 			radd(&s->r, ip);
@@ -175,7 +183,8 @@ store(Ref r, bits x, int ip, Ins *i, Fn *fn, Slot *sl)
 	if (slot(&s, &off, r, fn, sl)) {
 		if (s->l) {
 			radd(&s->r, ip);
-			s->l &= ~(x << off);
+			if (0 <= off && off < NBit)
+				s->l &= ~(x << off);
 		} else {
 			vgrow(&s->st, ++s->nst);
 			s->st[s->nst-1].ip = ip;
@@ -506,6 +515,8 @@ struct Chop {
 	char *wr;
 	int *cls;  /* -1 if unknown, 4 marks a class only read */
 	Ref *to;
+	int *blits; /* the ones that copy from or to it */
+	int nblit;
 };
 
 struct Blit {
@@ -561,6 +572,91 @@ chopat(Ref r, int64_t *off)
 		return -1;
 	*off = offof[r.val];
 	return c;
+}
+
+/* a blit gives each side the cuts of the other,
+ * and returns the sides that changed as bits */
+static int
+cutblit(Blit *bl)
+{
+	Chop *c, *c1;
+	int64_t o;
+	int grew;
+
+	c = &chops[bl->k];
+	c1 = &chops[bl->m];
+	grew = 0;
+	if (c->bad || c1->bad)
+		return 0;
+	for (o=0; o<=bl->sz; o++)
+		if (c->cut[bl->off[0]+o] != c1->cut[bl->off[1]+o]) {
+			grew |= c->cut[bl->off[0]+o] ? 2 : 1;
+			c->cut[bl->off[0]+o] = c1->cut[bl->off[1]+o] = 1;
+		}
+	return grew;
+}
+
+/* a piece with no class takes the one of the
+ * piece on the other side, as only read */
+static int
+clsblit(Blit *bl)
+{
+	Chop *c, *c1;
+	int64_t o;
+	int grew, *k, *k1;
+
+	c = &chops[bl->k];
+	c1 = &chops[bl->m];
+	grew = 0;
+	if (c->bad || c1->bad)
+		return 0;
+	for (o=0; o<bl->sz; o++) {
+		k = &c->cls[bl->off[0]+o];
+		k1 = &c1->cls[bl->off[1]+o];
+		if (c->cut[bl->off[0]+o] && (*k < 0) != (*k1 < 0)) {
+			if (*k < 0) {
+				*k = *k1 | 4;
+				grew |= 1;
+			} else {
+				*k1 = *k | 4;
+				grew |= 2;
+			}
+		}
+	}
+	return grew;
+}
+
+/* run f on every blit, and again on the blits
+ * of a slot that it changed, until none does */
+static void
+carry(Blit *blits, int nblit, int f(Blit *))
+{
+	Chop *c;
+	int *q, *queued, *b, h, n, j, x, side;
+
+	q = vnew(nblit, sizeof q[0], PFn);
+	queued = vnew(nblit, sizeof queued[0], PFn);
+	for (j=0; j<nblit; j++) {
+		q[j] = j;
+		queued[j] = 1;
+	}
+	for (h=0, n=nblit; n; n--) {
+		j = q[h];
+		h = (h + 1) % nblit;
+		queued[j] = 0;
+		x = f(&blits[j]);
+		for (side=0; side<2; side++) {
+			if (!(x & BIT(side)))
+				continue;
+			c = &chops[side ? blits[j].m : blits[j].k];
+			for (b=c->blits; b<&c->blits[c->nblit]; b++)
+				if (!queued[*b]) {
+					queued[*b] = 1;
+					q[(h + n - 1) % nblit] = *b;
+					n++;
+				}
+		}
+	}
 }
 
 /* the next cut after p, and a piece ends with the slot */
@@ -641,12 +737,12 @@ void
 chop(Fn *fn)
 {
 	Blk *b;
-	Ins *i;
-	Chop *c, *c1;
-	Blit *bl, *blits;
+	Ins *i, *first;
+	Chop *c;
+	Blit *blits;
 	Ref r[2], src, dst, v;
 	int64_t sz[2], off[2], o, s, bits;
-	int wr[2], k, m, n, p, q, t, cl, hard, grew, good, nchop, nblit, piece[ChopMax];
+	int wr[2], k, m, n, p, q, t, cl, hard, good, nchop, nblit, piece[ChopMax];
 
 	nofs = fn->ntmp;
 	chopof = vnew(nofs, sizeof chopof[0], PFn);
@@ -669,6 +765,8 @@ chop(Fn *fn)
 		c->wr = vnew(s, 1, PFn);
 		c->cls = vnew(s, sizeof c->cls[0], PFn);
 		c->to = vnew(s, sizeof c->to[0], PFn);
+		c->blits = vnew(0, sizeof c->blits[0], PFn);
+		c->nblit = 0;
 		memset(c->cut, 0, s + 1);
 		memset(c->rd, 0, s);
 		memset(c->wr, 0, s);
@@ -688,7 +786,7 @@ chop(Fn *fn)
 				if (k < 0)
 					continue;
 				c = &chops[k];
-				if (off[m] < 0 || sz[m] <= 0 || off[m] + sz[m] > c->sz)
+				if (off[m] < 0 || sz[m] <= 0 || off[m] > c->sz - sz[m])
 					c->bad = 1;
 				else
 					c->cut[off[m]] = c->cut[off[m] + sz[m]] = 1;
@@ -702,20 +800,13 @@ chop(Fn *fn)
 				blits[nblit-1] = (Blit){k, m, {off[0], off[1]}, sz[0]};
 			}
 		}
-	do {
-		grew = 0;
-		for (bl=blits; bl<&blits[nblit]; bl++) {
-			c = &chops[bl->k];
-			c1 = &chops[bl->m];
-			if (c->bad || c1->bad)
-				continue;
-			for (o=0; o<=bl->sz; o++)
-				if (c->cut[bl->off[0]+o] != c1->cut[bl->off[1]+o]) {
-					c->cut[bl->off[0]+o] = c1->cut[bl->off[1]+o] = 1;
-					grew = 1;
-				}
+	for (n=0; n<nblit; n++)
+		for (m=0; m<2; m++) {
+			c = &chops[m ? blits[n].m : blits[n].k];
+			vgrow(&c->blits, ++c->nblit);
+			c->blits[c->nblit-1] = n;
 		}
-	} while (grew);
+	carry(blits, nblit, cutblit);
 	for (c=chops; c<&chops[nchop]; c++)
 		if (!c->bad)
 			for (p=0; p<c->sz; p=q) {
@@ -762,23 +853,7 @@ chop(Fn *fn)
 					c->bad = 1;
 			}
 		}
-	do {
-		grew = 0;
-		for (bl=blits; bl<&blits[nblit]; bl++) {
-			c = &chops[bl->k];
-			c1 = &chops[bl->m];
-			if (c->bad || c1->bad)
-				continue;
-			for (o=0; o<bl->sz; o++)
-				if (c->cut[bl->off[0]+o] && (c->cls[bl->off[0]+o] < 0) != (c1->cls[bl->off[1]+o] < 0)) {
-					if (c->cls[bl->off[0]+o] < 0)
-						c->cls[bl->off[0]+o] = c1->cls[bl->off[1]+o] | 4;
-					else
-						c1->cls[bl->off[1]+o] = c->cls[bl->off[0]+o] | 4;
-					grew = 1;
-				}
-		}
-	} while (grew);
+	carry(blits, nblit, clsblit);
 	good = 0;
 	for (c=chops; c<&chops[nchop]; c++)
 		if (!c->bad)
@@ -790,8 +865,10 @@ chop(Fn *fn)
 	if (!good)
 		return;
 	for (b=fn->start; b; b=b->link) {
+		for (first=b->ins; first<&b->ins[b->nins] && ispar(first->op); first++)
+			;
 		curi = &insb[NIns];
-		for (i=&b->ins[b->nins]; i!=b->ins;) {
+		for (i=&b->ins[b->nins]; i!=first;) {
 			--i;
 			if (i->op == Oblit1) {
 				i--;
@@ -856,6 +933,8 @@ chop(Fn *fn)
 							emit(chopst(piececls(c, p), s), 0, R, getcon(0, fn), c->to[p]);
 						emit(s <= 4 ? Oalloc4 : Oalloc8, Kl, c->to[p], getcon(s, fn), R);
 					}
+		while (i != b->ins)
+			emiti(*--i);
 		idup(b, curi, &insb[NIns]-curi);
 	}
 }

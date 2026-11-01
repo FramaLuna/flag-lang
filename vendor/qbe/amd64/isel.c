@@ -139,6 +139,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			emit(Ocall, 0, R, r3, CALL(17));
 			emit(Ocopy, Kl, TMP(RDI), r2, R);
 			emit(Oload, Kl, r3, r2, R);
+			fn->leaf = 0;
 		}
 		cc = *c;
 		if (!T.windows)

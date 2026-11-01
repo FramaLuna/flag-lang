@@ -87,6 +87,29 @@ emitdbgmark(Ins *i, Fn *fn, FILE *f)
 	fn->dbgmark[i->arg[0].val] = -1;
 }
 
+/* whether a frame, with the stack the calls take
+ * below it, can reach past a page before the next
+ * access: then the prologue lowers the stack a page
+ * at a time and touches each one, so an overflow
+ * meets the guard page and not the memory below it */
+int
+probing(Fn *fn, uint64_t frame)
+{
+	Blk *b;
+	Ins *i;
+	int64_t area, most;
+
+	most = 0;
+	for (b=fn->start; b; b=b->link)
+		for (area=0, i=b->ins; i<&b->ins[b->nins]; i++)
+			if (i->op == Osalloc && rtype(i->arg[0]) == RCon) {
+				area += fn->con[i->arg[0].val].bits.i;
+				if (area > most)
+					most = area;
+			}
+	return frame + most + 16 > 4096;
+}
+
 void
 emitfnend(Fn *fn, FILE *f)
 {

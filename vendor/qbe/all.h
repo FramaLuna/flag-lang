@@ -626,6 +626,7 @@ void rega(Fn *);
 /* emit.c */
 void emitfnlnk(Fn *, FILE *);
 void emitfnend(Fn *, FILE *);
+int probing(Fn *, uint64_t);
 void emitdbgmark(Ins *, Fn *, FILE *);
 void emitdat(Dat *, FILE *);
 void emitdbgfile(char *, FILE *);

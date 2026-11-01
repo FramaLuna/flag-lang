@@ -6,8 +6,8 @@ typedef struct E E;
 struct E {
 	FILE *f;
 	Fn *fn;
-	int fp;
 	uint64_t fsz;
+	uint64_t save; /* the registers kept between rbp and the locals */
 	int nclob;
 };
 
@@ -169,21 +169,9 @@ slot(Ref r, E *e)
 	s = rsval(r);
 	assert(s <= e->fn->slot);
 	/* specific to NAlign == 3 */
-	if (s < 0) {
-		if (e->fp == RSP)
-			return 4*-s - 8 + e->fsz + e->nclob*8;
-		else
-			return 4*-s;
-	}
-	else if (e->fp == RSP)
-		return 4*s + e->nclob*8;
-	else if (e->fn->vararg) {
-		if (T.windows)
-			return -4 * (e->fn->slot - s);
-		else
-			return -176 + -4 * (e->fn->slot - s);
-	} else
-		return -4 * (e->fn->slot - s);
+	if (s < 0)
+		return 4*-s;
+	return -4 * (e->fn->slot - s) - e->save;
 }
 
 static void
@@ -314,10 +302,7 @@ Next:
 			fprintf(e->f, "%%%s", regtoa(ref.val, sz));
 			break;
 		case RSlot:
-			fprintf(e->f, "%d(%%%s)",
-				slot(ref, e),
-				regtoa(e->fp, SLong)
-			);
+			fprintf(e->f, "%d(%%rbp)", slot(ref, e));
 			break;
 		case RMem:
 		Mem:
@@ -326,7 +311,7 @@ Next:
 				off.type = CBits;
 				off.bits.i = slot(m->base, e);
 				addcon(&m->offset, &off, 1);
-				m->base = TMP(e->fp);
+				m->base = TMP(RBP);
 			}
 			if (m->offset.type != CUndef)
 				emitcon(&m->offset, e);
@@ -378,10 +363,7 @@ Next:
 		case RMem:
 			goto Mem;
 		case RSlot:
-			fprintf(e->f, "%d(%%%s)",
-				slot(ref, e),
-				regtoa(e->fp, SLong)
-			);
+			fprintf(e->f, "%d(%%rbp)", slot(ref, e));
 			break;
 		case RCon:
 			off = e->fn->con[ref.val];
@@ -646,7 +628,6 @@ emitins(Ins i, E *e)
 		 * maybe we should split Osalloc in 2 different
 		 * instructions depending on the result
 		 */
-		assert(e->fp == RBP);
 		emitf("subq %L0, %%rsp", &i, e);
 		if (!req(i.to, R))
 			emitcopy(i.to, TMP(RSP), Kl, e);
@@ -691,7 +672,6 @@ emitins(Ins i, E *e)
 static void
 framestart(E *e)
 {
-	e->fp = RBP;
 	fputs("\tpushq %rbp\n", e->f);
 	if (T.windows)
 		fputs("\t.seh_pushreg %rbp\n", e->f);
@@ -699,10 +679,36 @@ framestart(E *e)
 		fputs("\t.cfi_def_cfa_offset 16\n"
 			"\t.cfi_offset %rbp, -16\n", e->f);
 	fputs("\tmovq %rsp, %rbp\n", e->f);
-	if (T.windows)
-		fputs("\t.seh_setframe %rbp, 0\n", e->f);
 	if (dbginfo)
 		fputs("\t.cfi_def_cfa_register %rbp\n", e->f);
+}
+
+/* lower rsp by the frame, see probing() */
+static void
+lower(E *e)
+{
+	uint64_t n;
+
+	n = e->fsz;
+	if (!probing(e->fn, n)) {
+		if (n)
+			fprintf(e->f, "\tsubq $%"PRIu64", %%rsp\n", n);
+		return;
+	}
+	if (n >= 4096)
+		fprintf(e->f,
+			"\tmovl $%"PRIu64", %%r11d\n"
+			"1:\n"
+			"\tsubq $4096, %%rsp\n"
+			"\torq $0, (%%rsp)\n"
+			"\tsubl $1, %%r11d\n"
+			"\tjnz 1b\n",
+			n / 4096);
+	if (n % 4096)
+		fprintf(e->f,
+			"\tsubq $%"PRIu64", %%rsp\n"
+			"\torq $0, (%%rsp)\n",
+			n % 4096);
 }
 
 static void
@@ -732,11 +738,8 @@ sysv_framesz(E *e)
 	}
 	f = e->fn->slot;
 	f = (f + 3) & -4;
-	if (f > 0
-	&& e->fp == RSP
-	&& e->fn->salign == 4)
-		f += 2;
-	e->fsz = 4*f + 8*o + 176*e->fn->vararg;
+	e->save = 176*e->fn->vararg;
+	e->fsz = 4*f + 8*o + e->save;
 }
 
 void
@@ -759,8 +762,7 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 	fputs("\tendbr64\n", f);
 	framestart(e);
 	sysv_framesz(e);
-	if (e->fsz)
-		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
+	lower(e);
 	if (fn->vararg) {
 		o = -176;
 		for (r=amd64_sysv_rsave; r<&amd64_sysv_rsave[6]; r++, o+=8)
@@ -773,6 +775,9 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 			itmp.arg[0] = TMP(*r);
 			emitf("pushq %L0", &itmp, e);
 			e->nclob++;
+			if (dbginfo)
+				fprintf(f, "\t.cfi_offset %%%s, -%"PRIu64"\n",
+					rname[*r][0], 16 + e->fsz + 8*e->nclob);
 		}
 
 	for (lbl=0, b=fn->start; b; b=b->link) {
@@ -835,25 +840,63 @@ amd64_sysv_emitfn(Fn *fn, FILE *f)
 		elf_emitfnfin(fn->name, f);
 }
 
+/* the registers that Windows has the callee keep
+ * are saved right below rbp, so the unwinder finds
+ * them from rbp wherever rsp is; xmm15 is the scratch
+ * of emitins() */
 static void
 winabi_framesz(E *e)
 {
-	uint64_t i, o, f;
+	Blk *b;
+	Ins *i;
+	int *r;
+	uint64_t f;
 
+	for (b=e->fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++)
+			if ((i->op == Odiv && req(i->to, i->arg[1]))
+			|| (i->op == Oswap && KBASE(i->cls) != 0)
+			|| (i->op == Ocopy && rtype(i->to) == RSlot
+			 && (rtype(i->arg[0]) == RSlot || rtype(i->arg[0]) == RMem)))
+				e->fn->reg |= BIT(XMM15);
+	e->save = 0;
+	for (r=amd64_winabi_rclob; *r>=0; r++)
+		if (e->fn->reg & BIT(*r))
+			e->save += *r >= XMM0 ? 16 : 8;
+	e->save = (e->save + 15) & -16;
 	/* specific to NAlign == 3 */
-	o = 0;
-	if (!e->fn->leaf) {
-		for (i=0, o=0; i<NCLR_WIN; i++)
-			o ^= e->fn->reg >> amd64_winabi_rclob[i];
-		o &= 1;
-	}
 	f = e->fn->slot;
 	f = (f + 3) & -4;
-	if (f > 0
-	&& e->fp == RSP
-	&& e->fn->salign == 4)
-		f += 2;
-	e->fsz = 4*f + 8*o;
+	e->fsz = 4*f;
+}
+
+/* save, or restore, the registers of winabi_framesz() */
+static void
+winabi_keep(E *e, int restore)
+{
+	int *r;
+	uint64_t o;
+	char *n;
+
+	for (o=0, r=amd64_winabi_rclob; *r>=0; r++) {
+		if (!(e->fn->reg & BIT(*r)))
+			continue;
+		n = regtoa(*r, SLong);
+		if (restore)
+			fprintf(e->f, "\t%s %"PRId64"(%%rbp), %%%s\n",
+				*r >= XMM0 ? "movaps" : "movq",
+				(int64_t)(o - e->save), n);
+		else {
+			fprintf(e->f, "\t%s %%%s, %"PRIu64"(%%rsp)\n"
+				"\t.seh_save%s %%%s, %"PRIu64"\n",
+				*r >= XMM0 ? "movaps" : "movq", n, o,
+				*r >= XMM0 ? "xmm" : "reg", n, o);
+			if (dbginfo)
+				fprintf(e->f, "\t.cfi_offset %%%s, -%"PRIu64"\n",
+					n, 16 + e->save - o);
+		}
+		o += *r >= XMM0 ? 16 : 8;
+	}
 }
 
 void
@@ -866,8 +909,8 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	};
 	static int id0;
 	Blk *b, *s;
-	Ins *i, itmp;
-	int *r, c, n, lbl;
+	Ins *i;
+	int c, n, lbl;
 	E *e;
 
 	e = &(E){.f = f, .fn = fn};
@@ -885,21 +928,15 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	}
 	framestart(e);
 	winabi_framesz(e);
-	if (e->fsz >= 4096)
-		fprintf(f, "\tmovl $%"PRIu64", %%eax\n\tcallq ___chkstk_ms\n", e->fsz);
-	if (e->fsz)
+	if (e->save)
 		fprintf(f,
 			"\tsubq $%"PRIu64", %%rsp\n"
 			"\t.seh_stackalloc %"PRIu64"\n",
-			e->fsz, e->fsz);
-	for (r=amd64_winabi_rclob; r<&amd64_winabi_rclob[NCLR_WIN]; r++)
-		if (fn->reg & BIT(*r)) {
-			itmp.arg[0] = TMP(*r);
-			emitf("pushq %L0", &itmp, e);
-			fprintf(f, "\t.seh_pushreg %%%s\n", rname[*r][0]);
-			e->nclob++;
-		}
+			e->save, e->save);
+	fprintf(f, "\t.seh_setframe %%rbp, %"PRIu64"\n", e->save);
+	winabi_keep(e, 0);
 	fputs("\t.seh_endprologue\n", f);
+	lower(e);
 
 	for (lbl=0, b=fn->start; b; b=b->link) {
 		if (lbl || b->npred > 1)
@@ -912,16 +949,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 			fprintf(f, "\tud2\n");
 			break;
 		case Jret0:
-			if (fn->dynalloc)
-				fprintf(f,
-					"\tmovq %%rbp, %%rsp\n"
-					"\tsubq $%"PRIu64", %%rsp\n",
-					e->fsz + e->nclob * 8);
-			for (r=&amd64_winabi_rclob[NCLR_WIN]; r>amd64_winabi_rclob;)
-				if (fn->reg & BIT(*--r)) {
-					itmp.arg[0] = TMP(*r);
-					emitf("popq %L0", &itmp, e);
-				}
+			winabi_keep(e, 1);
 			frameend(e);
 			break;
 		case Jjmp:

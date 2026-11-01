@@ -472,6 +472,15 @@ emitins(Ins *i, Fn *fn, FILE *f)
 
 */
 
+static void
+lowersp(int n, FILE *f)
+{
+	if (n <= 2048)
+		fprintf(f, "\tadd sp, sp, -%d\n", n);
+	else
+		fprintf(f, "\tli t6, %d\n\tsub sp, sp, t6\n", n);
+}
+
 void
 rv64_emitfn(Fn *fn, FILE *f)
 {
@@ -513,17 +522,26 @@ rv64_emitfn(Fn *fn, FILE *f)
 	}
 	frame = (frame + 15) & ~15;
 
-	if (frame <= 2048)
-		fprintf(f,
-			"\tadd sp, sp, -%d\n",
-			frame
-		);
-	else
-		fprintf(f,
-			"\tli t6, %d\n"
-			"\tsub sp, sp, t6\n",
-			frame
-		);
+	if (!probing(fn, frame))
+		lowersp(frame, f);
+	else {
+		/* see probing() */
+		if (frame >= 4096)
+			fprintf(f,
+				"\tli t6, %d\n"
+				"1:\n"
+				"\tadd sp, sp, -2048\n"
+				"\tadd sp, sp, -2048\n"
+				"\tsd zero, 0(sp)\n"
+				"\tadd t6, t6, -1\n"
+				"\tbnez t6, 1b\n",
+				frame / 4096
+			);
+		if (frame % 4096) {
+			lowersp(frame % 4096, f);
+			fputs("\tsd zero, 0(sp)\n", f);
+		}
+	}
 	for (pr=rv64_rclob, off=0; *pr>=0; pr++) {
 		if (fn->reg & BIT(*pr)) {
 			fprintf(f,
@@ -531,6 +549,9 @@ rv64_emitfn(Fn *fn, FILE *f)
 				*pr < FT0 ? "sd" : "fsd",
 				rname[*pr], off
 			);
+			if (dbginfo)
+				fprintf(f, "\t.cfi_offset %s, %d\n",
+					rname[*pr], off - frame - fn->vararg * 64);
 			off += 8;
 		}
 	}
