@@ -135,7 +135,7 @@ func listing() -> &str:
                         inner[at] = given.arg
                         if want.cls >= AGG:
                             t := usize(want.cls - AGG)
-                            inner[at] = pooled(i64(room(t)), pool, taken)
+                            inner[at] = pooled(i64(room(t)), g, pool, taken)
                             append(body, Ins{op = "blit", a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
                     if i.cls >= AGG:
                         append(slots, Ins{op = "alloc8", cls = L, to = i.to, a = int_arg(i64(room(usize(i.cls - AGG))))})
@@ -145,7 +145,7 @@ func listing() -> &str:
                     for j in q.code..q.end:
                         c := comp.code[j]
                         if c.op == "alloc8":
-                            inner[c.to - q.temps] = pooled(c.a.n, pool, taken)
+                            inner[c.to - q.temps] = pooled(c.a.n, g, pool, taken)
                             continue
                         c = renamed(c, inner, q.temps, i64(after) - i64(q.labels))
                         if q.file != p.file:
@@ -345,13 +345,14 @@ func callee(i: Ins, ids: &map[&strview, usize]) -> usize:
         return comp.procs.len
     return ids[comp.globals[usize(i.a.n)]] ifnull comp.procs.len
 
-func pooled(size: i64, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
+# the inlined bodies of one function share their slots: those of another may give their address to a call, and QBE would keep the shared slot whole
+func pooled(size: i64, callee: usize, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
     k: usize = 0
-    while k < pool.len and (pool[k].a.n != size or contains(taken.*, k)):
+    while k < pool.len and (pool[k].a.n != size or pool[k].first != u32(callee) or contains(taken.*, k)):
         k += 1
     if k == pool.len:
         comp.temps += 1
-        append(pool, Ins{op = "alloc8", cls = L, to = comp.temps, a = int_arg(size)})
+        append(pool, Ins{op = "alloc8", cls = L, to = comp.temps, a = int_arg(size), first = u32(callee)})
     append(taken, k)
     return Arg{Temp, i64(pool[k].to)}
 
