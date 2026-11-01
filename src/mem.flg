@@ -168,6 +168,7 @@ type Fn:
     copies: &list[bool]
     spans: &list[Span]
     names: &list[&strview]
+    variables: &list[bool] # a temp that is a variable keeps its name, a slot of temporaries takes the name of what it holds
     places: &list[usize]
     cross: &list[bool]
     last: &list[u32]
@@ -290,6 +291,7 @@ func check_memory():
                 f.shown = view(quoted)
         for k in func.temps..func.last + 2:
             append(f.names, "")
+            append(f.variables, false)
         for k in func.params..func.params + func.count:
             p := comp.passes[k]
             t := u32(p.arg.n) + 1 - func.temps
@@ -299,6 +301,7 @@ func check_memory():
             append(f.copies, p.cls >= AGG)
         for k in func.mentions..func.mentioned:
             f.names[comp.mentions[k].temp + 1 - func.temps] = comp.mentions[k].name
+            f.variables[comp.mentions[k].temp + 1 - func.temps] = true
         append(f.spans, Span{first = u32(mem.ops.len)})
         for k in func.code..func.end:
             i := comp.code[k]
@@ -548,7 +551,7 @@ func check_memory():
                 from = mem.args[o.first].temp
             elif o.code != Load and o.code != Offset and o.code != Mix:
                 heir = 0
-            if heir != 0 and mem.fns[g].names[heir].len == 0:
+            if heir != 0 and (mem.fns[g].names[heir].len == 0 or o.code == Blit and not mem.fns[g].variables[heir]):
                 name := mem.fns[g].names[from]
                 place := places[from]
                 field := o.code == Offset and o.b.temp == 0 and o.b.data == 0
@@ -1001,6 +1004,8 @@ func visit(block: usize):
             touch(to, mem.fn.names[o.b.temp])
             if mem.speak:
                 copied(from, mem.fn.places[o.a.temp], mem.fn.names[o.a.temp])
+            if not mem.fn.variables[o.b.temp]:
+                mem.fn.names[o.b.temp] = mem.fn.names[o.a.temp]
             transfer(to, from, i64(o.size), o.mask)
         case Offset:
             x := target_of(o.a)
