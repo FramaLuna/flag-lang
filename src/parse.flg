@@ -145,7 +145,7 @@ func parse() -> Fail?:
                     finish(begin(Void, comp.nodes[c].tok))
         elif t.text == "func" or t.text == "operator":
             try func_decl(false)
-            if inline and text(n) == "main":
+            if inline and text(n) == "main" and module.len == 0 and params(n) == 0:
                 return fail("main is the entry point of the program, it cannot be inline", comp.tokens[comp.nodes[n].tok].at)
         elif t.text == "extern":
             if after.kind != Str:
@@ -266,6 +266,8 @@ func declare(n: usize, sym: Sym) -> Fail?:
             elif kind == Func or other == Func:
                 if kind == Constant or other == Constant:
                     problem = " is declared as a constant and as a function, a name is one or the other"
+                if kind == Var or other == Var:
+                    problem = " is declared as a variable and as a function, a name is one or the other"
             elif other != Void or kind != Void:
                 problem = " is declared twice"
             elif old.error != sym.error:

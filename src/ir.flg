@@ -12,6 +12,7 @@ CAGG = 1 << 30
 SMALL = 45
 LARGE = 500
 ROOMY = 4096 # bytes of slots, a page: a function with more is not inlined on its own, every caller's frame would take them
+SNUG = 32 # the same into a recursive caller, each level of the recursion takes them: about what the call takes
 
 func temp() -> Arg:
     comp.temps += 1
@@ -93,8 +94,10 @@ func listing() -> &str:
     defer free(ids)
     sizes: &list[usize]
     defer free(sizes)
-    roomy: &list[bool]
-    defer free(roomy)
+    rooms: &list[i64]
+    defer free(rooms)
+    framed: &list[bool]
+    defer free(framed)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
         if not comp.debug and p.name != "$main": # the start of the program, main is never inlined
@@ -121,7 +124,7 @@ func listing() -> &str:
             for k in p.code..p.end:
                 i := renamed(comp.code[k], names, first, hop)
                 g := callee(i, ids)
-                if g < f and (sizes[g] <= SMALL and not large and not roomy[g] or declared_inline(comp.procs[g].node)) and not comp.procs[g].recursive and not comp.procs[g].export:
+                if g < f and (sizes[g] <= SMALL and not large and rooms[g] <= ROOMY and (rooms[g] <= SNUG or not p.recursive) or declared_inline(comp.procs[g].node)) and not comp.procs[g].recursive and not framed[g] and not comp.procs[g].export:
                     q := comp.procs[g]
                     inner := fresh(q.temps, q.last)
                     taken: &list[usize]
@@ -181,10 +184,13 @@ func listing() -> &str:
         put(ids, p.name, f)
         append(sizes, size(p))
         room: i64 = 0
+        frame := false
         for i in comp.code[p.code:p.end]:
             if i.op == "alloc8":
                 room += i.a.n
-        append(roomy, room > ROOMY)
+            frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == "$flag_frame" # it reads the frame of its caller, panic for the chain
+        append(rooms, room)
+        append(framed, frame)
     live: &list[bool]
     defer free(live)
     work: &list[usize]

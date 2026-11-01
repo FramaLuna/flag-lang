@@ -1174,7 +1174,10 @@ type Channel[$T, $$size]:
     closed: bool
     items: array[$T, $$size]
 
-func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()):
+func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$size == 0:
+    @compile_error("a channel holds at least one value, its size cannot be 0")
+
+func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$size > 0:
     with lock(c.lock):
         while c.len == $$size and not c.closed:
             pause(c.emptied, c.lock)
@@ -1203,7 +1206,10 @@ priv type Receiving[$T, $$size]:
 func iter(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
     return Receiving[$T, $$size]{c}
 
-func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd:
+func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
+    @compile_error("a channel holds at least one value, its size cannot be 0")
+
+func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
     c := r.channel
     with lock(c.lock):
         while c.len == 0 and not c.closed:

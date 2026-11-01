@@ -113,7 +113,7 @@ A negative `code` is an error that has no errno: on Windows the errors of `renam
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
   - `close(held: Locked)` lets it go, `with` calls it
-- `Channel[$T, $$size]` a queue of up to `size` values between threads. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
+- `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
   - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
   - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
   - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`

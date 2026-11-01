@@ -32,8 +32,8 @@ func dwarf() -> &str:
     local := label_prefix()
     out += section("debug_abbrev") + local + "debug_abbrev:\n"
     abbreviation(out, ptr([UNIT_DIE, 0x11, 1, 0x25, 0x08, 0x13, 0x05, 0x03, 0x08, 0x1b, 0x08, 0x10, 0x17, 0, 0])) # compile unit: producer, language, name, comp_dir, stmt_list
-    abbreviation(out, ptr([FUNCTION_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0, 0])) # subprogram: name, decl_file, decl_line, type, low_pc, high_pc, frame_base
-    abbreviation(out, ptr([PROCEDURE_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0, 0]))
+    abbreviation(out, ptr([FUNCTION_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0x36, 0x0b, 0, 0])) # subprogram: name, decl_file, decl_line, type, low_pc, high_pc, frame_base, calling_convention
+    abbreviation(out, ptr([PROCEDURE_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0x36, 0x0b, 0, 0]))
     abbreviation(out, ptr([PARAMETER_DIE, 0x05, 0, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x02, 0x18, 0, 0])) # name, decl_file, decl_line, type, location
     abbreviation(out, ptr([VARIABLE_DIE, 0x34, 0, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x02, 0x18, 0, 0]))
     abbreviation(out, ptr([BLOCK_DIE, 0x0b, 1, 0x11, 0x01, 0x12, 0x06, 0, 0])) # low_pc, high_pc
@@ -101,6 +101,15 @@ func dwarf() -> &str:
         asciz(out, view(comp.files[file].path))
         asciz(out, current_dir())
         out += section_offset(local + "debug_line", "debug_line")
+        none: &list[Item]
+        for k in 1..comp.syms.len:
+            d := comp.syms[k].node
+            if first and (comp.nodes[d].kind == Struct or comp.nodes[d].kind == Alias) and not generic(d):
+                t := trust make_type(k, none, false, 0)
+                if t < needed.len and needed[t]:
+                    uleb(out, TYPEDEF_DIE) # the language is C, where a struct is named struct Point, and gdb takes the first of a typedef and an enumerator with its name
+                    asciz(out, comp.syms[k].name)
+                    out += reference(local + "type" + t)
         for t in 0..needed.len:
             if first and needed[t]:
                 ty := comp.types[t]
@@ -224,10 +233,6 @@ func dwarf() -> &str:
                     uleb(out, STRUCT_DIE + LEAF)
                     asciz(out, ty.name)
                     uleb(out, 0)
-                if ty.decl != 0 and (ty.kind == Struct and ty.name == text(ty.decl) and not context(t) or ty.kind == Union):
-                    uleb(out, TYPEDEF_DIE) # the language is C, where a struct is named struct Point
-                    asciz(out, text(ty.decl))
-                    out += reference(here)
         first = false
         for t in 0..comp.reached:
             if context(t) and file_of(comp.tokens[comp.nodes[comp.types[t].decl].tok].at) == file:
@@ -265,6 +270,13 @@ func dwarf() -> &str:
                     out += reference(local + "type" + inst.ret)
                 out += "\t.quad " + start + "\n\t.long " + local + f.name[1:] + ".end-" + start + "\n"
                 out += "\t.byte 2\n\t.byte " + (0x70 + frame) + "\n\t.byte 0\n" # DW_OP_breg
+                aggregates := aggregate(inst.ret)
+                for k in f.mentions..f.mentioned:
+                    aggregates = aggregates or comp.mentions[k].scope == 0 and aggregate(comp.mentions[k].type)
+                convention: usize = 1 # DW_CC_normal
+                if aggregates and not f.export:
+                    convention = 3 # DW_CC_nocall, QBE does not pass a struct like C
+                out += "\t.byte " + convention + "\n"
                 used: &list[bool]
                 for s in f.scopes..f.scoped:
                     append(used, false)

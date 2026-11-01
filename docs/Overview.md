@@ -645,7 +645,7 @@ inline operator +(a: V, b: V) -> V:
 inline func scale(v: V, k: f64) -> V:
     return V{v.x * k, v.y * k}
 ```
-A recursive function, `main` and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
+A recursive function, the `main` that starts the program and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
 
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.
