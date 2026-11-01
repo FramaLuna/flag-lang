@@ -673,7 +673,7 @@ The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_i
 ```flag
 print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
 ```
-`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit` or stops with an error like an index out of bounds. A crash or a signal, like Ctrl-C, loses what waits, so when you look for a crash use `eprint` or `flush(stdout)` (see [Files](Library.md#files)).
+`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit`, stops with an error like an index out of bounds or crashes. A signal like Ctrl-C loses what waits (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):
@@ -801,14 +801,14 @@ func main():
         total += wait p
     print(total)
 ```
-The arguments are computed where you call and copied to the new thread, and the result can be anything a function returns, text you own or an error to handle. `done(t)` asks if the thread ended without waiting, like a game that loads its level while it keeps drawing
+The arguments are computed where you call and copied to the new thread, and the result can be anything a function returns, text you own, an error to handle or a temporary: `wait` takes the temporaries of the thread into the ones of the thread that waits, as if a call had made them. `done(t)` asks if the thread ended without waiting, like a game that loads its level while it keeps drawing
 ```flag
 level := parallel load("castle.map")
 while not done(level):
     draw_loading_screen()
 start(try wait level)
 ```
-`parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it before the program ends. A thread you keep must be waited, and a function that can fail can't run alone, its error would be lost.
+`parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements, so the thread can use what `main` keeps. A thread you keep must be read, by `wait` or `done`, and `-memory` warns about one that is never waited. A function that can fail can't run alone, its error would be lost.
 
 Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock` lets one thread at a time change them
 ```flag
@@ -836,7 +836,7 @@ func main():
     for k in 0..4:
         append(workers, parallel worker(jobs))
     for name in ["a.txt", "b.txt", "c.txt"]:
-        owned: &str = name # a temporary of this thread can't go to another one
+        owned: &str = name # the worker frees what it gets, so it gets text it owns
         send(jobs, owned)
     close(jobs)
     for w in workers:

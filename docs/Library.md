@@ -44,7 +44,7 @@ What you write waits in the file and goes to the system in big pieces, so many s
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
 
-`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it.
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it. A file that another thread is writing at that moment is left to that thread: a read, `flush()`, the end of the program, a runtime error and a crash write what waits in the other files and don't wait for it, so a thread stuck sending to a client that doesn't read stops nobody else.
 
 The functions
 - `open(path: &strview) -> File|FsError` opens the file to read
@@ -53,7 +53,7 @@ The functions
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
 - `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
-- `flush()` writes now what waits in every file
+- `flush()` writes now what waits in every file that no other thread is writing at that moment
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
 
@@ -108,7 +108,7 @@ A negative `code` is an error that has no errno: on Windows the errors of `renam
 
 ### Threads
 `parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
-- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once
+- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
 - `cores() -> usize` how many processors the system has online, to split a job in as many threads
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
@@ -160,7 +160,7 @@ func main():
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
-- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list or a map frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
+- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c))
 - `sizeof(T)` the size of a type in bytes, as an integer literal
 - `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
@@ -474,8 +474,8 @@ It links the C math library.
 - `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
 
 ### Random numbers
-They are the same sequence on every run until you call `seed`, and they are not for secrets.
-- `seed(n: u64)` starts the sequence from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
+They are the same sequence on every run until you call `seed`, and they are not for secrets. Each thread has its own sequence, and a new thread starts it from the beginning, like the program does, whatever `main` seeded: threads that draw numbers call `seed` each one, with a different number, or they all draw the same ones.
+- `seed(n: u64)` starts the sequence of this thread from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
 - `random() -> f64` from 0 to 1, without the 1
 - `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included, in either order
 

@@ -38,6 +38,7 @@ priv extern "c":
     func pthread_attr_setstacksize(attributes: *bytes, size: usize) -> i32
     func pthread_attr_destroy(attributes: *bytes) -> i32
     func pthread_mutex_lock(mutex: *bytes) -> i32
+    func pthread_mutex_trylock(mutex: *bytes) -> i32
     func pthread_mutex_unlock(mutex: *bytes) -> i32
     func pthread_cond_wait(condition: *bytes, mutex: *bytes) -> i32
     func pthread_cond_broadcast(condition: *bytes) -> i32
@@ -48,6 +49,7 @@ priv extern "c":
     func WaitForSingleObject(handle: usize, milliseconds: u32) -> u32
     func CloseHandle(handle: usize) -> i32
     func AcquireSRWLockExclusive(lock: *bytes)
+    func TryAcquireSRWLockExclusive(lock: *bytes) -> u8
     func ReleaseSRWLockExclusive(lock: *bytes)
     func SleepConditionVariableSRW(condition: *bytes, lock: *bytes, milliseconds: u32, flags: u32) -> i32
     func WakeAllConditionVariable(condition: *bytes)
@@ -78,9 +80,15 @@ func free(p: *$T):
     free(p as *bytes)
 
 func panic(message: &strview, place: &strview = @here()):
-    eprint("flag: ", message)
-    eprint("  --> ", place)
-    trace(flag_frame(), 0)
+    tell(134)
+    flush()
+    report("flag: ")
+    report(message)
+    report("\n  --> ")
+    report(place)
+    report("\n")
+    frame := flag_frame()
+    trace(Crash{frame, 0, frame, 0, 0})
     exit(134)
 
 func assert(condition: bool, message: &strview = "assertion failed", place: &strview = @here()):
@@ -93,6 +101,7 @@ func cstr(text: &strview) -> cstr:
     return ptr(temp(text).*) as *u8
 
 func out_of_memory():
+    tell(9)
     message: &strview = "flag: out of memory\n"
     write(2, ptr(message.*), message.len)
     exit(9)
@@ -1013,6 +1022,14 @@ func close(held: Locked):
         l.owner = usize(0) as *bytes
         release(l)
 
+# takes the lock only when no thread holds it, this one neither, so a thread that must not wait never does
+priv func try_lock(l: *Lock) -> bool:
+    if not seized(l):
+        return false
+    l.owner = me()
+    l.depth = 1
+    return true
+
 priv func me() -> *bytes:
     return ptr(scratch_space) as *bytes # each thread has its own
 
@@ -1022,6 +1039,13 @@ priv func acquire(l: *Lock) where not @windows():
 
 priv func acquire(l: *Lock) where @windows():
     AcquireSRWLockExclusive(ptr(l.room) as *bytes)
+
+priv func seized(l: *Lock) -> bool where not @windows():
+    sign(ptr(l.room[0]), 0x32aa_aba7)
+    return pthread_mutex_trylock(ptr(l.room) as *bytes) == 0
+
+priv func seized(l: *Lock) -> bool where @windows():
+    return TryAcquireSRWLockExclusive(ptr(l.room) as *bytes) != 0
 
 priv func release(l: *Lock) where not @windows():
     pthread_mutex_unlock(ptr(l.room) as *bytes)
@@ -1071,6 +1095,7 @@ priv type Started: # the start of the block of a thread, the result goes after i
     handle: usize
     done: bool
     alone: bool
+    left: Arena # the temporaries the result may point to, for the thread that waits
 
 priv type Threads:
     lock: Lock
@@ -1105,24 +1130,41 @@ priv func started(t: *Started, run: *bytes) -> bool where @windows():
     t.handle = CreateThread(usize(0) as *bytes, STACK, run, t as *bytes, 0x10000, usize(0) as *u32) # STACK_SIZE_PARAM_IS_A_RESERVATION
     return t.handle != 0
 
-priv func finished(block: *bytes):
-    free(scratch_space.arena)
+priv func finished(block: *bytes, pointing: bool):
     free(printing.line)
     drop_stack()
     t := block as *Started
     alone := false
     with lock(threads.lock):
-        t.done = true
         alone = t.alone
+        if pointing and not alone:
+            t.left = scratch_space.arena
+        t.done = true
         threads.running -= 1
         wake(threads.changed)
+    if alone or not pointing:
+        free(scratch_space.arena)
     if alone:
         free(block)
 
+# the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
 priv func join(block: *bytes, place: &strview):
     if block as usize == 0:
         panic("wait of a thread that was never started", place)
-    wait_for((block as *Started).handle)
+    t := block as *Started
+    wait_for(t.handle)
+    a := ptr(scratch_space.arena)
+    had := a.blocks.len
+    for i in 0..t.left.count:
+        insert(a.blocks, a.count, t.left.blocks[i])
+        a.count += 1
+        a.used = t.left.used
+    for b in t.left.blocks[t.left.count:]:
+        free(ptr(b.*))
+    free(t.left.blocks)
+    while a.blocks.len > had and a.blocks.len > a.count:
+        last := trust pop(a.blocks) # one spare block less for each one it got, so waiting in a loop doesn't grow
+        free(ptr(last.*))
 
 priv func wait_for(handle: usize) where not @windows():
     pthread_join(handle, usize(0) as *bytes)
@@ -1139,6 +1181,7 @@ priv func detach(block: *bytes):
         done = t.done
         t.alone = true
     if done:
+        free(t.left)
         free(block)
 
 priv func let_go(handle: usize) where not @windows():
@@ -1152,7 +1195,9 @@ priv func settle():
         while threads.running > 0:
             pause(threads.changed, threads.lock)
 
-func done(t: Thread[$T]) -> bool:
+func done(t: Thread[$T], place: &strview = @here()) -> bool:
+    if t as usize == 0:
+        panic("done of a thread that was never started", place)
     with lock(threads.lock):
         return (t as *Started).done
 
@@ -1298,21 +1343,22 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
             cached.standard[f.fd] = s
         return s
 
+# a file that another thread writes at this moment is left to it, so one thread never waits for another
 func flush():
     with scratch():
         all: &slice[*Stream]
         with lock(io.lock):
             all = temp(io.streams)
         for s in all:
-            if s as usize != 0:
-                with lock(s.writing):
-                    drain(s)
+            if s as usize != 0 and try_lock(s.writing):
+                drain(s)
+                close(Locked{ptr(s.writing)})
 
 priv export func flag_exit():
     flush()
-    lost := flush(stdout)
-    if lost is FsError:
-        eprint("flag: ", lost)
+    out := stream(stdout)
+    if try_lock(out.writing) and out.failed != 0: # never let go, the program ends
+        eprint("flag: ", FsError{out.failed, "write", out.path})
         _exit(1)
 
 func open(path: &strview) -> File|FsError:
@@ -1444,7 +1490,7 @@ priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|
             return usize(n)
         code := failure(s, writing)
         if code != 0 and writing:
-            return FsError{code, "write", temp(s.path)}
+            return FsError{code, "write", ""} # drain keeps only its code, so a crash can write without memory
         if code != 0:
             return FsError{code, "read", temp(s.path)}
 
@@ -1453,14 +1499,15 @@ func close(f: File, place: &strview = @here()):
     with lock(s.reading):
         with lock(s.writing):
             drain(s)
-            release(s)
-            s.open = false
             s.failed = 0
             s.path.len = 0
             s.received.len = 0
             s.given = 0
             if s.received.cap > 131072:
                 free(s.received) # after a long line the stream keeps only its usual room
+            with lock(io.lock):
+                s.open = false
+            release(s) # last, a file that another thread opens can get the same number
 
 func errno() -> i32 where @linux():
     return __errno_location().*
@@ -1789,6 +1836,7 @@ priv type Crash:
     code: usize
     stack: usize
     address: usize
+    leaf: usize # where a function of C keeps the address it returns to while it keeps nothing on the stack
 
 priv type Chain:
     head: usize
@@ -1799,8 +1847,15 @@ priv type Chain:
     more: usize
 
 priv context failing:
-    told: bool
     stack: *bytes # where the handler runs, each thread takes its own
+
+priv telling: Lock # the first thread that fails takes it and keeps it, the others wait there for the end
+
+# one thread tells how the program fails, and if it fails again while it tells, it ends at once
+priv func tell(code: i32):
+    if telling.owner == me():
+        _exit(code)
+    lock(telling)
 
 priv export func flag_start():
     catch_crashes()
@@ -1809,12 +1864,12 @@ priv export func flag_start():
 priv func catch_crashes() where @linux():
     action: array[usize, 19] # struct sigaction: the handler, the mask, the flags and the restorer
     action[0] = ptr(flag_crash) as usize
-    action[17] = 0x8800_0004 # SA_RESETHAND, SA_ONSTACK, SA_SIGINFO
+    action[17] = 0x4800_0004 # SA_NODEFER, SA_ONSTACK, SA_SIGINFO
     for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
         sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
 
 priv func catch_crashes() where @macos():
-    action := [ptr(flag_crash) as usize, 0x45 << 32] # struct sigaction: the handler, then the mask and the flags SA_SIGINFO, SA_RESETHAND and SA_ONSTACK
+    action := [ptr(flag_crash) as usize, 0x51 << 32] # struct sigaction: the handler, then the mask and the flags SA_SIGINFO, SA_NODEFER and SA_ONSTACK
     for signal in [4, 8, 10, 11]: # SIGILL, SIGFPE, SIGBUS, SIGSEGV
         sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
 
@@ -1882,49 +1937,53 @@ priv export func flag_exception(pointers: *bytes) -> i32:
     return 0 # EXCEPTION_CONTINUE_SEARCH, the exception is not one that ends the program
 
 priv func crash(info: usize, context: usize) -> Crash where @linux() and @x86_64():
-    return {peek(context + 120), peek(context + 168), peek(context + 160), peek(info + 16)} # rbp, rip and rsp of the ucontext_t, si_addr of the siginfo_t
+    return {peek(context + 120), peek(context + 168), peek(context + 160), peek(info + 16), peek(context + 160)} # rbp, rip and rsp of the ucontext_t, si_addr of the siginfo_t
 
 priv func crash(info: usize, context: usize) -> Crash where @linux() and @arm64():
-    return {peek(context + 416), peek(context + 440), peek(context + 432), peek(info + 16)} # x29, pc and sp
+    return {peek(context + 416), peek(context + 440), peek(context + 432), peek(info + 16), context + 424} # x29, pc, sp and x30
 
 priv func crash(info: usize, context: usize) -> Crash where @linux() and @riscv64():
-    return {peek(context + 240), peek(context + 176), peek(context + 192), peek(info + 16)} # s0, pc and sp
+    return {peek(context + 240), peek(context + 176), peek(context + 192), peek(info + 16), context + 184} # s0, pc, sp and ra
 
 priv func crash(info: usize, context: usize) -> Crash where @macos() and @x86_64():
     state := peek(context + 48)
-    return {peek(state + 64), peek(state + 144), peek(state + 72), peek(info + 24)} # rbp, rip and rsp of the mcontext, si_addr
+    return {peek(state + 64), peek(state + 144), peek(state + 72), peek(info + 24), peek(state + 72)} # rbp, rip and rsp of the mcontext, si_addr
 
 priv func crash(info: usize, context: usize) -> Crash where @macos() and @arm64():
     state := peek(context + 48)
-    return {peek(state + 248), peek(state + 272), peek(state + 264), peek(info + 24)} # fp, pc and sp
+    return {peek(state + 248), peek(state + 272), peek(state + 264), peek(info + 24), state + 256} # fp, pc, sp and lr
 
 priv func crash(record: usize, context: usize) -> Crash where @windows():
-    return {peek(context + 0xa0), peek(context + 0xf8), peek(context + 0x98), peek(record + 40)} # Rbp, Rip and Rsp of the CONTEXT, the address of an access violation
+    return {peek(context + 0xa0), peek(context + 0xf8), peek(context + 0x98), peek(record + 40), peek(context + 0x98)} # Rbp, Rip and Rsp of the CONTEXT, the address of an access violation
 
-# a crash inside the handler finds it told and returns, the signal is back to its default and ends the program
+# asks for no memory and waits for no lock: a crash can come from inside malloc, or while a lock is held
 priv func crashed(what: &strview, c: Crash, code: i32):
-    if failing.told:
-        return
-    failing.told = true
-    flush()
+    tell(code)
+    if what == "stack overflow":
+        c.leaf = 0 # the stack pointer can be past the end of the stack
+    if try_lock(io.lock):
+        for s in io.streams:
+            if s as usize != 0 and try_lock(s.writing):
+                drain(s)
     report("flag: ")
     report(what)
     if what == "invalid memory access":
         report(" at 0x")
         report(u64(c.address), 16)
     report("\n")
-    trace(c.frame, c.code)
+    trace(c)
     _exit(code)
 
-# the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own: a crash can come from inside malloc
-priv func trace(frame: usize, stopped: usize):
+# the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
+priv func trace(c: Crash):
     head := flag_functions() as usize # how many functions, where the last one ends, and then each function in the order of their code
     table: &slice[Function]
     table = (head + 16) as *bytes
     table.len = peek(head)
     chain := Chain{head, table, table.len, 0, 0, 0}
-    code := stopped
-    fp := frame
+    code := c.code
+    fp := c.frame
+    reached := false # a function of the program, the library too
     while true:
         if code == 0 and fp != 0 and fp % 8 == 0:
             code = peek(fp + 8) - 1
@@ -1940,8 +1999,20 @@ priv func trace(frame: usize, stopped: usize):
                 low = middle + 1
             else:
                 high = middle
-        if low == 0 or low == table.len and code >= peek(head + 8):
-            break
+        known := low > 0 and (low < table.len or code < peek(head + 8))
+        if not known and reached:
+            break # a function of C that called yours
+        if not known: # the crash is in a function of C
+            framed := fp >= c.stack and fp < c.stack + STACK
+            if c.leaf != 0 and not (framed and peek(c.leaf) == peek(fp + 8)):
+                code = peek(c.leaf) - 1 # it keeps nothing on the stack yet, so this is where it returns
+            elif framed:
+                code = 0 # its frame pointers lead to yours
+            else:
+                break
+            c.leaf = 0
+            continue
+        reached = true
         code = 0
         f := low - 1
         if table[f].library:

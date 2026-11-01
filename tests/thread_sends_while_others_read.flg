@@ -1,0 +1,25 @@
+use net
+use os
+
+func flood(s: Socket):
+    chunk: &str
+    defer free(chunk)
+    for i in 0..1000:
+        chunk += "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    while true: # until its send waits for a client that never reads
+        write(s, chunk)
+        if flush(s) is NetError:
+            return
+
+func main():
+    server := trust listen(0)
+    quiet := trust connect("127.0.0.1", port(server))
+    flooded := trust accept(server)
+    parallel flood(flooded)
+    sleep(0.2)
+    client := trust connect("127.0.0.1", port(server))
+    other := trust accept(server)
+    write(other, "a read doesn't wait for a thread that sends\n")
+    trust flush(other)
+    print(trust read_line(client))
+    exit(0)

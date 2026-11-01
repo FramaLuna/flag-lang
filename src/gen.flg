@@ -27,8 +27,12 @@ func gen_program(check: bool) -> Fail?:
         eprint(ERR, "this program has no func main() to start from")
         return Fail
     entry: usize = 0
+    comp.settler = NONE
     if s != 0:
         entry = try instantiate(comp.syms[s].node, 0)
+        for n in comp.nodes:
+            if n.kind == Unary and comp.tokens[n.tok].text == "parallel":
+                comp.settler = entry
     if s != 0 and comp.insts[entry].ret != VOID and not integer(comp.insts[entry].ret):
         return fail("main cannot return " + comp.types[comp.insts[entry].ret].name + ", it returns nothing or an integer, the exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
     for k in 1..comp.syms.len:
@@ -69,14 +73,6 @@ func gen_program(check: bool) -> Fail?:
             zeros(held, room(t) - comp.types[t].size)
             comp.data += "data " + comp.globals[usize(v.at.n)] + " = align 8 { " + held + "}\n"
     done := try gen_from(0)
-    threads := false
-    for i in 0..done:
-        threads = threads or comp.insts[i].node == 0 and comp.insts[i].ret == VOID
-    nothing: &list[Value]
-    names: &list[&strview]
-    if threads:
-        try instantiate(comp.syms[try choose("settle", "", nothing, names, 0)].node, 0)
-        done = try gen_from(done)
     reached := comp.types.len
     funcs := comp.procs.len
     code := comp.code.len
@@ -229,8 +225,6 @@ func gen_program(check: bool) -> Fail?:
         result = temp()
         cls = W
     add(Ins{op = "call", cls = cls, to = u32(result.n), a = global(comp.insts[entry].name), first = u32(comp.passes.len)})
-    if threads:
-        try invoke("settle", nothing, 0)
     terminate("ret", result)
     close_proc(wrapper, W, 2)
     return null
@@ -287,6 +281,7 @@ func gen_from(from: usize) -> usize|Fail:
                 used += room(p)
             store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at), offset(block, HEAD))
             append(args, Value{type = pointer(BYTES), at = block})
+            append(args, truth(pointers(shape.ret) != 0))
             try invoke("finished", args, 0)
             terminate("ret", int_arg(0))
             close_proc(made, L, 1)
@@ -2584,6 +2579,8 @@ func leave(v: Value, at: usize) -> Fail?:
     return null
 
 func unwind(from: usize, staying: usize) -> Fail?:
+    if staying == 0:
+        try settle()
     kept := comp.vars.len
     comp.leaving = comp.loops.len
     comp.staying = staying
@@ -2591,6 +2588,13 @@ func unwind(from: usize, staying: usize) -> Fail?:
     comp.leaving = 0
     comp.staying = 0
     comp.vars.len = kept
+    return null
+
+# main waits for the threads that run alone before its deferred statements, so they can use all it keeps
+func settle() -> Fail?:
+    if comp.inst == comp.settler:
+        nothing: &list[Value]
+        try invoke("settle", nothing, 0)
     return null
 
 func run_defers(from: usize) -> Fail?:
@@ -2647,6 +2651,8 @@ func statements(n: usize) -> Fail?:
         comp.at = at_of(c)
         try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
         c = node_end(c)
+    if comp.live and outer == 0:
+        try settle()
     if comp.live:
         try run_defers(defers)
     comp.defers.len = defers

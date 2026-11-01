@@ -1,0 +1,22 @@
+type Start:
+    lock: Lock
+    ready: i32
+
+start: Start
+
+func work(p: *i64) -> i64:
+    with lock(start.lock):
+        start.ready += 1
+    while true: # the 16 threads fail at once
+        with lock(start.lock):
+            if start.ready == 16:
+                break
+    return p.*
+
+func main():
+    ts: &list[Thread[i64]]
+    defer free(ts)
+    for i in 0..16:
+        append(ts, parallel work(usize(0) as *i64))
+    for t in ts:
+        print(wait t)

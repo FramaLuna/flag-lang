@@ -1,0 +1,20 @@
+use os
+
+func idle():
+    sleep(30.0)
+
+func deep(n: i64) -> i64:
+    p := heap(n)
+    r := deep(n + 1) + p.*
+    free(p)
+    return r
+
+func main() -> i32:
+    if args().len > 1:
+        parallel idle() # with two threads malloc takes its lock, and a stack overflow happens inside it
+        return i32(deep(0))
+    said: &str
+    defer free(said)
+    code := output(executable() + " child 2>&1", said) iferror 0
+    print(said[:find(said, "\n") ifnull said.len], ", ", code != 0)
+    return 0
