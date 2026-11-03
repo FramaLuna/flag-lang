@@ -58,6 +58,10 @@ static struct {
 	{ Oudiv,   Ki, "udiv %=, %0, %1" },
 	{ Orem,    Ki, "sdiv %?, %0, %1\n\tmsub\t%=, %?, %1, %0" },
 	{ Ourem,   Ki, "udiv %?, %0, %1\n\tmsub\t%=, %?, %1, %0" },
+	{ Ocopy,   Kv, "mov %=.16b, %0.16b" },
+	{ Oswap,   Kv, "mov v31.16b, %0.16b\n\tmov\t%0.16b, %1.16b\n\tmov\t%1.16b, v31.16b" },
+	{ Oload,   Kv, "ldr %Q=, %M0" },
+	{ Ostorev, Kw, "str %Q0, %M1" },
 	{ Ocopy,   Ki, "mov %=, %0" },
 	{ Ocopy,   Ka, "fmov %=, %0" },
 	{ Oswap,   Ki, "mov %?, %0\n\tmov\t%0, %1\n\tmov\t%1, %?" },
@@ -102,6 +106,64 @@ static struct {
 	{ Oacmn,   Ki, "cmn %0, %1" },
 	{ Oafcmp,  Ka, "fcmpe %0, %1" },
 
+	{ Ovaddb, Kv, "add %=.16b, %0.16b, %1.16b" },
+	{ Ovaddh, Kv, "add %=.8h, %0.8h, %1.8h" },
+	{ Ovaddw, Kv, "add %=.4s, %0.4s, %1.4s" },
+	{ Ovaddl, Kv, "add %=.2d, %0.2d, %1.2d" },
+	{ Ovadds, Kv, "fadd %=.4s, %0.4s, %1.4s" },
+	{ Ovaddd, Kv, "fadd %=.2d, %0.2d, %1.2d" },
+	{ Ovsubb, Kv, "sub %=.16b, %0.16b, %1.16b" },
+	{ Ovsubh, Kv, "sub %=.8h, %0.8h, %1.8h" },
+	{ Ovsubw, Kv, "sub %=.4s, %0.4s, %1.4s" },
+	{ Ovsubl, Kv, "sub %=.2d, %0.2d, %1.2d" },
+	{ Ovsubs, Kv, "fsub %=.4s, %0.4s, %1.4s" },
+	{ Ovsubd, Kv, "fsub %=.2d, %0.2d, %1.2d" },
+	{ Ovmulh, Kv, "mul %=.8h, %0.8h, %1.8h" },
+	{ Ovmulw, Kv, "mul %=.4s, %0.4s, %1.4s" },
+	{ Ovmuls, Kv, "fmul %=.4s, %0.4s, %1.4s" },
+	{ Ovmuld, Kv, "fmul %=.2d, %0.2d, %1.2d" },
+	{ Ovdivs, Kv, "fdiv %=.4s, %0.4s, %1.4s" },
+	{ Ovdivd, Kv, "fdiv %=.2d, %0.2d, %1.2d" },
+	{ Ovand,  Kv, "and %=.16b, %0.16b, %1.16b" },
+	{ Ovor,   Kv, "orr %=.16b, %0.16b, %1.16b" },
+	{ Ovxor,  Kv, "eor %=.16b, %0.16b, %1.16b" },
+	{ Ovshlh, Kv, "dup v31.8h, %W1\n\tushl\t%=.8h, %0.8h, v31.8h" },
+	{ Ovshlw, Kv, "dup v31.4s, %W1\n\tushl\t%=.4s, %0.4s, v31.4s" },
+	{ Ovshll, Kv, "dup v31.2d, %L1\n\tushl\t%=.2d, %0.2d, v31.2d" },
+	{ Ovshrh, Kv, "neg %W?, %W1\n\tdup\tv31.8h, %W?\n\tushl\t%=.8h, %0.8h, v31.8h" },
+	{ Ovshrw, Kv, "neg %W?, %W1\n\tdup\tv31.4s, %W?\n\tushl\t%=.4s, %0.4s, v31.4s" },
+	{ Ovshrl, Kv, "neg %L?, %L1\n\tdup\tv31.2d, %L?\n\tushl\t%=.2d, %0.2d, v31.2d" },
+	{ Ovsarh, Kv, "neg %W?, %W1\n\tdup\tv31.8h, %W?\n\tsshl\t%=.8h, %0.8h, v31.8h" },
+	{ Ovsarw, Kv, "neg %W?, %W1\n\tdup\tv31.4s, %W?\n\tsshl\t%=.4s, %0.4s, v31.4s" },
+	{ Ovceqb, Kv, "cmeq %=.16b, %0.16b, %1.16b" },
+	{ Ovceqh, Kv, "cmeq %=.8h, %0.8h, %1.8h" },
+	{ Ovceqw, Kv, "cmeq %=.4s, %0.4s, %1.4s" },
+	{ Ovceql, Kv, "cmeq %=.2d, %0.2d, %1.2d" },
+	{ Ovceqs, Kv, "fcmeq %=.4s, %0.4s, %1.4s" },
+	{ Ovceqd, Kv, "fcmeq %=.2d, %0.2d, %1.2d" },
+	{ Ovcgtb, Kv, "cmgt %=.16b, %0.16b, %1.16b" },
+	{ Ovcgth, Kv, "cmgt %=.8h, %0.8h, %1.8h" },
+	{ Ovcgtw, Kv, "cmgt %=.4s, %0.4s, %1.4s" },
+	{ Ovcgtl, Kv, "cmgt %=.2d, %0.2d, %1.2d" },
+	{ Ovclts, Kv, "fcmgt %=.4s, %1.4s, %0.4s" },
+	{ Ovcltd, Kv, "fcmgt %=.2d, %1.2d, %0.2d" },
+	{ Ovcles, Kv, "fcmge %=.4s, %1.4s, %0.4s" },
+	{ Ovcled, Kv, "fcmge %=.2d, %1.2d, %0.2d" },
+	/* fmin and fmax answer NaN, Flag answers the first argument */
+	{ Ovmins, Kv, "fcmgt v31.4s, %0.4s, %1.4s\n\tbsl\tv31.16b, %1.16b, %0.16b\n\tmov\t%=.16b, v31.16b" },
+	{ Ovmind, Kv, "fcmgt v31.2d, %0.2d, %1.2d\n\tbsl\tv31.16b, %1.16b, %0.16b\n\tmov\t%=.16b, v31.16b" },
+	{ Ovmaxs, Kv, "fcmgt v31.4s, %1.4s, %0.4s\n\tbsl\tv31.16b, %1.16b, %0.16b\n\tmov\t%=.16b, v31.16b" },
+	{ Ovmaxd, Kv, "fcmgt v31.2d, %1.2d, %0.2d\n\tbsl\tv31.16b, %1.16b, %0.16b\n\tmov\t%=.16b, v31.16b" },
+	{ Ovsqrts, Kv, "fsqrt %=.4s, %0.4s" },
+	{ Ovsqrtd, Kv, "fsqrt %=.2d, %0.2d" },
+	{ Ovsplatb, Kv, "dup %=.16b, %W0" },
+	{ Ovsplath, Kv, "dup %=.8h, %W0" },
+	{ Ovsplatw, Kv, "dup %=.4s, %W0" },
+	{ Ovsplatl, Kv, "dup %=.2d, %L0" },
+	{ Ovsplats, Kv, "dup %=.4s, %0.s[0]" },
+	{ Ovsplatd, Kv, "dup %=.2d, %0.d[0]" },
+	{ Ovitos, Kv, "scvtf %=.4s, %0.4s" },
+
 #define X(c, str, _) \
 	{ Oflag+c, Ki, "cset %=, " str },
 	CMP(X)
@@ -135,12 +197,16 @@ rname(int r, int k)
 		case Ks: sprintf(buf, "s%d", r-V0); break;
 		case Kx:
 		case Kd: sprintf(buf, "d%d", r-V0); break;
+		case Kv: sprintf(buf, "v%d", r-V0); break;
+		case Kv+1: sprintf(buf, "q%d", r-V0); break;
 		}
 	else if (r == V31)
 		switch (k) {
 		default: die("invalid class");
 		case Ks: sprintf(buf, "s31"); break;
 		case Kd: sprintf(buf, "d31"); break;
+		case Kv: sprintf(buf, "v31"); break;
+		case Kv+1: sprintf(buf, "q31"); break;
 		}
 	else
 		die("invalid register");
@@ -202,6 +268,9 @@ emitf(char *s, Ins *i, E *e)
 			goto Switch;
 		case 'D':
 			k = Kd;
+			goto Switch;
+		case 'Q':
+			k = Kv+1; /* a v register named whole, for ldr and str */
 			goto Switch;
 		case '?':
 			if (KBASE(k) == 0)
@@ -441,7 +510,7 @@ emitins(Ins *i, E *e)
 		if (rtype(i->to) == RSlot) {
 			r = i->to;
 			if (!isreg(i->arg[0])) {
-				i->to = TMP(IP1);
+				i->to = TMP(i->cls == Kv ? V31 : IP1);
 				emitins(i, e);
 				i->arg[0] = i->to;
 			}

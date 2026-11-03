@@ -375,6 +375,7 @@ emitins(Ins *i, Fn *fn, FILE *f)
 				case Ks: i->op = Ostores; break;
 				case Kd: i->op = Ostored; break;
 				}
+				i->cls = Kw; /* the class of a store, its width is in the op */
 				fixmem(&i->arg[1], fn, f);
 				goto Table;
 			}

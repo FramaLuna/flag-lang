@@ -85,10 +85,16 @@ func fmod(x: f32, y: f32) -> f32:
 func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
     return a + (b - a) * t
 
-func abs(x: $T) -> $T where $T is i8|i16|i32|i64|f32|f64:
-    if x <= 0:
-        return 0 - x # -0.0 gives 0.0
+func abs(x: $T) -> $T where $T is i8|i16|i32|i64:
+    if x < 0:
+        return 0 - x
     return x
+
+func abs(x: $T) -> $T where $T is f32:
+    return (x as u32 and 0x7fff_ffff) as f32
+
+func abs(x: $T) -> $T where $T is f64:
+    return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
 
 func min(a: $T, b: $T) -> $T:
     if b < a:
@@ -101,6 +107,9 @@ func max(a: $T, b: $T) -> $T:
     return a
 
 func clamp(x: $T, low: $T, high: $T) -> $T:
+    return min(max(x, low), high)
+
+func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
     return min(max(x, low), high)
 
 priv context generator:

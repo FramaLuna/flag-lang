@@ -617,17 +617,22 @@ func unary() -> Fail?:
     t = comp.tokens[name]
     after := comp.tokens[name + 1].text
     brace := after == "{"
+    converts := false
     if t.kind == Name and after == "[":
         depth: usize = 0
+        listed := false
         i := name + 1
         while comp.tokens[i].kind != Line and comp.tokens[i].kind != End:
-            if comp.tokens[i].text == "[":
+            word := comp.tokens[i].text
+            if word == "[" or word == "(" or word == "{":
                 depth += 1
-            elif comp.tokens[i].text == "]":
+            elif word == "]" or word == ")" or word == "}":
                 depth -= 1
                 if depth == 0:
                     brace = comp.tokens[i + 1].text == "{"
+                    converts = listed and comp.tokens[i + 1].text == "(" # an index has no comma, simd[f32, 4](x) names a type
                     break
+            listed = listed or word == "," and depth == 1
             i += 1
     if t.kind == Name and not brace:
         j := name
@@ -639,6 +644,12 @@ func unary() -> Fail?:
         try type_expr()
         try expect("{")
         try arguments("}")
+        finish(n)
+    elif t.kind == Name and converts:
+        n := begin(Call, name)
+        try type_expr()
+        try expect("(")
+        try arguments(")")
         finish(n)
     elif (t.kind == Name or t.kind == Builtin) and after == "(":
         n := qualified(Call)

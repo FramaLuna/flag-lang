@@ -358,6 +358,10 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         if comp.types[args[0].type].kind == Bytes:
             return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
         return array_of(try concrete(args[0].type, tok.at), args[1].n)
+    if node.module.len == 0 and tok.text == "simd":
+        if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
+            return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
+        return simd_of(args[0].type, args[1].n, tok.at)
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
@@ -431,6 +435,9 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + " but got " + args.len, at)
     for a in args:
         try concrete(a.type, at)
+    if (sym.name == "map" or sym.name == "fixmap") and sym.library and comp.types[args[0].type].kind == Simd:
+        key_type := comp.types[args[0].type]
+        return fail(key_type.name + " cannot be the key of a map, a simd has no hash and its == answers each lane: use an array, array[" + comp.types[key_type.elem].name + ", " + key_type.count + "](v)", at)
     if kind == Void:
         return add_type(Type{kind = Void, name = view(key), align = 1, decl = decl, error = sym.error})
     saved := open_frame()
@@ -530,6 +537,33 @@ func array_of(elem: usize, count: usize) -> usize:
     if id is usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
+
+func simd_of(elem: usize, count: usize, at: usize) -> usize|Fail:
+    e := comp.types[elem]
+    key: &str = "simd["
+    key += e.name + ", " + count + "]"
+    id := comp.type_ids[view(key)]
+    if id is usize:
+        return id
+    if not numeric(elem) and e.kind != Bool:
+        return fail("the lanes of a simd hold numbers or bool, and " + e.name + " is neither", at)
+    if e.kind == Bool and count != 2 and count != 4 and count != 8 and count != 16:
+        return fail(key + " does not split a register of 16 bytes, a mask has 2, 4, 8 or 16 lanes", at)
+    if e.kind != Bool and e.size * count != 16:
+        more: &strview
+        if e.size * count > 16:
+            more = ", or an array of them"
+        return fail(key + " is " + e.size * count + " bytes, and a simd is one register of 16: use simd[" + e.name + ", " + 16 / e.size + "]" + more, at)
+    return add_type(Type{kind = Simd, name = view(key), size = 16, align = 16, elem = elem, count = count})
+
+func lane_type(t: usize) -> usize:
+    ty := comp.types[t]
+    if ty.kind != Simd or ty.elem != BOOL:
+        return ty.elem
+    lane: usize = I8
+    while comp.types[lane].size < 16 / ty.count:
+        lane += 1
+    return lane
 
 func thread_of(result: usize) -> usize:
     key: &str = "Thread["

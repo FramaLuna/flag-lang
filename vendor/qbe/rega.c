@@ -218,7 +218,10 @@ pmrec(enum PMStat *status, int i, int *k)
 	}
 	assert(KBASE(pm[i].cls) == KBASE(*k));
 	assert((Kw|Kl) == Kl && (Ks|Kd) == Kd);
-	*k |= pm[i].cls;
+	if (*k == Kv || pm[i].cls == Kv)
+		*k = Kv;
+	else
+		*k |= pm[i].cls;
 	for (j=0; j<npm; j++)
 		if (req(pm[j].dst, pm[i].src))
 			break;

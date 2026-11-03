@@ -11,6 +11,7 @@ This is the reference of the language
 - [Functions and calls](#functions-and-calls)
 - [Generics and where](#generics-and-where)
 - [Operators](#operators)
+- [SIMD](#simd)
 - [Iteration](#iteration)
 - [Control flow](#control-flow)
 - [Errors](#errors)
@@ -139,6 +140,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
 | `i64`, `u64`, `usize`, `f64`, pointers, function values, `Thread[T]` | 8 |
+| `simd[T, n]` | 16 |
 | void types, `null`, `IterationEnd` | 0 |
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
@@ -466,6 +468,39 @@ A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a 
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
+## SIMD
+`simd[T, n]` is `n` lanes of `T` that fill one register of 16 bytes: `simd[f32, 4]`, `simd[i32, 4]`, `simd[u32, 4]`, `simd[f64, 2]`, `simd[i64, 2]`, `simd[u64, 2]`, `simd[i16, 8]`, `simd[u16, 8]`, `simd[i8, 16]` and `simd[u8, 16]`. A mask `simd[bool, n]`, with `n` of 2, 4, 8 or 16, keeps each lane as an integer of `16 / n` bytes with all its bits 1 for `true` and 0 for `false`, so a comparison gives a mask as wide as the lanes it compared. Another size is an error: `simd[f32, 8] is 32 bytes, and a simd is one register of 16: use simd[f32, 4], or an array of them`.
+
+The size and the alignment are 16, like `__m128` in C, so a struct with a `simd` has the layout C gives it. Lists, `heap` and arenas give memory aligned to 16, and the loads don't need it, so a pointer to a `simd` made from a list of `f32` works
+```flag
+chunk := ptr(values[4 * i]) as *simd[f32, 4]
+chunk.* = chunk.* * k + 1.0
+```
+
+### Operators on lanes
+They work lane by lane, between two `simd` of one type, or with a number of the type of the lanes on one side, which goes in every lane: `v * k`, `1.0 - v`, `v < 0.0`
+- `+`, `-`, `*` and `-v` for numbers. Integers wrap around, like one number does
+- `/` for floats. Integers have no `/` or `%`: `a simd of i32 has no /, no processor divides integer lanes: convert it to an array`
+- `and`, `or`, `xor` and `not` for integers and masks. On masks both sides run, there is no short cut
+- `<<` and `>>` by a number, the same for every lane, as one number shifts: `v << 3`
+- `<`, `<=`, `>`, `>=`, `==` and `!=` give a mask, and each one is exact with NaN
+
+They belong to the language and cannot be declared. Since `==` answers each lane
+- a condition needs a `bool`, so `if v > 0.0:` is an error that points to `any(...)` and `all(...)`
+- a struct with a `simd` field gets no `==` or `hash` from the compiler: `Contact has a simd field, whose == answers each lane: declare == for Contact`
+- a `simd` has no `hash`, and it can't be the key of a map: `simd[i32, 4] cannot be the key of a map, a simd has no hash and its == answers each lane: use an array, array[i32, 4](v)`
+
+### Lanes, literals and conversions
+- `v[2]` reads a lane and `v[2] = x` changes it. The index is a constant: `a lane of a simd is chosen with a constant, for a variable one convert it to an array`. A lane of a mask is a `bool`
+- a literal takes the type of its place: `zero: simd[f32, 4] = [0.0, 0.0, 0.0, 0.0]`. Its elements can read lanes of other `simd`, which is how lanes are shuffled: `t: simd[f32, 4] = [r0[0], r1[0], r0[1], r1[1]]`
+- `T(x)` converts. `simd[f32, 4](k)` puts the number `k` in every lane, `simd[f32, 4](a)` takes the elements of an `array[f32, 4]` and `array[f32, 4](v)` gives them back. Between two `simd` with the same number of lanes each lane converts like `T(x)` of one number, so `simd[i32, 4](v)` rounds toward zero and stays at the limits
+- `as` reads the 16 bytes as another `simd` or an array: `v as simd[u32, 4]` gives the bits
+
+`select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` of a `simd` belong to the language too (see [simd](Library.md#simd)). They give the same result on every system: `min` and `max` are the comparisons of Flag, and `sum` adds in one fixed order.
+
+### In the processor
+On x86_64 and arm64 each operation is one instruction or a few, and a `simd` that stays in its function lives in a register, also when an inlined call copies it. rv64 has no vectors here and computes each lane on its own, with the same results. On x86_64 the instructions are those of x86-64-v2 (SSE4.2), which the processors of Intel have since 2008 and those of AMD since 2011 to 2013, so a program whose code names `simd` checks the processor when it starts: `flag: this program needs an x86-64-v2 processor (SSE4.2)`, with exit code 132. A lane read with `v[i]`, a shuffle, `sum`, `any` and `all` go through memory, one lane at a time. A `simd` doesn't cross to C by value, pass a pointer.
+
 ## Iteration
 ### Ranges
 `a..b` goes from `a` to `b - 1`, and `reverse a..b` from `b - 1` down to `a`. If `b <= a` it doesn't run. The variable has the type of the end that is not a literal, or `i32` if both are literals, and both ends must have the same type. The ends are computed once, before the loop.
@@ -586,6 +621,7 @@ These stop the program, and write the message to the error output
 | `flag: illegal instruction` | 132 |
 | `flag: arithmetic error` | 136 |
 | `flag: the test takes more than 10 s`, in `flagc test` | 142 |
+| `flag: this program needs an x86-64-v2 processor (SSE4.2)`, at the start of a program with `simd` | 132 |
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared
 ```
@@ -1003,7 +1039,7 @@ func drop(object: *Unknown):
 | `extern func(T) -> U` | a pointer to a function |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
 
-Tagged unions, fat pointers and the function values of Flag can't cross to C, pass their parts: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
+Tagged unions, fat pointers, the function values of Flag and `simd` can't cross to C, pass their parts or a pointer: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
 A C function can end with `...`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
@@ -1060,7 +1096,7 @@ Flag builds programs for Linux, macOS and Windows
 | `macos-arm64` | `arm64_apple` |
 | `windows-x86_64` | `amd64_win` |
 
-By default the target is the system flagc was built on. The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
+By default the target is the system flagc was built on. On x86_64 a program with `simd` needs x86-64-v2 (see [SIMD](#simd)). The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
 
 ### Cross compiling
 `-target` builds for another system, and you need a C compiler that links for that system. For example, from Linux to Windows with [zig](https://ziglang.org)
@@ -1162,6 +1198,8 @@ The last six are for the chain of calls and for the debugger. On x86_64 every fu
 - `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it
 - the blocks keep the order of the IL, and one is not merged into the block before it, so a scope is one range of code
 - each function has its `.cfi` in `.debug_frame`, with the registers it saves, and its first `.loc`, the line of its declaration, before its prologue and not again after it: a debugger that skips the prologue stops at the next line, the first one of the body
+
+Five more are for `simd`. QBE has a class `v`, 16 bytes of lanes in a float register, with `loadv`, `storev` and 56 operations whose name ends with the lane, like `vadds` for `f32` and `vceqw` for `i32`, in amd64 (SSE up to 4.2, with `xmm15` as the scratch) and arm64 (NEON, with `v31`). rv64 has none. The cut of small slots makes a piece of 16 bytes of class `v` where a `loadv` or a `storev` reads or writes it whole, and carries it across a blit, so a `simd` copied by an inlined call stays in a register. A `v` that lives across a call is spilled, and on arm64 always, because the callee keeps only the low half of `v8` to `v15`. `%c =w cpuid %leaf` gives `ecx` of that instruction on amd64, for the check at start. The slots of `alloc` are laid out from the widest down and rounded to 16 bytes, so an `alloc16` is aligned, which an `alloc4` before it could break, and arm64 passes the structs aligned to 16 that it refused. And the keywords of the IL didn't fit the hash of the lexer anymore, it has 2048 places now.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware

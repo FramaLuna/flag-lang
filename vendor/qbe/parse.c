@@ -3,7 +3,7 @@
 #include <stdarg.h>
 
 enum {
-	Ksb = 4, /* matches Oarg/Opar/Jret */
+	Ksb = Kv + 1, /* matches Oarg/Opar/Jret, past Kv */
 	Kub,
 	Ksh,
 	Kuh,
@@ -44,6 +44,7 @@ enum Token {
 	Tloadl,
 	Tloads,
 	Tloadd,
+	Tloadv,
 	Talloc1,
 	Talloc2,
 
@@ -75,6 +76,7 @@ enum Token {
 	Tb,
 	Td,
 	Ts,
+	Tv,
 	Tz,
 
 	Tint,
@@ -105,6 +107,7 @@ static char *kwmap[Ntok] = {
 	[Tloadl] = "loadl",
 	[Tloads] = "loads",
 	[Tloadd] = "loadd",
+	[Tloadv] = "loadv",
 	[Talloc1] = "alloc1",
 	[Talloc2] = "alloc2",
 	[Tblit] = "blit",
@@ -135,6 +138,7 @@ static char *kwmap[Ntok] = {
 	[Tl] = "l",
 	[Ts] = "s",
 	[Td] = "d",
+	[Tv] = "v",
 	[Tz] = "z",
 	[Tdots] = "...",
 };
@@ -145,8 +149,8 @@ enum {
 	TMask = 16383, /* for temps hash */
 	BMask = 8191, /* for blocks hash */
 
-	K = 11183273, /* found using tools/lexh.c */
-	M = 23,
+	K = 1277773053, /* found like tools/lexh.c, for the lanes */
+	M = 21,
 };
 
 static uchar lexh[1 << (32-M)];
@@ -502,6 +506,8 @@ parsecls(int *tyn)
 		return Ks;
 	case Td:
 		return Kd;
+	case Tv:
+		return Kv;
 	}
 }
 
@@ -548,6 +554,8 @@ parserefl(int arg)
 			err("invalid argument");
 		if (!arg && rtype(r) != RTmp)
 			err("invalid function parameter");
+		if (k == Kv)
+			err("a v value is not passed to a function");
 		if (env)
 			if (arg)
 				*curi = (Ins){Oarge, k, R, {r}};
@@ -654,7 +662,7 @@ parseline(PState ps)
 		expect(Tnl);
 		return PPhi;
 	case Tret:
-		curb->jmp.type = Jretw + rcls;
+		curb->jmp.type = Jretw + rcls - (rcls >= Ksb);
 		if (peek() == Tnl)
 			curb->jmp.type = Jret0;
 		else if (rcls != K0) {
@@ -741,11 +749,13 @@ parseline(PState ps)
 		}
 		if (k >= Ksb)
 			k = Kw;
+		if (k == Kv)
+			err("a v value is not returned by a call");
 		goto Ins;
 	}
 	if (op == Tloadw)
 		op = Oloadsw;
-	if (op >= Tloadl && op <= Tloadd)
+	if (op >= Tloadl && op <= Tloadv)
 		op = Oload;
 	if (op == Talloc1 || op == Talloc2)
 		op = Oalloc;
@@ -956,6 +966,8 @@ parsefn(Lnk *lnk)
 		rcls = parsecls(&curf->retty);
 	else
 		rcls = K0;
+	if (rcls == Kv)
+		err("a function does not return a v value");
 	if (next() != Tglo)
 		err("function name expected");
 	curf->name = strf(PFn, "%s", tokval.str);
@@ -1369,7 +1381,7 @@ printref(Ref r, Fn *fn, FILE *f)
 void
 printfn(Fn *fn, FILE *f)
 {
-	static char ktoc[] = "wlsd";
+	static char ktoc[] = "wlsdv";
 	static char *jtoa[NJmp] = {
 	#define X(j) [J##j] = #j,
 		JMPS(X)

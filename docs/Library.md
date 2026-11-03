@@ -230,9 +230,16 @@ On slices, so also on lists
 An array goes to these functions by its address: `sort(ptr(values))`.
 
 ### Arrays
-Two arrays of the same type work with the operators element by element, and give a new array
-- `+`, `-`, `*` and `/` for numbers, and `%`, `and`, `or`, `xor`, `<<` and `>>` for integers: `[1, 2] + [10, 20]` is `[11, 22]`
 - `a == b` and `a != b` compare every element
+
+An array has no arithmetic, a `simd` computes on lanes.
+
+### simd
+These take a `simd` and belong to the language, like its operators (see [SIMD](Reference.md#simd))
+- `select(m, a, b)` takes the lane of `a` where the mask `m` is `true`, and the lane of `b` where it's `false`. `a` or `b` can be a number, the same in every lane
+- `any(m) -> bool` and `all(m) -> bool` say if some lane of the mask `m` is `true`, or all of them
+- `sum(v)` adds the lanes in a fixed order, the upper half onto the lower half until one is left: `(v[0] + v[2]) + (v[1] + v[3])` for 4 lanes
+- `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of `math` give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
@@ -599,8 +606,8 @@ while true:
 It links the C math library.
 - `PI`, `TAU` and `E`
 - `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round` and `trunc` take one float, and `atan2(y, x)`, `pow(x, y)`, `hypot(x, y)` and `fmod(x, y)` take two. They are the C functions for `f64`, and each one has an `f32` version that gives an `f32`. The angles are in radians, `log` is the natural one and `round` takes the halves away from zero
-- `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128
-- `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`
+- `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128. A float loses its sign bit, like `fabs` in C, so `abs(-0.0)` is `0.0` and a NaN loses its sign too
+- `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`. `clamp` also takes a `simd` with two numbers, `clamp(v, 0.0, 1.0)`, and `min`, `max`, `abs` and `sqrt` of a `simd` are the language's (see [simd](#simd))
 - `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
 
 ### Random numbers

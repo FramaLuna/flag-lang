@@ -234,76 +234,6 @@ func next(w: *Walk[$T]) -> $T|IterationEnd:
     w.i += 1
     return p.*
 
-operator +(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] + b[i]
-    return out
-
-operator -(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] - b[i]
-    return out
-
-operator *(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer|f32|f64:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] * b[i]
-    return out
-
-operator /(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is f32|f64:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] / b[i]
-    return out
-
-operator /(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        if b[i] == 0:
-            panic("division by zero", place)
-        out[i] = a[i] / b[i]
-    return out
-
-operator %(a: *array[$T, $$n], b: *array[$T, $$n], place: &strview = @here()) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        if b[i] == 0:
-            panic("division by zero", place)
-        out[i] = a[i] % b[i]
-    return out
-
-operator and(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] and b[i]
-    return out
-
-operator or(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] or b[i]
-    return out
-
-operator xor(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] xor b[i]
-    return out
-
-operator <<(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] << b[i]
-    return out
-
-operator >>(a: *array[$T, $$n], b: *array[$T, $$n]) -> array[$T, $$n] where $T is Integer:
-    out: array[$T, $$n]
-    for i in 0..$$n:
-        out[i] = a[i] >> b[i]
-    return out
-
 operator ==(a: *array[$T, $$n], b: *array[$T, $$n]) -> bool:
     for i in 0..$$n:
         if a[i] != b[i]:
@@ -614,7 +544,7 @@ func try_reserve(a: *Arena, size: usize) -> NoMemory?:
 priv func take(a: *Arena, size: usize) -> *bytes:
     if size > MOST:
         return usize(0) as *bytes
-    need := (size + 7) / 8 * 8
+    need := (size + 15) / 16 * 16
     if a.count == 0 or a.used + need > a.blocks[a.count - 1].len:
         if a.count == a.blocks.len or a.blocks[a.count].len < need:
             room: usize = 65536
@@ -636,7 +566,7 @@ priv func take(a: *Arena, size: usize) -> *bytes:
 priv func resize(a: *Arena, at: *bytes, size: usize, wanted: usize) -> *bytes:
     if a as usize == 0:
         return realloc(at, wanted)
-    held := (size + 7) / 8 * 8
+    held := (size + 15) / 16 * 16
     last := a.count > 0 and at as usize + held == ptr(a.blocks[a.count - 1].*) as usize + a.used
     if last:
         a.used -= held # the last piece of the block, take gives the same place back when it fits

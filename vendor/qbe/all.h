@@ -63,6 +63,7 @@ struct Target {
 	char asloc[4];
 	char assym[4];
 	uint cansel:1;
+	uint halfsave:1; /* a call keeps only the low half of a v register */
 };
 
 #define BIT(n) ((bits)1 << (n))
@@ -193,7 +194,8 @@ enum {
 };
 
 #define INRANGE(x, l, u) ((unsigned)(x) - l <= u - l) /* linear in x */
-#define isstore(o) INRANGE(o, Ostoreb, Ostored)
+#define isstore(o) INRANGE(o, Ostoreb, Ostorev)
+#define isvec(o) INRANGE(o, Ovaddb, Ovitos)
 #define isload(o) INRANGE(o, Oloadsb, Oload)
 #define isalloc(o) INRANGE(o, Oalloc4, Oalloc16)
 #define isext(o) INRANGE(o, Oextsb, Oextuw)
@@ -210,15 +212,16 @@ enum {
 	Kw,
 	Kl,
 	Ks,
-	Kd
+	Kd,
+	Kv, /* 16 bytes of lanes, in a float register */
 };
 
 #define KWIDE(k) ((k)&1)
-#define KBASE(k) ((k)>>1)
+#define KBASE(k) ((k) == Kv ? 1 : (k)>>1)
 
 struct Op {
 	char *name;
-	short argcls[2][4];
+	short argcls[2][5];
 	uint canfold:1;
 	uint hasid:1;     /* op identity value? */
 	uint idval:1;     /* identity value 0/1 */
@@ -232,8 +235,8 @@ struct Op {
 };
 
 struct Ins {
-	uint op:30;
-	uint cls:2;
+	uint op:29;
+	uint cls:3;
 	Ref to;
 	Ref arg[2];
 };

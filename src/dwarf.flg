@@ -160,9 +160,9 @@ func dwarf() -> &str:
                         out += reference(local + "type" + comp.items[ty.first + i].type)
                     if leaf == 0:
                         out += "\t.byte 0\n"
-                case Array:
+                case Array, Simd:
                     uleb(out, ARRAY_DIE)
-                    out += reference(local + "type" + ty.elem)
+                    out += reference(local + "type" + lane_type(t))
                     uleb(out, COUNT_DIE)
                     uleb(out, ty.count)
                     out += "\t.byte 0\n"
@@ -329,8 +329,8 @@ func needs(t: usize, needed: *&list[bool]):
         return
     needed[t] = true
     ty := comp.types[t]
-    if ty.kind == Ptr or ty.kind == Array:
-        needs(ty.elem, needed)
+    if ty.kind == Ptr or ty.kind == Array or ty.kind == Simd:
+        needs(lane_type(t), needed)
     if ty.kind == Func:
         needs(ty.ret, needed)
     if ty.kind == Fat:

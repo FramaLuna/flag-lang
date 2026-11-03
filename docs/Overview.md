@@ -722,7 +722,20 @@ The functions of lists and slices, like `sort`, take an array by its address
 ```flag
 sort(ptr(a))
 ```
-Two arrays of the same type take the operators element by element: `[1, 2] + [10, 20]` is `[11, 22]`, and `==` compares every element.
+Two arrays of the same type compare with `==`, every element. An array holds values and has no arithmetic: numbers that compute together go in a `simd`.
+
+## SIMD
+`simd[T, n]` is `n` numbers in one register of 16 bytes, and its operators work on every lane at once
+```flag
+a: simd[f32, 4] = [1.0, 2.0, 3.0, 4.0]
+b := simd[f32, 4](0.5) # the same number in every lane
+c := a * b + 1.0 # a number beside a simd goes in every lane
+print(c) # [1.5, 2.0, 2.5, 3.0]
+c[0] = 9.0 # a lane, chosen with a constant
+m := a > 2.0 # a mask, simd[bool, 4]
+print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true, true] [0.0, 0.0, 3.0, 4.0] true 10.0
+```
+The lanes are `f32`, `i32` and `u32` by 4, `f64`, `i64` and `u64` by 2, `i16` and `u16` by 8, and `i8` and `u8` by 16. A comparison gives a mask, `select` takes each lane from one side or the other, and `min`, `max`, `abs` and `sqrt` work on each lane. On x86_64 and arm64 an operation is one or a few instructions of the processor, and the values stay in registers, so code on 4 lanes runs about 4 times as fast as on one number. More lanes are an array of them, `array[simd[f32, 4], 8]`. The details are in [SIMD](Reference.md#simd).
 
 ## Lists
 A `&list[T]` is a list that grows as you add elements. It starts empty, and you can also start it from an array on the heap

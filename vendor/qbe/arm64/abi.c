@@ -98,10 +98,10 @@ typclass(Class *c, Typ *t, int *gp, int *fp)
 	c->class = 0;
 	c->ngp = 0;
 	c->nfp = 0;
-	c->align = 8;
+	c->align = t->align > 3 ? 16 : 8;
 
-	if (t->align > 3)
-		err("alignments larger than 8 are not supported");
+	if (t->align > 4)
+		err("alignments larger than 16 are not supported");
 
 	c->size = sz;
 	c->hfa.base = Kx;

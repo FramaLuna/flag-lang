@@ -1,0 +1,30 @@
+type Pair:
+    low: simd[f32, 4]
+    high: simd[f32, 4]
+
+func push(v: simd[f32, 4], n: simd[f32, 4], k: f32) -> simd[f32, 4]:
+    return v + n * k
+
+func swapped(p: Pair) -> Pair:
+    return Pair{p.high, p.low}
+
+func power(v: simd[i32, 4], n: i32) -> simd[i32, 4]:
+    if n == 0:
+        return simd[i32, 4](1)
+    return v * power(v, n - 1)
+
+func main():
+    v: simd[f32, 4] = [1.0, 2.0, 3.0, 4.0]
+    n := simd[f32, 4](0.5)
+    for i in 0..3:
+        v = push(v, n, f32(i))
+    print(v)
+    p := Pair{v, n}
+    q := swapped(swapped(swapped(p)))
+    print(q.low, " ", q.high)
+    print(power(simd[i32, 4]([1, 2, 3, -1]), 5))
+    copies: array[simd[f32, 4], 3]
+    copies[0] = v
+    copies[1] = copies[0] * 2.0
+    copies[2] = copies[1]
+    print(copies[2])

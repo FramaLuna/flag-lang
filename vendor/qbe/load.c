@@ -49,7 +49,7 @@ loadsz(Ins *l)
 	case Oloadsb: case Oloadub: return 1;
 	case Oloadsh: case Oloaduh: return 2;
 	case Oloadsw: case Oloaduw: return 4;
-	case Oload: return KWIDE(l->cls) ? 8 : 4;
+	case Oload: return l->cls == Kv ? 16 : KWIDE(l->cls) ? 8 : 4;
 	}
 	die("unreachable");
 }
@@ -62,6 +62,7 @@ storesz(Ins *s)
 	case Ostoreh: return 2;
 	case Ostorew: case Ostores: return 4;
 	case Ostorel: case Ostored: return 8;
+	case Ostorev: return 16;
 	}
 	die("unreachable");
 }
@@ -274,6 +275,12 @@ def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
 			r1 = i->arg[1];
 		} else
 			continue;
+		if (sz > 8 && i->op != Oblit0) {
+			/* lanes are not forwarded */
+			if (alias(sl.ref, sl.off, sl.sz, r1, sz, &off, curf) != NoAlias)
+				goto Load;
+			continue;
+		}
 		switch (alias(sl.ref, sl.off, sl.sz, r1, sz, &off, curf)) {
 		case MustAlias:
 			if (i->op == Oblit0) {
@@ -448,7 +455,7 @@ loadopt(Fn *fn)
 	inum = 0;
 	for (b=fn->start; b; b=b->link)
 		for (i=b->ins; i<&b->ins[b->nins]; ++i) {
-			if (!isload(i->op))
+			if (!isload(i->op) || i->cls == Kv)
 				continue;
 			sz = loadsz(i);
 			sl = (Slice){i->arg[0], 0, sz, i->cls};

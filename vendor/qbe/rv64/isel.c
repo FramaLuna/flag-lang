@@ -238,7 +238,7 @@ rv64_isel(Fn *fn)
 	/* assign slots to fast allocs */
 	b = fn->start;
 	/* specific to NAlign == 3 */ /* or change n=4 and sz /= 4 below */
-	for (al=Oalloc, n=4; al<=Oalloc1; al++, n*=2)
+	for (al=Oalloc1, n=16; al>=Oalloc; al--, n/=2) /* the widest first, so each stays aligned */
 		for (i=b->ins; i<&b->ins[b->nins]; i++)
 			if (i->op == al) {
 				if (rtype(i->arg[0]) != RCon)
@@ -255,6 +255,7 @@ rv64_isel(Fn *fn)
 				*i = (Ins){.op = Onop};
 			}
 
+	fn->slot = (fn->slot + 3) & -4;
 	for (b=fn->start; b; b=b->link) {
 		curi = &insb[NIns];
 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)

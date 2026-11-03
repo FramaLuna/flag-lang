@@ -137,7 +137,13 @@ slot(int t)
 		 *
 		 * invariant: slot4 <= slot8
 		 */
-		if (KWIDE(tmp[t].cls)) {
+		if (tmp[t].cls == Kv) {
+			/* aligned to 16, a gap below it is lost */
+			s = (slot8 + 3) & -4;
+			if (slot4 == slot8 && s == slot8)
+				slot4 = s + 4;
+			slot8 = s + 4;
+		} else if (KWIDE(tmp[t].cls)) {
 			s = slot8;
 			if (slot4 == slot8)
 				slot4 += 2;
@@ -277,6 +283,11 @@ dopm(Blk *b, Ins *i, BSet *v)
 	bscopy(pm, v);
 	if (i != b->ins && (i-1)->op == Ocall) {
 		v->t[0] &= ~T.retregs((i-1)->arg[1], 0);
+		if (T.halfsave)
+			/* the callee keeps only half of a v register */
+			for (t=Tmp0; bsiter(v, &t); t++)
+				if (tmp[t].cls == Kv)
+					bsclr(v, t);
 		limit2(v, T.nrsave[0], T.nrsave[1], 0);
 		for (n=0, r=0; T.rsave[n]>=0; n++)
 			r |= BIT(T.rsave[n]);

@@ -10,10 +10,12 @@
 #define F(a,b,c,d,e,f,g,h,i,j)
 #endif
 
-#define T(a,b,c,d,e,f,g,h) {                          \
-	{[Kw]=K##a, [Kl]=K##b, [Ks]=K##c, [Kd]=K##d}, \
-	{[Kw]=K##e, [Kl]=K##f, [Ks]=K##g, [Kd]=K##h}  \
+#define T5(a,b,c,d,v,w,x,y,z,u) {                                 \
+	{[Kw]=K##a, [Kl]=K##b, [Ks]=K##c, [Kd]=K##d, [Kv]=K##v}, \
+	{[Kw]=K##w, [Kl]=K##x, [Ks]=K##y, [Kd]=K##z, [Kv]=K##u}  \
 }
+#define T(a,b,c,d,w,x,y,z) T5(a,b,c,d,e,w,x,y,z,e)
+#define TV(a,b) T5(e,e,e,e,a,e,e,e,e,b) /* lanes: v */
 
 /*********************/
 /* PUBLIC OPERATIONS */
@@ -93,6 +95,7 @@ O(storew,  T(w,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(storel,  T(l,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(stores,  T(s,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(stored,  T(d,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(storev,  T(v,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 
 O(loadsb,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(loadub,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
@@ -100,7 +103,7 @@ O(loadsh,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(loaduh,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(loadsw,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(loaduw,  T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
-O(load,    T(m,m,m,m, x,x,x,x), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(load,    T5(m,m,m,m,m, x,x,x,x,x), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 
 /* Extensions and Truncations */
 O(extsb,   T(w,w,e,e, x,x,e,e), F(1,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
@@ -131,13 +134,80 @@ O(alloc16, T(e,l,e,e, e,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(vaarg,   T(m,m,m,m, x,x,x,x), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(vastart, T(m,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 
-O(copy,    T(w,l,s,d, x,x,x,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(copy,    T5(w,l,s,d,v, x,x,x,x,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+
+/* Lanes: 16 bytes in a register, the suffix is the lane */
+/* (b h w l: integers of 1 2 4 8 bytes, s d: floats)     */
+O(vaddb,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vaddh,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vaddw,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vaddl,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vadds,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vaddd,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubb,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubh,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubw,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubl,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubs,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsubd,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmulh,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmulw,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmuls,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmuld,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vdivs,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vdivd,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vand,    TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vor,     TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vxor,    TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+/* the amount is one number for every lane, past the lane it gives 0, or the sign */
+O(vshlh,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vshlw,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vshll,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vshrh,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vshrw,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vshrl,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsarh,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsarw,   TV(v,w), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+/* each lane all ones where it holds, zero where not; gt is signed */
+O(vceqb,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vceqh,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vceqw,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vceql,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vceqs,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vceqd,   TV(v,v), F(0,0,0,1,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcgtb,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcgth,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcgtw,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcgtl,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vclts,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcltd,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcles,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vcled,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+/* min a, b is b < a ? b : a, and max a, b is a < b ? b : a */
+O(vmins,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmind,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmaxs,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vmaxd,   TV(v,v), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsqrts,  TV(v,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsqrtd,  TV(v,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+/* one number in every lane */
+O(vsplatb, TV(w,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsplath, TV(w,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsplatw, TV(w,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsplatl, TV(l,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsplats, TV(s,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vsplatd, TV(d,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+/* lanes of w to lanes of s */
+O(vitos,   TV(v,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
 
 /* Debug */
 O(dbgloc,  T(w,e,e,e, w,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(dbgslot, T(m,e,e,e, w,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(dbgmark, T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 O(frame,   T(e,x,e,e, e,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+
+/* amd64: ecx of cpuid with the leaf in eax */
+O(cpuid,   T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 
 /****************************************/
 /* INTERNAL OPERATIONS (keep nop first) */
@@ -150,11 +220,12 @@ O(blit0,   T(m,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,1,0) V(0)
 O(blit1,   T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,1,0) V(0)
 O(sel0,    T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(sel1,    T(w,l,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
-O(swap,    T(w,l,s,d, w,l,s,d), F(0,0,0,0,0,0,0,0,0,0)) X(1,0,0) V(0)
+O(swap,    T5(w,l,s,d,v, w,l,s,d,v), F(0,0,0,0,0,0,0,0,0,0)) X(1,0,0) V(0)
 O(sign,    T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(salloc,  T(e,l,e,e, e,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(xidiv,   T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(1,0,0) V(0)
 O(xdiv,    T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(1,0,0) V(0)
+O(xcpuid,  T(x,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(xcmp,    T(w,l,s,d, w,l,s,d), F(0,0,0,0,0,0,0,0,0,0)) X(1,1,0) V(0)
 O(xtest,   T(w,l,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(1,1,0) V(0)
 O(acmp,    T(w,l,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
@@ -222,6 +293,8 @@ O(xselfo,   T(e,e,s,d, e,e,s,d), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(xselfuo,  T(e,e,s,d, e,e,s,d), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 
 #undef T
+#undef T5
+#undef TV
 #undef X
 #undef V
 #undef O
