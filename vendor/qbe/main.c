@@ -136,6 +136,24 @@ dbgfile(char *fn)
 	emitdbgfile(fn, outf);
 }
 
+#ifdef _WIN32
+#include <wchar.h>
+int __stdcall MultiByteToWideChar(unsigned, unsigned long, const char *, int, wchar_t *, int);
+
+/* flagc gives the paths in UTF-8, and the fopen of Windows reads them in its code page */
+static FILE *
+openutf8(char *path, char *mode)
+{
+	wchar_t wide[32768], wmode[4];
+
+	if (!MultiByteToWideChar(65001, 0, path, -1, wide, 32768)
+	|| !MultiByteToWideChar(65001, 0, mode, -1, wmode, 4))
+		return 0;
+	return _wfopen(wide, wmode);
+}
+#define fopen openutf8
+#endif
+
 int
 main(int ac, char *av[])
 {

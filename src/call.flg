@@ -385,7 +385,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         return fail(name + " takes x[i] where a pointer goes, and a thread could not put the copy back: pass a pointer to a variable", at)
     if threaded:
         comp.insts[id].valued = true
-        return spawn(global(comp.insts[id].name), passes, func_of(taken, comp.insts[id].ret), at)
+        ret := comp.insts[id].ret
+        if ret == NEVER:
+            ret = VOID # its thread is waited for like one that returns nothing
+        return spawn(global(comp.insts[id].name), passes, func_of(taken, ret), at)
     result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
     while back.len > 0:
         element := back[back.len - 3:]

@@ -1,0 +1,33 @@
+use net
+
+func main() -> i32:
+    server := listen(0)
+    if server is NetError:
+        print(server)
+        return 1
+    waiting: &list[Socket|Server] # the server, for new connections, and the connections it took
+    defer free(waiting)
+    append(waiting, server)
+    print(ready(waiting))
+    client := connect("127.0.0.1", port(server))
+    if client is NetError:
+        print(client)
+        return 1
+    print(ready(waiting, 30.0))
+    peer := accept(server)
+    if peer is NetError:
+        print(peer)
+        return 1
+    append(waiting, peer)
+    print(ready(waiting))
+    write(client, "one\n") # ready writes it before it waits
+    print(ready(waiting, 30.0), " ", read_line(peer))
+    write(client, "two\nthree\n")
+    print(ready(waiting, 30.0), " ", read_line(peer))
+    print(ready(waiting), " ", read_line(peer)) # three came with two, it waits in the connection
+    print(ready(waiting), " ", ready(peer))
+    close(client)
+    print(ready(waiting, 30.0), " ", read_line(peer))
+    close(peer)
+    close(server)
+    return 0

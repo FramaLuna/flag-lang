@@ -13,6 +13,11 @@ type Date:
     second: i32
     weekday: i32
 
+type Process:
+    id: i64
+    input: File
+    output: File
+
 priv extern "c":
     func getenv(name: cstr) -> cstr
     func system(command: cstr) -> i32
@@ -22,61 +27,133 @@ priv extern "c":
     func write(fd: i32, at: *bytes, size: usize) -> i32
     func close(fd: i32) -> i32
     func pipe(fds: *i32) -> i32
+    func socketpair(family: i32, kind: i32, protocol: i32, fds: *i32) -> i32
+    func setsockopt(fd: i32, level: i32, name: i32, value: *bytes, size: u32) -> i32
     func fcntl(fd: i32, command: i32, ...) -> i32
     func _pipe(fds: *i32, size: u32, mode: i32) -> i32
-    func dup(fd: i32) -> i32
     func dup2(from: i32, to: i32) -> i32
     func fork() -> i32
     func execvp(file: cstr, args: **u8) -> i32
-    func _spawnvp(mode: i32, file: cstr, args: **u8) -> i64
     func waitpid(pid: i32, status: *i32, options: i32) -> i32
-    func _cwait(status: *i32, process: i64, action: i32) -> i64
+    func waitid(kind: i32, id: u32, info: *bytes, options: i32) -> i32
+    func kill(pid: i32, signal: i32) -> i32
     func _exit(code: i32)
     func readlink(path: cstr, into: *u8, size: usize) -> i64
     func _NSGetExecutablePath(into: *u8, size: *u32) -> i32
     func realpath(path: cstr, into: *u8) -> cstr
-    func GetModuleFileNameA(module: *bytes, into: *u8, size: u32) -> u32
-    func _get_osfhandle(fd: i32) -> *bytes
-    func SetHandleInformation(handle: *bytes, mask: u32, flags: u32) -> i32
     func getcwd(into: *u8, size: usize) -> cstr
     func chdir(path: cstr) -> i32
     func time(into: *i64) -> i64
     func localtime_r(when: *i64, into: *bytes) -> *bytes
+    func popen(command: cstr, mode: cstr) -> *bytes
+    func fread(into: *bytes, size: usize, count: usize, stream: *bytes) -> usize
+    func pclose(stream: *bytes) -> i32
+    func getrandom(into: *bytes, size: usize, flags: u32) -> i64
+    func getentropy(into: *bytes, size: usize) -> i32
+    func _wgetenv(name: wstr) -> wstr
+    func _wsystem(command: wstr) -> i32
+    func _wpopen(command: wstr, mode: wstr) -> *bytes
+    func _wgetcwd(into: wstr, size: i32) -> wstr
+    func _wchdir(path: wstr) -> i32
+    func _get_osfhandle(fd: i32) -> usize
     func _time64(into: *i64) -> i64
     func _localtime64_s(into: *bytes, when: *i64) -> i32
+    func GetModuleFileNameW(module: *bytes, into: wstr, size: u32) -> u32
+    func GetCommandLineW() -> wstr
+    func LocalFree(memory: *bytes) -> *bytes
+    func GetStdHandle(which: u32) -> usize
+    func GetCurrentProcess() -> usize
+    func DuplicateHandle(from: usize, handle: usize, to: usize, copy: *usize, access: u32, inherit: i32, options: u32) -> i32
+    func CloseHandle(handle: usize) -> i32
+    func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: usize) -> usize
+    func InitializeProcThreadAttributeList(list: *bytes, count: u32, flags: u32, size: *usize) -> i32
+    func UpdateProcThreadAttribute(list: *bytes, flags: u32, attribute: usize, value: *bytes, size: usize, previous: *bytes, returned: *usize) -> i32
+    func DeleteProcThreadAttributeList(list: *bytes)
+    func CreateProcessW(name: wstr, line: wstr, process: *bytes, thread: *bytes, inherit: i32, flags: u32, environment: *bytes, folder: wstr, startup: *StartupInfo, info: *ProcessInfo) -> i32
+    func GetConsoleProcessList(into: *u32, count: u32) -> u32
+    func WaitForSingleObject(handle: usize, milliseconds: u32) -> u32
+    func GetExitCodeProcess(process: usize, code: *u32) -> i32
+    func TerminateProcess(process: usize, code: u32) -> i32
+    func GetLastError() -> u32
     func GetSystemTimePreciseAsFileTime(into: *u64)
     func QueryPerformanceCounter(into: *i64) -> i32
     func QueryPerformanceFrequency(into: *i64) -> i32
     func Sleep(milliseconds: u32)
-    func popen(command: cstr, mode: cstr) -> *bytes
-    func fread(into: *bytes, size: usize, count: usize, stream: *bytes) -> usize
-    func pclose(stream: *bytes) -> i32
+
+priv extern "shell32" where @windows():
+    func CommandLineToArgvW(line: wstr, count: *i32) -> *wstr
+
+priv extern "bcrypt" where @windows():
+    func BCryptGenRandom(algorithm: *bytes, into: *bytes, size: u32, flags: u32) -> i32
+
+priv type StartupInfo: # STARTUPINFOEXW
+    size: u32
+    texts: array[usize, 3]
+    window: array[u32, 7]
+    flags: u32
+    show: array[u16, 4]
+    reserved: usize
+    handles: array[usize, 3]
+    attributes: *bytes
+
+priv type ProcessInfo: # PROCESS_INFORMATION
+    process: usize
+    thread: usize
+    ids: array[u32, 2]
 
 priv type Startup:
     lock: Lock
     args: &list[&strview]
+    values: &list[&strview] # what env gave on Windows, kept so it lives like the environment does
 
 priv startup: Startup
 
-func env(name: &strview) -> &strview|null:
+func env(name: &strview) -> &strview|null where not @windows():
     with scratch():
         found := getenv(cstr(name))
         if found as usize != 0:
             return view(found)
     return null
 
-func args() -> &slice[&strview]:
+func env(name: &strview) -> &strview|null where @windows():
+    with lock(startup.lock):
+        with scratch():
+            found := _wgetenv(wstr(name))
+            if found as usize == 0:
+                return null
+            value := temp(found)
+            for kept in startup.values:
+                if kept == value:
+                    return kept
+            copy: &str = value
+            append(startup.values, view(copy))
+            return copy
+
+func args() -> &slice[&strview] where not @windows():
     with lock(startup.lock):
         if startup.args.len == 0:
             for i in 0..usize(@argc()):
                 append(startup.args, view(((@argv() as usize + i * 8) as **u8).*))
         return startup.args
 
+func args() -> &slice[&strview] where @windows():
+    with lock(startup.lock):
+        if startup.args.len == 0:
+            count: i32 = 0
+            given := CommandLineToArgvW(GetCommandLineW(), ptr(count))
+            for i in 0..usize(count):
+                kept: &str # lives all the program
+                with scratch():
+                    kept = temp(((given as usize + i * 8) as *wstr).*)
+                append(startup.args, view(kept))
+            LocalFree(given as *bytes)
+        return startup.args
+
 func run(command: &strview) -> i32|FsError:
     flush()
     status: i32 = -1
     with scratch():
-        status = system(cstr(command))
+        status = shell(command)
     if status == -1:
         return FsError{errno(), "run", command}
     return exit_code(status)
@@ -84,13 +161,13 @@ func run(command: &strview) -> i32|FsError:
 func run(program: &slice[&strview]) -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
-    return finish(try spawn(program, -1))
+    return finish(try spawn(program, -1, -1))
 
 func output(command: &strview, into: *&str) -> i32|FsError:
     flush()
     stream := usize(0) as *bytes
     with scratch():
-        stream = popen(cstr(command), pipe_mode())
+        stream = shell_output(command)
     if stream as usize == 0:
         return FsError{errno(), "run", command}
     got: usize = 1
@@ -106,11 +183,11 @@ func output(program: &slice[&strview], into: *&str) -> i32|FsError:
     fds: array[i32, 2]
     if not make_pipe(ptr(fds)):
         return FsError{errno(), "run", program[0]}
-    pid := spawn(program, fds[1])
+    id := spawn(program, -1, fds[1])
     close(fds[1])
-    if pid is FsError:
+    if id is FsError:
         close(fds[0])
-        return pid
+        return id
     got: i32 = 1
     while got > 0:
         reserve(into, into.len + 65536)
@@ -118,13 +195,91 @@ func output(program: &slice[&strview], into: *&str) -> i32|FsError:
         if got > 0:
             into.len += usize(got)
     close(fds[0])
-    return finish(pid)
+    return finish(id)
 
-priv func pipe_mode() -> cstr where not @windows():
-    return "r"
+func start(program: &slice[&strview]) -> Process|FsError:
+    if program.len == 0:
+        return FsError{22, "run", "[]"} # EINVAL on every system
+    input: array[i32, 2] # the end the program reads, and yours
+    output: array[i32, 2] # yours, and the end the program writes
+    if not make_input(ptr(input)):
+        return FsError{errno(), "run", program[0]}
+    if not make_pipe(ptr(output)):
+        failed := FsError{errno(), "run", program[0]}
+        close(input[0])
+        close(input[1])
+        return failed
+    id := spawn(program, input[0], output[1])
+    close(input[0])
+    close(output[1])
+    if id is FsError:
+        close(input[1])
+        close(output[0])
+        return id
+    return Process{id, File{input[1]}, File{output[0]}}
 
-priv func pipe_mode() -> cstr where @windows():
-    return "rb" # binary, the bytes as the program wrote them
+func done(p: Process, place: &strview = @here()) -> bool:
+    running(p, "done", place)
+    flush()
+    return ended(p.id)
+
+func join(p: *Process, place: &strview = @here()) -> i32:
+    running(p.*, "wait", place)
+    flush()
+    code := finish(p.id)
+    p.id = 0
+    return code
+
+func kill(p: Process, place: &strview = @here()):
+    running(p, "kill", place)
+    end(p.id)
+
+priv func running(p: Process, what: &strview, place: &strview):
+    if p.id == 0:
+        panic(what + " of a process that is not running: it was never started, or it was waited already", place)
+
+func random_bytes(into: &slice[u8]) where @linux():
+    at: usize = 0
+    while at < into.len:
+        got := getrandom((ptr(into.*) as usize + at) as *bytes, into.len - at, 0)
+        if got < 0 and errno() != 4: # EINTR
+            no_random(errno())
+        if got > 0:
+            at += usize(got)
+
+func random_bytes(into: &slice[u8]) where @macos():
+    for at in 0..(into.len + 255) / 256:
+        part := into[at * 256:]
+        if part.len > 256:
+            part = part[:256] # the most getentropy gives at once
+        if getentropy(ptr(part.*), part.len) != 0:
+            no_random(errno())
+
+func random_bytes(into: &slice[u8]) where @windows():
+    most: usize = 0x8000_0000 # BCryptGenRandom counts in 32 bits
+    for at in 0..(into.len + most - 1) / most:
+        part := into[at * most:]
+        if part.len > most:
+            part = part[:most]
+        failed := BCryptGenRandom(usize(0) as *bytes, ptr(part.*), u32(part.len), 2) # BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        if failed != 0:
+            no_random(failed)
+
+# a key that comes out weak is worse than a program that stops
+priv func no_random(code: i32):
+    panic("" + FsError{code, "read random bytes", ""})
+
+priv func shell(command: &strview) -> i32 where not @windows():
+    return system(cstr(command))
+
+priv func shell(command: &strview) -> i32 where @windows():
+    return _wsystem(wstr(command))
+
+priv func shell_output(command: &strview) -> *bytes where not @windows():
+    return popen(cstr(command), "r")
+
+priv func shell_output(command: &strview) -> *bytes where @windows():
+    return _wpopen(wstr(command), wstr("rb")) # binary, the bytes as the program wrote them
 
 priv func make_pipe(fds: *array[i32, 2]) -> bool where not @windows():
     if pipe(fds as *i32) != 0:
@@ -136,7 +291,20 @@ priv func make_pipe(fds: *array[i32, 2]) -> bool where not @windows():
 priv func make_pipe(fds: *array[i32, 2]) -> bool where @windows():
     return _pipe(fds as *i32, 65536, 0x8080) == 0 # _O_BINARY and _O_NOINHERIT
 
-priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where not @windows():
+# a socket pair and not a pipe, so writing to a program that ended is an error and not a SIGPIPE that ends yours
+priv func make_input(fds: *array[i32, 2]) -> bool where not @windows():
+    if socketpair(1, 1, 0, fds as *i32) != 0: # AF_UNIX and SOCK_STREAM
+        return false
+    fcntl(fds.*[0], 2, 1)
+    fcntl(fds.*[1], 2, 1)
+    yes: i32 = 1
+    setsockopt(fds.*[1], 65535, 0x1022, ptr(yes) as *bytes, 4) # SO_NOSIGPIPE, for macOS, Linux sends with MSG_NOSIGNAL
+    return true
+
+priv func make_input(fds: *array[i32, 2]) -> bool where @windows():
+    return make_pipe(fds)
+
+priv func spawn(program: &slice[&strview], input: i32, output: i32) -> i64|FsError where not @windows():
     failure: array[i32, 2]
     if not make_pipe(ptr(failure)):
         return FsError{errno(), "run", program[0]}
@@ -158,8 +326,10 @@ priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where not @
             at += program[i].len + 1
     pid := fork()
     if pid == 0:
-        if into >= 0:
-            dup2(into, 1)
+        if input >= 0:
+            dup2(input, 0)
+        if output >= 0:
+            dup2(output, 1)
         execvp(args.*, args)
         failed := errno()
         write(failure[1], ptr(failed) as *bytes, 4)
@@ -175,11 +345,13 @@ priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where not @
         return FsError{code, "run", program[0]}
     return i64(pid)
 
-priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where @windows():
+# the program inherits only its three handles, and gets no window of its own when this one has no console
+priv func spawn(program: &slice[&strview], input: i32, output: i32) -> i64|FsError where @windows():
     line: &str
     defer free(line)
-    saved: i32 = -1
-    process: i64 = -1
+    made: i32 = 0
+    code: u32 = 0
+    info: ProcessInfo
     with scratch():
         dot := program[0].len
         for i in reverse 0..program[0].len:
@@ -191,11 +363,10 @@ priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where @wind
         extension := lower(program[0][dot:])
         if extension == ".bat" or extension == ".cmd":
             return FsError{22, "run", program[0]} # cmd.exe would read the arguments again, a batch file goes with run(command)
-        file := program[0]
-        if extension.len == 0:
-            file = file + ".exe" # so _spawnvp never finds a .bat or a .cmd
-        flush()
-        for part in program:
+        for i, word in program:
+            part := word
+            if i == 0 and extension.len == 0:
+                part = word + ".exe" # CreateProcessW adds it only to a name without a folder
             if line.len > 0:
                 line += " "
             if part.len > 0 and not contains(part, " ") and not contains(part, "\t") and not contains(part, "\""):
@@ -215,19 +386,39 @@ priv func spawn(program: &slice[&strview], into: i32) -> i64|FsError where @wind
                 for k in 0..slashes:
                     add_byte(line, '\\')
                 line += "\""
-        args := array[*u8, 2]{c_text(line), usize(0) as *u8}
-        if into >= 0:
-            saved = dup(1)
-            SetHandleInformation(_get_osfhandle(saved), 1, 0) # the program doesn't inherit it
-            dup2(into, 1)
-        process = _spawnvp(1, cstr(file), ptr(args) as **u8)
-    failed := FsError{errno(), "run", program[0]}
-    if into >= 0:
-        dup2(saved, 1)
-        close(saved)
-    if process < 0:
-        return failed
-    return process
+        flush()
+        given := [input, output, -1]
+        launch := StartupInfo{size = 112, flags = 0x100} # STARTF_USESTDHANDLES
+        nowhere: usize = 0 # the NUL device, for a standard handle that this program doesn't have
+        for k in 0..3:
+            source := GetStdHandle(u32(0xffff_fff6) - u32(k)) # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
+            if given[k] >= 0:
+                source = _get_osfhandle(given[k])
+            if (source == 0 or source == usize(0) - 1) and nowhere == 0:
+                nowhere = CreateFileW(wstr("NUL"), 0xc000_0000, 3, usize(0) as *bytes, 3, 0, 0) # GENERIC_READ and GENERIC_WRITE, shared, OPEN_EXISTING
+            if source == 0 or source == usize(0) - 1:
+                source = nowhere
+            DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), ptr(launch.handles[k]), 0, 1, 2) # inheritable, DUPLICATE_SAME_ACCESS
+        size: usize = 0
+        InitializeProcThreadAttributeList(usize(0) as *bytes, 1, 0, ptr(size))
+        launch.attributes = temp(size)
+        InitializeProcThreadAttributeList(launch.attributes, 1, 0, ptr(size))
+        UpdateProcThreadAttribute(launch.attributes, 0, 0x20002, ptr(launch.handles) as *bytes, 24, usize(0) as *bytes, usize(0) as *usize) # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+        flags: u32 = 0x80000 # EXTENDED_STARTUPINFO_PRESENT
+        consoles: u32 = 0
+        if GetConsoleProcessList(ptr(consoles), 1) == 0:
+            flags = flags or 0x800_0000 # CREATE_NO_WINDOW
+        made = CreateProcessW(usize(0) as wstr, wstr(line), usize(0) as *bytes, usize(0) as *bytes, 1, flags, usize(0) as *bytes, usize(0) as wstr, ptr(launch), ptr(info))
+        code = GetLastError()
+        DeleteProcThreadAttributeList(launch.attributes)
+        for h in launch.handles:
+            CloseHandle(h)
+        if nowhere != 0:
+            CloseHandle(nowhere)
+    if made == 0:
+        return FsError{windows_errno(code), "run", program[0]}
+    CloseHandle(info.thread)
+    return i64(info.process)
 
 priv func finish(pid: i64) -> i32 where not @windows():
     status: i32 = 0
@@ -235,9 +426,30 @@ priv func finish(pid: i64) -> i32 where not @windows():
     return exit_code(status)
 
 priv func finish(process: i64) -> i32 where @windows():
-    status: i32 = 0
-    _cwait(ptr(status), process, 0)
-    return status
+    code: u32 = 0
+    WaitForSingleObject(usize(process), 0xffff_ffff)
+    GetExitCodeProcess(usize(process), ptr(code))
+    CloseHandle(usize(process))
+    return i32(code)
+
+priv func ended(pid: i64) -> bool where @linux():
+    info: array[u32, 32]
+    waitid(1, u32(pid), ptr(info) as *bytes, 0x100_0005) # P_PID, WEXITED, WNOHANG and WNOWAIT, so the pid is not reused until wait
+    return info[0] != 0 # si_signo, SIGCHLD once it ended
+
+priv func ended(pid: i64) -> bool where @macos():
+    info: array[u32, 32]
+    waitid(1, u32(pid), ptr(info) as *bytes, 0x25)
+    return info[0] != 0
+
+priv func ended(process: i64) -> bool where @windows():
+    return WaitForSingleObject(usize(process), 0) == 0
+
+priv func end(pid: i64) where not @windows():
+    kill(i32(pid), 9) # SIGKILL
+
+priv func end(process: i64) where @windows():
+    TerminateProcess(usize(process), 137) # what a SIGKILL gives on the other systems
 
 priv func exit_code(status: i32) -> i32 where not @windows():
     if (status and 127) != 0:
@@ -266,11 +478,11 @@ func executable() -> &strview where @macos():
     return temp(view(ptr(full) as *u8))
 
 func executable() -> &strview where @windows():
-    buf: array[u8, 4096]
-    size := GetModuleFileNameA(usize(0) as *bytes, ptr(buf) as *u8, 4096)
+    buf: array[u16, 4096]
+    size := GetModuleFileNameW(usize(0) as *bytes, ptr(buf) as wstr, 4096)
     if size == 0 or size == 4096:
         return ""
-    return replace(view(ptr(buf) as *u8), "\\", "/")
+    return replace(temp(ptr(buf) as wstr), "\\", "/")
 
 func system_name() -> &strview where @linux():
     return "Linux"
@@ -288,18 +500,24 @@ func current_dir() -> &strview where not @windows():
     return temp(view(ptr(buf) as *u8))
 
 func current_dir() -> &strview where @windows():
-    buf: array[u8, 4096]
-    if getcwd(ptr(buf) as *u8, 4096) as usize == 0:
+    buf: array[u16, 4096]
+    if _wgetcwd(ptr(buf) as wstr, 4096) as usize == 0:
         return ""
-    return replace(view(ptr(buf) as *u8), "\\", "/")
+    return replace(temp(ptr(buf) as wstr), "\\", "/")
 
 func change_dir(path: &strview) -> FsError?:
     failed := false
     with scratch():
-        failed = chdir(cstr(path)) != 0
+        failed = enter(path) != 0
     if failed:
         return FsError{errno(), "enter", path}
     return null
+
+priv func enter(path: &strview) -> i32 where not @windows():
+    return chdir(cstr(path))
+
+priv func enter(path: &strview) -> i32 where @windows():
+    return _wchdir(wstr(path))
 
 priv func seconds(c: Clock) -> f64:
     return f64(c.seconds) + f64(c.nanos) / 1000000000.0

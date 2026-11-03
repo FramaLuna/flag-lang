@@ -105,7 +105,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
         if comp.nodes[f].kind == Func and body(f) != 0 and not generic(f):
-            try instantiate(f, 0)
+            if try holds_where(f):
+                try instantiate(f, 0)
         elif comp.nodes[f].kind == Func and not generic(f):
             c := f + 1
             while c < node_end(f) and comp.nodes[c].kind != Where:
@@ -1722,9 +1723,13 @@ func operation(n: usize, want: usize) -> Value|Fail:
             return called(n + 1, VOID, true)
         v := try value(n + 1, VOID)
         t := comp.types[v.type]
+        if o == "wait" and t.kind != Thread:
+            waited: &list[Value]
+            append(waited, v)
+            if not try offers("join", waited, tok.at):
+                return fail("wait expects a thread on its right, or a value with a join of its own, and " + t.name + " is neither: t := parallel f(x)", tok.at)
+            return invoke("join", waited, tok.at)
         if o == "wait":
-            if t.kind != Thread:
-                return fail("wait expects a thread on its right, and " + t.name + " is not one: t := parallel f(x)", tok.at)
             args: &list[Value]
             append(args, Value{type = pointer(BYTES), at = load(v).at})
             append(args, try place_of(tok.at))

@@ -1,0 +1,75 @@
+use os
+
+# the test runs itself as the other program, so it does the same on every system
+func child() -> i32:
+    what := args()[1]
+    if what == "echo":
+        while true:
+            line := read_line(stdin)
+            if not (line is &strview):
+                break
+            print("echo ", line)
+        return 0
+    if what == "exit":
+        return 3
+    if what == "args":
+        for a in args()[2:]:
+            print("[", a, "]")
+        return 0
+    sleep(30) # what == "sleep"
+    return 0
+
+func me(what: &strview, more: &slice[&strview]) -> &slice[&strview]:
+    program: &list[&strview]
+    defer free(program)
+    me := executable()
+    if ends_with(me, ".exe"):
+        me = me[:-4] # on Windows a name without an extension is a .exe
+    append(program, me)
+    append(program, what)
+    append(program, more)
+    return temp(program)
+
+func main() -> i32:
+    if args().len > 1:
+        return child()
+    nothing: &list[&strview]
+    echo := start(me("echo", nothing))
+    if echo is FsError:
+        print(echo)
+        return 1
+    write(echo.input, "one\n")
+    print(read_line(echo.output)) # what was written goes out before the program waits to read
+    write(echo.input, "two\n")
+    print(done(echo))
+    close(echo.input)
+    print(read_line(echo.output), " ", read_line(echo.output))
+    close(echo.output)
+    print(wait echo, " ", echo.id)
+    three := start(me("exit", nothing)) iferror Process{}
+    while not done(three):
+        sleep(0.001)
+    print(wait three)
+    write(three.input, "nobody reads this") # an error, not a signal that ends this program
+    print(flush(three.input) is FsError)
+    close(three.input)
+    close(three.output)
+    quoted := start(me("args", ptr(["a b", "", "c\"d", "e\\", "\\\"f"]))) iferror Process{}
+    close(quoted.input)
+    while true:
+        line := read_line(quoted.output)
+        if not (line is &strview):
+            break
+        print(line)
+    close(quoted.output)
+    print(wait quoted)
+    slow := start(me("sleep", nothing)) iferror Process{}
+    began := clock()
+    kill(slow)
+    print(wait slow, " ", clock() - began < 10.0)
+    close(slow.input)
+    close(slow.output)
+    print(start(nothing))
+    missing := start(ptr(["flag-surely-not-a-program"]))
+    print(missing)
+    return 0

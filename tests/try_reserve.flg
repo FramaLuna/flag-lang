@@ -1,0 +1,41 @@
+type Mark
+
+func fill(l: *&list[i64], count: usize) -> NoMemory?:
+    try try_reserve(l, count)
+    for i in 0..count:
+        append(l, i64(i))
+    return null
+
+func main():
+    huge := usize(1) << 63
+    numbers: &list[i64]
+    defer free(numbers)
+    print(try_reserve(numbers, huge), " ", numbers.cap)
+    print(try_reserve(numbers, usize(1) << 61), " ", numbers.cap) # its bytes would not fit in 64 bits
+    print(try_reserve(numbers, 100), " ", numbers.cap)
+    room := ptr(numbers.*)
+    for i in 0..100:
+        append(numbers, i64(i))
+    print(ptr(numbers.*) == room, " ", numbers[-1])
+    marks: &list[Mark]
+    defer free(marks)
+    print(try_reserve(marks, 10), " ", marks.cap)
+    text: &str
+    defer free(text)
+    print(try_reserve(text, huge), " ", try_reserve(text, 50), " ", text.cap)
+    counts: &map[&strview, i32]
+    defer free(counts)
+    print(try_reserve(counts, huge), " ", try_reserve(counts, 100), " ", counts.cap)
+    counts["a"] = 1
+    reserve(counts, 1000)
+    print(counts.cap, " ", counts["a"])
+    level: Arena
+    defer free(level)
+    print(try_reserve(level, huge), " ", level.blocks.len)
+    print(try_reserve(level, 100000), " ", level.blocks.len, " ", level.used)
+    first := ptr(level.blocks[0].*)
+    for i in 0..1000:
+        _ = arena(level, i)
+    print(level.blocks.len, " ", ptr(level.blocks[0].*) == first)
+    kept: &list[i64] = arena(level, [])
+    print(fill(kept, 10), " ", kept.len, " ", fill(kept, huge))

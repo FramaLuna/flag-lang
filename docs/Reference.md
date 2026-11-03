@@ -38,7 +38,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
-The generator starts from `main`, or from the tests with `flagc test` (see [Tests](#tests)), and only the code that it can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main`, or from the tests with `flagc test` (see [Tests](#tests)), and only the code that it can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` is false for the target is the exception, it doesn't exist there: `func f() where @windows():` is checked when you build for Windows, like a generic that no call makes. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
@@ -400,6 +400,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
+| `wait x` | `join(x)`, when `x` is not a `Thread`. A `Process` of `os` has one (see [Other programs](Library.md#other-programs)) |
 | `{k: v}` | `put` |
 | `print(a, b)` | formats the values with `+=` into one line, and `write(stdout, line)` |
 | `"a" + x`, `s += x` | `operator +=(s: *&str, x: T)` |
@@ -571,6 +572,8 @@ These stop the program, and write the message to the error output
 | `flag: send on a closed channel` | 134 |
 | `flag: wait of a thread that was never started` | 134 |
 | `flag: done of a thread that was never started` | 134 |
+| `flag: wait of a process that is not running: it was never started, or it was waited already`, also for `done` and `kill` | 134 |
+| `flag: cannot read random bytes: ...`, when the system gives none | 134 |
 | `flag: cannot start a thread, the system refuses one more` | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
@@ -588,7 +591,7 @@ flag: index 5 is out of bounds, length 3
   in load, main.flg:20
   in main, main.flg:31
 ```
-`flag: out of memory` has no place and no chain, any allocation can be the one that fails. The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
+`flag: out of memory` has no place and no chain, any allocation can be the one that fails. `try_reserve` makes room for what comes next and gives `NoMemory` instead of stopping (see [Memory](Library.md#memory)). The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
 
 The last four are crashes, what the system stops: a read or a write through a pointer to memory the program cannot touch, like a null pointer, says the address, an illegal instruction is most often a union that holds no valid tag, like memory you zeroed yourself (see [Unions](#unions)), and a recursion that goes too deep is a stack overflow. They write the chain too, without a place. The exit code is 128 plus the number of the signal, the table shows Linux, where a memory access can also be a bus error, 135, and macOS gives it 138. On Windows it's the code of the exception, like `0xc0000005`. The program ends with that code, not killed by the signal, so it leaves no core dump: to stop where it crashed, run it in a debugger (see [Debugging](#debugging)).
 
@@ -671,7 +674,7 @@ func main():
     print(wait a + wait b)
 ```
 - `parallel` goes before a call and nothing else: `parallel goes before a call, it runs that call in a new thread: parallel f(x)`. The call is chosen like any other, with its overloads, generics, defaults, `@here()` and the address that a `*T` parameter takes, and its arguments are computed in the thread that starts it and copied to the new one. A function value runs too, `parallel steps[i](x)`. A builtin like `print` or a conversion, and a C function, don't run in a thread: wrap them in a func
-- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else is `wait expects a thread on its right, and i32 is not one`
+- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else calls `join` (see [Protocol functions](#protocol-functions)), and a value without one is `wait expects a thread on its right, or a value with a join of its own, and i32 is neither`
 - A local variable that keeps a thread and that nothing reads doesn't compile: `t keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own`
 - `parallel f(x)` alone on its line starts a thread that nobody waits for. Its function can't fail, nothing would see the error: `this thread runs alone and nothing would see an error of i32|Bad, which its function gives: keep the thread and wait for it, t := parallel f(x)`
 - `Thread[T]` is 8 bytes, the address of a block on the heap where the thread finds its arguments and leaves its result. `wait` frees the block, so a thread is waited once, and one that nobody waits is a block that is never freed, `-memory` tells you. The block of a thread that runs alone is freed when it ends. A `Thread` that never got a thread, like a field at zero, stops the program when it's waited or given to `done`: `flag: wait of a thread that was never started`, `flag: done of a thread that was never started`
@@ -992,11 +995,11 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Programs get `.exe`: `a.exe` by default, and `flagc run` writes its program in `%TEMP%`
 - The standard input and output are binary, so `print` writes `\n` like on Linux, and `read_line` removes the `\r` of `\r\n` (it does it on every system)
 - The paths that `os` gives you use `/`, and `fs` takes `/` and `\`
-- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` passes each argument quoted so the program gets it exactly. That's why it runs a name without an extension as a `.exe` and refuses a `.bat` or `.cmd`, which `cmd.exe` would read again
+- Paths, arguments and environment variables go to Windows and come back in UTF-16, so the program always sees UTF-8: a path with `ñ` or `字` works whatever the code page of the system
+- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` and `start(program)` pass each argument quoted so the program gets it exactly. That's why they run a name without an extension as a `.exe` and refuse a `.bat` or `.cmd`, which `cmd.exe` would read again. A program started this way inherits only its standard input, output and error, and when your program has no console of its own, like a program with a window, it doesn't open one
 - `net` uses Winsock, and the first time a program listens the Windows firewall may ask you
 - The `raylib` module only has the Linux build of raylib, for Windows and macOS put your own `libraylib.a` in the `lib` folder
 - The console shows text with its code page, so accents may look wrong unless the console is in UTF-8 (`chcp 65001`)
-- Paths, arguments and environment variables go through the ANSI code page of the system, so a name with letters outside ASCII works only when that code page is UTF-8: the setting "Use Unicode UTF-8 for worldwide language support" of Windows 10 and later
 
 ## Editor support
 These are for editors and tools, they don't build the program.
@@ -1059,7 +1062,7 @@ error: the line ends here, ':' goes here
 - a test with no `name.flg` and no folder gives the compiler no files, only its arguments, that's how the usage is tested
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with thirty-three changes: its `main` returns instead of calling `exit`, so flagc can call it, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with thirty-four changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it opens its files with `_wfopen`, since flagc gives it the paths in UTF-8, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 

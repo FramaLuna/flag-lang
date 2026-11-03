@@ -7,7 +7,7 @@ Every function of the standard library, module by module.
 - [fs](#fs), whole files, folders and paths
 - [os](#os), the program, other programs and the time
 - [json](#json), reading and writing JSON
-- [net](#net), TCP connections
+- [net](#net), TCP connections and UDP
 - [math](#math)
 - [utf8](#utf8)
 - [bits](#bits), sets of numbers as bits
@@ -55,7 +55,11 @@ The functions
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
+- `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
+- `ready(files: &slice[File], seconds: f64 = 0.0) -> &slice[usize]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
+
+`ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
 
 The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run.
 
@@ -103,8 +107,9 @@ type error FsError:
 ```
 Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with, and for the standard files it's `the standard input`, `the standard output` or `the error output`.
 
-A negative `code` is an error that has no errno: on Windows the errors of `rename` are the codes of the system.
+A negative `code` is an error that has no errno, like an error of Windows that errno has no number for.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
+- `windows_errno(code: u32) -> i32` the errno of a code of `GetLastError`, the one the C library of Windows gives for it, and the code negative when errno has none: `FsError{windows_errno(GetLastError()), "lock", path}`
 
 ### Threads
 `parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
@@ -166,6 +171,16 @@ func main():
 - `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`
 - `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
+A program that must go on without memory, like an engine that loads a level, makes room first with `try_reserve`, which gives the error `NoMemory` instead of ending the program, and then fills it without allocating. There is one for lists, text, maps and arenas
+```flag
+func load(enemies: *&list[Enemy], count: usize) -> NoMemory?:
+    try try_reserve(enemies, count)
+    for i in 0..count:
+        append(enemies, Enemy{hp = 10}) # the room is there, append doesn't allocate
+    return null
+```
+`try_reserve` takes a new block and copies into it, so what you had stays as it was when there is no memory. More than 2^63 bytes, or a size that doesn't fit in 64 bits, is `NoMemory` too, without asking the system.
+
 ### Temporary memory
 - `scratch() -> Scratch` marks the scratch memory, and `close` of the mark releases every temporary made after it. `with scratch():` does both
 - `temp(size: usize) -> *bytes` that many bytes of temporary memory
@@ -179,6 +194,7 @@ An `Arena` gives out pieces of big blocks and releases them all at once. It star
 - `arena(a, [...])` and `arena(a, {...})` the list or the map of the literal, in the arena, with the type of the place where it lands: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
 - `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
 - `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
+- `reserve(a: *Arena, size: usize)` makes room for `size` bytes, so the pieces until then don't ask the heap for a block, and `try_reserve(a: *Arena, size: usize) -> NoMemory?` the same with `NoMemory` when the system gives no more memory. Each piece takes its size rounded up to the alignment of the arena
 - `count`, `used` and `blocks` are its fields: the blocks in use, the bytes used in the last one, and every block it has
 
 An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
@@ -194,6 +210,7 @@ On lists
 - `append(l: *&list[$T], v: $T)` adds `v` at the end. The first time it makes room for 8 elements, and then it doubles
 - `append(l: *&list[$T], items: &slice[$T])` adds all the elements at the end, also from the list itself
 - `reserve(l: *&list[$T], want: usize)` makes room for `want` elements, so the appends until then don't allocate
+- `try_reserve(l: *&list[$T], want: usize) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
 - `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
@@ -231,6 +248,7 @@ Building a `&str`
 - `add_byte(s: *&str, b: u8)` appends one byte
 - `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
 - `reserve(s: *&str, want: usize)` makes room for `want` bytes, so the appends until then don't allocate
+- `try_reserve(s: *&str, want: usize) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory
 - `view(s: &str) -> &strview` a view of the text
 - `free(s: *&str)` releases the text and leaves it empty, and in an arena it only leaves it empty
 
@@ -276,6 +294,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `at` and `contains` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`
+- `reserve(m: *&map[$K, $V], want: usize)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
@@ -313,11 +332,14 @@ func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usiz
 - `cstr(text: &strview) -> cstr` a copy with the zero, temporary
 - `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy. It's what the compiler calls when a `&str` goes as a `cstr`
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
+- `wstr` is the type `*u16`, a text of Windows in UTF-16 that ends with a zero, what the functions of Windows with a `W` at the end take
+- `wstr(text: &strview) -> wstr` the text in UTF-16 with the zero, temporary: `LoadLibraryW(wstr(path))`. A byte that is not UTF-8 becomes U+FFFD
+- `temp(w: wstr) -> &strview` a text of Windows in UTF-8, temporary. Half of a pair of surrogates alone becomes U+FFFD
 
 ## fs
 Whole files, folders and paths. The files read by parts, `File` and `open`, are in [core](#files), and the errors are the `FsError` of core.
 
-The files are read and written in binary, the bytes are the same on every system. On Windows the paths can use `/` or `\`.
+The files are read and written in binary, the bytes are the same on every system. On Windows the paths can use `/` or `\`, and they go to the system in UTF-16, so a name with `ñ` or `字` works.
 
 ### Whole files
 - `read_file(path: &strview) -> &str|FsError` all the file, yours
@@ -328,6 +350,7 @@ The files are read and written in binary, the bytes are the same on every system
 - `exists(path: &strview) -> bool` if there is a file or a folder there
 - `is_dir(path: &strview) -> bool`, also for a folder that you cannot read
 - `file_size(path: &strview) -> usize|FsError` in bytes, without opening the file, so it works on one that you cannot read. A folder has no size, it's an error
+- `modified(path: &strview) -> f64|FsError` when the file or the folder last changed, in seconds since 1970 like `now()` of `os`, with the fraction the system keeps: nanoseconds on Linux and macOS, 100 ns on Windows. It's how a program loads an asset again when it changes, `if modified(path) iferror 0.0 != loaded_at:`
 - `list_dir(path: &strview) -> &slice[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
 - `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
 - `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
@@ -351,7 +374,7 @@ The program, other programs and the time.
 
 The standard input is `read_line(stdin)` of [core](#files).
 
-On every system the paths that `os` gives use `/`.
+On every system the paths that `os` gives use `/`, and on Windows the paths, the arguments and the environment come from the system in UTF-16, so the program always sees UTF-8.
 
 ### Other programs
 A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
@@ -373,6 +396,37 @@ func main():
         print(text)
 ```
 Everything that waits in your files goes out before another program runs. On Linux and macOS a program killed by a signal gives 128 plus the signal.
+
+A program can also run while yours goes on, talking to it through its standard input and output
+- `start(program: &slice[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
+- `p.input` is a `File` that the program reads as its standard input, and `p.output` one with what it writes to its standard output. They are files like any other, so `write`, `read_line`, `read`, `ready` and `close` work on them. `close(p.input)` gives the program the end of its input, and close `p.output` when you no longer read it
+- `done(p: Process) -> bool` if it ended, without waiting
+- `wait p` waits for it to end and gives its exit code, like `run`. It's `join(p: *Process) -> i32` (see [Protocol functions](Reference.md#protocol-functions)), and it leaves `p.id` at 0, a process is waited once. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
+- `kill(p: Process)` ends it at once, and `wait` then gives 137, 128 plus `SIGKILL`, on every system
+- `id` is the number of the system for it, the pid, or a handle on Windows. `done`, `wait` and `kill` of a `Process` with `id` 0, one never started or waited already, stop the program: `flag: kill of a process that is not running: it was never started, or it was waited already`
+
+```flag
+use os
+
+func main():
+    p := start(ptr(["sort"]))
+    if p is FsError:
+        eprint(p)
+        return
+    write(p.input, "pear\napple\n")
+    close(p.input)
+    while true:
+        line := read_line(p.output)
+        if not (line is &strview):
+            break
+        print(line) # apple, then pear
+    close(p.output)
+    print(wait p) # 0
+```
+What you write to `p.input` waits in the file like any other, and it goes out with `flush`, before your program waits to read, and in `ready`, `done` and `wait`. Writing to a program that ended is a failed write, that `flush` tells you, and not a signal that ends yours.
+
+### Random bytes
+- `random_bytes(into: &slice[u8])` fills the bytes with random ones from the system, good for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. They come from `getrandom` on Linux, `getentropy` on macOS and `BCryptGenRandom` on Windows. When the system gives none the program stops with `flag: cannot read random bytes: ...`, a key that comes out weak is worse. The random numbers of `math` are not for secrets
 
 ### Time
 - `now() -> f64` the seconds since 1970, with decimals
@@ -434,7 +488,7 @@ type error NotJson:
 A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Node` has its `kind`, `from` and `to`, so that `d.text[from:to]` is its JSON text, `size`, how many nodes it takes with the ones inside it, and `escaped`, if it's a `Text` with escapes to decode. An object keeps each key as a `Text` node right before its value.
 
 ## net
-TCP connections. A `Socket` is one connection and a `Server` waits for them, each a type of its own, so a file never goes where a connection goes.
+TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them and an `Udp` sends and receives datagrams, each a type of its own, so a file never goes where a connection goes.
 - `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers: `cannot connect to example.com:80: Connection refused`
 - `listen(port: u16) -> Server|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
 - `accept(server: Server) -> Socket|NetError` waits for the next connection
@@ -446,10 +500,10 @@ TCP connections. A `Socket` is one connection and a `Server` waits for them, eac
 ```flag
 type error NetError:
     code: i32 # the error number of the system, errno
-    action: &strview # what failed: connect to, listen on port, accept a connection, read, write
-    address: &strview # the host and port of connect, the port of listen, empty for the rest
+    action: &strview # what failed: connect to, listen on port, accept a connection, read, write, open the UDP port, find, send to, receive
+    address: &strview # the host and port of connect and of send, the host of address, the port of listen and of udp, empty for the rest
 ```
-It prints like an `FsError`. A name that `connect` cannot find gives the negative code of `getaddrinfo`, and on Windows the codes are the negative ones of Winsock. `TIMED_OUT`, of core, is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read: the timeout ran out`.
+It prints like an `FsError`. A name that `connect` or `address` cannot find gives the negative code of `getaddrinfo`, and on Windows the codes are the negative ones of Winsock. `TIMED_OUT`, of core, is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read: the timeout ran out`.
 
 What you write waits in the connection like in a file, and it goes out with `flush`, or by itself before the program waits to read, so a request always goes before you wait for its answer
 ```flag
@@ -465,6 +519,53 @@ func main():
         print(read_line(c)) # HTTP/1.0 200 OK
 ```
 Writing to a connection that the other side closed gives a `NetError`, it doesn't stop the program. On Windows the module uses Winsock and starts it for you.
+
+### UDP
+An `Udp` is a port that sends and receives datagrams, each one whole or not at all. It is IPv6 and takes IPv4 too, so one `Udp` talks to both.
+- `udp(port: u16) -> Udp|NetError` opens the port on every address of the machine, 0 lets the system choose one
+- `address(host: &strview, port: u16) -> Address|NetError` the address of a name or of a number like `127.0.0.1` or `::1`, the first one the name has
+- `send(u: Udp, to: Address, data: &strview) -> NetError?` sends the data as one datagram, at most 65507 bytes
+- `receive(u: Udp, into: *&str) -> Address|NetError` waits for the next datagram, appends it to `into` and gives who sent it
+- `port(u: Udp) -> u16`, `timeout(u: Udp, seconds: f64)` and `close(u: Udp)` like the ones of a connection
+
+An `Address` has `ip: array[u8, 16]`, an IPv4 address in it is `::ffff:a.b.c.d`, and `port: u16`. It compares with `==`, it can be the key of a map, and it prints as `127.0.0.1:5000` or `[::1]:5000`.
+```flag
+use net
+
+func main():
+    u := udp(5000)
+    if u is NetError:
+        eprint(u)
+        return
+    got: &str
+    defer free(got)
+    while true:
+        got.len = 0
+        from := receive(u, got)
+        if from is Address:
+            _ = send(u, from, got) # each datagram goes back to who sent it
+```
+
+### Waiting for many
+- `ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize]` waits until one of them can be read without waiting, or `seconds` pass, and gives the indexes of the ready ones, temporary: a `Socket` with bytes or its end, a `Server` with a connection to accept, an `Udp` with a datagram. 0 only asks, and a negative `seconds` waits as long as it takes. The elements are any of `Socket`, `Server` and `Udp`, or a union of them, so one list holds a server and its connections
+- `ready(x, seconds: f64 = 0.0) -> bool` the same for one of them
+
+```flag
+waiting: &list[Socket|Server]
+append(waiting, server)
+while true:
+    with scratch():
+        for i in ready(waiting, -1.0):
+            one := waiting[i]
+            switch one:
+            case Server:
+                client := accept(one)
+                if client is Socket:
+                    append(waiting, client)
+            case Socket:
+                line := read_line(one)
+                ...
+```
 
 ## math
 It links the C math library.

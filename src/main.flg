@@ -255,7 +255,7 @@ context comp:
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
-    func _fullpath(into: *u8, path: cstr, size: usize) -> cstr
+    func _wfullpath(into: wstr, path: wstr, size: usize) -> wstr
     func getpid() -> i32
     func qbe_main(count: i32, args: **u8) -> i32
     func flag_embedded(index: usize, name: **u8, size: *usize) -> *bytes
@@ -665,10 +665,11 @@ func real_path(path: &strview) -> &strview where not @windows():
     return view(found)
 
 func real_path(path: &strview) -> &strview where @windows():
-    found := _fullpath(usize(0) as *u8, cstr(path), 0)
+    found := _wfullpath(usize(0) as wstr, wstr(path), 0)
     if found as usize == 0:
         return path
-    return view(found)
+    kept: &str = temp(found)
+    return kept
 
 func read_source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     code := texts[real_path(path)] ifnull view(try read_file(path))

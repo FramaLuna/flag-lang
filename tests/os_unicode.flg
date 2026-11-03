@@ -1,0 +1,38 @@
+use fs
+use os
+
+# on Windows the paths and the arguments go to the system in UTF-16, and come back in UTF-8
+func main() -> i32:
+    if args().len > 1:
+        print(args()[1], " ", args()[1].len)
+        return 0
+    folder := "build/tests/os_unicode ñandú 字"
+    _ = remove(join_path(folder, "año.txt"))
+    _ = remove(join_path(folder, "otro año.txt"))
+    _ = remove(folder)
+    print(make_dir(folder), " ", is_dir(folder))
+    name := join_path(folder, "año.txt")
+    print(write_file(name, "ñ字"), " ", exists(name), " ", file_size(name))
+    text := read_file(name)
+    if text is &str:
+        print(text, " ", modified(name) is f64)
+        free(text)
+    file := open(name)
+    if file is File:
+        print(read_line(file))
+        close(file)
+    moved := join_path(folder, "otro año.txt")
+    print(rename(name, moved), " ", exists(name), " ", list_dir(folder))
+    here := current_dir()
+    print(change_dir(folder), " ", ends_with(current_dir(), "ñandú 字"))
+    _ = change_dir(here)
+    child := start(ptr([executable(), moved]))
+    if child is FsError:
+        print(child)
+        return 1
+    close(child.input)
+    print(read_line(child.output))
+    close(child.output)
+    print(wait child)
+    print(remove(moved), " ", remove(folder), " ", exists(folder))
+    return 0
