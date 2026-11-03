@@ -2143,6 +2143,15 @@ priv export func flag_start():
     catch_crashes()
     guard_stack()
 
+priv entering: Lock
+priv stamped: bool
+
+# the first time a thread runs code of this program or library, stamp writes the tags its contexts start with, and the first time of all those of the file variables
+priv func enter(stamp: func(bool)):
+    with lock(entering):
+        stamp(not stamped)
+        stamped = true
+
 priv func catch_crashes() where @linux():
     for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
         catch(signal)

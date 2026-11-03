@@ -22,6 +22,7 @@ This is the reference of the language
 - [Debugging](#debugging)
 - [Tests](#tests)
 - [Calling C](#calling-c)
+- [Libraries](#libraries)
 - [Platforms](#platforms)
 - [Editor support](#editor-support)
 - [Diagnostics](#diagnostics)
@@ -38,7 +39,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
-The generator starts from `main`, or from the tests with `flagc test` (see [Tests](#tests)), and only the code that it can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` is false for the target is the exception, it doesn't exist there: `func f() where @windows():` is checked when you build for Windows, like a generic that no call makes. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main`, from the tests with `flagc test` (see [Tests](#tests)), or from the `export` functions of a library, and only the code that they can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` doesn't hold on the target is the exception: it's for another system, like `func f() where @windows():` on Linux, and it's checked when you build for that one, where the C functions it calls have the signatures of that system. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
@@ -46,12 +47,13 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 
 ## The command line
 ```
-flagc [run|test] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]
+flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]
 ```
 - An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
 - `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
 - `test` has to be the first argument too. It builds the tests of the files and runs them, the ones whose name has one of the words after `--` (see [Tests](#tests)). `-o` keeps the program of the tests, and `-timeout` gives the seconds each test can take, 10 if you don't give it
 - `-o` names the program, `a.out` if you don't give one, `a.exe` on Windows
+- `-shared` builds a library that a program loads instead of a program (see [Libraries](#libraries)). Its name is `a.so`, `a.dylib` or `a.dll` if you don't give one, and `run` with it is a wrong command line, a library doesn't run on its own
 - `-check` stops after checking the code, it writes nothing and it doesn't need a `main`
 - `-memory` runs the memory checker, the warnings don't change the exit code
 - `-debug` builds the program for gdb and lldb (see [Debugging](#debugging))
@@ -69,10 +71,12 @@ error: no test has parse or lex in its name
 ```
 
 ### The C compiler
-The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link is always
+The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link of a program is
 ```
 cc -o program program.s -L<library folder> -L<folder of each input> -l<each extern library> <anything else>
 ```
+A library, with `-shared`, has `-shared` before what you give, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
+
 The `-L` of the folders of your files means that you can put a `libsomething.a` next to your code and use it with `extern "something"`.
 
 If the C compiler cannot run you get
@@ -139,7 +143,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
-`sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`.
+`sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`. `offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `offset_of(Car.motor, power)`.
 
 Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together when all of them are constants, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces. A word with a value computed when the program runs is written one field at a time: joining the fields costs instructions, and when the value lives in registers they have to be taken apart again.
 
@@ -168,9 +172,9 @@ A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from wh
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A union of void types is only the tag, 4 bytes, that's why enums are small.
 
-The tag says which member the union holds. It comes from the id the type has inside that compilation, so it can change when you change the program, don't save it to a file. The tag of `null` is always 0.
+The tag says which member the union holds. The builtin types have the first tags, in the order `null`, `bool`, `i8`... `IterationEnd`, so the tag of `null` is always 0, and any other type has a hash of its name, with its module, so it's the same in every program and every library that has the type, whatever order they declare their types in. That's what lets a union cross between a program and a library it loads. The tag says which type it is, not what the type holds: a `Door` of the library with three fields and a `Door` of the program with two have the same tag, so a type you change between the two doesn't cross. Two types whose hashes give the same tag cannot be in one union, which almost never happens: `Open and Ajar have the same tag, so a union of them cannot tell which one it holds: rename one of them`. A tag doesn't change when you change the program, but don't save it to a file to read with another one either, write the name.
 
-An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a file variable without a value before `main`. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
+An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a file variable without a value before `main`. A library has no `main`, so there, and in a thread that C starts, it happens the first time the thread calls an `export func` (see [Libraries](#libraries)). Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
@@ -368,7 +372,7 @@ func main():
 - a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
-- C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
+- the name of a C function, of an `extern` block or an `export func`, is a value of an `extern func` type, the type of a function of C, and never of a `func` type: `sqrt is a C function, so its value is an extern func(f64) -> f64 and not the func(f64) -> f64 this place takes` (see [C function types](#c-function-types)). A `func` type cannot be in the signature of a C function
 - there are no closures, no functions inside functions and no functions without a name. A function gets what it needs as arguments
 
 ### Inlining
@@ -875,7 +879,7 @@ gdb ./main
 - the variables at the root of a file are global variables, and the contexts are thread-local variables, so the debugger shows the ones of the thread it stops in. On Linux for arm64 and riscv64 a context has no place in the DWARF: no relocation of those systems gives the place of thread data to it, gcc and clang leave it out too
 - numbers, `bool` and pointers are the types of C, and a `*u8` is a C string, so the `data` of a text shows the text, and what follows it too
 - a struct has its fields, and a struct, an enum or an alias you declare is also a typedef of its name, without its module, so `ptype Point`, `ptype Color` and `ptype Shape` work, where C would want `struct Point` and `enum Color`. A fat pointer is a struct with `data` and its fields, like `len`, `cap` and `arena`, a function value is a pointer to a function, and a `Thread[T]` is a struct with the address of its `block`
-- an enum is an enumeration with its variants, and their values are the tags of that compilation (see [Unions](#unions))
+- an enum is an enumeration with its variants, and their values are their tags (see [Unions](#unions))
 - a tagged union is a struct with its `tag`, an enumeration of its members, and the member it holds as a variant part, like Rust does: `{tag = (Point), Point = {x = 1, y = 2}}`, or `{tag = null}` for a member with no data. A member with data is `(Point)` in the enumeration, since in C an enumerator `Point` and the type `Point` share their names, and gdb would take one for the other. gdb shows that member, but in an array it shows every member of each union, and `print shapes[1]` the one it holds. lldb reads variant parts only in Rust code, so it may show only the tag
 - an untagged union is a union of its members
 
@@ -927,25 +931,65 @@ An `extern` block declares C functions and says which library they come from. `"
 extern "m":
     func cbrt(x: f64) -> f64
 ```
-A block can have a `where` like a function, and then its library is linked only when the condition holds. A block without functions just links its library, that's how a library says that it needs another one
+A block can have a `where` like a function. Then its library is linked only when the condition holds, and its functions exist only there, as if each one had that `where`, so two systems can give one function two signatures. A block without functions just links its library, that's how a library says that it needs another one
 ```flag
+extern "c" where not @windows():
+    func socket(domain: i32, kind: i32, protocol: i32) -> i32
+
 extern "ws2_32" where @windows():
-    func WSAStartup(version: u16, into: *bytes) -> i32
+    func socket(domain: i32, kind: i32, protocol: i32) -> u64 # a SOCKET is 64 bits
 
 extern "m":
 ```
+The functions of `extern` are functions like the others: two with the same parameters in one module are an error, `labs is declared twice with the same parameters`, and two with different parameters are overloads.
+
+A function takes the name of C you give it after `=`, so a C function can have another name in Flag, or one for each signature it's called with, like `objc_msgSend`, which takes the arguments of the method it sends to
+```flag
+extern "objc":
+    func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
+    func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
+    func wait_child(status: *i32) -> i32 = "wait" # wait is a word of Flag
+```
+The symbol is text and goes after what the function returns, before its `where`. Only a function of an `extern` block takes one: `only a func of an extern block takes = "symbol", the C function it calls`.
+
 You can also give the compiler `.c`, `.o` and `.a` files, they go to the C compiler with the rest.
 
 ### export
-`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. `ptr(name)` of an export function is its address as a `*bytes`, for C functions that take a callback
+`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. Its name is a value of its C function type, the callback you give to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
+
+func main():
+    values := [3, 1, 2]
+    qsort(ptr(values) as *bytes, 3, 4, ascending)
 ```
-`ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has. Inside Flag you don't need `ptr`, the name of a function is already a value (see [Function values](#function-values)), but that value doesn't cross to C.
+`ptr(name)` of an export function is its address as a `*bytes`, for a C function that takes a `void *`. `ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has.
+
+### C function types
+`extern func(i32, Rect) -> Rect` is the type of a function of C: 8 bytes, the address of the function, and a call through it passes and returns its values the way C does, structs too. It's another type than `func(i32, Rect) -> Rect`, the function values of Flag, which pass structs their own way. Its values are
+- the name of a C function, of an `extern` block or an `export func`: `f := cbrt` gives an `extern func(f64) -> f64`
+- an address that C gives you, read with `as`: what `symbol` of `os` finds in a library (see [Libraries](#libraries)), what `GetProcAddress` or a loader of Vulkan or OpenGL gives, a field of a table of C
+```flag
+type Unknown:
+    vtable: *Calls
+
+type Calls: # a COM object starts with its table of methods
+    query: extern func(*Unknown, *bytes, **bytes) -> i32
+    add_ref: extern func(*Unknown) -> u32
+    release: extern func(*Unknown) -> u32
+
+func drop(object: *Unknown):
+    object.vtable.release(object)
+```
+- it crosses to C: as a parameter, as a field of a struct that goes to C by value, and among the extra arguments of a variadic function
+- one at zero is the `NULL` of C. A C function may take it as no callback, so passing it is fine, and calling it stops the program like an empty function value: `flag: call of an empty function value`
+- `==` and printing work like for function values. `parallel` doesn't run one, `parallel cannot run an extern func(f64) -> f64, it is called the way C calls: wrap the call in a func`
+- a function of Flag doesn't go there: `double is a function of Flag, and the extern func(i32) -> i32 this place takes holds a C function: declare it export func`
+- a variadic C function has no value, a type cannot say its extra arguments
 
 ### Types
 | Flag | C |
@@ -956,12 +1000,13 @@ export func ascending(a: *i32, b: *i32) -> i32:
 | `i64`, `u64`, `usize` | `long long`, `unsigned long long`, `size_t` |
 | `f32`, `f64` | `float`, `double` |
 | `*T`, `cstr` | pointers |
+| `extern func(T) -> U` | a pointer to a function |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
 
-Tagged unions, fat pointers and function values can't cross to C, pass their parts: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
+Tagged unions, fat pointers and the function values of Flag can't cross to C, pass their parts: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
-A C function can end with `...`. The extra arguments must be integers, floats, `bool` or pointers, not function values, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
+A C function can end with `...`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
 
 ### Text
 `cstr` is `*u8`, a text that ends with a zero byte
@@ -971,6 +1016,38 @@ A C function can end with `...`. The extra arguments must be integers, floats, `
 - `view(c)` turns a `cstr` back into a `&strview`
 
 C's `printf` keeps what it prints in a buffer of its own, so into a pipe or a file its lines and the ones of `print` come out of order. Call `flush()` before C prints, and C's `fflush(NULL)` after it.
+
+## Libraries
+`-shared` builds a library that a program loads while it runs, a `.so` on Linux, a `.dylib` on macOS and a `.dll` on Windows. A library has no `main`, a `func main()` in it is a function like any other, and what it gives are its `export` functions
+```flag
+export func game_step(state: *State, dt: f64):
+    state.time += dt
+```
+```sh
+flagc game.flg -shared -o game.so
+```
+The program loads it with `load`, `symbol` and `close` of `os` (see [Libraries](Library.md#libraries)), and reads what `symbol` finds as an `extern func`
+```flag
+use os
+
+func main():
+    game := load("./game.so")
+    if game is LoadError:
+        panic("" + game)
+    step := trust symbol(trust game, "game_step") as extern func(*State, f64)
+    state: State
+    step(ptr(state), 0.016)
+```
+- a library starts on its own: the first time a thread calls one of its `export` functions, its contexts get the tags they start with, and the first time of all, its file variables (see [Unions](#unions)). So any thread of the program can call it, also one that C starts. An `export func` of a program does the same, for the threads of C that call it, like the one that a library of audio starts. When no context and no file variable holds a union without `null` there is nothing to do and the call costs nothing more
+- a library carries its own core: its own scratch memory, its own buffers for the files and its own file variables. What crosses between the two is bytes, and a struct, a pointer, a fat pointer or a union means the same on both sides when both declare the same types, since a tag is the same in every program (see [Unions](#unions)). Memory that one side allocates the other one can free, both use the `malloc` of C, but an arena or a temporary belongs to the side that made it
+- the crashes are the program's: a library doesn't catch them, so a crash in the program, or in the library, is reported by the program with the chain of its calls, which leaves out the functions of the library like it leaves out those of C. A thread that a library starts keeps its stack for the handler of the program. A runtime error of the library, like an index out of its list, is reported by the library, with the chain of its own functions
+- what a library prints waits in its own buffer, like the `printf` of C, so into a pipe or a file its lines and the ones of the program come out in the order each one writes its buffer: at a new line on a terminal, at `flush()`, when the library is closed and when the program ends. Call `flush()` on each side before the other one prints
+- a library has no arguments, `args()` is empty there
+- on Linux the contexts of a library are thread data that the library reaches through the table of the dynamic linker, the initial-exec model. glibc keeps about 1.5 KiB for the contexts of all the libraries that a program loads while it runs, the core of each library takes 136 bytes of them, and a library that needs more fails to load: `cannot load ./game.so: cannot allocate memory in static TLS block`. A library that is closed gives its room back. Keep the big things of a context behind a pointer
+- a library on Linux links with `-fPIC` and `-Wl,-Bsymbolic`, so its calls and the addresses of its functions go to its own functions, and never to the ones with the same name in the program or in another library
+- a library that you close and load again from the same path is the new one on Linux and Windows. macOS never unloads a library that has thread data, and every Flag library has, so give each version its own path there
+
+A program that reloads its game keeps its state in memory of its own, and gives a pointer to it to each version of the library: that's `tests/reload.flg`.
 
 ## Platforms
 Flag builds programs for Linux, macOS and Windows
@@ -1051,7 +1128,7 @@ error: the line ends here, ':' goes here
 `./build.sh sanitize` builds QBE with AddressSanitizer and UndefinedBehaviorSanitizer, and turns the three seeds into assembly for the six targets, with and without `-g`: a read out of an array, a memory freed twice or a shift that's too big stops it. CI runs it on Linux, since such a bug can pass on one system and break on another, as a read past an array of the slots that are cut did on macOS. QBE is built with `-fwrapv`: it adds offsets and folds constants with signed numbers that wrap around, as the target does, and C would leave that undefined.
 
 `./test.sh build/flagc` runs every test in `tests/`
-- `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
+- `name.flg` with `name.out` must print that, and the compiler must build it without printing anything. The program gets the compiler in the variable `FLAGC`, so a test can build what it needs, like the libraries that `reload.flg` loads
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
 - `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db` and the `Thread 1 hit` that comes before a breakpoint on Windows, where a program always has more than one thread
@@ -1062,7 +1139,7 @@ error: the line ends here, ':' goes here
 - a test with no `name.flg` and no folder gives the compiler no files, only its arguments, that's how the usage is tested
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with thirty-four changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it opens its files with `_wfopen`, since flagc gives it the paths in UTF-8, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with thirty-six changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it opens its files with `_wfopen`, since flagc gives it the paths in UTF-8, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
@@ -1077,6 +1154,8 @@ The nineteenth and the twentieth come with the inlining. A small slot of the sta
 The twenty-first goes with them. A copy out of a slot of the stack whose size is not a multiple of 8, a struct without fields of 8 bytes, goes 4 bytes at a time: its fields were written 4 bytes or less at a time, and a load of 8 bytes that takes two of those stores waits until they reach the cache. That's how a `Mat3` of nine `f32` that doesn't fit in the 32 bytes is copied, and a copy from the heap, whose stores are long done, still goes 8 bytes at a time. The integration of bodies that copies them got 7 % faster, and the poses of a skeleton 17 %.
 
 Six more fix QBE itself. `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign, and the forwarding of stores to loads kept the bits above a narrow store when a load that starts inside it took them shifted down: both happen in more slots since small slots are cut. GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion. The coalescing of slots shifted a mask by the offset of an access, that can be past its slot, which C leaves undefined. And on Windows a function keeps `xmm6` to `xmm15` for its caller, as the ABI asks: QBE took them as registers that any call changes, so a function of Flag that C calls, like a callback, could change the floats of the C around it. And on Windows a parameter that comes on the stack, the fifth and the ones after it, was read as a 64-bit integer whatever its type, so an `f32` or an `f64` there ended in a register of integers and the assembler refused the program.
+
+Two more are for libraries on Linux, whose thread data is `extern thread`, the initial-exec model: amd64 had it, and arm64 and rv64 stopped with `extern thread unavailable`. arm64 reads the place in the thread from the GOT, `:gottprel:`, and adds `tpidr_el0` through `x18`, which QBE keeps free outside Apple, and rv64 writes `la.tls.ie` and adds `tp`. And the offset of an address from the GOT, like a field of a context, is added after the address is read, on arm64 through a register: its `add` takes 12 bits, and a field past 4 KiB stopped QBE with an assertion.
 
 The last six are for the chain of calls and for the debugger. On x86_64 every function keeps its frame pointer, as on arm64 and rv64. On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set, `[rbp]` the `rbp` of the caller and `[rbp+8]` the return address, so they are found from `rbp` wherever the body moves `rsp`. `hlt` is an instruction that doesn't exist on every target, `udf` on arm64 and `unimp` on rv64 like `ud2` on amd64: it was a breakpoint there, and a crash handler doesn't take breakpoints. Each function ends with the label `.L<name>.end`, `L<name>.end` on macOS and Windows, which gives the table of functions and the DWARF its end. The instruction `%r =l frame` gives the frame pointer of the function. And `qbe -g` builds for a debugger
 - `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and that keeps it in memory, whole
@@ -1095,3 +1174,5 @@ Things that work in a way that may surprise you, so be aware
 - A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know), and it misses the element mistakes of [Elements](#elements)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy
+- A library writes its files through buffers of its own, so into a pipe the lines of a program and of a library it loads come out in the order each one flushes (see [Libraries](#libraries))
+- An address that C gives you can be read as a `func(...)` with `as` too, and a call through it passes structs the way of Flag: read it as an `extern func(...)`

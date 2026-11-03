@@ -255,7 +255,11 @@ loadaddr(Con *c, char *rn, FILE *f)
 			rn, rn, str(c->sym.id), off);
 		break;
 	case SExtThr:
-		die("extern thread unavailable on rv64");
+		/* initial-exec TLS: the offset from
+		 * tp is in the GOT */
+		fprintf(f, "\tla.tls.ie %s, %s\n", rn, str(c->sym.id));
+		fprintf(f, "\tadd %s, %s, tp\n", rn, rn);
+		break;
 	}
 }
 

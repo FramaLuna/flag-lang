@@ -1,0 +1,20 @@
+use fs
+use os
+
+func boom(p: *i32, depth: i32) -> i32:
+    if depth > 0:
+        return boom(p, depth - 1) + 1
+    return p.*
+
+func main():
+    library := dir_of(args()[0]) + "library_crash_game.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/library_crash_game.flg", "-shared", "-o", library]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library)
+    loaded := load(library)
+    if loaded is LoadError:
+        panic("" + loaded)
+    step := trust symbol(loaded, "game_step") as extern func(i32) -> i32
+    print("the library says ", step(41))
+    flush()
+    print(boom(usize(0) as *i32, 2))

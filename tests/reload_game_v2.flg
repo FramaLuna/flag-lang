@@ -1,0 +1,33 @@
+# the second version of the library that tests/reload.flg loads: it counts by ten and squares the circle
+type Circle:
+    r: f64
+
+type Square:
+    side: f64
+
+type State:
+    count: i64
+    shape: Circle|Square|null
+    fresh: bool
+    calm: bool
+
+type enum Mood:
+    Calm, Busy
+
+context mind:
+    mood: Mood
+
+last: Mood
+
+export func step(state: *State):
+    state.fresh = mind.mood == Calm
+    state.calm = last == Calm
+    mind.mood = Busy
+    last = Busy
+    state.count += 10
+    shape := state.shape
+    if shape is Circle:
+        state.shape = Square{shape.r * 2.0}
+
+export func version() -> i32:
+    return 2

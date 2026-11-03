@@ -1,0 +1,34 @@
+# the first version of the library that tests/reload.flg loads
+type Circle:
+    r: f64
+
+type Square:
+    side: f64
+
+type State:
+    count: i64
+    shape: Circle|Square|null
+    fresh: bool
+    calm: bool
+
+type enum Mood:
+    Calm, Busy
+
+context mind:
+    mood: Mood
+
+last: Mood
+
+export func step(state: *State):
+    state.fresh = mind.mood == Calm
+    state.calm = last == Calm
+    mind.mood = Busy
+    state.count += 1
+    shape := state.shape
+    if shape is Circle:
+        state.shape = Circle{shape.r + 1.0}
+    elif shape is null:
+        state.shape = Circle{1.0}
+
+export func version() -> i32:
+    return 1

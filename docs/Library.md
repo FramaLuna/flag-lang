@@ -5,7 +5,7 @@ Every function of the standard library, module by module.
 - [How to read this](#how-to-read-this)
 - [core](#core)
 - [fs](#fs), whole files, folders and paths
-- [os](#os), the program, other programs and the time
+- [os](#os), the program, other programs, libraries and the time
 - [json](#json), reading and writing JSON
 - [net](#net), TCP connections and UDP
 - [math](#math)
@@ -427,6 +427,34 @@ What you write to `p.input` waits in the file like any other, and it goes out wi
 
 ### Random bytes
 - `random_bytes(into: &slice[u8])` fills the bytes with random ones from the system, good for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. They come from `getrandom` on Linux, `getentropy` on macOS and `BCryptGenRandom` on Windows. When the system gives none the program stops with `flag: cannot read random bytes: ...`, a key that comes out weak is worse. The random numbers of `math` are not for secrets
+
+### Libraries
+A library that the program loads while it runs, like one that `flagc -shared` builds (see [Libraries](Reference.md#libraries)), is a `Library`. One that cannot load is a `LoadError`, with the words of the system: `cannot load ./game.so: cannot open shared object file: No such file or directory`
+```flag
+type Library:
+    handle: *bytes
+
+type error LoadError:
+    path: &strview # the path you gave
+    reason: &strview # what the system said, temporary
+```
+- `load(path: &strview) -> Library|LoadError` loads the library, with `dlopen` on Linux and macOS, every symbol now and none for the libraries loaded after it, and with `LoadLibraryW` on Windows. A path without `/` is searched where the system searches libraries, so write `./game.so` for one in the current folder
+- `symbol(library: Library, name: &strview) -> *bytes?` the address of an exported function or variable, `null` when the library has none with that name. A function is read with `as`: `step := trust symbol(game, "game_step") as extern func(*State, f64)`
+- `close(library: Library)` unloads the library, what it printed goes out first. Its functions and everything it pointed to are gone, so close it when no thread runs its code and nothing holds its addresses
+
+```flag
+use os
+
+func main():
+    game := load("./game.so")
+    if game is LoadError:
+        print(game)
+        return
+    version := symbol(game, "version")
+    if version is *bytes:
+        print("version ", (version as extern func() -> i32)())
+    close(game)
+```
 
 ### Time
 - `now() -> f64` the seconds since 1970, with decimals

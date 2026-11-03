@@ -208,10 +208,10 @@ func dwarf() -> &str:
                         for m in members(t):
                             if comp.types[m].size == 0:
                                 uleb(out, VARIANT_DIE + LEAF)
-                                uleb(out, m - 1)
+                                uleb(out, usize(comp.types[m].tag))
                             else:
                                 uleb(out, VARIANT_DIE)
-                                uleb(out, m - 1)
+                                uleb(out, usize(comp.types[m].tag))
                                 uleb(out, MEMBER_DIE)
                                 asciz(out, comp.types[m].name)
                                 out += reference(local + "type" + m)
@@ -230,7 +230,7 @@ func dwarf() -> &str:
                             asciz(out, comp.types[m].name)
                         else:
                             asciz(out, "(" + comp.types[m].name + ")") # an enumerator Point would hide the type Point from gdb
-                        uleb(out, m - 1)
+                        uleb(out, usize(comp.types[m].tag))
                     out += "\t.byte 0\n"
                 case:
                     uleb(out, STRUCT_DIE + LEAF)

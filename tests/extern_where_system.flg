@@ -1,0 +1,15 @@
+# the where of a block decides which of its functions exist: building for Windows takes the second socket
+extern "c" where not @windows():
+    func socket(domain: i32, kind: i32, protocol: i32) -> i32
+
+extern "ws2_32" where @windows():
+    func socket(domain: i32, kind: i32, protocol: i32) -> u64
+
+func handle() -> u64 where @windows():
+    return socket(23, 2, 0)
+
+func handle() -> u64 where not @windows():
+    return u64(socket(10, 2, 0))
+
+func main():
+    print(handle() > 0)

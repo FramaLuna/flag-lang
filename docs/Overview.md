@@ -1046,19 +1046,29 @@ func main():
     name: cstr = cstr("hola")
     print(strlen(name), " ", strlen("abc"), " ", view(name))
 ```
-`export func` makes a function that C can call, with the plain name and the C calling convention. `ptr` of an export function gives you its address, that's how you pass callbacks to C
+A function can have another name in Flag than in C, after `=`, and so one C function can be declared once for each signature you call it with
+```flag
+extern "objc":
+    func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
+    func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
+```
+`export func` makes a function that C can call, with the plain name and the C calling convention. Its name is a value of type `extern func(...)`, the function type of C, and that's how you pass callbacks to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
 
 func main():
     values := [3, 1, 2]
-    qsort(ptr(values) as *bytes, 3, 4, ptr(ascending))
+    qsort(ptr(values) as *bytes, 3, 4, ascending)
 ```
-A callback for C is always an `export func` passed with `ptr`. The function values of Flag don't cross to C.
+An `extern func` is called like C calls, structs too, so it's also what a table of functions of C holds, and what an address that C gives you becomes with `as`: `f := address as extern func(f64) -> f64`. The function values of Flag, `func(...)`, don't cross to C.
+
+`offset_of(T, field)` gives the place of a field, like `sizeof` gives the size, both known when the program compiles.
+
+A library that a program loads is built with `-shared`, and the program loads it with `load` and `symbol` of [os](Library.md#libraries). That's how a game reloads its code while it runs: see [Libraries](Reference.md#libraries).
 
 ## Memory safety
 ### The flag
@@ -1097,6 +1107,7 @@ flagc main.flg other.flg some_folder -o program
 flagc run main.flg -- first second
 ```
 - `-o` the name of the program (`a.out` if you don't give one, `a.exe` on Windows, with `run` the program is removed after it runs unless you give one)
+- `-shared` builds a library instead of a program (see [Libraries](Reference.md#libraries))
 - `-check` only checks the code, without building the program
 - `-memory` checks the memory (see [Memory safety](#memory-safety))
 - `-debug` builds the program for gdb and lldb (see [Debugging](Reference.md#debugging))

@@ -123,9 +123,40 @@ func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
         append(args, Item{name = "", type = elem})
     return make_type(s, args, true, at)
 
+# the tag of a builtin is its place among them, so null is 0, and any other tag is a hash of the type, the same in every program and library that has it
 func add_type(t: Type) -> usize:
     if t.kind != Union:
         comp.spelled += t.name.len
+    t.tag = u32(comp.types.len) - 1
+    if comp.types.len > NEVER:
+        shape: &str
+        defer free(shape)
+        if t.kind == Ptr or t.kind == Array or t.kind == Thread:
+            shape += "" + t.kind + "[" + comp.types[t.elem].tag + ", " + t.count + "]"
+        elif t.kind == Func:
+            shape += t.name[:trust find(t.name, "(")] + "(" + comp.types[t.ret].tag
+            for i in 0..t.count:
+                shape += ", " + comp.types[comp.items[t.first + i].type].tag
+            shape += ")"
+        elif t.kind == Union or t.kind == Untagged:
+            parts: &list[u32]
+            defer free(parts)
+            for i in 0..t.count:
+                append(parts, comp.types[comp.items[t.first + i].type].tag)
+            sort(parts) # the order of the ids changes from one program to another, the order of the tags doesn't
+            shape += "" + t.kind + parts
+        elif t.decl != 0 and type_params(t.decl) > 0:
+            shape += t.name[:trust find(t.name, "[")] + "["
+            for i in 0..type_params(t.decl):
+                arg := comp.items[t.args + i]
+                if arg.type == VOID:
+                    shape += "" + arg.n + ", "
+                else:
+                    shape += "" + comp.types[arg.type].tag + ", "
+            shape += "]"
+        else:
+            shape += t.name
+        t.tag = u32(32 + hash(view(shape)) % 0x7fff_ffe0)
     append(comp.types, t)
     put(comp.type_ids, t.name, comp.types.len - 1)
     return comp.types.len - 1
@@ -185,6 +216,18 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     id := comp.type_ids[view(key)]
     if id is usize:
         return id
+    tags: &list[u32]
+    defer free(tags)
+    for m in flat:
+        append(tags, comp.types[m].tag)
+    sort(tags)
+    for i in 1..tags.len:
+        if kind == Union and tags[i] == tags[i - 1]:
+            same: &list[&strview]
+            for m in flat:
+                if comp.types[m].tag == tags[i]:
+                    append(same, comp.types[m].name)
+            return fail(same[0] + " and " + same[1] + " have the same tag, so a union of them cannot tell which one it holds: rename one of them", at)
     first := comp.items.len
     for m in flat:
         append(comp.items, Item{name = "", type = m})
@@ -277,7 +320,7 @@ func resolve(n: usize) -> usize|Fail:
             else:
                 ret = try concrete(try resolve(c), tok.at)
             c = node_end(c)
-        return func_of(parts, ret)
+        return func_of(parts, ret, tok.text == "extern")
     if tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:
@@ -496,8 +539,11 @@ func thread_of(result: usize) -> usize:
         return id
     return add_type(Type{kind = Thread, name = view(key), size = 8, align = 8, elem = result})
 
-func func_of(taken: &list[usize], ret: usize) -> usize:
-    key: &str = "func("
+func func_of(taken: &list[usize], ret: usize, foreign: bool) -> usize:
+    key: &str
+    if foreign:
+        key += "extern "
+    key += "func("
     for i in 0..taken.len:
         if i > 0:
             key += ", "
@@ -511,7 +557,7 @@ func func_of(taken: &list[usize], ret: usize) -> usize:
     first := comp.items.len
     for t in taken:
         append(comp.items, Item{name = "", type = t})
-    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len})
+    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
 
 func type_params(decl: usize) -> usize:
     count: usize = 0

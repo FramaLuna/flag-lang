@@ -1,0 +1,19 @@
+# a thread that C starts gets the tags of its contexts the first time it calls an export func
+type enum Mood:
+    Calm, Busy
+
+context mind:
+    mood: Mood
+
+extern "c":
+    func from_thread(n: i32) -> i32
+
+export func on_thread(n: i32) -> i32:
+    calm := mind.mood == Calm
+    mind.mood = Busy
+    if calm:
+        return n + 1
+    return 0
+
+func main():
+    print(on_thread(1), " ", on_thread(1), " ", from_thread(10), " ", from_thread(20))

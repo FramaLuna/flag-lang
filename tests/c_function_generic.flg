@@ -1,0 +1,22 @@
+# an extern func and a func are two types: two overloads, a $T taken from each, and a union with one
+extern "m":
+    func sqrt(x: f64) -> f64
+
+func double(x: f64) -> f64:
+    return x * 2.0
+
+func apply(f: extern func($T) -> $T, x: $T) -> $T:
+    return f(x)
+
+func apply(f: func($T) -> $T, x: $T) -> $T:
+    return f(x) + x
+
+func main():
+    root: extern func(f64) -> f64 = sqrt
+    twice: func(f64) -> f64 = double
+    print(apply(root, 16.0), " ", apply(twice, 1.0))
+    maybe: (extern func(f64) -> f64)? = null
+    print(maybe is null)
+    maybe = sqrt
+    if maybe is extern func(f64) -> f64:
+        print(maybe(9.0))

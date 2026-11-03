@@ -50,6 +50,10 @@ priv extern "c":
     func pclose(stream: *bytes) -> i32
     func getrandom(into: *bytes, size: usize, flags: u32) -> i64
     func getentropy(into: *bytes, size: usize) -> i32
+    func dlopen(path: cstr, flags: i32) -> *bytes
+    func dlsym(handle: *bytes, name: cstr) -> *bytes
+    func dlclose(handle: *bytes) -> i32
+    func dlerror() -> cstr
     func _wgetenv(name: wstr) -> wstr
     func _wsystem(command: wstr) -> i32
     func _wpopen(command: wstr, mode: wstr) -> *bytes
@@ -75,6 +79,10 @@ priv extern "c":
     func GetExitCodeProcess(process: usize, code: *u32) -> i32
     func TerminateProcess(process: usize, code: u32) -> i32
     func GetLastError() -> u32
+    func LoadLibraryW(path: wstr) -> *bytes
+    func GetProcAddress(handle: *bytes, name: cstr) -> *bytes
+    func FreeLibrary(handle: *bytes) -> i32
+    func FormatMessageW(flags: u32, source: *bytes, code: u32, language: u32, into: wstr, size: u32, arguments: *bytes) -> u32
     func GetSystemTimePreciseAsFileTime(into: *u64)
     func QueryPerformanceCounter(into: *i64) -> i32
     func QueryPerformanceFrequency(into: *i64) -> i32
@@ -578,3 +586,66 @@ func sleep(seconds: f64) where @windows():
             part = 1000000.0 # Sleep counts milliseconds in 32 bits
         Sleep(u32(part * 1000.0))
         left -= part
+
+extern "dl" where @linux():
+
+type Library:
+    handle: *bytes
+
+type error LoadError:
+    path: &strview
+    reason: &strview
+
+operator +=(s: *&str, e: LoadError):
+    s.* += "cannot load " + e.path + ": " + e.reason
+
+func load(path: &strview) -> Library|LoadError where not @windows():
+    handle := usize(0) as *bytes
+    with scratch():
+        handle = dlopen(cstr(path), loading())
+    if handle as usize != 0:
+        return Library{handle}
+    reason := view(dlerror())
+    if starts_with(reason, path) and starts_with(reason[path.len:], ": "):
+        reason = reason[path.len + 2:] # glibc says the path first
+    return LoadError{path, temp(reason)}
+
+func load(path: &strview) -> Library|LoadError where @windows():
+    handle := usize(0) as *bytes
+    code: u32 = 0
+    with scratch():
+        handle = LoadLibraryW(wstr(path))
+        code = GetLastError()
+    if handle as usize != 0:
+        return Library{handle}
+    text: array[u16, 512]
+    FormatMessageW(0x1200, usize(0) as *bytes, code, 0, ptr(text) as wstr, 512, usize(0) as *bytes)
+    return LoadError{path, trim_end(temp(ptr(text) as wstr))}
+
+priv func loading() -> i32 where @linux():
+    return 2 # RTLD_NOW, and RTLD_LOCAL is 0
+
+priv func loading() -> i32 where @macos():
+    return 6 # RTLD_NOW and RTLD_LOCAL
+
+func symbol(library: Library, name: &strview) -> *bytes? where not @windows():
+    found := usize(0) as *bytes
+    with scratch():
+        found = dlsym(library.handle, cstr(name))
+    if found as usize == 0:
+        return null
+    return found
+
+func symbol(library: Library, name: &strview) -> *bytes? where @windows():
+    found := usize(0) as *bytes
+    with scratch():
+        found = GetProcAddress(library.handle, cstr(name))
+    if found as usize == 0:
+        return null
+    return found
+
+func close(library: Library) where not @windows():
+    dlclose(library.handle)
+
+func close(library: Library) where @windows():
+    FreeLibrary(library.handle)

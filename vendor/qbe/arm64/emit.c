@@ -279,8 +279,16 @@ loadaddr(Con *c, char *rn, E *e)
 			    "\tadd\tR, R, #:lo12:SO\n";
 		break;
 	case SExtThr:
-		if (!T.apple)
-			die("extern thread unavailable on arm64");
+		if (!T.apple) {
+			/* initial-exec TLS: the offset from
+			 * the thread pointer is in the GOT,
+			 * x18 is free outside of Apple */
+			s = "\tadrp\tR, :gottprel:S\n"
+			    "\tldr\tR, [R, #:gottprel_lo12:S]\n"
+			    "\tmrs\tx18, tpidr_el0\n"
+			    "\tadd\tR, R, x18\n";
+			break;
+		}
 		/* fall through */
 	case SThr:
 		if (T.apple)

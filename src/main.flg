@@ -73,8 +73,10 @@ type Type:
     start: usize
     args: usize
     decl: usize
+    tag: u32
     error: bool
     packed: bool
+    foreign: bool
 
 type Item:
     name: &strview
@@ -244,6 +246,7 @@ context comp:
     entry: usize # main, the main of C
     tests: &list[usize]
     settler: usize # main, when the program starts threads
+    stamping: bool # a context or a file variable holds a union without null, that gets its tag when a thread enters
     asked: usize
     defined: &list[usize]
     hover: &str
@@ -252,6 +255,7 @@ context comp:
     machine: &strview
     choosing: bool
     debug: bool
+    shared: bool
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
@@ -310,6 +314,8 @@ func main() -> i32:
             memory = true
         elif a == "-debug":
             comp.debug = true
+        elif a == "-shared":
+            comp.shared = true
         elif a == "-version":
             print("flag ", view(flag_version()))
             return 0
@@ -329,7 +335,10 @@ func main() -> i32:
             append(rest, a)
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]")
+        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]")
+        return 2
+    if running and comp.shared:
+        eprint(ERR, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
@@ -363,6 +372,9 @@ func main() -> i32:
     suffix: &strview = ".out"
     if comp.system == "windows":
         suffix = ".exe"
+    if comp.shared:
+        suffixes := {"linux": ".so", "macos": ".dylib", "windows": ".dll"}
+        suffix = trust suffixes[comp.system]
     if fleeting:
         output = "/tmp"
         temp_dir := env("TEMP")
@@ -569,6 +581,10 @@ func main() -> i32:
         append(link, "-L" + dir_of(input))
     for l in comp.libs:
         append(link, "-l" + l)
+    if comp.shared:
+        append(link, "-shared")
+    if comp.shared and comp.system == "linux":
+        append(link, ptr(["-fPIC", "-Wl,-Bsymbolic"])) # a library calls its own functions, never those of the program or of another library
     for r in rest:
         append(link, r)
     if not ran(link, linking):

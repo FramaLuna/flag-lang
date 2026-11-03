@@ -71,7 +71,7 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
 {
 	char buf[32];
 	Con *c, cc;
-	Ref r0, r1, r2, r3;
+	Ref r0, r1, r2;
 	int s, n;
 
 	r0 = *pr;
@@ -80,17 +80,18 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
 		c = &fn->con[r0.val];
 		if (c->type == CAddr && ((c->sym.type & SExt)
 		 || (T.apple && (c->sym.type & SThr)))) {
+			cc = *c; /* newcon() can move fn->con */
 			r1 = newtmp("isel", Kl, fn);
 			*pr = r1;
-			if (c->bits.i) {
+			if (cc.bits.i) {
+				/* the offset goes in a register,
+				 * add takes only 12 bits */
 				r2 = newtmp("isel", Kl, fn);
-				cc = (Con){.type = CBits};
-				cc.bits.i = c->bits.i;
-				r3 = newcon(&cc, fn);
-				emit(Oadd, Kl, r1, r2, r3);
+				emit(Oadd, Kl, r1, r2, getcon(cc.bits.i, fn));
+				fixarg(&curi->arg[1], Kl, 0, fn);
 				r1 = r2;
 			}
-			if (T.apple && (c->sym.type & SThr)) {
+			if (T.apple && (cc.sym.type & SThr)) {
 				emit(Ocopy, Kl, r1, TMP(R0), R);
 				r1 = newtmp("isel", Kl, fn);
 				r2 = newtmp("isel", Kl, fn);
@@ -99,10 +100,8 @@ fixarg(Ref *pr, int k, int phi, Fn *fn)
 				emit(Oload, Kl, r1, r2, R);
 				r1 = r2;
 			}
-			cc = *c;
 			cc.bits.i = 0;
-			r3 = newcon(&cc, fn);
-			emit(Ocopy, Kl, r1, r3, R);
+			emit(Ocopy, Kl, r1, newcon(&cc, fn), R);
 			break;
 		}
 		if (KBASE(k) == 0 && phi)

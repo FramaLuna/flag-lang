@@ -448,6 +448,8 @@ func put_arg(out: *&str, a: Arg, first: u32):
     case Const:
         out.* += a.n
     case Global:
+        if comp.shared and comp.system == "linux" and starts_with(comp.globals[usize(a.n)], "thread "):
+            out.* += "extern " # initial-exec, the place of thread data comes from the GOT
         out.* += comp.globals[usize(a.n)]
     case Single, Double:
         if a.kind == Single:

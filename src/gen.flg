@@ -23,14 +23,15 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             t := try make_type(k, none, kind == Fat, comp.tokens[comp.nodes[d].tok].at)
             if kind == Context:
                 comp.data += "thread data $ctx." + comp.types[t].name + " = align 8 { z " + room(t) + " }\n"
+                comp.stamping = comp.stamping or tagged(t)
     s := first_sym("main")
-    while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0):
+    while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0 or comp.shared):
         s = comp.syms[s].next
     if testing:
         s = first_sym("run_test")
         while not comp.syms[s].library:
             s = comp.syms[s].next
-    if s == 0 and not check:
+    if s == 0 and not check and not comp.shared:
         eprint(ERR, "this program has no func main() to start from")
         return Fail
     comp.entry = NONE
@@ -80,6 +81,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             held: &str
             if kids(d) == 1:
                 zeros(held, comp.types[t].size)
+                comp.stamping = comp.stamping or tagged(t)
             else:
                 given := node_end(d + 1)
                 body := comp.body.len
@@ -93,6 +95,34 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 comp.held.len = 0
             zeros(held, room(t) - comp.types[t].size)
             comp.data += "data " + comp.globals[usize(v.at.n)] + " = align 8 { " + held + "}\n"
+    comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
+    if comp.stamping:
+        comp.data += "thread data $flag.entered = { w 0 }\n"
+    comp.at = 0
+    comp.live = true
+    stamper := open_proc("$flag.stamp", 0, 0, true)
+    variables := temp()
+    append(comp.passes, Pass{W, variables, true})
+    l_variables := label()
+    l_contexts := label()
+    branch(variables, l_variables, l_contexts)
+    open_block(l_variables)
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Var and kids(d) == 1:
+            v := trust shared(d)
+            stamp(v.type, v.at, 0)
+    jump(l_contexts)
+    open_block(l_contexts)
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Context:
+            t := trust make_type(k, none, false, 0)
+            stamp(t, global("thread $ctx." + comp.types[t].name), 0)
+    if comp.stamping:
+        add(Ins{op = "storew", a = int_arg(1), b = global("thread $flag.entered")})
+    terminate("ret", Arg{})
+    close_proc(stamper, 0, 1)
     done := try gen_from(0)
     reached := comp.types.len
     funcs := comp.procs.len
@@ -104,12 +134,12 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     assembly := comp.assembly.len
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
-        if comp.nodes[f].kind == Func and body(f) != 0 and not generic(f):
-            if try holds_where(f):
-                try instantiate(f, 0)
-        elif comp.nodes[f].kind == Func and not generic(f):
+        checked := comp.nodes[f].kind == Func and not generic(f) and try holds_where(f) # a function for another system is checked when you build for it
+        if checked and body(f) != 0:
+            try instantiate(f, 0)
+        elif checked:
             c := f + 1
-            while c < node_end(f) and comp.nodes[c].kind != Where:
+            while c < node_end(f) and comp.nodes[c].kind != Literal and comp.nodes[c].kind != Where:
                 if comp.nodes[c].kind != Var:
                     try passing(try resolve(c), true, comp.tokens[comp.nodes[c].tok].at)
                 elif text(c) != "..":
@@ -225,7 +255,6 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     comp.reached = reached
     if check:
         return null
-    comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
     if testing:
         table: &str
         for n, k in comp.tests:
@@ -273,7 +302,8 @@ func gen_from(from: usize) -> usize|Fail:
             shape := comp.types[comp.binds[-1].type]
             block := temp()
             append(comp.passes, Pass{L, block, false})
-            stamp_start(false)
+            append(comp.passes, Pass{W, int_arg(0), true})
+            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len - 1), count = 1})
             args: &list[Value]
             try invoke("guard_stack", args, 0)
             start := HEAD + align_up(comp.types[shape.ret].size, 8)
@@ -423,7 +453,7 @@ func gen_from(from: usize) -> usize|Fail:
             append(comp.passes, Pass{L, argv, false})
             add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
             add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
-            stamp_start(true)
+            try enter()
             add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
             if comp.system == "windows":
                 for fd in 0..3:
@@ -431,6 +461,14 @@ func gen_from(from: usize) -> usize|Fail:
                     append(comp.passes, Pass{W, int_arg(i64(fd)), true})
                     append(comp.passes, Pass{W, int_arg(32768), true})
                     add(Ins{op = "call", a = global("$_setmode"), first = u32(modes), count = 2})
+        elif inst.export and not inst.library and comp.stamping: # C may call it from a thread that never ran code of this program or library
+            l_enter := label()
+            l_body := label()
+            branch(op1(W, "loadw", global("thread $flag.entered")), l_body, l_enter)
+            open_block(l_enter)
+            try enter()
+            jump(l_body)
+            open_block(l_body)
         name := text(f)
         first: usize = VOID
         second: usize = VOID
@@ -557,7 +595,7 @@ func declared_inline(f: usize) -> bool:
 
 func result(f: usize) -> usize|Fail:
     c := kid(f, params(f))
-    if c == node_end(f) or comp.nodes[c].kind == Where or comp.nodes[c].kind == Block:
+    if c == node_end(f) or comp.nodes[c].kind == Literal or comp.nodes[c].kind == Where or comp.nodes[c].kind == Block:
         return VOID
     return resolve(c)
 
@@ -586,7 +624,12 @@ func instantiate(f: usize, at: usize) -> usize|Fail:
         export = export or comp.syms[s].node == f and comp.syms[s].export
         s = comp.syms[s].next
     name: &str = "$"
-    if body(f) == 0 or export:
+    symbol := kid(f, params(f))
+    while symbol < node_end(f) and comp.nodes[symbol].kind != Literal:
+        symbol = node_end(symbol)
+    if symbol < node_end(f):
+        name += text(symbol)[1:text(symbol).len - 1]
+    elif body(f) == 0 or export:
         name += text(f)
     else:
         if comp.tokens[comp.nodes[f].tok].kind == Name:
@@ -807,7 +850,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 append(order, k)
             found: usize = 0
             seen := false
-            foreign := false
+            variadic := false
             untyped := false
             tied := false
             s = first_sym(tok.text)
@@ -816,8 +859,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if callable(s, node.module, typed, tok.at):
                     seen = true
                     fits := false
-                    if body(f) == 0 or comp.syms[s].export:
-                        foreign = true
+                    if params(f) > 0 and text(kid(f, params(f) - 1)) == "..":
+                        variadic = true
                     elif wanted == VOID and generic(f):
                         untyped = true
                     elif wanted == VOID or params(f) == order.len:
@@ -835,8 +878,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                         tied = true
                 s = comp.syms[s].next
             if seen:
-                if found == 0 and foreign:
-                    return fail(tok.text + " is a C function, a function value cannot hold it: wrap it in a func that calls it", tok.at)
+                if found == 0 and variadic:
+                    return fail(tok.text + " takes more arguments after its parameters, and a function type cannot say that: wrap it in a func that calls it", tok.at)
                 if found == 0 and untyped:
                     return fail(tok.text + " is generic and nothing here gives it its types: give it to a variable that says its function type first", tok.at)
                 if found == 0:
@@ -851,11 +894,17 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 if id == comp.entry:
                     return fail(ENTRY, tok.at)
                 comp.insts[id].valued = true
-                made := func_of(taken, comp.insts[id].ret)
+                made := func_of(taken, comp.insts[id].ret, body(f) == 0 or comp.insts[id].export)
+                if wanted != VOID and comp.types[made].foreign and not comp.types[wanted].foreign:
+                    return fail(tok.text + " is a C function, so its value is an " + comp.types[made].name + " and not the " + comp.types[wanted].name + " this place takes", tok.at)
+                if wanted != VOID and comp.types[wanted].foreign and not comp.types[made].foreign:
+                    return fail(tok.text + " is a function of Flag, and the " + comp.types[wanted].name + " this place takes holds a C function: declare it export func", tok.at)
                 if wanted != VOID and made != wanted:
                     return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
                 if noted(tok.at):
                     mark(comp.nodes[f].tok)
+                if body(f) == 0 and comp.system != "windows":
+                    return Value{type = made, at = global("extern " + comp.insts[id].name)} # the address of a function of another library comes from the GOT
                 return Value{type = made, at = global(comp.insts[id].name)}
             try hidden(tok.text, true, tok.at)
             try hidden(tok.text, false, tok.at)
@@ -1556,12 +1605,14 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             to := comp.items[shape.first + passes.len].type
             given := try value(c, to)
             if accepts(to, given) < 0 and not (comp.types[to].kind == Ptr and comp.types[to].elem == given.type):
-                return fail("this function value is a " + shape.name + ", it takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
-            append(passes, try hand(given, to, false, at_of(c)))
+                return fail("this " + shape.name + " takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
+            append(passes, try hand(given, to, shape.foreign, at_of(c)))
             c = node_end(c)
+        if threaded and shape.foreign:
+            return fail("parallel cannot run an " + shape.name + ", it is called the way C calls: wrap the call in a func", tok.at)
         if threaded:
             return spawn(code, passes, callee.type, tok.at)
-        return emit(code, passes, shape.ret, false, tok.at)
+        return emit(code, passes, shape.ret, shape.foreign, tok.at)
     name := tok.text
     target: usize = VOID
     if node.module.len == 0:
@@ -1578,7 +1629,7 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
         args: &list[Item]
         target = try make_type(s, args, false, tok.at)
     conversion := kids(n) == 1 and target != VOID
-    if conversion or tok.kind == Builtin or node.module.len == 0 and (name == "sizeof" or name == "ptr" or name == "print" or name == "eprint" or name == "can_assign"):
+    if conversion or tok.kind == Builtin or node.module.len == 0 and (name == "sizeof" or name == "offset_of" or name == "ptr" or name == "print" or name == "eprint" or name == "can_assign"):
         if threaded:
             return fail("parallel runs a function in a new thread, and " + name + " is not one: wrap it in a func", tok.at)
         c := n + 1
@@ -1660,6 +1711,14 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
                     label = "_" + label
                 comp.assembly += ".p2align 3\n" + label + ":\n.incbin \"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
             return Value{type = try fat_type("strview", VOID, tok.at), at = Arg{Global, id}, mem = true, lit = true}
+        if name == "offset_of":
+            if kids(n) != 2 or comp.nodes[kid(n, 1)].kind != Name:
+                return fail("offset_of expects a type and the name of one of its fields: offset_of(Point, y)", tok.at)
+            ty := comp.types[try resolve(n + 1)]
+            for i in 0..ty.count:
+                if (ty.kind == Struct or ty.kind == Fat) and comp.items[ty.first + i].name == text(kid(n, 1)):
+                    return literal(false, comp.items[ty.first + i].n)
+            return fail(ty.name + " has no field " + text(kid(n, 1)), at_of(kid(n, 1)))
         if tok.kind == Builtin and kids(n) != 0:
             return fail(name + " expects no arguments", tok.at)
         if tok.kind != Builtin and kids(n) != 1:
@@ -2526,7 +2585,7 @@ func image(t: usize, n: usize, out: *&str) -> usize|Fail: # the node of a part t
                 member = try member_for(t, v, at_of(n))
         if not contains(members(t), member):
             return n
-        out.* += "w " + (member - 1) + ", "
+        out.* += "w " + comp.types[member].tag + ", "
         if ty.size > 4:
             zeros(out, 4)
             unknown := try image(member, n, out)
@@ -2653,7 +2712,7 @@ func tag(v: Value) -> Arg:
     return op1(W, "loadw", v.at)
 
 func tag_of(member: usize) -> Arg:
-    return int_arg(i64(member) - 1)
+    return int_arg(i64(comp.types[member].tag))
 
 func tagged(t: usize) -> bool:
     ty := comp.types[t]
@@ -2688,16 +2747,11 @@ func stamp(t: usize, addr: Arg, at: usize):
         jump(l_head)
         open_block(l_done)
 
-func stamp_start(program: bool):
-    none: &list[Item]
-    for k in 1..comp.syms.len:
-        d := comp.syms[k].node
-        if comp.nodes[d].kind == Context:
-            t := trust make_type(k, none, false, 0)
-            stamp(t, global("thread $ctx." + comp.types[t].name), 0)
-        elif comp.nodes[d].kind == Var and kids(d) == 1 and program:
-            v := trust shared(d)
-            stamp(v.type, v.at, 0)
+# the first time a thread runs code of this program or library, its contexts and the file variables get the tags they start with
+func enter() -> Fail?:
+    stamper := Value{type = func_of(ptr([usize(BOOL)]), VOID, false), at = global("$flag.stamp")}
+    try invoke("enter", ptr([stamper]), 0)
+    return null
 
 func packs(f: Item, at: usize) -> bool:
     size := comp.types[f.type].size

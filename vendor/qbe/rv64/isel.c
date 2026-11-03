@@ -22,13 +22,29 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 	char buf[32];
 	Ref r0, r1;
 	int s, n, op;
-	Con *c;
+	Con *c, cc;
 
 	r0 = r1 = *r;
 	op = i ? i->op : Ocopy;
 	switch (rtype(r0)) {
 	case RCon:
 		c = &fn->con[r0.val];
+		if (c->type == CAddr && (c->sym.type & SExt)) {
+			/* the address comes from the GOT,
+			 * and the offset is added to it
+			 */
+			cc = *c;
+			r1 = newtmp("isel", Kl, fn);
+			r0 = r1;
+			if (cc.bits.i) {
+				r0 = newtmp("isel", Kl, fn);
+				emit(Oadd, Kl, r1, r0, getcon(cc.bits.i, fn));
+				fixarg(&curi->arg[1], Kl, curi, fn);
+			}
+			cc.bits.i = 0;
+			emit(Ocopy, Kl, r0, newcon(&cc, fn), R);
+			break;
+		}
 		if (c->type == CAddr && memarg(r, op, i))
 			break;
 		if (KBASE(k) == 0)
