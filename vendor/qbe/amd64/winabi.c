@@ -679,7 +679,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
           emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), R);
           emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
         } else {
-          emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
+          emit(Oload, instr->cls, instr->to, SLOT(-slot_offset), R);
         }
         slot_offset += 2;
         break;

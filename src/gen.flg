@@ -887,7 +887,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return fail(ty.name + " holds " + counted(filled.len, "element", "elements") + " but this literal gives " + counted(given, "value", "values"), tok.at)
             if given != filled.len:
                 return fail(ty.name + " has " + counted(filled.len, "field", "fields") + " but this literal gives " + counted(given, "value", "values"), tok.at)
-        word := Arg{}
+        word: &list[Value]
+        defer free(word)
+        known := true
+        joined: u64 = 0
         last: usize = 0
         i: usize = 0
         while c < node_end(n):
@@ -911,23 +914,26 @@ func gen(n: usize, want: usize) -> Value|Fail:
             v := try value(c, f.type)
             at := f.n / 8 * 8
             if not named and at >= last and packs(f, at):
-                v = try convert(v, f.type, Arg{}, at_of(c))
-                bits := load(v).at
-                if comp.types[f.type].kind == Union:
-                    bits = tag(v)
-                elif comp.types[f.type].kind == Float:
-                    bits = op1(W, "cast", bits)
-                if size < 4:
-                    bits = op(W, "and", bits, int_arg(i64((1 << (8 * size)) - 1)))
-                bits = op1(L, "extuw", bits)
-                if f.n > at:
-                    bits = op(L, "shl", bits, int_arg(i64(8 * (f.n - at))))
-                if word.kind != Empty:
-                    bits = op(L, "or", word, bits)
-                word = bits
+                w := try convert(v, f.type, Arg{}, at_of(c))
+                bits := load(w).at
+                if comp.types[v.type].size == 0:
+                    bits = tag_of(v.type)
+                if bits.kind == Single:
+                    bits = int_arg(i64(f32(bits.n as f64) as u32))
+                known = known and bits.kind == Const
+                if known:
+                    joined = joined or (u64(bits.n) and (u64(1) << u64(8 * size)) - 1) << u64(8 * (f.n - at))
+                append(word, w)
                 if i + 1 == filled.len or not packs(filled[i + 1], at):
-                    store(U64, Value{type = U64, at = word}, offset(slot, at)) # the whole word, so a copy of it reads one store
-                    word = Arg{}
+                    if known:
+                        store(U64, Value{type = U64, at = int_arg(i64(joined))}, offset(slot, at)) # the whole word, so a copy of it reads one store
+                    else:
+                        for j, x in word:
+                            g := filled[i + 1 - word.len + j]
+                            store(g.type, x, offset(slot, g.n))
+                    word.len = 0
+                    known = true
+                    joined = 0
             else:
                 try assign(offset(slot, f.n), f.type, v, at_of(c))
                 last = f.n + size
@@ -1115,7 +1121,9 @@ func iterate(n: usize) -> Fail?:
             return fail("a range expects integers at both ends, this one is " + comp.types[t].name, at)
         if not start.lit and not end.lit and start.type != end.type:
             return fail("a range expects both ends of one type, got " + comp.types[start.type].name + " and " + comp.types[end.type].name, at)
-        if start.lit and not start.neg and end.lit and not end.neg:
+        if start.lit and not start.neg:
+            limit = usize(1) << 63 # it never goes below where it starts, so it is never negative
+        if limit != 0 and end.lit and not end.neg:
             limit = end.n
     else:
         walked = try value(subject, VOID)
@@ -1296,9 +1304,20 @@ func cases(n: usize) -> Fail?:
         subject = load(subject)
     whole := comp.types[subject.type]
     union := whole.kind == Union
+    all := members(subject.type)
+    defer free(all)
     left := members(subject.type)
+    owner: &list[u32] # over a union, the body of each member a case names, and where that case is
+    defer free(owner)
+    place: &list[usize]
+    defer free(place)
+    for m in all:
+        append(owner, u32(0))
+        append(place, usize(0))
+    bodies := comp.body.len
     l_end := label()
     fallback: usize = 0
+    l_fallback: u32 = 0
     before := comp.vars.len
     ends: &list[Local]
     lives: usize = 0
@@ -1320,8 +1339,10 @@ func cases(n: usize) -> Fail?:
             if union and left.len == 0:
                 return fail("this default case never runs, the cases above handle every type of " + whole.name, at)
             fallback = c
+            l_fallback = l_body
             handled = left
-            jump(l_body)
+            if not union:
+                jump(l_body)
         while not last:
             first := here()
             l := comp.nodes.len
@@ -1338,7 +1359,7 @@ func cases(n: usize) -> Fail?:
                 if not typed or last and not peek(":"):
                     return fail("a case over " + whole.name + " names one of its types, and this is a value: name the type and compare the value inside its case", first.at)
                 for m in members(try resolve(l)):
-                    if not contains(members(subject.type), m):
+                    if not contains(all, m):
                         return fail(whole.name + " can never be " + comp.types[m].name + ", so this case never runs", first.at)
                     if not contains(left, m):
                         return fail("this switch already handles " + comp.types[m].name + " above, each type goes in one case", first.at)
@@ -1378,7 +1399,10 @@ func cases(n: usize) -> Fail?:
             comp.nodes.len = l
             comp.pos += 1
         if union and fallback != c:
-            branch(tag_test(subject, handled), l_body, l_next)
+            for m in handled:
+                k := trust find(all, m)
+                owner[k] = l_body
+                place[k] = at
         open_block(l_body)
         if union and local_of(n + 1) != 0:
             try confine(n + 1, handled, at_of(c))
@@ -1386,11 +1410,56 @@ func cases(n: usize) -> Fail?:
         if try keep(before, before, ends):
             lives += 1
             jump(l_end)
-        open_block(l_next)
+        if not union:
+            open_block(l_next)
         c = node_end(c)
     if union and fallback == 0 and left.len > 0:
         return fail("this switch never handles " + comp.types[try union_of(left, Union, tok.at)].name + " and has no default case", tok.at)
-    if fallback != 0 or union or truths == 3:
+    if union:
+        middle := comp.body.len
+        comp.at = tok.at
+        named: &list[u64] # the tag of each member a case names, with its place in all below it
+        defer free(named)
+        for k in 0..all.len:
+            if owner[k] != 0:
+                append(named, u64(tag_of(all[k]).n) << 32 or u64(k))
+        sort(named)
+        current := tag(subject)
+        ranges: &list[usize]
+        defer free(ranges)
+        heads: &list[u32]
+        defer free(heads)
+        low: usize = 0
+        high := named.len
+        while true:
+            if high - low > 8: # a short run is tested in order: one mispredicted jump, where each halving costs half of one
+                half := (low + high) / 2
+                l_low := label()
+                l_high := label()
+                branch(op(W, "cultw", current, int_arg(i64(named[half] >> 32))), l_low, l_high)
+                append(ranges, half)
+                append(ranges, high)
+                append(heads, l_high)
+                high = half
+                open_block(l_low)
+                continue
+            for x in named[low:high]:
+                k := usize(x and 0xffff_ffff)
+                l_other := label()
+                comp.at = place[k]
+                branch(op(W, "ceqw", current, int_arg(i64(x >> 32))), owner[k], l_other)
+                open_block(l_other)
+            if fallback != 0:
+                jump(l_fallback)
+            else:
+                terminate("hlt", Arg{})
+            if heads.len == 0:
+                break
+            open_block(trust pop(heads))
+            high = trust pop(ranges)
+            low = trust pop(ranges)
+        postpone(bodies, middle) # the search goes before the bodies
+    elif fallback != 0 or truths == 3:
         terminate("hlt", Arg{})
     else:
         lives += 1
@@ -1825,22 +1894,21 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             return fail("an array index expects an integer, this one is " + comp.types[index.type].name, at_of(kid(n, 1)))
         elem := comp.types[t].elem
         length := int_arg(i64(comp.types[t].count))
-        known := array and index.lit and not index.neg and index.n < comp.types[t].count
-        if array and local_of(kid(n, 1)) != 0:
-            limit := comp.vars[local_of(kid(n, 1)) - 1].limit
-            known = limit != 0 and limit <= comp.types[t].count
+        limit: usize = 0
+        if local_of(kid(n, 1)) != 0:
+            limit = comp.vars[local_of(kid(n, 1)) - 1].limit
+        known := array and (index.lit and not index.neg and index.n < comp.types[t].count or limit != 0 and limit <= comp.types[t].count)
         if not array:
             elem = element(t)
             length = load(Value{type = USIZE, at = offset(addr, 8), mem = true}).at
             addr = op1(L, "loadl", addr)
         wide: usize = USIZE
-        if comp.types[index.type].kind == Int and not known:
+        if comp.types[index.type].kind == Int and limit == 0 and not known:
             wide = I64
         raw := load(try convert_number(index, wide, tok.at)).at
         i := raw
         if wide == I64:
-            below := op1(L, "extuw", op(W, "csltl", raw, int_arg(0)))
-            i = op(L, "add", raw, op(L, "mul", below, length))
+            i = op(L, "add", raw, op(L, "and", op(L, "sar", raw, int_arg(63)), length))
         if not known:
             l_out := label()
             l_in := label()

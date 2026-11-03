@@ -9,7 +9,8 @@ SH = 7
 UH = 8
 AGG = 16
 CAGG = 1 << 30
-SMALL = 45
+SMALL = 35
+CUT = 32 # bytes of a slot that QBE cuts into registers
 LARGE = 500
 ROOMY = 4096 # bytes of slots, a page: a function with more is not inlined on its own, every caller's frame would take them
 SNUG = 32 # the same into a recursive caller, each level of the recursion takes them: about what the call takes
@@ -101,7 +102,7 @@ func listing() -> &str:
     for f in 0..comp.procs.len:
         p := comp.procs[f]
         if not comp.debug and p.name != "$main": # the start of the program, main is never inlined
-            large := size(p) > LARGE
+            large := p.end - p.code > LARGE
             top := p.labels
             for i in comp.code[p.code:p.end]:
                 if i.op == "@" and u32(i.a.n) > top:
@@ -182,13 +183,27 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        append(sizes, size(p))
+        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers, what goes through it is gone when inlined
+        for t in p.temps..p.last + 1:
+            append(cut, false)
+        for k in p.params..p.params + p.count:
+            given := comp.passes[k]
+            if given.cls >= AGG and given.cls < CAGG and comp.types[given.cls - AGG].size <= CUT:
+                cut[given.arg.n - i64(p.temps)] = true
+        work: usize = 0
         room: i64 = 0
         frame := false
         for i in comp.code[p.code:p.end]:
             if i.op == "alloc8":
                 room += i.a.n
+                cut[i.to - p.temps] = i.a.n <= CUT
+            elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
+                cut[i.to - p.temps] = true
+            elif not (i.op == "absent" or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+                work += 1
             frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == "$flag_frame" # it reads the frame of its caller, panic for the chain
+        free(cut)
+        append(sizes, work)
         append(rooms, room)
         append(framed, frame)
     live: &list[bool]
@@ -356,11 +371,8 @@ func pooled(size: i64, callee: usize, pool: *&list[Ins], taken: *&list[usize]) -
     append(taken, k)
     return Arg{Temp, i64(pool[k].to)}
 
-func size(p: Proc) -> usize:
-    count: usize = 0
-    for i in comp.code[p.code:p.end]:
-        count += usize(i.op != "alloc8" and i.op != "absent")
-    return count
+func cut_at(cut: &list[bool], a: Arg, first: u32) -> bool:
+    return a.kind == Temp and cut[a.n - i64(first)]
 
 func fresh(first: u32, last: u32) -> &list[Arg]:
     names: &list[Arg]
