@@ -472,7 +472,7 @@ Emit:
 		salloc(i.to, i.arg[0], fn);
 		break;
 	default:
-		if (isvec(i.op)) {
+		if (isvec(i.op) || islane(i.op)) {
 			/* lanes take registers, only an
 			 * amount to shift can be a number */
 			emiti(i);

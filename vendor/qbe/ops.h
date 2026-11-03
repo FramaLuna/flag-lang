@@ -234,6 +234,23 @@ O(afcmp,   T(e,e,s,d, e,e,s,d), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(reqz,    T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(rnez,    T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 
+/* Lanes of a v, in the order of the loads and the stores: */
+/* get has the lane in arg[1], set the lane of the vlane before it */
+O(vgetsb,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vgetub,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vgetsh,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vgetuh,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vgetsw,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vgetuw,  T(v,v,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vget,    T(v,v,v,v, x,x,x,x), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,1) V(0)
+O(vlane,   T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vsetb,   TV(v,w), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vseth,   TV(v,w), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vsetw,   TV(v,w), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vsetl,   TV(v,l), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vsets,   TV(v,s), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+O(vsetd,   TV(v,d), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
+
 /* Arguments, Parameters, and Calls */
 O(par,     T(x,x,x,x, x,x,x,x), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(parsb,   T(x,x,x,x, x,x,x,x), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)

@@ -1,0 +1,96 @@
+# v[k] reads and writes a lane of a simd that stays in its register: every kind of lane, in a
+# loop that also works on the whole simd, in literals that mix the lanes of two, and before
+# sum, any and all
+
+type Pair:
+    low: simd[f32, 4]
+    high: simd[i32, 4]
+
+inline func churn(v: simd[$T, $$n], w: simd[$T, $$n]) -> simd[$T, $$n]:
+    x := v
+    for i in 0..3:
+        x[1] = x[0] - w[1]
+        x = x + w
+        x[0] = x[1] + x[0]
+    return x
+
+inline func flip(m: simd[bool, $$n], k: simd[bool, $$n]) -> simd[bool, $$n]:
+    x := m
+    for i in 0..3:
+        x[1] = not x[0]
+        x = x xor k
+        x[0] = x[1] and k[1]
+    return x
+
+func wide(v: simd[$T, $$n]) -> i64:
+    return i64(v[0]) * 1000 + i64(v[1])
+
+func main():
+    b: simd[i8, 16] = [1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -128]
+    ub := b as simd[u8, 16]
+    h: simd[i16, 8] = [100, -200, 300, -400, 500, -600, 700, -32768]
+    uh := h as simd[u16, 8]
+    w: simd[i32, 4] = [70000, -80000, 90000, -2147483648]
+    uw := w as simd[u32, 4]
+    l: simd[i64, 2] = [5000000000, -6000000000]
+    ul := l as simd[u64, 2]
+    s: simd[f32, 4] = [1.5, -2.25, 3.0, -4.75]
+    d: simd[f64, 2] = [0.125, -1e100]
+
+    print(churn(b, b), " ", sum(churn(b, b)), " ", wide(churn(b, b)))
+    print(churn(ub, ub), " ", sum(churn(ub, ub)), " ", wide(churn(ub, ub)))
+    print(churn(h, h), " ", sum(churn(h, h)), " ", wide(churn(h, h)))
+    print(churn(uh, uh), " ", sum(churn(uh, uh)), " ", wide(churn(uh, uh)))
+    print(churn(w, w), " ", sum(churn(w, w)), " ", wide(churn(w, w)))
+    print(churn(uw, uw), " ", sum(churn(uw, uw)), " ", wide(churn(uw, uw)))
+    print(churn(l, l), " ", sum(churn(l, l)), " ", wide(churn(l, l)))
+    print(churn(ul, ul), " ", sum(churn(ul, ul)), " ", wide(churn(ul, ul)))
+    print(churn(s, s), " ", sum(churn(s, s)), " ", wide(churn(s, s)))
+    print(churn(d, d), " ", sum(churn(d, d)))
+
+    bb: simd[i8, 16] = [b[15], ub[14] as i8, b[13], b[12], b[11], b[10], b[9], b[8], b[7], b[6], b[5], b[4], b[3], b[2], b[1], b[0]]
+    mixed_u8: simd[u8, 16] = [ub[0], ub[15], 7, ub[1], ub[14], 8, ub[2], ub[13], 9, ub[3], ub[12], 10, ub[4], ub[11], 11, ub[5]]
+    hh: simd[i16, 8] = [h[7], uh[7] as i16, h[0], h[6], h[1], h[5], h[2], h[4]]
+    mixed_u16: simd[u16, 8] = [uh[7], uh[0], uh[6], uh[1], 1, uh[2], uh[5], uh[3]]
+    ww: simd[i32, 4] = [w[3], i32(l[0] - 4999999999), w[0], w[1]]
+    mixed_u32: simd[u32, 4] = [uw[3], uw[0], 0, uw[1]]
+    ll: simd[i64, 2] = [l[1], i64(w[3])]
+    mixed_u64: simd[u64, 2] = [ul[1], ul[0]]
+    ss: simd[f32, 4] = [s[3], f32(d[0]), s[1], s[0]]
+    dd: simd[f64, 2] = [d[1], f64(s[3])]
+    print(bb, " ", mixed_u8)
+    print(hh, " ", mixed_u16)
+    print(ww, " ", mixed_u32, " ", ll, " ", mixed_u64)
+    print(ss, " ", dd)
+    print(sum(bb), " ", sum(mixed_u8), " ", sum(hh), " ", sum(mixed_u16), " ", sum(ww), " ", sum(mixed_u32))
+    print(sum(ll), " ", sum(mixed_u64), " ", sum(ss), " ", sum(dd))
+
+    m16 := b > 0
+    m8 := h > 0
+    m4 := s > 0.0
+    m2 := d > 0.0
+    k16 := b < 10
+    k8 := uh > 600
+    k4 := w < 0
+    k2 := l > 0
+    print(flip(m16, k16), " ", any(flip(m16, k16)), " ", all(flip(m16, k16)))
+    print(flip(m8, k8), " ", any(flip(m8, k8)), " ", all(flip(m8, k8)))
+    print(flip(m4, k4), " ", any(flip(m4, k4)), " ", all(flip(m4, k4)))
+    print(flip(m2, k2), " ", any(flip(m2, k2)), " ", all(flip(m2, k2)))
+    picked: simd[bool, 4] = [m4[1], k4[1], m4[0], k4[3]]
+    print(picked, " ", any(picked), " ", all(picked))
+    picked[2] = false
+    picked[0] = true
+    print(picked, " ", picked[0], " ", picked[2], " ", any(picked), " ", all(picked))
+    pair: simd[bool, 2] = [k2[0], m2[1]]
+    pair[1] = true
+    print(pair, " ", all(pair), " ", any(not pair))
+
+    p := Pair{s, w}
+    for i in 0..3:
+        q := p
+        q.low[3] = f32(q.high[1])
+        q.high[2] = i32(q.low[0]) + i32(i)
+        q.high = q.high + 1
+        p = q
+    print(p.low, " ", p.high, " ", p.low[3], " ", p.high[2])

@@ -9,6 +9,7 @@ struct E {
 	uint64_t fsz;
 	uint64_t save; /* the registers kept between rbp and the locals */
 	int nclob;
+	int lane; /* of the next vset, given by a vlane */
 };
 
 #define CMP(X) \
@@ -113,6 +114,22 @@ static struct {
 	{ Osltof,   Ka, "cvtsi2%k %L0, %=" },
 	{ Ocast,    Ki, "movq %D0, %L=" },
 	{ Ocast,    Ka, "movq %L0, %D=" },
+
+	{ Ovgetsb,  Ki, "pextrb %1, %0, %W=\n\tmovsb%k %B=, %=" },
+	{ Ovgetub,  Ki, "pextrb %1, %0, %W=" },
+	{ Ovgetsh,  Ki, "pextrw %1, %0, %W=\n\tmovsw%k %H=, %=" },
+	{ Ovgetuh,  Ki, "pextrw %1, %0, %W=" },
+	{ Ovgetsw,  Kl, "pextrd %1, %0, %W=\n\tmovslq %W=, %L=" },
+	{ Ovgetsw,  Kw, "pextrd %1, %0, %W=" },
+	{ Ovgetuw,  Ki, "pextrd %1, %0, %W=" },
+	{ Ovget,    Kw, "pextrd %1, %0, %W=" },
+	{ Ovget,    Kl, "pextrq %1, %0, %L=" },
+	{ Ovget,    Ka, "pshufd %1, %0, %=" },
+	{ Ovsetb,   Kv, "pinsrb %0, %W1, %=" },
+	{ Ovseth,   Kv, "pinsrw %0, %W1, %=" },
+	{ Ovsetw,   Kv, "pinsrd %0, %W1, %=" },
+	{ Ovsetl,   Kv, "pinsrq %0, %L1, %=" },
+	{ Ovsets,   Kv, "insertps %0, %1, %=" },
 
 	{ Oaddr,    Ki, "lea%k %M0, %=" },
 	{ Oswap,    Ki, "xchg%k %0, %1" },
@@ -331,6 +348,9 @@ Next:
 					m->scale
 				);
 			fputc(')', e->f);
+			break;
+		case RInt:
+			fprintf(e->f, "$%d", rsval(ref));
 			break;
 		case RCon:
 			off = e->fn->con[ref.val];
@@ -777,6 +797,30 @@ emitins(Ins i, E *e)
 		break;
 	case Oframe:
 		emitcopy(i.to, TMP(RBP), Kl, e);
+		break;
+	case Ovget:
+		if (i.cls == Kd) /* pshufd takes the words 2n and 2n + 1 */
+			i.arg[1] = INT(10 * rsval(i.arg[1]) + 4);
+		goto Table;
+	case Ovlane:
+		e->lane = rsval(i.arg[0]);
+		break;
+	case Ovsetb:
+	case Ovseth:
+	case Ovsetw:
+	case Ovsetl:
+	case Ovsets:
+	case Ovsetd:
+		/* xmm15 holds a float to put that is also the result */
+		if (req(i.to, i.arg[1]) && !req(i.to, i.arg[0])) {
+			emitcopy(TMP(XMM15), i.arg[1], Kv, e);
+			i.arg[1] = TMP(XMM15);
+		}
+		emitcopy(i.to, i.arg[0], Kv, e);
+		i.arg[0] = INT(i.op == Ovsets ? e->lane << 4 : e->lane);
+		if (i.op != Ovsetd)
+			goto Table;
+		emitf(e->lane ? "unpcklpd %1, %=" : "movsd %1, %=", &i, e);
 		break;
 	case_Oxsel:
 		if (req(i.to, i.arg[1]))

@@ -510,7 +510,7 @@ typedef struct Blit Blit;
 struct Chop {
 	int sz;
 	int bad;
-	char *cut; /* a piece starts or ends here, 2 marks a v piece */
+	char *cut; /* a piece starts or ends here, 2 marks a v piece, 4 a cut a v piece can hold */
 	char *rd;
 	char *wr;
 	int *cls;  /* -1 if unknown, 8 marks a class only read */
@@ -668,6 +668,19 @@ chopnext(Chop *c, int p)
 	return p;
 }
 
+/* the v piece that holds a lane at off, or -1 */
+static int
+lanein(Chop *c, int64_t off, int64_t sz)
+{
+	int p;
+
+	for (p=off; !c->cut[p]; p--)
+		;
+	if (sz >= 16 || chopnext(c, p) - p != 16)
+		return -1;
+	return p;
+}
+
 static int
 chopcls(int k, int sz)
 {
@@ -791,7 +804,10 @@ chop(Fn *fn)
 				c = &chops[k];
 				if (off[m] < 0 || sz[m] <= 0 || off[m] > c->sz - sz[m])
 					c->bad = 1;
-				else {
+				else if (n == 1 && sz[m] < 16) {
+					c->cut[off[m]] |= 4;
+					c->cut[off[m] + sz[m]] |= 4;
+				} else {
 					c->cut[off[m]] |= 1 | 2 * (n == 1 && sz[m] == 16);
 					c->cut[off[m] + sz[m]] |= 1;
 				}
@@ -819,6 +835,13 @@ chop(Fn *fn)
 					q = p + 1;
 					continue;
 				}
+				/* a v piece holds the cuts of its lanes */
+				if (c->cut[p] & 2 && p + 16 <= c->sz) {
+					for (q=p+1; q<p+16 && !(c->cut[q] & 3); q++)
+						;
+					if (q == p + 16)
+						memset(&c->cut[p+1], 0, 15);
+				}
 				q = chopnext(c, p);
 				for (s=c->cut[p] & 2 ? 16 : 8; s>q-p; s/=2)
 					;
@@ -834,6 +857,14 @@ chop(Fn *fn)
 				if (k < 0)
 					continue;
 				c = &chops[k];
+				if ((p = lanein(c, o, sz[m])) >= 0) {
+					/* a lane is put into the rest of the piece */
+					if ((o - p) % sz[m])
+						c->bad = 1;
+					c->rd[p] = 1;
+					c->wr[p] |= wr[m];
+					continue;
+				}
 				for (p=o; p<o+sz[m]; p++) {
 					if (!c->cut[p])
 						continue;
@@ -908,12 +939,29 @@ chop(Fn *fn)
 			if ((isalloc(i->op) || i->op == Oadd) && chopat(i->to, &o) >= 0)
 				continue;
 			if (isload(i->op) && (k = chopat(i->arg[0], &o)) >= 0) {
-				emit(i->op, i->cls, i->to, chops[k].to[o], R);
+				c = &chops[k];
+				s = loadsz(i);
+				if ((p = lanein(c, o, s)) < 0) {
+					emit(i->op, i->cls, i->to, c->to[o], R);
+					continue;
+				}
+				v = newtmp("chop", Kv, fn);
+				emit(Ovgetsb + (i->op - Oloadsb), i->cls, i->to, v, INT((o - p) / s));
+				emit(Oload, Kv, v, c->to[p], R);
 				continue;
 			}
 			if (isstore(i->op) && (k = chopat(i->arg[1], &o)) >= 0) {
 				c = &chops[k];
 				s = storesz(i);
+				if ((p = lanein(c, o, s)) >= 0) {
+					src = newtmp("chop", Kv, fn);
+					dst = newtmp("chop", Kv, fn);
+					emit(Ostorev, 0, R, dst, c->to[p]);
+					emit(Ovsetb + (i->op - Ostoreb), Kv, dst, src, i->arg[0]);
+					emit(Ovlane, Kw, R, INT((o - p) / s), R);
+					emit(Oload, Kv, src, c->to[p], R);
+					continue;
+				}
 				if (chopnext(c, o) - o == s) {
 					emit(chopst(piececls(c, o), s), 0, R, i->arg[0], c->to[o]);
 					continue;

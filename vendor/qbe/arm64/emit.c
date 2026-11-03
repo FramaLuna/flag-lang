@@ -7,6 +7,7 @@ struct E {
 	Fn *fn;
 	uint64_t frame;
 	uint padding;
+	int lane; /* of the next vset, given by a vlane */
 };
 
 #define CMP(X) \
@@ -163,6 +164,23 @@ static struct {
 	{ Ovsplats, Kv, "dup %=.4s, %0.s[0]" },
 	{ Ovsplatd, Kv, "dup %=.2d, %0.d[0]" },
 	{ Ovitos, Kv, "scvtf %=.4s, %0.4s" },
+	{ Ovgetsb, Ki, "smov %=, %V0.b[%1]" },
+	{ Ovgetub, Ki, "umov %W=, %V0.b[%1]" },
+	{ Ovgetsh, Ki, "smov %=, %V0.h[%1]" },
+	{ Ovgetuh, Ki, "umov %W=, %V0.h[%1]" },
+	{ Ovgetsw, Kl, "smov %=, %V0.s[%1]" },
+	{ Ovgetsw, Kw, "umov %=, %V0.s[%1]" },
+	{ Ovgetuw, Ki, "umov %W=, %V0.s[%1]" },
+	{ Ovget,   Kw, "umov %=, %V0.s[%1]" },
+	{ Ovget,   Kl, "umov %=, %V0.d[%1]" },
+	{ Ovget,   Ks, "dup %=, %V0.s[%1]" },
+	{ Ovget,   Kd, "dup %=, %V0.d[%1]" },
+	{ Ovsetb,  Kv, "ins %=.b[%0], %W1" },
+	{ Ovseth,  Kv, "ins %=.h[%0], %W1" },
+	{ Ovsetw,  Kv, "ins %=.s[%0], %W1" },
+	{ Ovsetl,  Kv, "ins %=.d[%0], %L1" },
+	{ Ovsets,  Kv, "ins %=.s[%0], %1.s[0]" },
+	{ Ovsetd,  Kv, "ins %=.d[%0], %1.d[0]" },
 
 #define X(c, str, _) \
 	{ Oflag+c, Ki, "cset %=, " str },
@@ -272,6 +290,9 @@ emitf(char *s, Ins *i, E *e)
 		case 'Q':
 			k = Kv+1; /* a v register named whole, for ldr and str */
 			goto Switch;
+		case 'V':
+			k = Kv;
+			goto Switch;
 		case '?':
 			if (KBASE(k) == 0)
 				fputs(rname(IP1, k), e->f);
@@ -281,6 +302,10 @@ emitf(char *s, Ins *i, E *e)
 		case '=':
 		case '0':
 			r = c == '=' ? i->to : i->arg[0];
+			if (rtype(r) == RInt) {
+				fprintf(e->f, "%d", rsval(r));
+				break;
+			}
 			assert(isreg(r) || req(r, TMP(V31)));
 			fputs(rname(r.val, k), e->f);
 			break;
@@ -289,8 +314,11 @@ emitf(char *s, Ins *i, E *e)
 			switch (rtype(r)) {
 			default:
 				die("invalid second argument");
+			case RInt:
+				fprintf(e->f, "%d", rsval(r));
+				break;
 			case RTmp:
-				assert(isreg(r));
+				assert(isreg(r) || req(r, TMP(V31)));
 				fputs(rname(r.val, k), e->f);
 				break;
 			case RCon:
@@ -585,6 +613,24 @@ emitins(Ins *i, E *e)
 	case Oframe:
 		emitf("mov %=, x29", i, e);
 		break;
+	case Ovlane:
+		e->lane = rsval(i->arg[0]);
+		break;
+	case Ovsetb:
+	case Ovseth:
+	case Ovsetw:
+	case Ovsetl:
+	case Ovsets:
+	case Ovsetd:
+		/* v31 holds a float to put that is also the result */
+		if (req(i->to, i->arg[1]) && !req(i->to, i->arg[0])) {
+			emitf("mov v31.16b, %1.16b", i, e);
+			i->arg[1] = TMP(V31);
+		}
+		if (!req(i->to, i->arg[0]))
+			emitf("mov %=.16b, %0.16b", i, e);
+		i->arg[0] = INT(e->lane);
+		goto Table;
 	}
 }
 
