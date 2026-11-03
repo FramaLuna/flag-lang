@@ -20,6 +20,7 @@ This is the reference of the language
 - [Memory](#memory)
 - [The memory checker](#the-memory-checker)
 - [Debugging](#debugging)
+- [Tests](#tests)
 - [Calling C](#calling-c)
 - [Platforms](#platforms)
 - [Editor support](#editor-support)
@@ -37,7 +38,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
-The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main`, or from the tests with `flagc test` (see [Tests](#tests)), and only the code that it can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
@@ -45,10 +46,11 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 
 ## The command line
 ```
-flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]
+flagc [run|test] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]
 ```
 - An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
 - `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
+- `test` has to be the first argument too. It builds the tests of the files and runs them, the ones whose name has one of the words after `--` (see [Tests](#tests)). `-o` keeps the program of the tests, and `-timeout` gives the seconds each test can take, 10 if you don't give it
 - `-o` names the program, `a.out` if you don't give one, `a.exe` on Windows
 - `-check` stops after checking the code, it writes nothing and it doesn't need a `main`
 - `-memory` runs the memory checker, the warnings don't change the exit code
@@ -59,10 +61,11 @@ flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug]
 - `-version` prints the version and the commit it was built from
 - Anything else goes to the C compiler, in the same order: `.c`, `.o` and `.a` files, `-l` flags, `-static`...
 
-flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay` or `-at` is the last argument, and when `-at` is not a place inside one of the files
+flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay`, `-at` or `-timeout` is the last argument, when `-at` is not a place inside one of the files, when `-timeout` is not a number of seconds of 1 or more, and when no test has the words after `--` in its name
 ```
 error: -target expects a value after it
 error: the folder notes has no .flg file to compile
+error: no test has parse or lex in its name
 ```
 
 ### The C compiler
@@ -157,7 +160,7 @@ A `packed type` has no padding, each field starts where the one before ends and 
 A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
 
 ### Arrays
-`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it.
+`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `sizeof` that takes the type of where you use it.
 
 ### Fixed maps
 `fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `sizeof(fixmap[i32, i32, 2])` is 24.
@@ -288,10 +291,10 @@ if found is Card:
 The rules
 - `if x is T:` narrows the block, and the `elif` and `else` get what is left
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
-- `not (x is T)` doesn't narrow anything
+- `not` turns around what it narrows, so `if not (x is T):` narrows like the `else` of `if x is T:`
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
-- after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
+- after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it. A branch leaves with `return`, `break`, `continue`, or a call to a function that returns `never`, like `panic` (see [Returns](#returns))
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
 `==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
@@ -523,7 +526,8 @@ They work on the innermost loop, there are no labels, and with a number they rea
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
 - Code after `return`, `break` or `continue` in the same block is an error: `this code can never run, the block already left`
-- `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code
+- `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code. It is the `main` of C, the program starts there, so nothing in the program can call it or take it as a value: `main is where the program starts, the main of C, so nothing in the program can call it or take it as a value`
+- A function that never returns, like `panic` or `exit`, says so with `-> never`. A call to it is a statement and ends the path like `return`, so the code after it is an error and it narrows like a `return`. On the right of `ifnull` and `iferror` it leaves the value without the `null` or the error: `port := parse_int(text) ifnull panic("not a number")`. Anywhere else it's an error, it gives no value: `a function that never returns is a statement, not a value`. The function itself cannot `return` or reach its end: `this function returns never, and a path reaches its end: end each path with a call that never returns, like exit`. A C function can return `never` too, like `exit`
 - `_ = value` throws the value away, also when there is a variable named `_`
 - A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
 
@@ -574,6 +578,7 @@ These stop the program, and write the message to the error output
 | `flag: stack overflow` | 139 |
 | `flag: illegal instruction` | 132 |
 | `flag: arithmetic error` | 136 |
+| `flag: the test takes more than 10 s`, in `flagc test` | 142 |
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared
 ```
@@ -598,7 +603,7 @@ The chain
 
 The program reads it from the frame pointers, that every function keeps, and a table in the program says which function each return address belongs to, with the name and place of each function of yours: about 50 bytes for each function written to the program, and with the frame pointers 1 % of the size of the compiler. The handler of the crashes is set when the program starts, before `main`, and every thread, the first one too, keeps a stack of 64 KiB for it, so a stack overflow can be told in any of them. It asks for no memory and waits for no lock, a crash can come from inside `malloc`, and a crash inside the report ends the program at once with the same code. A function whose frame can go past a page touches each page as it lowers the stack, so even a frame bigger than the guard page at the end of a stack stops there, and never writes over the stack of another thread. A program that sets its own handler for `SIGSEGV`, `SIGBUS`, `SIGILL` or `SIGFPE` replaces it.
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, slices and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
@@ -618,6 +623,15 @@ func main():
 Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. The names in it are the ones of the root of the file, so in `NEXT = LIMIT + 1` the `LIMIT` is the constant, also where a local variable `LIMIT` hides it. When the expression fails for one of them, a note says which: `PAIR is read here`.
 
 A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+
+An array literal takes its elements from the type of the place too: an `array[T, N]`, and through `ptr` a `*array[T, N]` or a `&slice[T]`, so `words: &slice[u32] = ptr(SHADER)` keeps `SHADER = [0x0723_0203, 3]` as `u32` words. A literal that doesn't fit is an error at the literal, with a note at the place that reads the constant. The arguments of a call don't give their type, they are computed before the overload is chosen: give the slice to a variable with its type first, like a struct literal (see [Rough edges](#rough-edges)).
+
+### Files in the program
+`@embed("path")` is the file at that path, read when the program compiles, as a `&strview` of static data like a text literal. The path is text, from the folder of the file that has the `@embed`, written with `/`. The bytes go to the assembler with `.incbin`, so a big file costs about nothing to compile: 1.5 MB build in 0.06 s, where the same bytes as a text literal take 0.66 s and five times the memory. A file named twice is in the program once, and one the compiler cannot read is an error
+```
+error: cannot read the size of assets/logo.png: No such file or directory, and @embed takes the file when it compiles, with its path from the folder of this file
+```
+The bytes start at an address aligned to 8 and a `0` follows them, so a view of them as other numbers works: `words: &slice[u32]`, `words = ptr(SHADER.*) as *bytes`, `words.len = SHADER.len / 4`. A constant that is an `@embed`, `LOGO = @embed("logo.png")`, is the same data wherever you read it, and like a text literal, writing into it is wrong.
 
 A constant or a file variable and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`, and `handler is declared as a variable and as a function, a name is one or the other`.
 
@@ -852,7 +866,7 @@ flagc main.flg -o main -debug
 gdb ./main
 ```
 - each file is a compile unit, and each function has its name, the line where it's declared and its code. The instances of a generic share its name, so `break sort` stops in all of them. A breakpoint in a function stops at the first line of its body, with the parameters in their place
-- `break main` stops twice, first in the `main` of C that starts the program and has no lines, then in yours: `break main.flg:main` stops only in yours
+- your `main` is the `main` of C, so `break main` stops once, at the first line of its body, after the start of the program that it does before that line: it keeps the arguments and sets the handler of crashes
 - `break panic` stops at a runtime error, before it writes its message, and `bt` shows the calls that led there with their arguments. A crash stops the program in the debugger by itself, at the instruction that failed
 - the parameters and the variables are in their slot of the stack, inside the blocks of code where they are visible, so the `i` of one loop and the `i` of the next are two variables
 - the variables at the root of a file are global variables, and the contexts are thread-local variables, so the debugger shows the ones of the thread it stops in. On Linux for arm64 and riscv64 a context has no place in the DWARF: no relocation of those systems gives the place of thread data to it, gcc and clang leave it out too
@@ -871,6 +885,37 @@ The program changes so that what the debugger reads stays true. Nothing is inlin
 On macOS the linker leaves the DWARF in the object file, so `-debug` assembles the program into `program.o`, links it, runs `dsymutil`, that writes `program.dSYM` next to the program, and removes the object unless `-keep`. A `dsymutil` that cannot run is an error: `cannot run dsymutil: ..., -debug on macOS keeps the DWARF in main.dSYM with dsymutil`.
 
 On Windows gdb and lldb read the DWARF too. The debugger of Visual Studio reads PDB, which flagc doesn't write.
+
+## Tests
+`flagc test` builds the tests of your files into a program and runs them. A test is a function whose name starts with `test_`, declared in a file you give to flagc, not in the library, and it takes nothing and returns nothing. One that takes or returns something is an error, and so are files without a test, like a program without `main`
+```
+error: test_parse is a test, so it takes nothing and returns nothing
+error: these files have no test, a test is a func whose name starts with test_
+```
+The name of a test is the one of its function, after its module when it has one: `mathx.test_gcd`. A `priv` test in a file without a module has the file as its module: `parse.flg.test_lines`. The words after `--` choose by that name: a test runs when its name has one of them, so `-- parse` runs `test_parse_int` and `test_parse_float`.
+
+The program starts from a function of core instead of your `main`, so `main` is checked like any other function and a test can call it. Each test runs in a process of its own, as many at once as the machine has cores, so a failed `assert`, a crash or a test that never ends fails only that test. A test passes when its process ends with 0: `assert`, `panic`, a runtime error, a crash, `exit(1)` and its time fail it. A test that takes more than its seconds, 10 or those of `-timeout`, is stopped with exit code 142 on every system, and writes where it was, with the chain of calls of a crash
+```
+flag: the test takes more than 10 s
+  in test_hangs, tests/gcd_test.flg:15
+```
+The threads that a test starts alone are waited for when it returns, as `main` does. A test that calls `args()` gets the arguments of the program of the tests.
+
+What a test writes to the standard output and to the error output goes, in the order it wrote it, to a file next to the program, `program.<n>`, and it's shown only when the test fails. When every test ended, flagc writes each one that failed, in the order of the files, with the place of its `func`, its exit code and what it wrote, and then how many passed and failed. This goes to the standard output, and flagc exits with 1 when a test failed
+```
+FAIL mathx.test_gcd_of_zero, tests/gcd_test.flg:7, exit code 134
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/gcd_test.flg:7
+3 passed, 1 failed
+```
+The program of the tests runs one test, the one it names, `program name [seconds [file]]`, and without the file it writes where it always does. `-o` keeps it, so a test runs alone or in a debugger
+```sh
+flagc test src -o tests -debug -- test_parse
+gdb --args ./tests parse.test_parse
+```
+On Linux and macOS the time is an alarm, `SIGALRM`, that the handler of crashes reports, so a test that calls `alarm` or sets its own handler for it changes that. On Windows a timer stops the thread of the test and reads where it was.
 
 ## Calling C
 ### extern
@@ -1041,6 +1086,7 @@ Things that work in a way that may surprise you, so be aware
 - A text literal is static data that every use shares, and so do the literals with the same text and the constants kept in data (see [Constants](#constants)). Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
+- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i32, 2]` even where `f` takes a `&slice[u32]`: give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
 - `receive` of a `Channel` gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in channel`, that ends only when it's closed
 - A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable

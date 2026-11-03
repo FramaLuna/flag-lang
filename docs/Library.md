@@ -31,9 +31,9 @@ The functions that take an index or a `File` also have a last parameter `place: 
 ### The program
 - `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
 - `eprint(values...)` the same to the error output
-- `panic(message: &strview)` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
+- `panic(message: &strview) -> never` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
 - `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
-- `exit(code: i32)` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
+- `exit(code: i32) -> never` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
 The arguments of the program are `args()` of [os](#os).
 
@@ -275,6 +275,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
+- `at` and `contains` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory

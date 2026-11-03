@@ -241,10 +241,13 @@ context comp:
     blame: usize
     live: bool
     inst: usize
+    entry: usize # main, the main of C
+    tests: &list[usize]
     settler: usize # main, when the program starts threads
     asked: usize
     defined: &list[usize]
     hover: &str
+    assembly: &str # written after what QBE writes: the files of @embed and the DWARF
     system: &strview
     machine: &strview
     choosing: bool
@@ -271,15 +274,17 @@ func main() -> i32:
     inputs: &list[&strview]
     rest: &list[&strview]
     arguments := args()
-    running := arguments.len > 1 and arguments[1] == "run"
+    testing := arguments.len > 1 and arguments[1] == "test"
+    running := arguments.len > 1 and arguments[1] == "run" or testing
     program: &list[&strview]
+    seconds: i64 = 10
     i := 1 + usize(running)
     while i < arguments.len:
         a := arguments[i]
         if running and a == "--":
             append(program, arguments[i + 1:])
             break
-        if a == "-o" or a == "-overlay" or a == "-at" or a == "-target":
+        if a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
             i += 1
             if i == arguments.len:
                 eprint(ERR, a, " expects a value after it")
@@ -290,6 +295,11 @@ func main() -> i32:
                 overlay = arguments[i]
             elif a == "-target":
                 target = arguments[i]
+            elif a == "-timeout":
+                seconds = parse_int(arguments[i]) ifnull 0
+                if seconds < 1:
+                    eprint(ERR, "-timeout expects the seconds a test can take, 1 or more, but got ", arguments[i])
+                    return 2
             else:
                 query = arguments[i]
         elif a == "-keep":
@@ -319,7 +329,7 @@ func main() -> i32:
             append(rest, a)
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]")
+        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
@@ -361,7 +371,7 @@ func main() -> i32:
         output += "/flag-run-" + getpid() + suffix
     elif output.len == 0:
         output = "a" + suffix
-    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes [] {} IterationEnd"
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes [] {} IterationEnd never"
     start: usize = 0
     for k in 0..builtin.len + 1:
         if k == builtin.len or items(builtin)[k] == ' ':
@@ -495,7 +505,7 @@ func main() -> i32:
             k := comp.tokens[t]
             if k.kind != Line and k.at <= at and at < k.at + k.text.len:
                 comp.asked = t + 1
-    failed := gen_program(check) is Fail
+    failed := gen_program(check, testing) is Fail
     if memory and not failed:
         check_memory()
     if comp.asked != 0:
@@ -524,7 +534,9 @@ func main() -> i32:
         args[6] = ssa
     if qbe_main(6 + i32(comp.debug), ptr(args) as **u8) != 0:
         return 1
-    if comp.debug and append_file(view(asm), dwarf()) is FsError:
+    if comp.debug:
+        comp.assembly += dwarf()
+    if append_file(view(asm), comp.assembly) is FsError:
         eprint(ERR, "cannot write ", asm)
         return 1
     cc: &list[&strview]
@@ -573,14 +585,71 @@ func main() -> i32:
     me := view(output)
     if not contains(me, "/"):
         me = "./" + me
-    insert(program, 0, me)
-    code := run(program)
+    code: i32|FsError = 0
+    if testing:
+        chosen: &list[usize]
+        for k in comp.tests:
+            picked := program.len == 0
+            for word in program:
+                picked = picked or contains(test_name(k), word)
+            if picked:
+                append(chosen, k)
+        if chosen.len == 0:
+            words: &str
+            for word in program:
+                if words.len > 0:
+                    words += " or "
+                words += word
+            eprint(ERR, "no test has ", words, " in its name")
+            code = 2
+        commands: &list[&list[&strview]]
+        codes: &list[i32|FsError]
+        for j, k in chosen:
+            command: &list[&strview]
+            append(command, ptr([me, test_name(k), "" + seconds, me + "." + j]))
+            append(commands, command)
+            append(codes, 0)
+        queue: Channel[usize, 64]
+        workers: &list[Thread[null]]
+        while workers.len < cores() and workers.len < chosen.len:
+            append(workers, parallel run_tests(ptr(queue), commands, codes))
+        for j in 0..chosen.len:
+            send(ptr(queue), j)
+        close(ptr(queue))
+        for w in workers:
+            wait w
+        failures: usize = 0
+        for j, k in chosen:
+            said := read_file(commands[j][-1]) iferror ""
+            _ = remove(commands[j][-1])
+            ended := codes[j]
+            if ended is i32 and ended == 0:
+                continue
+            failures += 1
+            how := "" + ended
+            if ended is i32:
+                how = "exit code " + ended
+            at := comp.tokens[comp.nodes[comp.syms[k].node].tok].at
+            print("FAIL ", test_name(k), ", ", comp.files[file_of(at)].path, ":", line_of(at), ", ", how)
+            write(stdout, said)
+            if said.len > 0 and not ends_with(said, "\n"):
+                print()
+        if chosen.len > 0:
+            print(chosen.len - failures, " passed, ", failures, " failed")
+            code = i32(failures > 0)
+    else:
+        insert(program, 0, me)
+        code = run(program)
     if fleeting:
         _ = remove(view(output))
     if code is FsError:
         eprint(ERR, code)
         return 1
     return code
+
+func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], codes: &slice[i32|FsError]):
+    for j in queue:
+        codes[j] = run(commands[j])
 
 func ran(command: &slice[&strview], why: &strview) -> bool:
     code := run(command)

@@ -1,0 +1,30 @@
+type error Missing
+
+func find(key: &strview) -> i32|Missing:
+    if key == "one":
+        return 1
+    return Missing
+
+func fail_with(message: &strview) -> never:
+    print("failing: ", message)
+    exit(0)
+
+func checked(key: &strview) -> i32:
+    found := find(key)
+    if found is Missing:
+        panic("no " + key)
+    return found + 1
+
+func first(values: &slice[i32]) -> i32:
+    if values.len > 0:
+        return values[0]
+    panic("no values")
+
+func main():
+    print(checked("one"), " ", first(ptr([7, 8])))
+    ages: &map[&strview, i32]
+    put(ages, "ana", 30)
+    age := ages["ana"] ifnull panic("no ana")
+    print(age + 1)
+    later := find("two") iferror fail_with("two is missing")
+    print(later)

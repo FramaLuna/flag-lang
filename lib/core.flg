@@ -9,7 +9,7 @@ extern "c":
     func memcmp(a: *bytes, b: *bytes, size: usize) -> i32
     func memchr(at: *bytes, byte: i32, size: usize) -> *bytes
     func strlen(s: cstr) -> usize
-    func exit(code: i32)
+    func exit(code: i32) -> never
     func snprintf(into: *u8, size: usize, format: cstr, ...) -> i32
     func strtod(text: cstr, end: *bytes) -> f64
 
@@ -24,7 +24,7 @@ priv extern "c":
     func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func atexit(callback: *bytes) -> i32
-    func _exit(code: i32)
+    func _exit(code: i32) -> never
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
     func __errno_location() -> *i32
@@ -60,6 +60,15 @@ priv extern "c":
     func SetThreadStackGuarantee(size: *u32) -> i32
     func flag_frame() -> usize
     func flag_functions() -> *usize
+    func flag_tests() -> *usize
+    func dup2(from: i32, to: i32) -> i32
+    func alarm(seconds: u32) -> u32
+    func GetCurrentProcess() -> usize
+    func GetCurrentThread() -> usize
+    func DuplicateHandle(process: usize, handle: usize, into_process: usize, into: *usize, access: u32, inherit: i32, options: u32) -> i32
+    func CreateTimerQueueTimer(timer: *usize, queue: usize, callback: *bytes, parameter: *bytes, due: u32, period: u32, flags: u32) -> i32
+    func SuspendThread(thread: usize) -> u32
+    func GetThreadContext(thread: usize, context: *bytes) -> i32
 
 extern "pthread" where @linux():
 
@@ -79,7 +88,7 @@ func heap(v: $T) -> *$T:
 func free(p: *$T):
     free(p as *bytes)
 
-func panic(message: &strview, place: &strview = @here()):
+func panic(message: &strview, place: &strview = @here()) -> never:
     tell(134)
     flush()
     report("flag: ")
@@ -100,16 +109,16 @@ type cstr = *u8
 func cstr(text: &strview) -> cstr:
     return ptr(temp(text).*) as *u8
 
-func out_of_memory():
+func out_of_memory() -> never:
     tell(9)
     message: &strview = "flag: out of memory\n"
     write(2, ptr(message.*), message.len)
     exit(9)
 
-func out_of_bounds(i: $I, len: usize, place: &strview = @here()) where $I is Integer:
+func out_of_bounds(i: $I, len: usize, place: &strview = @here()) -> never where $I is Integer:
     panic("index " + i + " is out of bounds, length " + len, place)
 
-func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) where $I is Integer:
+func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) -> never where $I is Integer:
     panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
 
 func natural(i: $I, len: usize) -> usize where $I is Integer:
@@ -1650,7 +1659,7 @@ priv func slots(m: &map[$K, $V]) -> &slice[Slot[$K, $V]]:
 priv func kept_hash(key: $K) -> u64:
     return hash(key) or 0x8000_0000_0000_0000 # 0 marks a free slot
 
-priv func locate(m: &map[$K, $V], key: $K) -> usize:
+priv func locate(m: &map[$K, $V], key: $Q) -> usize:
     table := slots(m)
     h := kept_hash(key)
     i := usize(h) and m.cap - 1
@@ -1687,6 +1696,12 @@ priv func put(m: *&map[$K, $V], key: $K) -> *$V:
     return ptr(table[i].value)
 
 func at(m: &map[$K, $V], key: $K) -> $V|null:
+    return found(m, key)
+
+func at(m: &map[&str, $V], key: &strview) -> $V|null:
+    return found(m, key)
+
+priv func found(m: &map[$K, $V], key: $Q) -> $V|null:
     if m.cap == 0:
         return null
     table := slots(m)
@@ -1696,6 +1711,9 @@ func at(m: &map[$K, $V], key: $K) -> $V|null:
     return table[i].value
 
 func contains(m: &map[$K, $V], key: $K) -> bool:
+    return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
+
+func contains(m: &map[&str, $V], key: &strview) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func remove(m: *&map[$K, $V], key: $K) -> $V|null:
@@ -1876,6 +1894,71 @@ priv func catch_crashes() where @macos():
 priv func catch_crashes() where @windows():
     AddVectoredExceptionHandler(1, ptr(flag_exception))
 
+priv type Test:
+    name: cstr
+    run: func()
+
+priv overtime: &str # what a test says when its time is up
+
+priv tested: usize # the thread that runs the test, on Windows
+
+# the main of the program that flagc test builds: it runs the test it names, in the seconds it gives, writing to the file it gives
+priv func run_test() -> i32:
+    head := flag_tests()
+    tests: &slice[Test]
+    tests = (head as usize + 8) as *bytes
+    tests.len = head.*
+    given: &slice[cstr]
+    given = @argv()
+    given.len = usize(@argc())
+    if given.len < 2:
+        eprint("flag: name the test to run")
+        return 2
+    for t in tests:
+        if view(t.name) == view(given[1]):
+            if given.len > 3:
+                flags := open_flags()
+                out := open(given[3], flags[1], flags[3])
+                dup2(out, 1)
+                dup2(out, 2)
+                close(out)
+            if given.len > 2:
+                seconds := parse_int(view(given[2])) ifnull 0
+                if seconds > 0:
+                    overtime += "the test takes more than " + seconds + " s"
+                    limit(u32(seconds))
+            t.run()
+            return 0
+    eprint("flag: there is no test named ", view(given[1]))
+    return 2
+
+# the alarm goes to the handler of crashes, set as catch_crashes sets it
+priv func limit(seconds: u32) where @linux():
+    action: array[usize, 19]
+    action[0] = ptr(flag_crash) as usize
+    action[17] = 0x4800_0004
+    sigaction(14, ptr(action) as *bytes, usize(0) as *bytes) # SIGALRM
+    alarm(seconds)
+
+priv func limit(seconds: u32) where @macos():
+    action := [ptr(flag_crash) as usize, 0x51 << 32]
+    sigaction(14, ptr(action) as *bytes, usize(0) as *bytes) # SIGALRM
+    alarm(seconds)
+
+priv func limit(seconds: u32) where @windows():
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(tested), 0, 0, 2) # DUPLICATE_SAME_ACCESS
+    timer: usize = 0
+    CreateTimerQueueTimer(ptr(timer), 0, ptr(flag_overtime), usize(0) as *bytes, seconds * 1000, 0, 8) # WT_EXECUTEONLYONCE
+
+priv export func flag_overtime(parameter: *bytes, fired: u8) where @windows():
+    SuspendThread(tested)
+    room: array[u64, 160]
+    context := (ptr(room) as usize + 15) / 16 * 16 # a CONTEXT is aligned to 16
+    ((context + 48) as *u32).* = 0x10_0003 # ContextFlags: CONTEXT_CONTROL and CONTEXT_INTEGER
+    GetThreadContext(tested, context as *bytes)
+    record: array[usize, 6] # with no address in it
+    crashed(overtime, crash(ptr(record) as usize, context), 142)
+
 # each thread keeps room for the handler, so a stack overflow is reported too
 priv func guard_stack() where @linux():
     failing.stack = malloc(65536)
@@ -1915,6 +1998,8 @@ priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
         what = "illegal instruction"
     elif signal == 8:
         what = "arithmetic error"
+    elif signal == 14:
+        what = overtime
     elif c.address + 65536 >= c.stack and c.address < c.stack + 1048576:
         what = "stack overflow"
     crashed(what, c, 128 + signal)
@@ -1957,7 +2042,7 @@ priv func crash(record: usize, context: usize) -> Crash where @windows():
     return {peek(context + 0xa0), peek(context + 0xf8), peek(context + 0x98), peek(record + 40), peek(context + 0x98)} # Rbp, Rip and Rsp of the CONTEXT, the address of an access violation
 
 # asks for no memory and waits for no lock: a crash can come from inside malloc, or while a lock is held
-priv func crashed(what: &strview, c: Crash, code: i32):
+priv func crashed(what: &strview, c: Crash, code: i32) -> never:
     tell(code)
     if what == "stack overflow":
         c.leaf = 0 # the stack pointer can be past the end of the stack

@@ -224,7 +224,6 @@ func panic_if(bad: Arg, message: &strview, at: usize) -> Fail?:
     args: &list[Value]
     append(args, Value{type = try fat_type("strview", VOID, at), at = text_data(message), mem = true})
     try invoke("panic", args, at)
-    terminate("hlt", Arg{})
     open_block(l_good)
     return null
 
@@ -346,6 +345,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     order := trust arrange(f, args.len, names)
     taken: &list[usize]
     id := try instantiate_for(f, order, args, ptr(taken), at)
+    if id == comp.entry:
+        return fail(ENTRY, at)
     foreign := body(f) == 0 or comp.insts[id].export
     passes: &list[Pass]
     back: &list[Value]
@@ -565,7 +566,7 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
     if big(ret) and not foreign:
         result = alloc(ret)
         append(comp.passes, Pass{L, result, false})
-    elif ret != VOID:
+    elif ret != VOID and ret != NEVER:
         i.cls = try passing(ret, foreign, at)
         result = temp()
         i.to = u32(result.n)
@@ -574,6 +575,8 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
     comp.at = at
     add(i)
     comp.at = here
+    if ret == NEVER:
+        terminate("hlt", Arg{})
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)
     return Value{type = ret, at = result, mem = aggregate(ret)}
@@ -601,6 +604,17 @@ func bind(f: usize, order: &list[usize], args: &list[Value]) -> i64|Fail:
                 score = -1
         c = node_end(c)
     return score
+
+func holds_where(f: usize) -> bool|Fail:
+    choosing := comp.choosing
+    comp.choosing = true
+    defer comp.choosing = choosing
+    c := kid(f, params(f))
+    while c < node_end(f):
+        if comp.nodes[c].kind == Where and not try holds(c + 1):
+            return false
+        c = node_end(c)
+    return true
 
 func turn(v: Value) -> i32:
     if v.type == NULL:

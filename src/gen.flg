@@ -1,7 +1,10 @@
 @trust
-UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
+use fs
 
-func gen_program(check: bool) -> Fail?:
+UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
+ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
+
+func gen_program(check: bool, testing: bool) -> Fail?:
     none: &list[Item]
     for k in 1..comp.syms.len:
         if comp.nodes[comp.syms[k].node].kind == Void:
@@ -23,18 +26,35 @@ func gen_program(check: bool) -> Fail?:
     s := first_sym("main")
     while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0):
         s = comp.syms[s].next
+    if testing:
+        s = first_sym("run_test")
+        while not comp.syms[s].library:
+            s = comp.syms[s].next
     if s == 0 and not check:
         eprint(ERR, "this program has no func main() to start from")
         return Fail
-    entry: usize = 0
+    comp.entry = NONE
     comp.settler = NONE
     if s != 0:
-        entry = try instantiate(comp.syms[s].node, 0)
+        comp.entry = try instantiate(comp.syms[s].node, 0)
+        comp.insts[comp.entry].name = "$main"
+        comp.insts[comp.entry].export = true
         for n in comp.nodes:
             if n.kind == Unary and comp.tokens[n.tok].text == "parallel":
-                comp.settler = entry
-    if s != 0 and comp.insts[entry].ret != VOID and not integer(comp.insts[entry].ret):
-        return fail("main cannot return " + comp.types[comp.insts[entry].ret].name + ", it returns nothing or an integer, the exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
+                comp.settler = comp.entry
+    if s != 0 and comp.insts[comp.entry].ret != VOID and not integer(comp.insts[comp.entry].ret):
+        return fail("main cannot return " + comp.types[comp.insts[comp.entry].ret].name + ", it returns nothing or an integer, the exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
+    for k in 1..comp.syms.len:
+        test := comp.syms[k]
+        f := test.node
+        if testing and starts_with(test.name, "test_") and comp.nodes[f].kind == Func and body(f) != 0 and not test.library:
+            if params(f) > 0 or generic(f) or try result(f) != VOID:
+                return fail(test.name + " is a test, so it takes nothing and returns nothing", comp.tokens[comp.nodes[f].tok].at)
+            comp.insts[try instantiate(f, 0)].valued = true
+            append(comp.tests, k)
+    if testing and comp.tests.len == 0 and not check:
+        eprint(ERR, "these files have no test, a test is a func whose name starts with test_")
+        return Fail
     for k in 1..comp.syms.len:
         if comp.syms[k].export:
             f := comp.syms[k].node
@@ -48,7 +68,8 @@ func gen_program(check: bool) -> Fail?:
                 return fail("an export function cannot be generic, other languages need one fixed signature", at)
             if others != 0:
                 return fail("an export function cannot be overloaded, its name is the symbol other languages call", at)
-            try instantiate(f, 0)
+            if try holds_where(f):
+                try instantiate(f, 0)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Var:
@@ -80,6 +101,7 @@ func gen_program(check: bool) -> Fail?:
     mentions := comp.mentions.len
     scopes := comp.scopes.len
     data := comp.data.len
+    assembly := comp.assembly.len
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
         if comp.nodes[f].kind == Func and body(f) != 0 and not generic(f):
@@ -197,37 +219,24 @@ func gen_program(check: bool) -> Fail?:
     comp.mentions.len = mentions
     comp.scopes.len = scopes
     comp.data.len = data
+    comp.assembly.len = assembly
     clear(comp.stored)
     comp.reached = reached
     if check:
         return null
     comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
-    comp.at = 0
-    comp.live = true
-    wrapper := open_proc("$main", 0, 0, true)
-    argc := temp()
-    argv := temp()
-    append(comp.passes, Pass{W, argc, true})
-    append(comp.passes, Pass{L, argv, false})
-    add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
-    add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
-    stamp_start(true)
-    add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
-    if comp.system == "windows":
-        for fd in 0..3:
-            modes := comp.passes.len
-            append(comp.passes, Pass{W, int_arg(i64(fd)), true})
-            append(comp.passes, Pass{W, int_arg(32768), true})
-            add(Ins{op = "call", a = global("$_setmode"), first = u32(modes), count = 2})
-    result := int_arg(0)
-    cls: u32 = 0
-    if comp.insts[entry].ret != VOID:
-        result = temp()
-        cls = W
-    add(Ins{op = "call", cls = cls, to = u32(result.n), a = global(comp.insts[entry].name), first = u32(comp.passes.len)})
-    terminate("ret", result)
-    close_proc(wrapper, W, 2)
+    if testing:
+        table: &str
+        for n, k in comp.tests:
+            comp.data += "data $flag.test." + n + " = { b \"" + test_name(k) + "\", b 0 }\n"
+            table += ", l $flag.test." + n + ", l " + comp.insts[try instantiate(comp.syms[k].node, 0)].name
+        comp.data += "data $flag.tests = { l " + comp.tests.len + table + " }\nfunction l $flag_tests() {\n@start\n\tret $flag.tests\n}\n"
     return null
+
+func test_name(s: usize) -> &strview:
+    if comp.syms[s].module.len == 0:
+        return comp.syms[s].name
+    return comp.syms[s].module + "." + comp.syms[s].name
 
 func gen_from(from: usize) -> usize|Fail:
     pending: &list[usize]
@@ -398,12 +407,29 @@ func gen_from(from: usize) -> usize|Fail:
         if big(inst.ret) and not inst.export:
             comp.dest = temp()
             append(comp.passes, Pass{L, comp.dest, false})
+        taken := params(f) + usize(comp.dest.kind != Empty)
         for k in 0..params(f):
             given := comp.vars[k]
             if comp.passes[made.params + k].cls < AGG:
                 comp.vars[k].addr = alloc(given.type)
                 store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
             mention(given.name, comp.vars[k].addr, given.type, given.tok)
+        if i == comp.entry: # it is the main of C, and starts the program
+            taken = 2
+            argc := temp()
+            argv := temp()
+            append(comp.passes, Pass{W, argc, true})
+            append(comp.passes, Pass{L, argv, false})
+            add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
+            add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
+            stamp_start(true)
+            add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
+            if comp.system == "windows":
+                for fd in 0..3:
+                    modes := comp.passes.len
+                    append(comp.passes, Pass{W, int_arg(i64(fd)), true})
+                    append(comp.passes, Pass{W, int_arg(32768), true})
+                    add(Ins{op = "call", a = global("$_setmode"), first = u32(modes), count = 2})
         name := text(f)
         first: usize = VOID
         second: usize = VOID
@@ -428,6 +454,8 @@ func gen_from(from: usize) -> usize|Fail:
         try statements(body(f))
         if comp.live:
             comp.at = comp.tokens[comp.nodes[f].tok].at
+            if comp.ret == NEVER:
+                return fail("this function returns never, and a path reaches its end: end each path with a call that never returns, like exit", comp.at)
             if comp.ret != VOID:
                 return fail("not every path of this function returns a value", comp.at)
             terminate("ret", Arg{})
@@ -437,7 +465,12 @@ func gen_from(from: usize) -> usize|Fail:
             back = try passing(inst.ret, true, comp.at)
         elif inst.ret != VOID and comp.dest.kind == Empty:
             back = cls(inst.ret)
-        close_proc(made, back, params(f) + usize(comp.dest.kind != Empty))
+        if i == comp.entry and inst.ret == VOID: # C reads an exit code from it
+            back = W
+            for k in 0..comp.body.len:
+                if comp.body[k].op == "ret":
+                    comp.body[k].a = int_arg(0)
+        close_proc(made, back, taken)
         close_frame(saved)
     comp.blame = 0
     return known
@@ -629,6 +662,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
         try update(spot, n, first)
         return none
     case Return:
+        if comp.ret == NEVER:
+            return fail("this function returns never, so it cannot return", tok.at)
         if node.size == 1:
             if comp.ret != VOID:
                 return fail("return expects a value, this function returns " + comp.types[comp.ret].name, tok.at)
@@ -812,6 +847,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 f := comp.syms[found].node
                 taken: &list[usize]
                 id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
+                if id == comp.entry:
+                    return fail(ENTRY, tok.at)
                 comp.insts[id].valued = true
                 made := func_of(taken, comp.insts[id].ret)
                 if wanted != VOID and made != wanted:
@@ -955,6 +992,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     if noted(tok.at):
                         mark(comp.nodes[field_node(t, f.name)].tok, described(f.name, f.type))
                     return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place, lit = base.lit and aggregate(f.type)}
+        if comp.types[t].kind == Array and tok.text == "len":
+            return literal(false, comp.types[t].count)
         if comp.tokens[node.tok + 1].text == "(":
             return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
         how: &strview
@@ -1012,7 +1051,7 @@ func collection(n: usize, want: usize, arena: usize) -> Value|Fail:
     want_value: usize = VOID
     if node.kind == Items and hint.kind == Array and hint.count == kids(n):
         want_value = hint.elem
-    if node.kind == Items and owned:
+    if node.kind == Items and sequence(t):
         want_value = element(t)
     if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
         want_key = comp.items[hint.args].type
@@ -1584,7 +1623,7 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             try runtime("print_line", values, tok.at) # one line at a time, so two threads never mix theirs
             return none
         platform := name == "@linux" or name == "@macos" or name == "@windows" or name == "@x86_64" or name == "@arm64" or name == "@riscv64"
-        if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@compile_error" and not platform:
+        if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@embed" and name != "@compile_error" and not platform:
             return fail("there is no builtin named " + name, tok.at)
         if name == "@compile_error":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
@@ -1593,6 +1632,33 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
                 message := text(n + 1)
                 return fail(message[1:message.len - 1], comp.insts[comp.inst].at)
             return none
+        if name == "@embed":
+            if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
+                return fail("@embed expects the path of the file as text, from the folder of this file: @embed(\"shader.spv\")", tok.at)
+            path := join_path(dir_of(view(comp.files[file_of(tok.at)].path)), text(n + 1)[1:text(n + 1).len - 1])
+            key: &str = "@"
+            key += path
+            id := comp.stored[view(key)] ifnull i64(comp.globals.len)
+            if id == i64(comp.globals.len):
+                size := file_size(path)
+                if size is FsError:
+                    return fail("" + size + ", and @embed takes the file when it compiles, with its path from the folder of this file", at_of(n + 1))
+                pair: &str = "$flag.embed."
+                pair += id
+                global(view(pair))
+                put(comp.stored, view(key), id)
+                label: &str = "flag.file."
+                label += id
+                comp.data += "data " + pair + " = { l $" + label + ", l " + size + " }\n"
+                if comp.system == "linux":
+                    comp.assembly += ".section .rodata\n"
+                elif comp.system == "windows":
+                    comp.assembly += ".section .rdata,\"dr\"\n"
+                else:
+                    comp.assembly += ".section __TEXT,__const\n"
+                    label = "_" + label
+                comp.assembly += ".p2align 3\n" + label + ":\n.incbin \"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
+            return Value{type = try fat_type("strview", VOID, tok.at), at = Arg{Global, id}, mem = true, lit = true}
         if tok.kind == Builtin and kids(n) != 0:
             return fail(name + " expects no arguments", tok.at)
         if tok.kind != Builtin and kids(n) != 1:
@@ -1618,7 +1684,10 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
                     return fail("ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := " + text(a), tok.at)
                 if found != 0:
                     return Value{type = pointer(BYTES), at = global("$" + text(a))}
-            return address(try value(a, VOID))
+            pointee := want
+            if comp.types[want].kind == Ptr:
+                pointee = comp.types[want].elem
+            return address(try value(a, pointee))
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
@@ -1808,6 +1877,11 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 jump(l_good)
                 open_block(l_good)
                 return none
+            if other.type == NEVER:
+                open_block(l_good)
+                absent(v.at, v.type, rest)
+                v = Value{type = kept, at = payload(v.at, kept), mem = true}
+                continue
             result := kept
             if not try assignable(kept, other.type, at) and not (other.lit and accepts(kept, other) >= 0):
                 both_sides: &list[usize]
@@ -1918,7 +1992,6 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
             append(bounds, Value{type = wide, at = raw})
             append(bounds, Value{type = USIZE, at = length})
             try invoke("out_of_bounds", bounds, tok.at)
-            terminate("hlt", Arg{})
             open_block(l_in)
         scaled := times(i, comp.types[elem].size)
         count: u32 = 0
@@ -2092,6 +2165,8 @@ func value(n: usize, want: usize) -> Value|Fail:
     v := try gen(n, want)
     if v.type == VOID:
         return fail("a function that returns nothing is a statement, not a value", at_of(n))
+    if v.type == NEVER:
+        return fail("a function that never returns is a statement, not a value", at_of(n))
     reads(n)
     return v
 
@@ -2102,6 +2177,8 @@ func reads(n: usize):
 func put_text(place: Value, v: Value, at: usize) -> Fail?:
     if comp.types[v.type].kind == Func:
         return put_text(place, Value{type = pointer(BYTES), at = load(v).at}, at)
+    if comp.types[v.type].name == "&str": # text goes as text, a += of a union that holds &str would take it back
+        return put_text(place, try convert(v, try fat_type("strview", VOID, at), Arg{}, at), at)
     args: &list[Value]
     append(args, place)
     append(args, v)
@@ -2280,6 +2357,8 @@ func narrow(cond: usize, matching: bool) -> Fail?:
         if comp.nodes[c].kind == Binary and (text(c) == "and" and matching or text(c) == "or" and not matching):
             append(parts, node_end(subject))
             append(parts, subject)
+        elif comp.nodes[c].kind == Unary and text(c) == "not":
+            try narrow(subject, not matching)
         elif comp.nodes[c].kind == Binary and text(c) == "is" and local_of(subject) != 0:
             wanted := members(try resolve(node_end(subject)))
             kept: &list[usize]
