@@ -1,0 +1,18 @@
+use os
+
+# with its standard input closed the pipe of a program can take number 0, and the program still reads it
+func main() -> i32:
+    if args().len > 1:
+        print("the program reads ", read_line(stdin))
+        return 0
+    me := executable()
+    if ends_with(me, ".exe"):
+        me = me[:-4]
+    close(stdin)
+    p := start(ptr([me, "child"])) iferror Process{}
+    write(p.input, "hello\n")
+    close(p.input)
+    print(read_line(p.output))
+    close(p.output)
+    print(wait p)
+    return 0

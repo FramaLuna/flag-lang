@@ -246,7 +246,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
         return null
     at := comp.tokens[comp.nodes[n].tok].at
     id := comp.type_ids[sym.name]
-    if id is usize and id <= ITERATIONEND and kind != Func:
+    if id is usize and id <= NEVER and kind != Func:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     s := first_sym(sym.name)
     while s != 0:
@@ -263,13 +263,10 @@ func declare(n: usize, sym: Sym) -> Fail?:
                     new_end = node_end(n)
                 if old_end == 0:
                     old_end = node_end(old.node)
-                twin := new_end - n == old_end - old.node
-                i: usize = 1
-                while twin and n + i < new_end:
-                    x := comp.nodes[old.node + i]
-                    y := comp.nodes[n + i]
-                    twin = x.kind == y.kind and x.size == y.size and x.module == y.module and (x.kind == Var or text(old.node + i) == text(n + i))
-                    i += 1
+                taken := kid(n, params(n))
+                new_where := where_start(n)
+                old_where := where_start(old.node)
+                twin := taken - n == kid(old.node, params(old.node)) - old.node and same_nodes(n + 1, old.node + 1, taken - n - 1) and new_end - new_where == old_end - old_where and same_nodes(new_where, old_where, new_end - new_where)
                 if twin:
                     problem = " is declared twice with the same parameters"
             elif kind == Func or other == Func:
@@ -294,6 +291,20 @@ func declare(n: usize, sym: Sym) -> Fail?:
     append(comp.syms, made)
     put(comp.names, sym.name, comp.syms.len - 1)
     return null
+
+func same_nodes(a: usize, b: usize, count: usize) -> bool:
+    for i in 0..count:
+        x := comp.nodes[a + i]
+        y := comp.nodes[b + i]
+        if x.kind != y.kind or x.size != y.size or x.module != y.module or x.kind != Var and text(a + i) != text(b + i):
+            return false
+    return true
+
+func where_start(f: usize) -> usize:
+    c := kid(f, params(f))
+    while c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
+        c = node_end(c)
+    return c
 
 func func_decl(external: bool) -> Fail?:
     keyword := here().text
@@ -350,8 +361,12 @@ func func_decl(external: bool) -> Fail?:
         return fail("only a func of an extern block takes = \"symbol\", the C function it calls", here().at)
     if peek("="):
         comp.pos += 1
-        if here().kind != Str:
-            return unexpected("= expects the symbol of the C function as text: = \"objc_msgSend\"")
+        named := here().kind == Str and here().text.len > 2
+        if named:
+            for i, b in items(here().text[1:here().text.len - 1]):
+                named = named and (is_letter(b) or b == '.' or i > 0 and (is_digit(b) or b == '$'))
+        if not named:
+            return unexpected("= expects the symbol of the C function as text, a name of letters, digits, _, . and $: = \"objc_msgSend\"")
         finish(begin(Literal, comp.pos))
         comp.pos += 1
     try where_clause()

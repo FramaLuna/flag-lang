@@ -14,6 +14,7 @@ extern "c":
     func strtod(text: cstr, end: *bytes) -> f64
 
 priv extern "c":
+    func stamp(variables: bool) = "flag.stamp"
     func read(fd: i32, at: *bytes, size: usize) -> i32
     func write(fd: i32, at: *bytes, size: usize) -> i32
     func open(path: cstr, flags: i32, ...) -> i32
@@ -1835,12 +1836,11 @@ priv func slots(m: &map[$K, $V]) -> &slice[Slot[$K, $V]]:
     out.len = m.cap
     return out
 
-priv func kept_hash(key: $K) -> u64:
-    return hash(key) or 0x8000_0000_0000_0000 # 0 marks a free slot
+priv TAKEN = 0x8000_0000_0000_0000 # in the hash of every key, so 0 marks a free slot
 
 priv func locate(m: &map[$K, $V], key: $Q) -> usize:
     table := slots(m)
-    h := kept_hash(key)
+    h := hash(key) or TAKEN
     i := usize(h) and m.cap - 1
     while table[i].hash != 0 and (table[i].hash != h or table[i].key != key):
         i = (i + 1) and m.cap - 1
@@ -1854,7 +1854,7 @@ priv func put(m: *&map[$K, $V], key: $K) -> *$V:
     i := locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
-        table[i] = Slot[$K, $V]{hash = kept_hash(key), key = key}
+        table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = key}
         m.len += 1
     return ptr(table[i].value)
 
@@ -1880,6 +1880,12 @@ func contains(m: &map[&str, $V], key: &strview) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func remove(m: *&map[$K, $V], key: $K) -> $V|null:
+    return removed(m, key)
+
+func remove(m: *&map[&str, $V], key: &strview) -> $V|null:
+    return removed(m, key)
+
+priv func removed(m: *&map[$K, $V], key: $Q) -> $V|null:
     if m.cap == 0:
         return null
     table := slots(m.*)
@@ -2077,7 +2083,7 @@ priv entering: Lock
 priv stamped: bool
 
 # the first time a thread runs code of this program or library, stamp writes the tags its contexts start with, and the first time of all those of the file variables
-priv func enter(stamp: func(bool)):
+priv func enter():
     with lock(entering):
         stamp(not stamped)
         stamped = true
@@ -2111,7 +2117,7 @@ priv overtime: &str # what a test says when its time is up
 
 priv tested: usize # the thread that runs the test, on Windows
 
-# the main of the program that flagc test builds: it runs the test it names, in the seconds it gives, writing to the file it gives
+# the main of the program that flagc test builds: it runs the test it names, in the seconds it gives
 priv func run_test() -> i32:
     head := flag_tests()
     tests: &slice[Test]
@@ -2125,12 +2131,7 @@ priv func run_test() -> i32:
         return 2
     for t in tests:
         if view(t.name) == view(given[1]):
-            if given.len > 3:
-                flags := open_flags()
-                out := open(given[3], flags[1], flags[3])
-                dup2(out, 1)
-                dup2(out, 2)
-                close(out)
+            dup2(1, 2) # what the test writes to each one comes out in order
             if given.len > 2:
                 seconds := parse_int(view(given[2])) ifnull 0
                 if seconds > 0:

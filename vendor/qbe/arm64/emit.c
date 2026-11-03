@@ -510,7 +510,7 @@ emitins(Ins *i, E *e)
 		if (rtype(i->to) == RSlot) {
 			r = i->to;
 			if (!isreg(i->arg[0])) {
-				i->to = TMP(i->cls == Kv ? V31 : IP1);
+				i->to = TMP(KBASE(i->cls) == 0 ? IP1 : V31); /* a float goes through a float register */
 				emitins(i, e);
 				i->arg[0] = i->to;
 			}
@@ -520,7 +520,7 @@ emitins(Ins *i, E *e)
 			emitins(i, e);
 			break;
 		}
-		assert(isreg(i->to));
+		assert(isreg(i->to) || req(i->to, TMP(V31)));
 		switch (rtype(i->arg[0])) {
 		case RCon:
 			c = &e->fn->con[i->arg[0].val];

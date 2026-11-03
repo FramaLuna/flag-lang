@@ -3,7 +3,7 @@
 #include <stdarg.h>
 
 enum {
-	Ksb = Kv + 1, /* matches Oarg/Opar/Jret, past Kv */
+	Ksb = Kv + 1, /* matches Oarg/Opar past Kv, Jret one less */
 	Kub,
 	Ksh,
 	Kuh,
@@ -762,7 +762,7 @@ parseline(PState ps)
 	if (op == Ovastart && !curf->vararg)
 		err("cannot use vastart in non-variadic function");
 	if (k >= Ksb)
-		err("size class must be w, l, s, or d");
+		err("size class must be w, l, s, d or v");
 	i = 0;
 	if (peek() != Tnl)
 		for (;;) {

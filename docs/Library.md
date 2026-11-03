@@ -61,7 +61,7 @@ The functions
 
 `ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
 
-The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run.
+The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
 
 ```flag
 func main():
@@ -300,7 +300,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
-- `at` and `contains` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`
+- `at`, `contains` and `remove` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`, `remove(m, "port")`
 - `reserve(m: *&map[$K, $V], want: usize)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
@@ -385,7 +385,7 @@ On every system the paths that `os` gives use `/`, and on Windows the paths, the
 
 ### Other programs
 A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
-- `run(command: &strview) -> i32|FsError` runs the command with the shell (`sh`, or `cmd.exe` on Windows) and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
+- `run(command: &strview) -> i32|FsError` runs the command with the shell, `/bin/sh -c`, or `cmd.exe /d /s /c` on Windows, and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
 - `run(program: &slice[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
 - `output(command: &strview, into: *&str) -> i32|FsError` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
 - `output(program: &slice[&strview], into: *&str) -> i32|FsError` the same without a shell
@@ -408,9 +408,9 @@ A program can also run while yours goes on, talking to it through its standard i
 - `start(program: &slice[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
 - `p.input` is a `File` that the program reads as its standard input, and `p.output` one with what it writes to its standard output. They are files like any other, so `write`, `read_line`, `read`, `ready` and `close` work on them. `close(p.input)` gives the program the end of its input, and close `p.output` when you no longer read it
 - `done(p: Process) -> bool` if it ended, without waiting
-- `wait p` waits for it to end and gives its exit code, like `run`. It's `join(p: *Process) -> i32` (see [Protocol functions](Reference.md#protocol-functions)), and it leaves `p.id` at 0, a process is waited once. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
+- `wait p` waits for it to end and gives its exit code, like `run`. It's `join(p: *Process) -> i32` (see [Protocol functions](Reference.md#protocol-functions)), and it leaves `p.id` at 0: like a thread, a process is waited once, and a copy of it that you wait again is gone. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
 - `kill(p: Process)` ends it at once, and `wait` then gives 137, 128 plus `SIGKILL`, on every system
-- `id` is the number of the system for it, the pid, or a handle on Windows. `done`, `wait` and `kill` of a `Process` with `id` 0, one never started or waited already, stop the program: `flag: kill of a process that is not running: it was never started, or it was waited already`
+- `id` is the number of the system for it, the pid, or a handle on Windows. `done`, `wait` and `kill` of a `Process` with `id` 0, one never started or waited already, stop the program: `flag: kill of a process that is not running: it was never started, or it was waited already`. So does `wait` of a copy waited already on Linux and macOS. On Windows the handle of a copy may be another one by then, so don't keep copies of a `Process` you wait
 
 ```flag
 use os

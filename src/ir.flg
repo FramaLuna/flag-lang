@@ -184,14 +184,14 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers, what goes through it is gone when inlined
+        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
         for t in p.temps..p.last + 1:
             append(cut, false)
         for k in p.params..p.params + p.count:
             given := comp.passes[k]
             if given.cls >= AGG and given.cls < CAGG and comp.types[given.cls - AGG].size <= CUT:
                 cut[given.arg.n - i64(p.temps)] = true
-        work: usize = 0
+        stays: usize = 0
         room: i64 = 0
         frame := false
         for i in comp.code[p.code:p.end]:
@@ -201,10 +201,10 @@ func listing() -> &str:
             elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
                 cut[i.to - p.temps] = true
             elif not (i.op == "absent" or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
-                work += 1
+                stays += 1
             frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == "$flag_frame" # it reads the frame of its caller, panic for the chain
         free(cut)
-        append(sizes, work)
+        append(sizes, stays)
         append(rooms, room)
         append(framed, frame)
     live: &list[bool]
@@ -251,7 +251,7 @@ func listing() -> &str:
             shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
             place += shown.len + 1
             places += ", "
-            text_bytes(places, replace(shown, "\\", "\\\\"))
+            text_bytes(places, shown)
             places += "b 0"
     out += places + " }\n"
     out += "function l $flag_frame() {\n@start\n\t%f =l frame\n\t%c =l loadl %f\n\tret %c\n}\n" # the frame of its caller, its own is gone when it returns

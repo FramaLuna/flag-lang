@@ -1,0 +1,21 @@
+use fs
+
+# the text that iferror and ifnull give starts empty, it doesn't keep the block of the round before
+func lookup(k: i32) -> &str|null:
+    if k == 1:
+        out: &str = "one"
+        return out
+    return null
+
+func main():
+    _ = write_file("build/tests/iferror_text_slot.txt", "hi")
+    for name in ["build/tests/iferror_text_slot.txt", "build/tests/iferror_text_slot.missing"]:
+        said := read_file(name) iferror ""
+        said += "!"
+        print(said)
+        free(said)
+    for k in [1, 2]:
+        got := lookup(k) ifnull ""
+        got += "!"
+        print(got)
+        free(got)

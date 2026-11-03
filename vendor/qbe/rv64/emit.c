@@ -343,6 +343,16 @@ emitins(Ins *i, Fn *fn, FILE *f)
 		}
 		emitf(omap[o].fmt, i, fn, f);
 		break;
+	case Osar:
+	case Oshr:
+	case Oshl:
+		/* an immediate count goes in 5 bits for w and 6 for l,
+		 * as the hardware takes the count of a register */
+		if (rtype(i->arg[1]) == RCon) {
+			con = &fn->con[i->arg[1].val];
+			i->arg[1] = getcon(con->bits.i & (i->cls == Kw ? 31 : 63), fn);
+		}
+		goto Table;
 	case Ocopy:
 		if (req(i->to, i->arg[0]))
 			break;

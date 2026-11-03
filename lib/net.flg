@@ -6,6 +6,7 @@ priv extern "c":
     func bind(fd: i64, address: *bytes, size: u32) -> i32
     func listen(fd: i64, backlog: i32) -> i32
     func accept(fd: i64, address: *bytes, size: *u32) -> i32
+    func accept4(fd: i64, address: *bytes, size: *u32, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func setsockopt(fd: i64, level: i32, name: i32, value: *bytes, size: u32) -> i32
     func getaddrinfo(host: cstr, service: cstr, hints: *bytes, found: **bytes) -> i32
@@ -60,7 +61,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     entry := found
     while entry as usize != 0:
         fields := entry as *array[i32, 4]
-        fd := i64(socket(fields.*[1], fields.*[2], fields.*[3]))
+        fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
         address := ((entry as usize + address_in_info()) as **bytes).*
         size := ((entry as usize + 16) as *u32).*
         if fd >= 0:
@@ -77,7 +78,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
 
 func listen(port: u16) -> Server|NetError:
     start()
-    fd := i64(socket(2, 1, 0))
+    fd := i64(socket(2, sealed(1), 0))
     address := inet_address()
     address[2] = u8(port >> 8)
     address[3] = u8(port and 255)
@@ -91,7 +92,7 @@ func listen(port: u16) -> Server|NetError:
     return Server{i32(fd)}
 
 func accept(server: Server) -> Socket|NetError:
-    fd := i64(accept(i64(server.fd), usize(0) as *bytes, usize(0) as *u32))
+    fd := accepted(i64(server.fd))
     if fd < 0:
         return NetError{failure(), "accept a connection", ""}
     prepare(fd)
@@ -252,9 +253,21 @@ priv func start() where @windows():
     data: array[u8, 408]
     WSAStartup(514, ptr(data) as *bytes)
 
+# close on exec from the start, so a program that another thread starts on Linux doesn't take it
+priv func sealed(kind: i32) -> i32 where @linux():
+    return kind or 0x80000 # SOCK_CLOEXEC
+
+priv func sealed(kind: i32) -> i32 where not @linux():
+    return kind
+
+priv func accepted(fd: i64) -> i64 where @linux():
+    return i64(accept4(fd, usize(0) as *bytes, usize(0) as *u32, 0x80000))
+
+priv func accepted(fd: i64) -> i64 where not @linux():
+    return i64(accept(fd, usize(0) as *bytes, usize(0) as *u32))
+
 priv func prepare(fd: i64) where @linux():
     yes: i32 = 1
-    fcntl(fd, 2, 1) # close on exec
     setsockopt(fd, 1, 2, ptr(yes) as *bytes, 4) # SO_REUSEADDR
     setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY, what you flush goes at once
 
@@ -286,9 +299,8 @@ priv func dispose(fd: i64) where @windows():
     closesocket(fd)
 
 priv func open_udp() -> i64 where @linux():
-    fd := i64(socket(10, 2, 0)) # AF_INET6 and SOCK_DGRAM
+    fd := i64(socket(10, 0x80002, 0)) # AF_INET6, and SOCK_DGRAM with SOCK_CLOEXEC
     no: i32 = 0
-    fcntl(fd, 2, 1) # close on exec
     setsockopt(fd, 41, 26, ptr(no) as *bytes, 4) # IPV6_V6ONLY off, so it takes IPv4 too
     return fd
 

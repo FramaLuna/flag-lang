@@ -301,8 +301,8 @@ func main() -> i32:
                 target = arguments[i]
             elif a == "-timeout":
                 seconds = parse_int(arguments[i]) ifnull 0
-                if seconds < 1:
-                    eprint(ERR, "-timeout expects the seconds a test can take, 1 or more, but got ", arguments[i])
+                if seconds < 1 or seconds > 2000000:
+                    eprint(ERR, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
                     return 2
             else:
                 query = arguments[i]
@@ -620,15 +620,18 @@ func main() -> i32:
             code = 2
         commands: &list[&list[&strview]]
         codes: &list[i32|FsError]
+        said: &list[&str]
         for j, k in chosen:
             command: &list[&strview]
-            append(command, ptr([me, test_name(k), "" + seconds, me + "." + j]))
+            append(command, ptr([me, test_name(k), "" + seconds]))
             append(commands, command)
             append(codes, 0)
+            none: &str
+            append(said, none)
         queue: Channel[usize, 64]
         workers: &list[Thread[null]]
         while workers.len < cores() and workers.len < chosen.len:
-            append(workers, parallel run_tests(ptr(queue), commands, codes))
+            append(workers, parallel run_tests(ptr(queue), commands, codes, said))
         for j in 0..chosen.len:
             send(ptr(queue), j)
         close(ptr(queue))
@@ -636,8 +639,6 @@ func main() -> i32:
             wait w
         failures: usize = 0
         for j, k in chosen:
-            said := read_file(commands[j][-1]) iferror ""
-            _ = remove(commands[j][-1])
             ended := codes[j]
             if ended is i32 and ended == 0:
                 continue
@@ -647,8 +648,8 @@ func main() -> i32:
                 how = "exit code " + ended
             at := comp.tokens[comp.nodes[comp.syms[k].node].tok].at
             print("FAIL ", test_name(k), ", ", comp.files[file_of(at)].path, ":", line_of(at), ", ", how)
-            write(stdout, said)
-            if said.len > 0 and not ends_with(said, "\n"):
+            write(stdout, said[j])
+            if said[j].len > 0 and not ends_with(said[j], "\n"):
                 print()
         if chosen.len > 0:
             print(chosen.len - failures, " passed, ", failures, " failed")
@@ -663,9 +664,19 @@ func main() -> i32:
         return 1
     return code
 
-func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], codes: &slice[i32|FsError]):
+# each test reads the end of its input and writes to a pipe, the output and the errors in the order it wrote them
+func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], codes: &slice[i32|FsError], said: &slice[&str]):
     for j in queue:
-        codes[j] = run(commands[j])
+        p := start(commands[j])
+        if p is FsError:
+            codes[j] = p
+            continue
+        close(p.input)
+        got: usize = 1
+        while got > 0:
+            got = read(p.output, ptr(said[j]), 65536) iferror 0
+        close(p.output)
+        codes[j] = wait p
 
 func ran(command: &slice[&strview], why: &strview) -> bool:
     code := run(command)
