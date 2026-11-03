@@ -944,7 +944,7 @@ flag: the test takes more than 10 s
 ```
 The threads that a test starts alone are waited for when it returns, as `main` does. A test that calls `args()` gets the arguments of the program of the tests.
 
-A test reads an empty standard input, and what it writes to the standard output and to the error output comes to flagc through a pipe, in the order it wrote it, and is shown only when the test fails. When every test ended, flagc writes each one that failed, in the order of the files, with the place of its `func`, its exit code and what it wrote, and then how many passed and failed. This goes to the standard output, and flagc exits with 1 when a test failed
+A test reads an empty standard input, and what it writes to the standard output and to the error output comes to flagc through a pipe, in the order it wrote it, and is shown only when the test fails. When every test ended, flagc writes each one that failed, in the order of the files, with the place of its `func`, its exit code and what it wrote, and then how many passed and failed. A crash on Windows ends with the code of its exception, and flagc writes it in hex, `exit code 0xc0000005`, like Windows does. This goes to the standard output, and flagc exits with 1 when a test failed
 ```
 FAIL mathx.test_gcd_of_zero, tests/gcd_test.flg:7, exit code 134
 checking gcd(7, 0)
