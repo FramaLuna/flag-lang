@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (not released yet)
+## 0.5.0
 
 A release about reaching past the program: numbers in lanes of one register, libraries that a program loads and reloads while it runs, the functions of C with their types, other programs that run beside yours, UDP, and tests that run each in a process of its own. Structs, `switch` and signed indexes got faster, and Windows takes text in UTF-16 everywhere.
 
