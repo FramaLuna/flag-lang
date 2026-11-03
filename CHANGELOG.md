@@ -34,12 +34,13 @@ Changed
 - The operators of arrays are gone, except `==`: an array holds values, and arithmetic on lanes is a `simd`. `a + b` between two arrays now says so
 - `abs` of a float clears the sign bit, like `fabs`, so it also takes the sign off a NaN
 - On x86_64 a program whose code names `simd` needs x86-64-v2 (SSE4.2) and says so when it starts
-- Arenas give pieces aligned to 16, and a stack slot aligned to 16 is aligned again: QBE could lay it out 8 bytes off after smaller ones
+- Arenas give pieces aligned to 16, and a stack slot aligned to 16 is aligned again: QBE could lay it out 8 bytes off after smaller ones. A `simd` in a tagged union goes at byte 16, so `simd[f32, 4]?` takes 32 and the `simd` is aligned there too
 - `hash` of a `simd` is an error that says why, `simd[i32, 4] has no hash, its == answers each lane: use an array, array[i32, 4](v)`, so a map with `simd` keys says it first. So is the `==` of a struct, a union or an array that holds `simd`, and an `operator` between a `simd` and a number, that belongs to the language. An `operator` between a `simd` and a type of yours is yours, like `m * v` of a `Mat4`
 - `select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` with a `simd` are the language's with their number of arguments and no module, or `math`. With other arguments a function of yours with that name is called, like a `max(v)` that gives the largest lane
 - `never` is only what a function returns: a variable, a parameter or a member of a union cannot be `never`
 - `not (x is T)` narrows, like the `else` of `x is T`
 - An array literal takes its element type from a `*array[T, N]` or a `&slice[T]` through `ptr`, so a constant of integers can be a `&slice[u32]`: `words: &slice[u32] = ptr(SHADER)`
+- `[...]` takes the one array or `simd` of a union, and `{k: v}` its one map, like `{...}` takes its one struct: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`
 - Your `main` is the `main` of C, so `break main` stops once, in your code, and nothing in the program can call `main` or take it as a value
 - `panic`, `exit`, `out_of_memory` and `out_of_bounds` return `never`
 - The tag of a union member is a hash of its type, the same in every program and library, where it was the id of that compilation: a union crosses between a program and a library it loads. The builtin types keep the first tags, `null` is still 0, and two types whose hashes meet can't be in one union
@@ -51,6 +52,7 @@ Changed
 - On Windows text goes to the system in UTF-16: files, folders, the environment, the arguments, other programs, the messages of errors and the paths of the compiler take letters outside ASCII, where they went through the code page of the system. `rename` gives an errno, where it gave the code of Windows
 - `run` and `output` of a command start `/bin/sh -c` or `cmd.exe /d /s /c` the way they start a program, so a program you run gets only its three files, also when another thread opens a file or starts another program at that moment: Linux opens pipes and sockets close on exec, macOS starts programs with `posix_spawn` and `POSIX_SPAWN_CLOEXEC_DEFAULT`, and Windows with `CreateProcessW` and the list of the three handles, where `_spawnvp`, `system`, `popen` and a `dup2` of the standard output were not safe with threads
 - The parameters of an `extern func(...)` type and what it returns are checked where the type is written, like those of an `extern` function, and a `= "symbol"` is a C name of letters, digits, `_`, `.` and `$`, where any text went to QBE and failed there
+- `-memory` warns about a thread that runs alone in a library, where nothing waits for it and the program may close the library while it runs
 - `-memory` names the function as you wrote it, `release cannot release p`, where a C function with a symbol of its own was named `free`
 - `test.sh` gives the program of a test the compiler in `FLAGC`
 - gdb goes from the line of a `switch` on a union to the case that runs, the search for it is on the line of the `switch`

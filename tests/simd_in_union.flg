@@ -1,0 +1,41 @@
+type Err:
+    code: i32
+
+type Holder:
+    flag: u8
+    held: simd[f32, 4]|Err|null
+
+kept: simd[i32, 4]|null = [5, 6, 7, 8]
+
+func aligned(at: usize) -> bool:
+    return at % 16 == 0
+
+func scaled(v: simd[f32, 4]|Err|null) -> simd[f32, 4]|null:
+    if v is Err:
+        return null
+    if v is simd[f32, 4]:
+        print(aligned(ptr(v) as usize))
+        return v * 2.0
+    return v
+
+func main():
+    print(sizeof(simd[f32, 4]|null), " ", sizeof(simd[f32, 4]|Err|null), " ", sizeof(Holder))
+    x: simd[f32, 4]|Err|null = [1.0, 2.0, 3.0, 4.0]
+    print(scaled(x), " ", scaled(Err{3}), " ", scaled(null))
+    narrowed := x ifnull simd[f32, 4](0.0)
+    print(narrowed)
+    print(kept)
+    copy := kept
+    if copy is simd[i32, 4]:
+        print(aligned(ptr(copy) as usize), " ", copy + 1)
+    many: &list[Holder]
+    defer free(many)
+    for i in 0..5:
+        append(many, Holder{u8(i), simd[f32, 4](f32(i))})
+    append(many, Holder{9, Err{1}})
+    ok := true
+    for h in many:
+        if h.held is simd[f32, 4]:
+            ok = ok and aligned(ptr(h.held) as usize)
+    print(ok, " ", many[4].held, " ", many[5].held)
+    print(kept == null)

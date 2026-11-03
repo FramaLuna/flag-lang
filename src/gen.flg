@@ -1097,7 +1097,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
 func collection(n: usize, want: usize, arena: usize) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
-    t := struct_in(want)
+    fitting: &list[usize]
+    for m in members(want):
+        k := comp.types[m].kind
+        if node.kind == Items and (k == Array or k == Simd or sequence(m)) or node.kind == Pairs and (k == Struct or k == Fat and text(comp.types[m].decl) == "map"):
+            append(fitting, m)
+    t := want
+    if fitting.len == 1:
+        t = fitting[0]
     hint := comp.types[t]
     fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
     shape: &strview = "map"
@@ -1111,14 +1118,7 @@ func collection(n: usize, want: usize, arena: usize) -> Value|Fail:
     if arena != 0:
         given = try value(arena, VOID)
         at = at_of(arena)
-        fitting: &list[usize]
-        for m in members(want):
-            if comp.types[m].kind == Fat and text(comp.types[m].decl) == shape:
-                append(fitting, m)
-        owned = fitting.len == 1
-        if owned:
-            t = fitting[0]
-            hint = comp.types[t]
+        owned = hint.kind == Fat and text(hint.decl) == shape
     if node.size == 1 and arena != 0 and not owned and want != VOID:
         return fail("this empty " + shape + " lives in an arena as a &" + shape + ", which cannot land in " + comp.types[want].name, tok.at)
     if node.size == 1 and arena != 0 and not owned:
@@ -2968,11 +2968,11 @@ func image(t: usize, n: usize, out: *&str) -> usize|Fail: # the node of a part t
             return n
         out.* += "w " + comp.types[member].tag + ", "
         if ty.size > 4:
-            zeros(out, 4)
+            zeros(out, past_tag(member) - 4)
             unknown := try image(member, n, out)
             if unknown != 0:
                 return unknown
-            zeros(out, ty.size - 8 - comp.types[member].size)
+            zeros(out, ty.size - past_tag(member) - comp.types[member].size)
         return 0
     if ty.kind == Struct and (n == 0 or kind == Brace or kind == Fill):
         given: &list[usize]
@@ -3115,7 +3115,7 @@ func stamp(t: usize, addr: Arg, at: usize):
     ty := comp.types[t]
     if ty.kind == Union and ty.start != NULL:
         set_tag(t, ty.start, offset(addr, at))
-        stamp(ty.start, addr, at + 8)
+        stamp(ty.start, addr, at + past_tag(ty.start))
     elif ty.kind == Struct or ty.kind == Fat:
         for i in 0..ty.count:
             if not comp.items[ty.first + i].shared:
@@ -3356,7 +3356,7 @@ func big(t: usize) -> bool:
 func payload(addr: Arg, t: usize) -> Arg:
     if comp.types[t].kind == Union or comp.types[t].size == 0:
         return addr
-    return add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = int_arg(8), member = u32(t)})
+    return add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = int_arg(i64(past_tag(t))), member = u32(t)})
 
 func absent(addr: Arg, t: usize, here: &list[usize]):
     for m in members(t):

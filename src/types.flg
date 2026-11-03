@@ -258,13 +258,16 @@ func lay_out(t: usize):
         size = 4
         align = 4
     elif comp.types[t].kind == Union:
-        size = 8 + align_up(size, 8)
-        align = 8
+        align = align_up(8, align)
+        size = align + align_up(size, 8)
     comp.types[t].size = align_up(size, align)
     comp.types[t].align = align
 
 func align_up(n: usize, a: usize) -> usize:
     return (n + a - 1) / a * a
+
+func past_tag(member: usize) -> usize:
+    return align_up(8, comp.types[member].align)
 
 func bound(name: &strview) -> usize:
     i := comp.binds.len
