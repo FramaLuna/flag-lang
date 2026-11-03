@@ -1,0 +1,16 @@
+type Wrapped:
+    tag: u8
+    lanes: simd[i32, 4]
+
+func check(depth: i32) -> bool:
+    a: i64 = 1
+    v := simd[f32, 4](f32(depth))
+    w := Wrapped{1, simd[i32, 4](depth)}
+    b: u8 = 2
+    ok := ptr(v) as usize % 16 == 0 and ptr(w.lanes) as usize % 16 == 0 and a + i64(b) == 3
+    if depth > 0:
+        return ok and check(depth - 1)
+    return ok
+
+func main():
+    print(check(5))

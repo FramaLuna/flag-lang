@@ -160,9 +160,9 @@ func dwarf() -> &str:
                         out += reference(local + "type" + comp.items[ty.first + i].type)
                     if leaf == 0:
                         out += "\t.byte 0\n"
-                case Array:
+                case Array, Simd:
                     uleb(out, ARRAY_DIE)
-                    out += reference(local + "type" + ty.elem)
+                    out += reference(local + "type" + lane_type(t))
                     uleb(out, COUNT_DIE)
                     uleb(out, ty.count)
                     out += "\t.byte 0\n"
@@ -208,14 +208,14 @@ func dwarf() -> &str:
                         for m in members(t):
                             if comp.types[m].size == 0:
                                 uleb(out, VARIANT_DIE + LEAF)
-                                uleb(out, m - 1)
+                                uleb(out, usize(comp.types[m].tag))
                             else:
                                 uleb(out, VARIANT_DIE)
-                                uleb(out, m - 1)
+                                uleb(out, usize(comp.types[m].tag))
                                 uleb(out, MEMBER_DIE)
                                 asciz(out, comp.types[m].name)
                                 out += reference(local + "type" + m)
-                                uleb(out, 8)
+                                uleb(out, past_tag(m))
                                 out += "\t.byte 0\n"
                         out += "\t.byte 0\n\t.byte 0\n" + here + ".tags:\n"
                     uleb(out, ENUM_DIE)
@@ -230,7 +230,7 @@ func dwarf() -> &str:
                             asciz(out, comp.types[m].name)
                         else:
                             asciz(out, "(" + comp.types[m].name + ")") # an enumerator Point would hide the type Point from gdb
-                        uleb(out, m - 1)
+                        uleb(out, usize(comp.types[m].tag))
                     out += "\t.byte 0\n"
                 case:
                     uleb(out, STRUCT_DIE + LEAF)
@@ -329,8 +329,8 @@ func needs(t: usize, needed: *&list[bool]):
         return
     needed[t] = true
     ty := comp.types[t]
-    if ty.kind == Ptr or ty.kind == Array:
-        needs(ty.elem, needed)
+    if ty.kind == Ptr or ty.kind == Array or ty.kind == Simd:
+        needs(lane_type(t), needed)
     if ty.kind == Func:
         needs(ty.ret, needed)
     if ty.kind == Fat:

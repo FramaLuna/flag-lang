@@ -1,0 +1,83 @@
+$ build/tests/bin/flagc test tests/flagc_test.files/gcd.flg tests/flagc_test.files/gcd_test.flg tests/flagc_test.files/plain_test.flg -timeout 1
+FAIL mathx.test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7, exit code 134
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/flagc_test.files/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7
+FAIL mathx.test_out_of_bounds, tests/flagc_test.files/gcd_test.flg:11, exit code 134
+flag: index 3 is out of bounds, length 0
+  --> tests/flagc_test.files/gcd_test.flg:13:12
+  in test_out_of_bounds, tests/flagc_test.files/gcd_test.flg:11
+FAIL mathx.test_hangs, tests/flagc_test.files/gcd_test.flg:15, exit code 142
+flag: the test takes more than 1 s
+  in test_hangs, tests/flagc_test.files/gcd_test.flg:15
+FAIL mathx.test_exits, tests/flagc_test.files/gcd_test.flg:19, exit code 3
+FAIL mathx.test_crashes, tests/flagc_test.files/gcd_test.flg:22, exit code 139
+flag: invalid memory access at 0x0
+  in test_crashes, tests/flagc_test.files/gcd_test.flg:22
+FAIL test_plain, tests/flagc_test.files/plain_test.flg:1, exit code 134
+to the error output
+flag: plain fails
+  --> tests/flagc_test.files/plain_test.flg:3:5
+  in test_plain, tests/flagc_test.files/plain_test.flg:1
+FAIL plain_test.flg.test_private, tests/flagc_test.files/plain_test.flg:5, exit code 134
+flag: assertion failed
+  --> tests/flagc_test.files/plain_test.flg:6:5
+  in test_private, tests/flagc_test.files/plain_test.flg:5
+1 passed, 7 failed
+exit code 1
+$ build/tests/bin/flagc test tests/flagc_test.files/ -timeout 1 -- gcd_of private
+FAIL mathx.test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7, exit code 134
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/flagc_test.files/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7
+FAIL plain_test.flg.test_private, tests/flagc_test.files/plain_test.flg:5, exit code 134
+flag: assertion failed
+  --> tests/flagc_test.files/plain_test.flg:6:5
+  in test_private, tests/flagc_test.files/plain_test.flg:5
+0 passed, 2 failed
+exit code 1
+$ build/tests/bin/flagc test tests/flagc_test.files/gcd.flg tests/flagc_test.files/gcd_test.flg -o build/tests/flagc_test.program -- test_gcd
+FAIL mathx.test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7, exit code 134
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/flagc_test.files/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7
+1 passed, 1 failed
+exit code 1
+$ build/tests/flagc_test.program mathx.test_gcd
+a test that passes says nothing
+exit code 0
+$ build/tests/flagc_test.program mathx.test_gcd_of_zero
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/flagc_test.files/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/flagc_test.files/gcd_test.flg:7
+exit code 134
+$ build/tests/flagc_test.program test_gcd
+flag: there is no test named test_gcd
+exit code 2
+$ build/tests/flagc_test.program
+flag: name the test to run
+exit code 2
+$ build/tests/bin/flagc test tests/flagc_test.files/gcd.flg -- nothing
+error: these files have no test, a test is a func whose name starts with test_
+exit code 1
+$ build/tests/bin/flagc test tests/flagc_test.files/gcd.flg tests/flagc_test.files/gcd_test.flg -- nothing private
+error: no test has nothing or private in its name
+exit code 2
+$ build/tests/bin/flagc test tests/flagc_test.wrong/none.flg
+error: these files have no test, a test is a func whose name starts with test_
+exit code 1
+$ build/tests/bin/flagc test tests/flagc_test.wrong/takes.flg
+error: test_takes is a test, so it takes nothing and returns nothing
+  --> tests/flagc_test.wrong/takes.flg:1:6
+   | func test_takes(n: i32):
+   |      ^
+exit code 1
+$ build/tests/bin/flagc test tests/flagc_test.files/gcd.flg -timeout 0
+error: -timeout expects the seconds a test can take, from 1 to 2000000, but got 0
+exit code 2
+$ build/tests/bin/flagc test -check tests/flagc_test.wrong/none.flg tests/flagc_test.files/
+exit code 0

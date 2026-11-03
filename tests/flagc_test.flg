@@ -1,0 +1,30 @@
+use fs
+use os
+
+func main():
+    flagc := dir_of(executable()) + "bin/flagc test "
+    files := "tests/flagc_test.files/"
+    wrong := "tests/flagc_test.wrong/"
+    kept := dir_of(executable()) + "flagc_test.program"
+    show(flagc + files + "gcd.flg " + files + "gcd_test.flg " + files + "plain_test.flg -timeout 1")
+    show(flagc + files + " -timeout 1 -- gcd_of private")
+    show(flagc + files + "gcd.flg " + files + "gcd_test.flg -o " + kept + " -- test_gcd")
+    show(kept + " mathx.test_gcd")
+    show(kept + " mathx.test_gcd_of_zero")
+    show(kept + " test_gcd")
+    show(kept)
+    _ = remove(kept)
+    show(flagc + files + "gcd.flg -- nothing")
+    show(flagc + files + "gcd.flg " + files + "gcd_test.flg -- nothing private")
+    show(flagc + wrong + "none.flg")
+    show(flagc + wrong + "takes.flg")
+    show(flagc + files + "gcd.flg -timeout 0")
+    show(flagc + "-check " + wrong + "none.flg " + files)
+
+func show(command: &strview):
+    said: &str
+    code := output(command + " 2>&1", ptr(said)) iferror -1
+    print("$ ", replace(command, dir_of(executable()), "build/tests/"))
+    shown := replace(view(said), "\e[1;31merror:\e[0m", "error:")
+    write(stdout, replace(shown, "exit code 0xc0000005", "exit code 139")) # a crash on Windows, 128 + SIGSEGV on Linux and macOS
+    print("exit code ", code)

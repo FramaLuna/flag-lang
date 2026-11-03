@@ -1,0 +1,47 @@
+type Body:
+    tag: u8
+    velocity: simd[f32, 4]
+    mass: f32
+
+type Row:
+    lanes: array[simd[f32, 4], 3]
+
+func scaled(v: simd[f32, 4], k: f32) -> simd[f32, 4]:
+    return v * k
+
+func aligned(at: usize) -> bool:
+    return at % 16 == 0
+
+func main():
+    b := Body{1, [1.0, 2.0, 3.0, 4.0], 2.0}
+    print(sizeof(Body), " ", aligned(ptr(b.velocity) as usize), " ", scaled(b.velocity, b.mass))
+    bodies: &list[Body]
+    defer free(bodies)
+    for i in 0..5:
+        append(bodies, Body{u8(i), simd[f32, 4](f32(i)), 1.0})
+    ok := true
+    for i in 0..bodies.len:
+        bodies[i].velocity += 0.5
+        ok = ok and aligned(ptr(bodies[i].velocity) as usize)
+    print(ok, " ", bodies[4].velocity)
+    level: Arena
+    defer free(level)
+    for i in 0..10:
+        tiny := arena(level, u8(i))
+        v := arena(level, simd[i32, 4](i32(i)))
+        ok = ok and aligned(v as usize) and v.*[2] == i32(i) and tiny.* == u8(i)
+    print(ok)
+    values: &list[f32]
+    defer free(values)
+    for i in 0..8:
+        append(values, f32(i))
+    for i in usize(0)..2:
+        chunk := ptr(values[4 * i]) as *simd[f32, 4]
+        chunk.* = chunk.* * 2.0 + 1.0
+    print(values)
+    r: Row
+    r.lanes[1] = [1.0, 2.0, 3.0, 4.0]
+    r.lanes[2] = r.lanes[1] * r.lanes[1]
+    kept := heap(r.lanes[2])
+    print(r.lanes, " ", kept.*)
+    free(kept)

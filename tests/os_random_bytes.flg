@@ -1,0 +1,23 @@
+use os
+
+func zeros(bytes: &slice[u8]) -> usize:
+    count: usize = 0
+    for b in bytes:
+        count += usize(b == 0)
+    return count
+
+func main():
+    key: array[u8, 32]
+    other: array[u8, 32]
+    random_bytes(ptr(key))
+    random_bytes(ptr(other))
+    print(key != other, " ", zeros(ptr(key)) < 8)
+    many: &list[u8]
+    defer free(many)
+    for i in 0..1000:
+        append(many, 0)
+    random_bytes(many) # more than the 256 bytes that getentropy gives at once
+    print(zeros(many) < 50, " ", zeros(many[900:]) < 20)
+    nothing: &list[u8]
+    random_bytes(nothing)
+    print(nothing.len)

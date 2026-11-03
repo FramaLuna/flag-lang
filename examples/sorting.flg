@@ -1,5 +1,5 @@
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*Score, *Score) -> i32)
 
 packed type Score:
     player: &strview
@@ -10,7 +10,7 @@ export func by_points(a: *Score, b: *Score) -> i32:
 
 func main():
     scores: array[Score, 4] = [{"ana", 120}, {"bob", 340}, {"cyd", 90}, {"dee", 310}]
-    qsort(ptr(scores) as *bytes, 4, sizeof(Score), ptr(by_points))
+    qsort(ptr(scores) as *bytes, 4, sizeof(Score), by_points)
     for i, s in scores:
         print(i + 1, ". ", s.player, " ", s.points)
     print("a packed score takes ", sizeof(Score), " bytes, the last one is ", scores[-1].player)

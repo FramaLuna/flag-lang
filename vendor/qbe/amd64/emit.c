@@ -9,6 +9,7 @@ struct E {
 	uint64_t fsz;
 	uint64_t save; /* the registers kept between rbp and the locals */
 	int nclob;
+	int lane; /* of the next vset, given by a vlane */
 };
 
 #define CMP(X) \
@@ -82,6 +83,8 @@ static struct {
 	{ Omul,     Ks, "+mulss %1, %=" },
 	{ Omul,     Kd, "+mulsd %1, %=" },
 	{ Odiv,     Ka, "-div%k %1, %=" },
+	{ Ostorev,  Ka, "movups %0, %M1" },
+	{ Oload,    Kv, "movups %M0, %=" },
 	{ Ostorel,  Ka, "movq %L0, %M1" },
 	{ Ostorew,  Ka, "movl %W0, %M1" },
 	{ Ostoreh,  Ka, "movw %H0, %M1" },
@@ -112,12 +115,29 @@ static struct {
 	{ Ocast,    Ki, "movq %D0, %L=" },
 	{ Ocast,    Ka, "movq %L0, %D=" },
 
+	{ Ovgetsb,  Ki, "pextrb %1, %0, %W=\n\tmovsb%k %B=, %=" },
+	{ Ovgetub,  Ki, "pextrb %1, %0, %W=" },
+	{ Ovgetsh,  Ki, "pextrw %1, %0, %W=\n\tmovsw%k %H=, %=" },
+	{ Ovgetuh,  Ki, "pextrw %1, %0, %W=" },
+	{ Ovgetsw,  Kl, "pextrd %1, %0, %W=\n\tmovslq %W=, %L=" },
+	{ Ovgetsw,  Kw, "pextrd %1, %0, %W=" },
+	{ Ovgetuw,  Ki, "pextrd %1, %0, %W=" },
+	{ Ovget,    Kw, "pextrd %1, %0, %W=" },
+	{ Ovget,    Kl, "pextrq %1, %0, %L=" },
+	{ Ovget,    Ka, "pshufd %1, %0, %=" },
+	{ Ovsetb,   Kv, "pinsrb %0, %W1, %=" },
+	{ Ovseth,   Kv, "pinsrw %0, %W1, %=" },
+	{ Ovsetw,   Kv, "pinsrd %0, %W1, %=" },
+	{ Ovsetl,   Kv, "pinsrq %0, %L1, %=" },
+	{ Ovsets,   Kv, "insertps %0, %1, %=" },
+
 	{ Oaddr,    Ki, "lea%k %M0, %=" },
 	{ Oswap,    Ki, "xchg%k %0, %1" },
 	{ Osign,    Kl, "cqto" },
 	{ Osign,    Kw, "cltd" },
 	{ Oxdiv,    Ki, "div%k %0" },
 	{ Oxidiv,   Ki, "idiv%k %0" },
+	{ Oxcpuid,  Kw, "pushq %%rbx\n\tpushq %%rdx\n\tcpuid\n\tpopq %%rdx\n\tpopq %%rbx" },
 	{ Oxcmp,    Ks, "ucomiss %S0, %S1" },
 	{ Oxcmp,    Kd, "ucomisd %D0, %D1" },
 	{ Oxcmp,    Ki, "cmp%k %0, %1" },
@@ -329,6 +349,9 @@ Next:
 				);
 			fputc(')', e->f);
 			break;
+		case RInt:
+			fprintf(e->f, "$%d", rsval(ref));
+			break;
 		case RCon:
 			off = e->fn->con[ref.val];
 			if (off.type == CBits)
@@ -386,6 +409,109 @@ Next:
 	goto Next;
 }
 
+/* the lanes: c is commutative, n is not, r is not
+ * with its arguments the other way around, u has one
+ * argument, s shifts, and the rest are splats */
+static struct {
+	short op;
+	char form;
+	char *name;
+} vmap[] = {
+	{ Ovaddb, 'c', "paddb" }, { Ovaddh, 'c', "paddw" },
+	{ Ovaddw, 'c', "paddd" }, { Ovaddl, 'c', "paddq" },
+	{ Ovadds, 'c', "addps" }, { Ovaddd, 'c', "addpd" },
+	{ Ovsubb, 'n', "psubb" }, { Ovsubh, 'n', "psubw" },
+	{ Ovsubw, 'n', "psubd" }, { Ovsubl, 'n', "psubq" },
+	{ Ovsubs, 'n', "subps" }, { Ovsubd, 'n', "subpd" },
+	{ Ovmulh, 'c', "pmullw" }, { Ovmulw, 'c', "pmulld" },
+	{ Ovmuls, 'c', "mulps" }, { Ovmuld, 'c', "mulpd" },
+	{ Ovdivs, 'n', "divps" }, { Ovdivd, 'n', "divpd" },
+	{ Ovand, 'c', "andps" }, { Ovor, 'c', "orps" },
+	{ Ovxor, 'c', "xorps" },
+	{ Ovshlh, 's', "psllw" }, { Ovshlw, 's', "pslld" },
+	{ Ovshll, 's', "psllq" }, { Ovshrh, 's', "psrlw" },
+	{ Ovshrw, 's', "psrld" }, { Ovshrl, 's', "psrlq" },
+	{ Ovsarh, 's', "psraw" }, { Ovsarw, 's', "psrad" },
+	{ Ovceqb, 'c', "pcmpeqb" }, { Ovceqh, 'c', "pcmpeqw" },
+	{ Ovceqw, 'c', "pcmpeqd" }, { Ovceql, 'c', "pcmpeqq" },
+	{ Ovceqs, 'c', "cmpeqps" }, { Ovceqd, 'c', "cmpeqpd" },
+	{ Ovcgtb, 'n', "pcmpgtb" }, { Ovcgth, 'n', "pcmpgtw" },
+	{ Ovcgtw, 'n', "pcmpgtd" }, { Ovcgtl, 'n', "pcmpgtq" },
+	{ Ovclts, 'n', "cmpltps" }, { Ovcltd, 'n', "cmpltpd" },
+	{ Ovcles, 'n', "cmpleps" }, { Ovcled, 'n', "cmplepd" },
+	{ Ovmins, 'r', "minps" }, { Ovmind, 'r', "minpd" },
+	{ Ovmaxs, 'r', "maxps" }, { Ovmaxd, 'r', "maxpd" },
+	{ Ovsqrts, 'u', "sqrtps" }, { Ovsqrtd, 'u', "sqrtpd" },
+	{ Ovitos, 'u', "cvtdq2ps" },
+	{ Ovsplatb, 'b', "movd %W0, %=\n\tpunpcklbw %=, %=\n\tpshuflw $0, %=, %=\n\tpshufd $0, %=, %=" },
+	{ Ovsplath, 'b', "movd %W0, %=\n\tpshuflw $0, %=, %=\n\tpshufd $0, %=, %=" },
+	{ Ovsplatw, 'b', "movd %W0, %=\n\tpshufd $0, %=, %=" },
+	{ Ovsplatl, 'b', "movq %L0, %=\n\tpunpcklqdq %=, %=" },
+	{ Ovsplats, 'f', "movss %0, %=\n\tshufps $0, %=, %=" },
+	{ Ovsplatd, 'f', "movsd %0, %=\n\tunpcklpd %=, %=" },
+	{ NOp, 0, 0 }
+};
+
+/* xmm15 is the scratch, it holds an argument
+ * that is also the result, or a shift amount */
+static void
+emitvec(Ins i, E *e)
+{
+	Ref r;
+	int o;
+	char *s, *n;
+
+	for (o=0; vmap[o].op != i.op; o++)
+		if (vmap[o].op == NOp)
+			die("no lanes for %s", optab[i.op].name);
+	n = vmap[o].name;
+	switch (vmap[o].form) {
+	case 'b':
+		emitf(n, &i, e);
+		return;
+	case 'f':
+		if (req(i.to, i.arg[0])) {
+			s = strchr(n, '\n') + 2;
+			emitf(s, &i, e);
+		} else
+			emitf(n, &i, e);
+		return;
+	case 'u':
+		fprintf(e->f, "\t%s %%%s, ", n, regtoa(i.arg[0].val, SLong));
+		fprintf(e->f, "%%%s\n", regtoa(i.to.val, SLong));
+		return;
+	case 'r':
+		r = i.arg[0];
+		i.arg[0] = i.arg[1];
+		i.arg[1] = r;
+		break;
+	case 's':
+		if (rtype(i.arg[1]) == RTmp) {
+			fprintf(e->f, "\tmovd %%%s, %%xmm15\n",
+				regtoa(i.arg[1].val, SWord));
+			i.arg[1] = TMP(XMM15);
+		}
+		break;
+	}
+	if (req(i.to, i.arg[1]) && !req(i.to, i.arg[0])) {
+		if (vmap[o].form == 'c') {
+			r = i.arg[0];
+			i.arg[0] = i.arg[1];
+			i.arg[1] = r;
+		} else {
+			emitcopy(TMP(XMM15), i.arg[1], Kv, e);
+			i.arg[1] = TMP(XMM15);
+		}
+	}
+	emitcopy(i.to, i.arg[0], Kv, e);
+	fprintf(e->f, "\t%s ", n);
+	if (rtype(i.arg[1]) == RCon)
+		fprintf(e->f, "$%"PRId64, e->fn->con[i.arg[1].val].bits.i);
+	else
+		fprintf(e->f, "%%%s", regtoa(i.arg[1].val, SLong));
+	fprintf(e->f, ", %%%s\n", regtoa(i.to.val, SLong));
+}
+
 static bits negmask[4] = {
 	[Ks] = 0x80000000,
 	[Kd] = 0x8000000000000000,
@@ -405,6 +531,10 @@ emitins(Ins i, E *e)
 	default:
 		if (isxsel(i.op))
 			goto case_Oxsel;
+		if (isvec(i.op)) {
+			emitvec(i, e);
+			break;
+		}
 	Table:
 		/* most instructions are just pulled out of
 		 * the table omap[], some special cases are
@@ -486,6 +616,19 @@ emitins(Ins i, E *e)
 		if (req(i.to, i.arg[0]))
 			break;
 		t0 = rtype(i.arg[0]);
+		if (i.cls == Kv) {
+			if (isreg(i.to) && isreg(i.arg[0]))
+				emitf("movaps %0, %=", &i, e);
+			else if (isreg(i.to))
+				emitf("movups %M0, %=", &i, e);
+			else if (isreg(i.arg[0]))
+				emitf("movups %0, %M=", &i, e);
+			else {
+				emitf("movups %M0, %%xmm15", &i, e);
+				emitf("movups %%xmm15, %M=", &i, e);
+			}
+			break;
+		}
 		if (i.cls == Kl
 		&& t0 == RCon
 		&& e->fn->con[i.arg[0].val].type == CBits) {
@@ -654,6 +797,30 @@ emitins(Ins i, E *e)
 		break;
 	case Oframe:
 		emitcopy(i.to, TMP(RBP), Kl, e);
+		break;
+	case Ovget:
+		if (i.cls == Kd) /* pshufd takes the words 2n and 2n + 1 */
+			i.arg[1] = INT(10 * rsval(i.arg[1]) + 4);
+		goto Table;
+	case Ovlane:
+		e->lane = rsval(i.arg[0]);
+		break;
+	case Ovsetb:
+	case Ovseth:
+	case Ovsetw:
+	case Ovsetl:
+	case Ovsets:
+	case Ovsetd:
+		/* xmm15 holds a float to put that is also the result */
+		if (req(i.to, i.arg[1]) && !req(i.to, i.arg[0])) {
+			emitcopy(TMP(XMM15), i.arg[1], Kv, e);
+			i.arg[1] = TMP(XMM15);
+		}
+		emitcopy(i.to, i.arg[0], Kv, e);
+		i.arg[0] = INT(i.op == Ovsets ? e->lane << 4 : e->lane);
+		if (i.op != Ovsetd)
+			goto Table;
+		emitf(e->lane ? "unpcklpd %1, %=" : "movsd %1, %=", &i, e);
 		break;
 	case_Oxsel:
 		if (req(i.to, i.arg[1]))
@@ -856,6 +1023,7 @@ winabi_framesz(E *e)
 		for (i=b->ins; i<&b->ins[b->nins]; i++)
 			if ((i->op == Odiv && req(i->to, i->arg[1]))
 			|| (i->op == Oswap && KBASE(i->cls) != 0)
+			|| isvec(i->op) || i->cls == Kv
 			|| (i->op == Ocopy && rtype(i->to) == RSlot
 			 && (rtype(i->arg[0]) == RSlot || rtype(i->arg[0]) == RMem)))
 				e->fn->reg |= BIT(XMM15);

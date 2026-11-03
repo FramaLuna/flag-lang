@@ -321,6 +321,16 @@ sel(Ins i, Num *tn, Fn *fn)
 		emit(Ocopy, Kw, TMP(RCX), r0, R);
 		fixarg(&i1->arg[0], argcls(&i, 0), i1, fn);
 		break;
+	case Ocpuid:
+		/* like the divisions, the copies after it
+		 * keep rax and rcx out of other hands */
+		emit(Ocopy, Kw, R, TMP(RAX), R);
+		emit(Ocopy, Kw, i.to, TMP(RCX), R);
+		emit(Oxcpuid, Kw, R, R, R);
+		emit(Ocopy, Kw, TMP(RCX), CON_Z, R);
+		emit(Ocopy, Kw, TMP(RAX), i.arg[0], R);
+		fixarg(&curi->arg[0], Kw, curi, fn);
+		break;
 	case Ouwtof:
 		r0 = newtmp("utof", Kl, fn);
 		emit(Osltof, k, i.to, r0, R);
@@ -405,6 +415,7 @@ sel(Ins i, Num *tn, Fn *fn)
 		break;
 	case Onop:
 		break;
+	case Ostorev:
 	case Ostored:
 	case Ostores:
 	case Ostorel:
@@ -461,6 +472,21 @@ Emit:
 		salloc(i.to, i.arg[0], fn);
 		break;
 	default:
+		if (isvec(i.op) || islane(i.op)) {
+			/* lanes take registers, only an
+			 * amount to shift can be a number */
+			emiti(i);
+			i1 = curi;
+			for (j=0; j<2; j++)
+				if (rtype(i.arg[j]) == RCon
+				&& (j == 0 || !INRANGE(i.op, Ovshlh, Ovsarw))) {
+					kc = argcls(&i, j);
+					i1->arg[j] = newtmp("isel", kc, fn);
+					emit(Ocopy, kc, i1->arg[j], i.arg[j], R);
+					fixarg(&curi->arg[0], kc, curi, fn);
+				}
+			break;
+		}
 		if (isext(i.op))
 			goto case_Oext;
 		if (isxsel(i.op))
@@ -901,7 +927,7 @@ amd64_isel(Fn *fn)
 	/* assign slots to fast allocs */
 	b = fn->start;
 	/* specific to NAlign == 3 */ /* or change n=4 and sz /= 4 below */
-	for (al=Oalloc, n=4; al<=Oalloc1; al++, n*=2)
+	for (al=Oalloc1, n=16; al>=Oalloc; al--, n/=2) /* the widest first, so each stays aligned */
 		for (i=b->ins; i<&b->ins[b->nins]; i++)
 			if (i->op == al) {
 				if (rtype(i->arg[0]) != RCon)
@@ -915,10 +941,10 @@ amd64_isel(Fn *fn)
 					die("alloc too large");
 				fn->tmp[i->to.val].slot = fn->slot;
 				fn->slot += sz;
-				fn->salign = 2 + al - Oalloc;
 				*i = (Ins){.op = Onop};
 			}
 
+	fn->slot = (fn->slot + 3) & -4;
 	/* process basic blocks */
 	n = fn->ntmp;
 	num = emalloc(n * sizeof num[0]);

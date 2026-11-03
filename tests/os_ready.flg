@@ -1,0 +1,31 @@
+use os
+
+func main() -> i32:
+    if args().len > 1:
+        line := read_line(stdin) # waits for the other side before it writes
+        sleep(0.2)
+        print("got ", line)
+        print("more") # both lines go out together when the program ends
+        return 0
+    p := start(ptr([executable(), "child"]))
+    if p is FsError:
+        print(p)
+        return 1
+    quiet := start(ptr([executable(), "child"])) iferror Process{} # waits for a line that never comes
+    print(ready(p.output), " ", ready(p.output, 0.05))
+    write(p.input, "hi\n") # ready writes it before it waits
+    began := clock()
+    print(ready(p.output, 30.0), " ", clock() - began > 0.1)
+    print(read_line(p.output))
+    print(ready(p.output)) # the second line is already read, it waits in the file
+    print(read_line(p.output))
+    print(ready(ptr([quiet.output, p.output]), 30.0)) # the end of the output is there too
+    print(read_line(p.output))
+    close(p.input)
+    close(p.output)
+    print(wait p)
+    close(quiet.input)
+    print(read_line(quiet.output))
+    close(quiet.output)
+    print(wait quiet)
+    return 0

@@ -11,6 +11,7 @@ This is the reference of the language
 - [Functions and calls](#functions-and-calls)
 - [Generics and where](#generics-and-where)
 - [Operators](#operators)
+- [SIMD](#simd)
 - [Iteration](#iteration)
 - [Control flow](#control-flow)
 - [Errors](#errors)
@@ -20,7 +21,9 @@ This is the reference of the language
 - [Memory](#memory)
 - [The memory checker](#the-memory-checker)
 - [Debugging](#debugging)
+- [Tests](#tests)
 - [Calling C](#calling-c)
+- [Libraries](#libraries)
 - [Platforms](#platforms)
 - [Editor support](#editor-support)
 - [Diagnostics](#diagnostics)
@@ -37,7 +40,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
-The generator starts from `main` and only the code that `main` can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main`, from the tests with `flagc test` (see [Tests](#tests)), or from the `export` functions of a library, and only the code that they can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` doesn't hold on the target is the exception: it's for another system, like `func f() where @windows():` on Linux, and it's checked when you build for that one, where the C functions it calls have the signatures of that system. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
@@ -45,11 +48,13 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 
 ## The command line
 ```
-flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-version] [anything else goes to cc] [-- arguments for run]
+flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]
 ```
 - An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
 - `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
+- `test` has to be the first argument too. It builds the tests of the files and runs them, the ones whose name has one of the words after `--` (see [Tests](#tests)). `-o` keeps the program of the tests, and `-timeout` gives the seconds each test can take, 10 if you don't give it
 - `-o` names the program, `a.out` if you don't give one, `a.exe` on Windows
+- `-shared` builds a library that a program loads instead of a program (see [Libraries](#libraries)). Its name is `a.so`, `a.dylib` or `a.dll` if you don't give one, and `run` with it is a wrong command line, a library doesn't run on its own
 - `-check` stops after checking the code, it writes nothing and it doesn't need a `main`
 - `-memory` runs the memory checker, the warnings don't change the exit code
 - `-debug` builds the program for gdb and lldb (see [Debugging](#debugging))
@@ -59,17 +64,20 @@ flagc [run] file.flg folder ... [-o program] [-keep] [-check] [-memory] [-debug]
 - `-version` prints the version and the commit it was built from
 - Anything else goes to the C compiler, in the same order: `.c`, `.o` and `.a` files, `-l` flags, `-static`...
 
-flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay` or `-at` is the last argument, and when `-at` is not a place inside one of the files
+flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay`, `-at` or `-timeout` is the last argument, when `-at` is not a place inside one of the files, when `-timeout` is not a number of seconds from 1 to 2000000, about 23 days, and when no test has the words after `--` in its name
 ```
 error: -target expects a value after it
 error: the folder notes has no .flg file to compile
+error: no test has parse or lex in its name
 ```
 
 ### The C compiler
-The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link is always
+The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link of a program is
 ```
 cc -o program program.s -L<library folder> -L<folder of each input> -l<each extern library> <anything else>
 ```
+A library, with `-shared`, has `-shared` before what you give, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
+
 The `-L` of the folders of your files means that you can put a `libsomething.a` next to your code and use it with `extern "something"`.
 
 If the C compiler cannot run you get
@@ -132,13 +140,14 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
 | `i64`, `u64`, `usize`, `f64`, pointers, function values, `Thread[T]` | 8 |
+| `simd[T, n]` | 16 |
 | void types, `null`, `IterationEnd` | 0 |
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
-`sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`.
+`sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`. `offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `offset_of(Car.motor, power)`.
 
-Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces.
+Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together when all of them are constants, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces. A word with a value computed when the program runs is written one field at a time: joining the fields costs instructions, and when the value lives in registers they have to be taken apart again.
 
 ### Structs
 The fields are in the order you write them, each one aligned to its own size, and the size of the struct is rounded up to its biggest alignment, like C does
@@ -154,20 +163,20 @@ A field with `@other` uses the same bytes as a field declared above it, it canno
 
 A `packed type` has no padding, each field starts where the one before ends and its alignment is 1, so `packed type T:` with `a: u8` and `b: i64` takes 9 bytes. Fields can share storage with `@` there too. A packed struct cannot be passed to C by value, pass a pointer.
 
-A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
+A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. A list of values `[...]` takes the one array or `simd` of a union the same way, and a literal of pairs `{k: v}` its one map: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
 
 ### Arrays
-`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it.
+`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `sizeof` that takes the type of where you use it.
 
 ### Fixed maps
 `fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `sizeof(fixmap[i32, i32, 2])` is 24.
 
 ### Unions
-A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A union of void types is only the tag, 4 bytes, that's why enums are small.
+A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A `simd` goes at byte 16, where its alignment puts it, so `simd[f32, 4]?` takes 32. A union of void types is only the tag, 4 bytes, that's why enums are small.
 
-The tag says which member the union holds. It comes from the id the type has inside that compilation, so it can change when you change the program, don't save it to a file. The tag of `null` is always 0.
+The tag says which member the union holds. The builtin types have the first tags, in the order `null`, `bool`, `i8`... `IterationEnd`, `never`, so the tag of `null` is always 0, and any other type has a hash of its name, with its module, so it's the same in every program and every library that has the type, whatever order they declare their types in. The module of a `priv` type is its file, so a `priv` type doesn't cross. That's what lets a union cross between a program and a library it loads. The tag says which type it is, not what the type holds: a `Door` of the library with three fields and a `Door` of the program with two have the same tag, so a type you change between the two doesn't cross. Two types whose hashes give the same tag cannot be in one union, which almost never happens: `Open and Ajar have the same tag, so a union of them cannot tell which one it holds: rename one of them`. A tag doesn't change when you change the program, but don't save it to a file to read with another one either, write the name.
 
-An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a file variable without a value before `main`. Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
+An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value: a variable, a field, an element, a literal. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a file variable without a value before `main`. A library has no `main`, so there, and in a thread that C starts, it happens the first time the thread calls an `export func` (see [Libraries](#libraries)). Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
@@ -288,10 +297,10 @@ if found is Card:
 The rules
 - `if x is T:` narrows the block, and the `elif` and `else` get what is left
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
-- `not (x is T)` doesn't narrow anything
+- `not` turns around what it narrows, so `if not (x is T):` narrows like the `else` of `if x is T:`
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
-- after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it
+- after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it. A branch leaves with `return`, `break`, `continue`, or a call to a function that returns `never`, like `panic` (see [Returns](#returns))
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
 `==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
@@ -336,7 +345,7 @@ error: ambiguous call to show, several overloads match (i32) equally
 
 The order of the declarations doesn't matter, a function can call one declared below it or in another file.
 
-Declaring the same function twice in a module is an error, with a note that points to the other one. Two functions are the same when everything from the name to the `:` is equal, and the names of the parameters don't count
+Declaring the same function twice in a module is an error, with a note that points to the other one. Two functions are the same when the types of their parameters and their `where` are equal: the names of the parameters, what they return and the symbol of C don't count, since a call never chooses by them
 ```
 error: main is declared twice with the same parameters
 ```
@@ -365,11 +374,11 @@ func main():
 - a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
-- C functions (`extern` and `export`) cannot be function values, and a function type cannot be in the signature of one. A C callback is still an `export func` passed with `ptr`
+- the name of a C function, of an `extern` block or an `export func`, is a value of an `extern func` type, the type of a function of C, and never of a `func` type: `sqrt is a C function, so its value is an extern func(f64) -> f64 and not the func(f64) -> f64 this place takes` (see [C function types](#c-function-types)). A `func` type cannot be in the signature of a C function
 - there are no closures, no functions inside functions and no functions without a name. A function gets what it needs as arguments
 
 ### Inlining
-When the program is written, a direct call to a small function is replaced by the body of that function. A function is small when it has at most 45 instructions of IL, after the calls inside it were replaced, and at most 4 KiB of variables, and the function that makes the call has at most 500 instructions: inlining into big functions makes QBE slow, and a big function gains little from it. The variables of an inlined body take room in the frame of the caller even when the call never runs, so a function with an array of a million numbers would make every frame that calls it that big, and on Windows, whose stack is 1 MiB, the program would stop with `flag: stack overflow`. Into a function that calls itself, directly or through others, a function is inlined on its own only with at most 32 bytes of variables, about what the call takes: each level of the recursion keeps them, and a recursion of 30000 levels that calls one with an array of 256 bytes would need 8 MiB. `inline func` and `inline operator` replace every direct call, whatever the sizes, and a generic one does it in each instance
+When the program is written, a direct call to a small function is replaced by the body of that function. A function is small when it has at most 35 instructions of IL that stay after it's inlined, counted after the calls inside it were replaced, and at most 4 KiB of variables, and the function that makes the call has at most 500 instructions of IL: inlining into big functions makes QBE slow, and a big function gains little from it. What doesn't stay is the reading, writing and copying of the variables and parameters of 32 bytes or less, that QBE keeps in registers (see [Building the compiler](#building-the-compiler)). So `operator +` of a struct of three `f32` has 23 instructions and keeps 4, the three additions and the `ret`, and the operators of small structs are inlined where they are used, while a function that copies a struct of more than 32 bytes counts its copies. The variables of an inlined body take room in the frame of the caller even when the call never runs, so a function with an array of a million numbers would make every frame that calls it that big, and on Windows, whose stack is 1 MiB, the program would stop with `flag: stack overflow`. Into a function that calls itself, directly or through others, a function is inlined on its own only with at most 32 bytes of variables, about what the call takes: each level of the recursion keeps them, and a recursion of 30000 levels that calls one with an array of 256 bytes would need 8 MiB. `inline func` and `inline operator` replace every direct call, whatever the sizes, and a generic one does it in each instance
 ```flag
 inline func clamp(x: $T, low: $T, high: $T) -> $T:
     if x < low:
@@ -397,6 +406,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
+| `wait x` | `join(x)`, when `x` is not a `Thread`. A `Process` of `os` has one (see [Other programs](Library.md#other-programs)) |
 | `{k: v}` | `put` |
 | `print(a, b)` | formats the values with `+=` into one line, and `write(stdout, line)` |
 | `"a" + x`, `s += x` | `operator +=(s: *&str, x: T)` |
@@ -454,9 +464,42 @@ In an assignment the right side runs first, and then the place on the left is fo
 
 When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has a `put(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once, and so does assigning a field or an element of it: `players[name].score += 10`, `pairs[a][b] += 1`. The right side runs first and the pointer is used at once, so a right side that grows the map is safe. The `put` of a map that gives the pointer is priv to core, because a pointer you keep goes bad at the next `put`. Without that `put`, like on a fixed map, a field of `x[i]` cannot be assigned, it would only change a copy. On a fixed map `put` gives `MapFull?` and an assignment cannot pass an error on, so `x[i] = v` and `x[i] += v` don't compile there: call `try put(m, k, v)`.
 
-A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `put(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map. The map is not touched while the call runs, so a call that grows it is safe. Without a `put(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy.
+A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `put(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map. The map is not touched while the call runs, so a call that grows it is safe. Without a `put(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy. `ptr(x[i])` gets a pointer to a copy too, like `ptr` of any value that is not a variable, and nothing puts that one back.
 
 There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
+
+## SIMD
+`simd[T, n]` is `n` lanes of `T` that fill one register of 16 bytes: `simd[f32, 4]`, `simd[i32, 4]`, `simd[u32, 4]`, `simd[f64, 2]`, `simd[i64, 2]`, `simd[u64, 2]`, `simd[i16, 8]`, `simd[u16, 8]`, `simd[i8, 16]` and `simd[u8, 16]`. A mask `simd[bool, n]`, with `n` of 2, 4, 8 or 16, keeps each lane as an integer of `16 / n` bytes with all its bits 1 for `true` and 0 for `false`, so a comparison gives a mask as wide as the lanes it compared. Another size is an error: `simd[f32, 8] is 32 bytes, and a simd is one register of 16: use simd[f32, 4], or an array of them`.
+
+The size and the alignment are 16, like `__m128` in C, so a struct with a `simd` has the layout C gives it. Lists, `heap` and arenas give memory aligned to 16, and the loads don't need it, so a pointer to a `simd` made from a list of `f32` works
+```flag
+chunk := ptr(values[4 * i]) as *simd[f32, 4]
+chunk.* = chunk.* * k + 1.0
+```
+
+### Operators on lanes
+They work lane by lane, between two `simd` of one type, or with a number of the type of the lanes on one side, which goes in every lane: `v * k`, `1.0 - v`, `v < 0.0`
+- `+`, `-`, `*` and `-v` for numbers. Integers wrap around, like one number does
+- `/` for floats. Integers have no `/` or `%`: `a simd of i32 has no /, no processor divides integer lanes: convert it to an array`
+- `and`, `or`, `xor` and `not` for integers and masks. On masks both sides run, there is no short cut, and a mask goes first: `b and m`, with a `bool` first, is a condition that stops at the `bool`. `not` of integer lanes flips their bits, which one integer writes `x xor -1`
+- `<<` and `>>` by a number, the same for every lane, as one number shifts: `v << 3`
+- `<`, `<=`, `>`, `>=`, `==` and `!=` give a mask, and each one is exact with NaN
+
+They belong to the language and cannot be declared: `operator + between simd[f32, 4] and f32 works on the lanes, it belongs to the language and cannot be declared`. An operator between a `simd` and a type of yours is yours, like `operator *(m: Mat4, v: simd[f32, 4])`. Since `==` answers each lane
+- a condition needs a `bool`, so `if v > 0.0:` is an error that points to `any(...)` and `all(...)`
+- a struct with a `simd` field, also inside an array, gets no `==` or `hash` from the compiler: `Contact has a simd field, whose == answers each lane: declare == for Contact`. Nor does a union that holds a `simd`, and two arrays of `simd` don't compare with `==` either: `array[simd[f32, 4], 2] holds simd, whose == answers each lane: compare them with all(a[i] == b[i])`
+- a `simd` has no `hash`, so it can't be the key of a map: `simd[i32, 4] has no hash, its == answers each lane: use an array, array[i32, 4](v)`
+
+### Lanes, literals and conversions
+- `v[2]` reads a lane and `v[2] = x` changes it. The index is a constant: `a lane of a simd is chosen with a constant, for a variable one convert it to an array`. A lane of a mask is a `bool` made from the bits of the lane, so it's a copy like an element of a map: `ptr(m[0])` points to the copy, and a call that would change it doesn't compile
+- a literal takes the type of its place, also inside `T(...)`: `zero: simd[f32, 4] = [0.0, 0.0, 0.0, 0.0]`, and `simd[u8, 16]([..., 300])` is `300 does not fit in u8`. Its elements can read lanes of other `simd`, which is how lanes are shuffled: `t: simd[f32, 4] = [r0[0], r1[0], r0[1], r1[1]]`
+- `T(x)` converts. `simd[f32, 4](k)` puts the number `k` in every lane, `simd[f32, 4](a)` takes the elements of an `array[f32, 4]` and `array[f32, 4](v)` gives them back. Between two `simd` with the same number of lanes each lane converts like `T(x)` of one number, so `simd[i32, 4](v)` rounds toward zero and stays at the limits
+- `as` reads the 16 bytes as another `simd` or an array: `v as simd[u32, 4]` gives the bits
+
+`select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` of a `simd` belong to the language too (see [simd](Library.md#simd)). They give the same result on every system: `min` and `max` are the comparisons of Flag, and `sum` adds in one fixed order. A call with a `simd` and their number of arguments is the one of the language. With another number of arguments, or through a module other than `math`, it's an ordinary call, so a `func max(v: simd[f32, 4]) -> f32` of yours works.
+
+### In the processor
+On x86_64 and arm64 most operations are one instruction or a few, and a `simd` that stays in its function lives in a register, also when an inlined call copies it. `v[i]` reads or writes its lane in the register, with one instruction, so a loop that sets a lane and then computes with the whole `simd` doesn't go through memory. Some operations have no instruction and go lane by lane, each lane taken out of the register and the result put back: `*` of 8-bit and 64-bit lanes, `abs` of `i8` and `i64`, `<<` and `>>` of 8-bit lanes, `>>` of `i64`, and every conversion but `i32` to `f32`. A shuffle, `sum`, `any` and `all` read the lanes the same way. rv64 has no vectors here and computes each lane on its own, with the same results. On x86_64 the instructions are those of x86-64-v2 (SSE4.2), which the processors of Intel have since 2008 and those of AMD since 2011 to 2013, so a program whose code names `simd` checks the processor when it starts: `flag: this program needs an x86-64-v2 processor (SSE4.2)`, with exit code 132. A `simd` whose address is taken, as with `ptr(v)`, stays in memory, and so does the variable a function returns when the call isn't inlined: in a function that computes `x` in a loop and returns it, return a copy, `y := x`, and the loop keeps `x` in a register. A `simd` doesn't cross to C by value, pass a pointer.
 
 ## Iteration
 ### Ranges
@@ -480,7 +523,7 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
 
-Over a value that is not a tagged union, each case is compared with `==`, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. A switch over a `bool` with `case true:` and `case false:` handles every value, like a switch with a default, so a function can end with it when both cases return.
+Over a value that is not a tagged union, each case is compared with `==`, in order, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. A switch over a `bool` with `case true:` and `case false:` handles every value, like a switch with a default, so a function can end with it when both cases return.
 
 Over a tagged union the cases name its member types: one type, several separated by `,`, or a union `A|B`. A case runs when the union holds one of them, and inside it a local variable or a parameter has those types, like inside `if x is A|B:`. The default gets the members that no case names, and after the switch the variable has the types of the cases that don't leave, so `case null: return` leaves it without `null`. A subject that is not a variable is tested the same way, there is just nothing to narrow
 ```flag
@@ -500,6 +543,8 @@ func area(s: Circle|Square|null) -> f64:
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 
 The cases are read when the switch is checked, with the type of the subject known: over a tagged union a case is a type and over anything else a value. So `Red`, `m.Thing`, `Car.motor` and `Pair[i32]` are types in a switch over a union, and `limit`, `p.x` and `t[0]` are values in a switch over a number. In a generic function every instance reads the cases with its own types, so a mistake in a case shows when a call makes that instance.
+
+Over a tagged union the switch reads the tag once and looks for it among the types that the cases name, halving the list until 8 or fewer are left, that it tests in order. So a switch over 120 types makes about 8 comparisons and not 60. The types of the default case are not in the list, it runs when nothing in the list matches, so a few cases and a default over a big enum are a few comparisons. The search is on the line of the `switch`, so a debugger goes from there to the case that runs.
 
 `break` inside a switch leaves the loop around the switch.
 
@@ -521,7 +566,8 @@ They work on the innermost loop, there are no labels, and with a number they rea
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
 - Code after `return`, `break` or `continue` in the same block is an error: `this code can never run, the block already left`
-- `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code
+- `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code. It is the `main` of C, the program starts there, so nothing in the program can call it or take it as a value: `main is where the program starts, the main of C, so nothing in the program can call it or take it as a value`
+- A function that never returns, like `panic` or `exit`, says so with `-> never`. A call to it is a statement and ends the path like `return`, so the code after it is an error and it narrows like a `return`. On the right of `ifnull` and `iferror` it leaves the value without the `null` or the error: `port := parse_int(text) ifnull panic("not a number")`. Anywhere else it's an error, it gives no value: `a function that never returns is a statement, not a value`. The function itself cannot `return` or reach its end: `this function returns never, and a path reaches its end: end each path with a call that never returns, like exit`. A C function can return `never` too, like `exit`. `parallel` of one gives a `Thread[null]`, like a function that returns nothing. `never` is only what a function returns, a variable, a parameter or a member of a union cannot be one: `never is what a function that never returns gives, a value cannot be never`
 - `_ = value` throws the value away, also when there is a variable named `_`
 - A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
 
@@ -565,6 +611,8 @@ These stop the program, and write the message to the error output
 | `flag: send on a closed channel` | 134 |
 | `flag: wait of a thread that was never started` | 134 |
 | `flag: done of a thread that was never started` | 134 |
+| `flag: wait of a process that is not running: it was never started, or it was waited already`, also for `done` and `kill` | 134 |
+| `flag: cannot read random bytes: ...`, when the system gives none | 134 |
 | `flag: cannot start a thread, the system refuses one more` | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
@@ -572,6 +620,8 @@ These stop the program, and write the message to the error output
 | `flag: stack overflow` | 139 |
 | `flag: illegal instruction` | 132 |
 | `flag: arithmetic error` | 136 |
+| `flag: the test takes more than 10 s`, in `flagc test` | 142 |
+| `flag: this program needs an x86-64-v2 processor (SSE4.2)`, at the start of a program with `simd` | 132 |
 
 The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared
 ```
@@ -581,7 +631,7 @@ flag: index 5 is out of bounds, length 3
   in load, main.flg:20
   in main, main.flg:31
 ```
-`flag: out of memory` has no place and no chain, any allocation can be the one that fails. The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
+`flag: out of memory` has no place and no chain, any allocation can be the one that fails. `try_reserve` makes room for what comes next and gives `NoMemory` instead of stopping (see [Memory](Library.md#memory)). The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
 
 The last four are crashes, what the system stops: a read or a write through a pointer to memory the program cannot touch, like a null pointer, says the address, an illegal instruction is most often a union that holds no valid tag, like memory you zeroed yourself (see [Unions](#unions)), and a recursion that goes too deep is a stack overflow. They write the chain too, without a place. The exit code is 128 plus the number of the signal, the table shows Linux, where a memory access can also be a bus error, 135, and macOS gives it 138. On Windows it's the code of the exception, like `0xc0000005`. The program ends with that code, not killed by the signal, so it leaves no core dump: to stop where it crashed, run it in a debugger (see [Debugging](#debugging)).
 
@@ -596,9 +646,11 @@ The chain
 
 The program reads it from the frame pointers, that every function keeps, and a table in the program says which function each return address belongs to, with the name and place of each function of yours: about 50 bytes for each function written to the program, and with the frame pointers 1 % of the size of the compiler. The handler of the crashes is set when the program starts, before `main`, and every thread, the first one too, keeps a stack of 64 KiB for it, so a stack overflow can be told in any of them. It asks for no memory and waits for no lock, a crash can come from inside `malloc`, and a crash inside the report ends the program at once with the same code. A function whose frame can go past a page touches each page as it lowers the stack, so even a frame bigger than the guard page at the end of a stack stops there, and never writes over the stack of another thread. A program that sets its own handler for `SIGSEGV`, `SIGBUS`, `SIGILL` or `SIGFPE` replaces it.
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists and slices, the count of an array, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, slices and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
+
+A signed index pays for the negative case, three instructions more than an `usize`, unless the compiler knows it's not negative: the variable of a `for` over a range that starts at a literal that is not negative never goes below it, so `for i in 0..n` indexes like an `usize` whatever the type of `n`.
 
 ## Constants, file variables and contexts
 ### Constants
@@ -614,6 +666,15 @@ func main():
 Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. The names in it are the ones of the root of the file, so in `NEXT = LIMIT + 1` the `LIMIT` is the constant, also where a local variable `LIMIT` hides it. When the expression fails for one of them, a note says which: `PAIR is read here`.
 
 A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+
+An array literal takes its elements from the type of the place too: an `array[T, N]`, and through `ptr` a `*array[T, N]` or a `&slice[T]`, so `words: &slice[u32] = ptr(SHADER)` keeps `SHADER = [0x0723_0203, 3]` as `u32` words. A literal that doesn't fit is an error at the literal, with a note at the place that reads the constant. The arguments of a call don't give their type, they are computed before the overload is chosen: give the slice to a variable with its type first, like a struct literal (see [Rough edges](#rough-edges)).
+
+### Files in the program
+`@embed("path")` is the file at that path, read when the program compiles, as a `&strview` of static data like a text literal. The path is a text literal, escapes and all, from the folder of the file that has the `@embed`, written with `/`. The bytes go to the assembler with `.incbin`, so a big file costs about nothing to compile: 1.5 MB build in 0.06 s, where the same bytes as a text literal take 0.66 s and five times the memory. A file named twice is in the program once, and one the compiler cannot read is an error
+```
+error: cannot read the size of assets/logo.png: No such file or directory, and @embed takes the file when it compiles, with its path from the folder of this file
+```
+The bytes start at an address aligned to 8 and a `0` follows them, so a view of them as other numbers works: `words: &slice[u32]`, `words = ptr(SHADER.*) as *bytes`, `words.len = SHADER.len / 4`. A constant that is an `@embed`, `LOGO = @embed("logo.png")`, is the same data wherever you read it, and like a text literal, writing into it is wrong.
 
 A constant or a file variable and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`, and `handler is declared as a variable and as a function, a name is one or the other`.
 
@@ -653,11 +714,11 @@ func main():
     print(wait a + wait b)
 ```
 - `parallel` goes before a call and nothing else: `parallel goes before a call, it runs that call in a new thread: parallel f(x)`. The call is chosen like any other, with its overloads, generics, defaults, `@here()` and the address that a `*T` parameter takes, and its arguments are computed in the thread that starts it and copied to the new one. A function value runs too, `parallel steps[i](x)`. A builtin like `print` or a conversion, and a C function, don't run in a thread: wrap them in a func
-- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else is `wait expects a thread on its right, and i32 is not one`
+- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else calls `join` (see [Protocol functions](#protocol-functions)), and a value without one is `wait expects a thread on its right, or a value with a join of its own, and i32 is neither`
 - A local variable that keeps a thread and that nothing reads doesn't compile: `t keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own`
 - `parallel f(x)` alone on its line starts a thread that nobody waits for. Its function can't fail, nothing would see the error: `this thread runs alone and nothing would see an error of i32|Bad, which its function gives: keep the thread and wait for it, t := parallel f(x)`
 - `Thread[T]` is 8 bytes, the address of a block on the heap where the thread finds its arguments and leaves its result. `wait` frees the block, so a thread is waited once, and one that nobody waits is a block that is never freed, `-memory` tells you. The block of a thread that runs alone is freed when it ends. A `Thread` that never got a thread, like a field at zero, stops the program when it's waited or given to `done`: `flag: wait of a thread that was never started`, `flag: done of a thread that was never started`
-- Every thread ends before the program does: when `main` ends, before its deferred statements run, it waits for the threads that still run, so a thread that runs alone can use the variables of `main` and what they own. Then the program writes what waits in the files. `main` waits only in a program that has a `parallel`. `exit()` in any thread ends all of them, and a runtime error or a crash in any thread ends the program with its message, its place and the chain of calls of that thread (see [Runtime errors](#runtime-errors)). When two threads fail at once, the first one writes its report and the others wait for the end, so two reports never mix
+- Every thread ends before the program does: when `main` ends, before its deferred statements run, it waits for the threads that still run, so a thread that runs alone can use the variables of `main` and what they own. Then the program writes what waits in the files. `main` waits only in a program that has a `parallel`. A library has no `main`, so nothing waits for a thread it leaves alone (see [Libraries](#libraries)). `exit()` in any thread ends all of them, and a runtime error or a crash in any thread ends the program with its message, its place and the chain of calls of that thread (see [Runtime errors](#runtime-errors)). When two threads fail at once, the first one writes its report and the others wait for the end, so two reports never mix
 - Each thread that `parallel` starts has 8 MiB of stack, on every system. The first thread, the one of `main`, has the stack of the system: 8 MiB on Linux and macOS, and 1 MiB on Windows
 - Each thread has its own contexts, at zero when it starts, and its own scratch memory. `wait` takes the blocks of the scratch of the thread that ended into the scratch of the thread that waits, as if a call had made those temporaries, so the result can be a temporary, like the path of an error of `read`, until the `with scratch():` around the `wait` ends. A thread that nobody waits frees its scratch when it ends, and so does one whose result holds no pointer. An argument is copied as it is, so a temporary given to a thread still lives in the scratch of the thread that started it: give the other thread text you own, a `&str`
 - File variables are shared and nothing protects them, guard what two threads change with a `Lock`, an `Arena` too. `-memory` doesn't look for two threads that use the same memory at once
@@ -722,7 +783,7 @@ append(enemies, Enemy{hp = 10}) # grows in level
 name: &str = arena(level, "boss") # text that lives in level
 name += " final" # grows in level too
 ```
-- `arena(a, v)` copies the value into `a` and gives a pointer to it, like `heap(v)`. The pieces are aligned to 8 bytes, the most any type needs
+- `arena(a, v)` copies the value into `a` and gives a pointer to it, like `heap(v)`. The pieces are aligned to 16 bytes, the most any type needs, which is a `simd`
 - `arena(a, text)` with a `&strview` or a `&str` gives a `&str` with a copy of the text
 - `arena(a, [...])` and `arena(a, {...})` build the literal as a `&list` or a `&map` that lives in `a`, with the type of the place where it lands, also of a union with one list or map in it: `bytes: &list[u8] = arena(a, [1, 2])`. Without one the literal gives its own, `arena(a, [1, 2])` is a `&list[i32]`, and an empty literal needs one: `this empty list lives in an arena and gets its type from where it lands, and nothing here gives a &list: x: &list[i32] = arena(a, [])`, and one that lands in another type is an error too: `this empty list lives in an arena as a &list, which cannot land in &ring.ring[i32]`. The compiler builds these, so `arena` with a list or map literal is always this one, also when you declare an `arena` of yours
 - `a` is the `Arena` or a pointer to one, and anything else is an error: `arena(a, ...) expects the Arena it allocates in, or a pointer to one, but got i32`
@@ -741,7 +802,7 @@ The pointer of `arena(a, v)` doesn't know its arena, and `free` of it is a mista
 - temporaries used after their `with scratch():` ended: `kept points to memory that may be freed already`
 - a pointer to a local variable that leaves its function: `a pointer to buf cannot leave name, buf lives on its stack`
 - a function that frees one argument and reads another that may be the same memory, like `t += t`: `this call may free memory that it also reads through another argument`
-- threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait t` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it, that goes with a thread that runs alone, or that goes to a `Channel` that is not a local variable of the function. `main` waits for the threads that run alone before its variables end, so there they are clean
+- threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait t` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it, that goes with a thread that runs alone, or that goes to a `Channel` that is not a local variable of the function. `main` waits for the threads that run alone before its variables end, so there they are clean. A library has no `main`, so there a thread that runs alone is a warning of its own: `this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close`
 - `send` of a `Channel` gives what the value owns to the thread that receives it: the memory of a `&str`, `&list` or `&map`, the heap block that a pointer points to the start of, and a `Thread`. It's not yours to free any more, and using it after is using memory that may be freed already. A view, the arena of a text and a pointer inside a block stay yours
 - a temporary that a thread may still use when its `with scratch():` releases it, given to `parallel f(x)` or sent with `send`: `a thread may still use this temporary when its with scratch() releases it: wait for the thread inside it, or give it a &str`, with a note at the `with`. A thread waited inside the same `with scratch():` is clean. A thread that runs alone, in a function that is not `main`, can outlive any scratch: `a thread may still use this temporary when the with scratch() of a caller releases it: give the thread a &str`. What a thread gives back lives in the scratch of the thread that waits, until the `with scratch():` around the `wait`
 - a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct or an element of a list: an `Arena` that gave memory, a `Lock` that was taken, a `Channel` that was used. `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it` and `this copies the Channel jobs in pool, that may be in use: the copy is another channel, use a pointer to it`. A copy at zero, like `w := World{}` or `append(worlds, World{})`, is clean. A function of yours that takes one by value warns at every call: `make takes level by value, a copy of an Arena: make it take *Arena`
@@ -848,13 +909,13 @@ flagc main.flg -o main -debug
 gdb ./main
 ```
 - each file is a compile unit, and each function has its name, the line where it's declared and its code. The instances of a generic share its name, so `break sort` stops in all of them. A breakpoint in a function stops at the first line of its body, with the parameters in their place
-- `break main` stops twice, first in the `main` of C that starts the program and has no lines, then in yours: `break main.flg:main` stops only in yours
+- your `main` is the `main` of C, so `break main` stops once, at the first line of its body, after the start of the program that it does before that line: it keeps the arguments and sets the handler of crashes
 - `break panic` stops at a runtime error, before it writes its message, and `bt` shows the calls that led there with their arguments. A crash stops the program in the debugger by itself, at the instruction that failed
 - the parameters and the variables are in their slot of the stack, inside the blocks of code where they are visible, so the `i` of one loop and the `i` of the next are two variables
 - the variables at the root of a file are global variables, and the contexts are thread-local variables, so the debugger shows the ones of the thread it stops in. On Linux for arm64 and riscv64 a context has no place in the DWARF: no relocation of those systems gives the place of thread data to it, gcc and clang leave it out too
 - numbers, `bool` and pointers are the types of C, and a `*u8` is a C string, so the `data` of a text shows the text, and what follows it too
 - a struct has its fields, and a struct, an enum or an alias you declare is also a typedef of its name, without its module, so `ptype Point`, `ptype Color` and `ptype Shape` work, where C would want `struct Point` and `enum Color`. A fat pointer is a struct with `data` and its fields, like `len`, `cap` and `arena`, a function value is a pointer to a function, and a `Thread[T]` is a struct with the address of its `block`
-- an enum is an enumeration with its variants, and their values are the tags of that compilation (see [Unions](#unions))
+- an enum is an enumeration with its variants, and their values are their tags (see [Unions](#unions))
 - a tagged union is a struct with its `tag`, an enumeration of its members, and the member it holds as a variant part, like Rust does: `{tag = (Point), Point = {x = 1, y = 2}}`, or `{tag = null}` for a member with no data. A member with data is `(Point)` in the enumeration, since in C an enumerator `Point` and the type `Point` share their names, and gdb would take one for the other. gdb shows that member, but in an array it shows every member of each union, and `print shapes[1]` the one it holds. lldb reads variant parts only in Rust code, so it may show only the tag
 - an untagged union is a union of its members
 
@@ -868,6 +929,37 @@ On macOS the linker leaves the DWARF in the object file, so `-debug` assembles t
 
 On Windows gdb and lldb read the DWARF too. The debugger of Visual Studio reads PDB, which flagc doesn't write.
 
+## Tests
+`flagc test` builds the tests of your files into a program and runs them. A test is a function whose name starts with `test_`, declared in a file you give to flagc, not in the library, and it takes nothing and returns nothing. One that takes or returns something is an error, and so are files without a test, like a program without `main`
+```
+error: test_parse is a test, so it takes nothing and returns nothing
+error: these files have no test, a test is a func whose name starts with test_
+```
+The name of a test is the one of its function, after its module when it has one: `mathx.test_gcd`. A `priv` test in a file without a module has the file as its module: `parse.flg.test_lines`. The words after `--` choose by that name: a test runs when its name has one of them, so `-- parse` runs `test_parse_int` and `test_parse_float`.
+
+The program starts from a function of core instead of your `main`, so `main` is checked like any other function and a test can call it. Each test runs in a process of its own, as many at once as the machine has cores, so a failed `assert`, a crash or a test that never ends fails only that test. A test passes when its process ends with 0: `assert`, `panic`, a runtime error, a crash, `exit(1)` and its time fail it. A test that takes more than its seconds, 10 or those of `-timeout`, is stopped with exit code 142 on every system, and writes where it was, with the chain of calls of a crash
+```
+flag: the test takes more than 10 s
+  in test_hangs, tests/gcd_test.flg:15
+```
+The threads that a test starts alone are waited for when it returns, as `main` does. A test that calls `args()` gets the arguments of the program of the tests.
+
+A test reads an empty standard input, and what it writes to the standard output and to the error output comes to flagc through a pipe, in the order it wrote it, and is shown only when the test fails. When every test ended, flagc writes each one that failed, in the order of the files, with the place of its `func`, its exit code and what it wrote, and then how many passed and failed. A crash on Windows ends with the code of its exception, and flagc writes it in hex, `exit code 0xc0000005`, like Windows does. This goes to the standard output, and flagc exits with 1 when a test failed
+```
+FAIL mathx.test_gcd_of_zero, tests/gcd_test.flg:7, exit code 134
+checking gcd(7, 0)
+flag: gcd(7, 0) is 7
+  --> tests/gcd_test.flg:9:5
+  in test_gcd_of_zero, tests/gcd_test.flg:7
+3 passed, 1 failed
+```
+The program of the tests runs one test, the one it names, `program name [seconds]`, with its error output joined to the standard output. `-o` keeps it, so a test runs alone or in a debugger
+```sh
+flagc test src -o tests -debug -- test_parse
+gdb --args ./tests parse.test_parse
+```
+On Linux and macOS the time is an alarm, `SIGALRM`, that the handler of crashes reports, so a test that calls `alarm` or sets its own handler for it changes that. On Windows a timer stops the thread of the test and reads where it was.
+
 ## Calling C
 ### extern
 An `extern` block declares C functions and says which library they come from. `"c"` is the C library, and any other name is linked with `-lname`
@@ -875,25 +967,66 @@ An `extern` block declares C functions and says which library they come from. `"
 extern "m":
     func cbrt(x: f64) -> f64
 ```
-A block can have a `where` like a function, and then its library is linked only when the condition holds. A block without functions just links its library, that's how a library says that it needs another one
+A block can have a `where` like a function. Then its library is linked only when the condition holds, and its functions exist only there, as if each one had that `where`, so two systems can give one function two signatures. A block without functions just links its library, that's how a library says that it needs another one
 ```flag
+extern "c" where not @windows():
+    func socket(domain: i32, kind: i32, protocol: i32) -> i32
+
 extern "ws2_32" where @windows():
-    func WSAStartup(version: u16, into: *bytes) -> i32
+    func socket(domain: i32, kind: i32, protocol: i32) -> u64 # a SOCKET is 64 bits
 
 extern "m":
 ```
+The functions of `extern` are functions like the others: two with the same parameters in one module are an error, `labs is declared twice with the same parameters`, also when they return different types or call different symbols, and two with different parameters are overloads.
+
+A function takes the name of C you give it after `=`, so a C function can have another name in Flag, or one for each signature it's called with, like `objc_msgSend`, which takes the arguments of the method it sends to
+```flag
+extern "objc":
+    func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
+    func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
+    func wait_child(status: *i32) -> i32 = "wait" # wait is a word of Flag
+```
+The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't start with a digit or `$`, and goes after what the function returns, before its `where`. Only a function of an `extern` block takes one: `only a func of an extern block takes = "symbol", the C function it calls`.
+
 You can also give the compiler `.c`, `.o` and `.a` files, they go to the C compiler with the rest.
 
 ### export
-`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. `ptr(name)` of an export function is its address as a `*bytes`, for C functions that take a callback
+`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. Its name is a value of its C function type, the callback you give to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
+
+func main():
+    values := [3, 1, 2]
+    qsort(ptr(values) as *bytes, 3, 4, ascending)
 ```
-`ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has. Inside Flag you don't need `ptr`, the name of a function is already a value (see [Function values](#function-values)), but that value doesn't cross to C.
+`ptr(name)` of an export function is its address as a `*bytes`, for a C function that takes a `void *`. `ptr` of a function that is not exported is an error, a callback needs the one fixed signature an export has.
+
+### C function types
+`extern func(i32, Rect) -> Rect` is the type of a function of C: 8 bytes, the address of the function, and a call through it passes and returns its values the way C does, structs too. It's another type than `func(i32, Rect) -> Rect`, the function values of Flag, which pass structs their own way. Its values are
+- the name of a C function, of an `extern` block or an `export func`: `f := cbrt` gives an `extern func(f64) -> f64`
+- an address that C gives you, read with `as`: what `symbol` of `os` finds in a library (see [Libraries](#libraries)), what `GetProcAddress` or a loader of Vulkan or OpenGL gives, a field of a table of C
+```flag
+type Unknown:
+    vtable: *Calls
+
+type Calls: # a COM object starts with its table of methods
+    query: extern func(*Unknown, *bytes, **bytes) -> i32
+    add_ref: extern func(*Unknown) -> u32
+    release: extern func(*Unknown) -> u32
+
+func drop(object: *Unknown):
+    object.vtable.release(object)
+```
+- it crosses to C: as a parameter, as a field of a struct that goes to C by value, and among the extra arguments of a variadic function
+- one at zero is the `NULL` of C. A C function may take it as no callback, so passing it is fine, and calling it stops the program like an empty function value: `flag: call of an empty function value`
+- `==` and printing work like for function values. `parallel` doesn't run one, `parallel cannot run an extern func(f64) -> f64, it is called the way C calls: wrap the call in a func`
+- a function of Flag doesn't go there: `double is a function of Flag, and the extern func(i32) -> i32 this place takes holds a C function: declare it export func`
+- a variadic C function has no value, a type cannot say its extra arguments
+- its parameters and what it returns are types that cross to C, checked where the type is written: `extern func(&str) -> i32` is `&str cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`
 
 ### Types
 | Flag | C |
@@ -904,12 +1037,13 @@ export func ascending(a: *i32, b: *i32) -> i32:
 | `i64`, `u64`, `usize` | `long long`, `unsigned long long`, `size_t` |
 | `f32`, `f64` | `float`, `double` |
 | `*T`, `cstr` | pointers |
+| `extern func(T) -> U` | a pointer to a function |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
 
-Tagged unions, fat pointers and function values can't cross to C, pass their parts: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
+Tagged unions, fat pointers, the function values of Flag and `simd` can't cross to C, pass their parts or a pointer: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
-A C function can end with `...`. The extra arguments must be integers, floats, `bool` or pointers, not function values, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
+A C function can end with `...`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
 
 ### Text
 `cstr` is `*u8`, a text that ends with a zero byte
@@ -919,6 +1053,39 @@ A C function can end with `...`. The extra arguments must be integers, floats, `
 - `view(c)` turns a `cstr` back into a `&strview`
 
 C's `printf` keeps what it prints in a buffer of its own, so into a pipe or a file its lines and the ones of `print` come out of order. Call `flush()` before C prints, and C's `fflush(NULL)` after it.
+
+## Libraries
+`-shared` builds a library that a program loads while it runs, a `.so` on Linux, a `.dylib` on macOS and a `.dll` on Windows. A library has no `main`, a `func main()` in it is a function like any other, and what it gives are its `export` functions
+```flag
+export func game_step(state: *State, dt: f64):
+    state.time += dt
+```
+```sh
+flagc game.flg -shared -o game.so
+```
+The program loads it with `load`, `symbol` and `close` of `os` (see [Libraries](Library.md#libraries)), and reads what `symbol` finds as an `extern func`
+```flag
+use os
+
+func main():
+    game := load("./game.so")
+    if game is LoadError:
+        panic("" + game)
+    step := trust symbol(game, "game_step") as extern func(*State, f64)
+    state: State
+    step(ptr(state), 0.016)
+```
+- a library starts on its own: the first time a thread calls one of its `export` functions, its contexts get the tags they start with, and the first time of all, its file variables (see [Unions](#unions)). So any thread of the program can call it, also one that C starts. An `export func` of a program does the same, for the threads of C that call it, like the one that a library of audio starts. When no context and no file variable holds a union without `null` there is nothing to do and the call costs nothing more
+- a library carries its own core: its own scratch memory, its own buffers for the files and its own file variables. What crosses between the two is bytes, and a struct, a pointer, a fat pointer or a union means the same on both sides when both declare the same types, since a tag is the same in every program (see [Unions](#unions)). Memory that one side allocates the other one can free, both use the `malloc` of C, but an arena or a temporary belongs to the side that made it
+- the crashes are the program's: a library doesn't catch them, so a crash in the program, or in the library, is reported by the program with the chain of its calls, which leaves out the functions of the library like it leaves out those of C. A thread that a library starts keeps its stack for the handler of the program. A runtime error of the library, like an index out of its list, is reported by the library, with the chain of its own functions
+- what a library prints waits in its own buffer, like the `printf` of C, so into a pipe or a file its lines and the ones of the program come out in the order each one writes its buffer: at a new line on a terminal, at `flush()`, when the library is closed and when the program ends. Call `flush()` on each side before the other one prints
+- a library has no arguments, `args()` is empty there
+- a library has no `main` to wait for the threads it starts: one that runs alone ends when the program does, and one still running when the program closes the library runs code that is gone and crashes. Keep its `Thread` and `wait` it in an `export func` that the program calls before `close`, and `-memory` points at every thread that runs alone in a library (see [The memory checker](#the-memory-checker))
+- on Linux the contexts of a library are thread data that the library reaches through the table of the dynamic linker, the initial-exec model. glibc keeps about 1.5 KiB for the contexts of all the libraries that a program loads while it runs, the core of each library takes 136 bytes of them, and a library that needs more fails to load: `cannot load ./game.so: cannot allocate memory in static TLS block`. A library that is closed gives its room back. Keep the big things of a context behind a pointer
+- a library on Linux links with `-fPIC` and `-Wl,-Bsymbolic`, so its calls and the addresses of its functions go to its own functions, and never to the ones with the same name in the program or in another library
+- a library that you close and load again from the same path is the new one on Linux and Windows. macOS never unloads a library that has thread data, and every Flag library has, so give each version its own path there
+
+A program that reloads its game keeps its state in memory of its own, and gives a pointer to it to each version of the library: that's `tests/reload.flg`.
 
 ## Platforms
 Flag builds programs for Linux, macOS and Windows
@@ -931,7 +1098,7 @@ Flag builds programs for Linux, macOS and Windows
 | `macos-arm64` | `arm64_apple` |
 | `windows-x86_64` | `amd64_win` |
 
-By default the target is the system flagc was built on. The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
+By default the target is the system flagc was built on. On x86_64 a program with `simd` needs x86-64-v2 (see [SIMD](#simd)). The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
 
 ### Cross compiling
 `-target` builds for another system, and you need a C compiler that links for that system. For example, from Linux to Windows with [zig](https://ziglang.org)
@@ -943,11 +1110,11 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Programs get `.exe`: `a.exe` by default, and `flagc run` writes its program in `%TEMP%`
 - The standard input and output are binary, so `print` writes `\n` like on Linux, and `read_line` removes the `\r` of `\r\n` (it does it on every system)
 - The paths that `os` gives you use `/`, and `fs` takes `/` and `\`
-- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` passes each argument quoted so the program gets it exactly. That's why it runs a name without an extension as a `.exe` and refuses a `.bat` or `.cmd`, which `cmd.exe` would read again
+- Paths, arguments and environment variables go to Windows and come back in UTF-16, so the program always sees UTF-8: a path with `ñ` or `字` works whatever the code page of the system
+- `run(command)` and `output(command, into)` go through `cmd.exe`, and `run(program)` and `start(program)` pass each argument quoted so the program gets it exactly. That's why they run a name without an extension as a `.exe` and refuse a `.bat` or `.cmd`, which `cmd.exe` would read again. A program started this way inherits only its standard input, output and error, and when your program has no console of its own, like a program with a window, it doesn't open one
 - `net` uses Winsock, and the first time a program listens the Windows firewall may ask you
 - The `raylib` module only has the Linux build of raylib, for Windows and macOS put your own `libraylib.a` in the `lib` folder
 - The console shows text with its code page, so accents may look wrong unless the console is in UTF-8 (`chcp 65001`)
-- Paths, arguments and environment variables go through the ANSI code page of the system, so a name with letters outside ASCII works only when that code page is UTF-8: the setting "Use Unicode UTF-8 for worldwide language support" of Windows 10 and later
 
 ## Editor support
 These are for editors and tools, they don't build the program.
@@ -999,7 +1166,7 @@ error: the line ends here, ':' goes here
 `./build.sh sanitize` builds QBE with AddressSanitizer and UndefinedBehaviorSanitizer, and turns the three seeds into assembly for the six targets, with and without `-g`: a read out of an array, a memory freed twice or a shift that's too big stops it. CI runs it on Linux, since such a bug can pass on one system and break on another, as a read past an array of the slots that are cut did on macOS. QBE is built with `-fwrapv`: it adds offsets and folds constants with signed numbers that wrap around, as the target does, and C would leave that undefined.
 
 `./test.sh build/flagc` runs every test in `tests/`
-- `name.flg` with `name.out` must print that, and the compiler must build it without printing anything
+- `name.flg` with `name.out` must print that, and the compiler must build it without printing anything. The program gets the compiler in the variable `FLAGC`, so a test can build what it needs, like the libraries that `reload.flg` loads
 - `name.flg` with `name.err` must fail with that text in the error
 - `name.flg` with `name.warn` is compiled with `-memory` and must warn with that text, or not warn if the file is empty
 - `name.gdb` runs the program in gdb with those commands, where there is a gdb, and `name.out` is what gdb prints, without its lines about `libthread_db` and the `Thread 1 hit` that comes before a breakpoint on Windows, where a program always has more than one thread
@@ -1010,7 +1177,7 @@ error: the line ends here, ':' goes here
 - a test with no `name.flg` and no folder gives the compiler no files, only its arguments, that's how the usage is tested
 - and every example in `examples/` must compile
 
-QBE is in `vendor/qbe` with thirty-one changes: its `main` returns instead of calling `exit`, so flagc can call it, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The fifth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
+QBE is in `vendor/qbe` with forty-six changes: its `main` returns instead of calling `exit`, so flagc can call it, on Windows it opens its files with `_wfopen`, since flagc gives it the paths in UTF-8, a function that can go past a page of stack before it touches it lowers the stack a page at a time and touches each one, and a constant that takes the place of a 32 bit load is cut to 32 bits, like amd64 now cuts every constant to the size of its operand, as arm64 and rv64 did, so the assembler has nothing to warn about. The probes are how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than the guard of a thread, 4 KiB, jumped over it into the stack of another thread. A function counts its frame and the stack its calls take below it, the arguments that go on the stack and on Windows the 32 bytes kept for the callee, so one that doesn't reach a page is written as before. The sixth is for macOS: a 64-bit value stored far in a stack frame of more than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 
 The other three make big functions fast, on every target. Whether a block dominates another is read from numbers given to the dominator tree, instead of walking up the tree. A temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one. And the search for a path between two blocks clears only the blocks it visited. A loop that turns an enum of 1500 variants into text took 37 s in QBE and takes 0.2 s, and a function with 2400 `l[i]` took 2.5 s and takes 0.3 s.
 
@@ -1018,25 +1185,34 @@ Three more keep long chains from growing with their square. The dominators of a 
 
 Six more keep a long function linear, in memory and in time. A set of temporaries, like the ones liveness and the register allocator keep for every block, holds only its words that are not zero, by their index. A set had a bit for every temporary of the function, so the sets of a function took its blocks times its temporaries, and spilling made a new one at each instruction, where it now reuses two. Three walks no longer go through every block between two others, which in a chain of `elif` is the whole chain, because its dominator tree is as deep as the chain: the search for a jump that already decided a value stops before the first definition of the value, the common dominator of two blocks climbs from one side until it dominates the other, and the best block for an instruction jumps to the closest dominator in fewer loops. And amd64 clears, for each block, the entries of the temporaries it uses, instead of its table of all of them. The sixth is in the search for the phis of a temporary defined in more than one place, that walked every instruction of the function for each such temporary and now walks its definitions: the pieces of a cut slot, below, are defined at least twice, so a chain of 3000 copies of a struct took 1.1 s and takes 0.15 s. QBE writes the same program, and the compiler builds itself with 0.5 % fewer instructions after the first five, and 3.9 % fewer after the sixth. 20000 `elif` with a `print` each took 3.1 s and 1.9 GB, and take 1.6 s and 0.4 GB. When they test a value known only when the program runs, nothing folds: 5000 took 3.6 s and 1.8 GB, growing with the square, and 20000 take 2.8 s and 0.5 GB.
 
-The eighteenth is for the contexts, that are thread data. `amd64_win` takes thread data: it goes in the section `.tls$`, and its address is the block of the thread in the table at `gs:88`, at `_tls_index`, plus the place of the symbol in it. And on Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. An address of thread data that a call or a `sel` takes is made there too, since the arguments of a call, and the two halves of a `sel`, stay together. On macOS that also fixes the address of thread data given as an argument of a call, whose call to the runtime broke the arguments already in their registers, a function whose only call is that one aligns the stack for it, and thread data that starts at zero goes in `__thread_bss`, so it takes no room in the program file. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1 % more when it only checks.
+The nineteenth is for the contexts, that are thread data. `amd64_win` takes thread data: it goes in the section `.tls$`, and its address is the block of the thread in the table at `gs:88`, at `_tls_index`, plus the place of the symbol in it. And on Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. An address of thread data that a call or a `sel` takes is made there too, since the arguments of a call, and the two halves of a `sel`, stay together. On macOS that also fixes the address of thread data given as an argument of a call, whose call to the runtime broke the arguments already in their registers, a function whose only call is that one aligns the stack for it, and thread data that starts at zero goes in `__thread_bss`, so it takes no room in the program file. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1 % more when it only checks.
 
-The nineteenth and the twentieth come with the inlining. A small slot of the stack, of 32 bytes or less, whose address only reaches loads, stores, blits and additions of constants, is cut into one slot for each piece that is read or written, before `promote`, which then keeps the pieces in registers. That's how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, and again only through the blits of a slot that changed, so a chain of copies is not walked once for each link. A store of a constant is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, after the parameters, so no path reads it undefined. `qbe -g` keeps every slot whole, for the debugger. And rv64 copies a constant, or a value on the stack, into a temporary on the stack through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
+The twentieth and the twenty-first come with the inlining. A small slot of the stack, of 32 bytes or less, whose address only reaches loads, stores, blits and additions of constants, is cut into one slot for each piece that is read or written, before `promote`, which then keeps the pieces in registers. That's how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, and again only through the blits of a slot that changed, so a chain of copies is not walked once for each link. A store of a constant is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, after the parameters, so no path reads it undefined. `qbe -g` keeps every slot whole, for the debugger. And rv64 copies a constant, or a value on the stack, into a temporary on the stack through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
 
-Five more fix QBE itself. `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign, and the forwarding of stores to loads kept the bits above a narrow store when a load that starts inside it took them shifted down: both happen in more slots since small slots are cut. GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion. The coalescing of slots shifted a mask by the offset of an access, that can be past its slot, which C leaves undefined. And on Windows a function keeps `xmm6` to `xmm15` for its caller, as the ABI asks: QBE took them as registers that any call changes, so a function of Flag that C calls, like a callback, could change the floats of the C around it.
+The twenty-second goes with them. A copy out of a slot of the stack whose size is not a multiple of 8, a struct without fields of 8 bytes, goes 4 bytes at a time: its fields were written 4 bytes or less at a time, and a load of 8 bytes that takes two of those stores waits until they reach the cache. That's how a `Mat3` of nine `f32` that doesn't fit in the 32 bytes is copied, and a copy from the heap, whose stores are long done, still goes 8 bytes at a time. The integration of bodies that copies them got 7 % faster, and the poses of a skeleton 17 %.
 
-The last six are for the chain of calls and for the debugger. On x86_64 every function keeps its frame pointer, as on arm64 and rv64. On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set, `[rbp]` the `rbp` of the caller and `[rbp+8]` the return address, so they are found from `rbp` wherever the body moves `rsp`. `hlt` is an instruction that doesn't exist on every target, `udf` on arm64 and `unimp` on rv64 like `ud2` on amd64: it was a breakpoint there, and a crash handler doesn't take breakpoints. Each function ends with the label `.L<name>.end`, `L<name>.end` on macOS and Windows, which gives the table of functions and the DWARF its end. The instruction `%r =l frame` gives the frame pointer of the function. And `qbe -g` builds for a debugger
+Ten more fix QBE itself. `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign, and the forwarding of stores to loads kept the bits above a narrow store when a load that starts inside it took them shifted down: both happen in more slots since small slots are cut. GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion. The coalescing of slots shifted a mask by the offset of an access, that can be past its slot, which C leaves undefined. And on Windows a function keeps `xmm6` to `xmm15` for its caller, as the ABI asks: QBE took them as registers that any call changes, so a function of Flag that C calls, like a callback, could change the floats of the C around it. And on Windows a parameter that comes on the stack, the fifth and the ones after it, was read as a 64-bit integer whatever its type, so an `f32` or an `f64` there ended in a register of integers and the assembler refused the program. And rv64 stopped with `no match for stores(s)` when it copied a float from a register to a slot of the stack: the store kept the class of the copy. A parallel move of more than 64 copies, like 64 floats alive in a loop, stopped the register allocator with `no more pm slots`, and its list grows now. With more floats alive than registers, arm64 copied a float from one slot of the stack to another through a register of integers and stopped with `invalid class`: it goes through `v31`. And rv64 wrote a shift of a `w` by a constant of 32 or more as it came, which the assembler refuses: the constant is cut to 5 bits for `w` and 6 for `l`, as the processor cuts a count in a register.
+
+Two more are for libraries on Linux, whose thread data is `extern thread`, the initial-exec model: amd64 had it, and arm64 and rv64 stopped with `extern thread unavailable`. arm64 reads the place in the thread from the GOT, `:gottprel:`, and adds `tpidr_el0` through `x18`, which QBE keeps free outside Apple, and rv64 writes `la.tls.ie` and adds `tp`. And the offset of an address from the GOT, like a field of a context, is added after the address is read, on arm64 through a register: its `add` takes 12 bits, and a field past 4 KiB stopped QBE with an assertion.
+
+Six more are for the chain of calls and for the debugger. On x86_64 every function keeps its frame pointer, as on arm64 and rv64. On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set, `[rbp]` the `rbp` of the caller and `[rbp+8]` the return address, so they are found from `rbp` wherever the body moves `rsp`. `hlt` is an instruction that doesn't exist on every target, `udf` on arm64 and `unimp` on rv64 like `ud2` on amd64: it was a breakpoint there, and a crash handler doesn't take breakpoints. Each function ends with the label `.L<name>.end`, `L<name>.end` on macOS and Windows, which gives the table of functions and the DWARF its end. The instruction `%r =l frame` gives the frame pointer of the function. And `qbe -g` builds for a debugger
 - `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and that keeps it in memory, whole
 - `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it
 - the blocks keep the order of the IL, and one is not merged into the block before it, so a scope is one range of code
 - each function has its `.cfi` in `.debug_frame`, with the registers it saves, and its first `.loc`, the line of its declaration, before its prologue and not again after it: a debugger that skips the prologue stops at the next line, the first one of the body
+
+The last six are for `simd`. QBE has a class `v`, 16 bytes of lanes in a float register, with `loadv`, `storev` and 56 operations whose name ends with the lane, like `vadds` for `f32` and `vceqw` for `i32`, in amd64 (SSE up to 4.2, with `xmm15` as the scratch) and arm64 (NEON, with `v31`). rv64 has none. The cut of small slots makes a piece of 16 bytes of class `v` where a `loadv` or a `storev` reads or writes it whole, and carries it across a blit, so a `simd` copied by an inlined call stays in a register. A load or a store of one lane inside that piece doesn't cut it: it becomes `vget`, which takes the lane out of the register, or `vset`, which puts it in, with `pextr`, `pinsr`, `insertps` and `pshufd` on amd64 and `umov`, `smov`, `dup` and `ins` on arm64, so `v[i]` keeps the `simd` in its register. An instruction has two arguments, so `vget` has the number of the lane in the second one and `vset` takes it from the `vlane` right before it. The cut makes them, they are not words of the IL. A `v` that lives across a call is spilled on SysV, where a call keeps no float register, and on arm64, where the callee keeps only the low half of `v8` to `v15`. On Windows it can stay in `xmm6` to `xmm15`, that the callee keeps whole. `%c =w cpuid %leaf` gives `ecx` of that instruction on amd64, for the check at start. The slots of `alloc` are laid out from the widest down and rounded to 16 bytes, so an `alloc16` is aligned, which an `alloc4` before it could break, and arm64 passes the structs aligned to 16 that it refused. And the keywords of the IL didn't fit the hash of the lexer anymore, it has 2048 places now.
 
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
 - A text literal is static data that every use shares, and so do the literals with the same text and the constants kept in data (see [Constants](#constants)). Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
+- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i32, 2]` even where `f` takes a `&slice[u32]`: give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
 - `receive` of a `Channel` gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in channel`, that ends only when it's closed
 - A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable
 - The memory checker has the false positives of [What it doesn't know](#what-it-doesnt-know), and it misses the element mistakes of [Elements](#elements)
 - `a = b` between two `&str` doesn't copy the text, both share it, only a `&strview` is copied. Write `a = view(b)` to copy
+- A library writes its files through buffers of its own, so into a pipe the lines of a program and of a library it loads come out in the order each one flushes (see [Libraries](#libraries))
+- An address that C gives you can be read as a `func(...)` with `as` too, and a call through it passes structs the way of Flag: read it as an `extern func(...)`

@@ -108,6 +108,35 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
             return truth(x > y)
         case ">=":
             return truth(x >= y)
+    if (comp.types[l.type].kind == Simd or comp.types[r.type].kind == Simd) and not try offers(o, ptr([l, r]), at):
+        sides: &list[Value]
+        append(sides, l)
+        append(sides, r)
+        t := l.type
+        if comp.types[t].kind != Simd:
+            t = r.type
+        lane := comp.types[t].elem
+        shown := comp.types[t].name
+        shift := o == "<<" or o == ">>"
+        bits := o == "and" or o == "or" or o == "xor"
+        if lane == BOOL and shift:
+            return fail(o + " works on lanes of integers, and " + shown + " is a mask", at)
+        if lane == BOOL and not bits and o != "==" and o != "!=":
+            return fail(o + " works on lanes of numbers, and " + shown + " is a mask", at)
+        if (bits or shift) and comp.types[lane].kind == Float:
+            return fail(o + " works on lanes of integers, and " + shown + " holds floats: reinterpret it as bits with as simd[u" + 8 * comp.types[lane].size + ", " + comp.types[t].count + "]", at)
+        try simd_args(o, sides, at)
+        if shift and (sides[0].type != t or sides[1].type == t):
+            return fail(o + " shifts every lane of a simd by one amount, a number on its right", at)
+        if (o == "/" or o == "%") and integer(lane):
+            return fail("a simd of " + comp.types[lane].name + " has no " + o + ", no processor divides integer lanes: convert it to an array", at)
+        if o == "%":
+            return fail("% works on integers, and " + shown + " holds floats", at)
+        if o == "==" or o == "!=" or o == "<" or o == "<=" or o == ">" or o == ">=":
+            t = try simd_of(BOOL, comp.types[t].count, at)
+        return lanes(o, sides, t, at)
+    if (o == "==" or o == "!=") and comp.types[l.type].kind == Array and holds_lanes(l.type):
+        return fail(comp.types[l.type].name + " holds simd, whose == answers each lane: compare them with all(a[i] == b[i])", at)
     if l.lit and not r.lit and numeric(l.type) and numeric(r.type):
         l = try convert(l, r.type, Arg{}, at)
     if r.lit and not l.lit and numeric(r.type) and numeric(l.type):
@@ -160,6 +189,29 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
         open_block(l_done)
         return load(Value{type = l.type, at = slot, mem = true})
     return Value{type = l.type, at = extend(l.type, op(cls(l.type), name, x, y))}
+
+# the simd among args, where a literal beside it takes the type of its lanes
+func simd_args(o: &strview, args: &slice[Value], at: usize) -> usize|Fail:
+    t: usize = VOID
+    for a in args:
+        if t == VOID and comp.types[a.type].kind == Simd:
+            t = a.type
+    lane := comp.types[t].elem
+    for k in 0..args.len:
+        a := args[k]
+        given := comp.types[a.type]
+        if given.kind == Simd and a.type != t:
+            return fail(o + " expects two simd of one type but got " + comp.types[t].name + " and " + given.name + ", convert one side with " + comp.types[t].name + "(...) or " + given.name + "(...)", at)
+        if a.lit and numeric(a.type) and numeric(lane):
+            args[k] = try convert(a, lane, Arg{}, at)
+        elif a.type != t and a.type != lane:
+            hint: &strview
+            if numeric(a.type):
+                hint = ", convert it with " + comp.types[lane].name + "(...)"
+            elif given.kind == Array:
+                hint = ", make it one with " + comp.types[t].name + "([...])"
+            return fail(o + " expects " + comp.types[t].name + " or " + comp.types[lane].name + " beside " + comp.types[t].name + " but got " + given.name + hint, at)
+    return t
 
 func native(o: &strview, k: TypeKind) -> &strview:
     whole := k == Int or k == Uint
@@ -224,7 +276,6 @@ func panic_if(bad: Arg, message: &strview, at: usize) -> Fail?:
     args: &list[Value]
     append(args, Value{type = try fat_type("strview", VOID, at), at = text_data(message), mem = true})
     try invoke("panic", args, at)
-    terminate("hlt", Arg{})
     open_block(l_good)
     return null
 
@@ -265,7 +316,65 @@ func returned(name: &strview, args: &list[Value], at: usize) -> usize|Fail:
     return ret
 
 func call(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: usize, threaded: bool) -> Value|Fail:
+    simd := false
+    for a in args:
+        simd = simd or comp.types[a.type].kind == Simd
+    wanted: usize = 0
+    switch name:
+    case "any", "all", "sum", "abs", "sqrt":
+        wanted = 1
+    case "min", "max":
+        wanted = 2
+    case "select":
+        wanted = 3
+    if simd and args.len == wanted and (module.len == 0 or module == "math"):
+        if threaded:
+            return fail("parallel runs a function in a new thread, and " + name + " of a simd belongs to the language: wrap it in a func", at)
+        for label in names:
+            if label.len > 0:
+                return fail(name + " of a simd belongs to the language, its arguments cannot be named", at)
+        vector := comp.types[args[0].type]
+        if name == "any" or name == "all" or name == "sum":
+            if name == "sum" and vector.elem == BOOL:
+                return fail("sum adds the lanes of numbers, and " + vector.name + " is a mask", at)
+            if name != "sum" and vector.elem != BOOL:
+                return fail(name + " asks about the lanes of a mask, and " + vector.name + " holds numbers: compare them first, like " + name + "(v > 0)", at)
+            copy := Value{type = args[0].type, at = alloc(args[0].type, true), mem = true} # the lanes are read from a slot of their own, so the simd stays whole in a register
+            blit(args[0].at, copy.at, args[0].type)
+            parts: &list[Value]
+            for i in 0..vector.count:
+                append(parts, lane(copy, i))
+            o: &strview = "+"
+            if name == "any":
+                o = "or"
+            elif name == "all":
+                o = "and"
+            while parts.len > 1:
+                half := parts.len / 2
+                for i in 0..half:
+                    parts[i] = try binary(o, parts[i], parts[i + half], at)
+                parts.len = half
+            return load(parts[0])
+        if name == "select":
+            if comp.types[args[1].type].kind != Simd and comp.types[args[2].type].kind != Simd:
+                return fail("select chooses the lanes of a simd, and it gets two numbers: give it a simd", at)
+            t := try simd_args(name, args[1:], at)
+            mask := try simd_of(BOOL, comp.types[t].count, at)
+            if args[0].type != mask:
+                return fail("select takes a " + comp.types[mask].name + " to choose the lanes of " + comp.types[t].name + ", and this is " + vector.name, at)
+            return lanes(name, args, t, at)
+        t := try simd_args(name, args, at)
+        lane := comp.types[comp.types[t].elem]
+        if (name == "min" or name == "max") and lane.kind == Bool:
+            return fail(name + " compares lanes of numbers, and " + comp.types[t].name + " is a mask", at)
+        if name == "abs" and lane.kind != Int and lane.kind != Float:
+            return fail("abs expects signed numbers or floats in the lanes, and " + comp.types[t].name + " holds " + lane.name, at)
+        if name == "sqrt" and lane.kind != Float:
+            return fail("sqrt expects floats in the lanes, and " + comp.types[t].name + " holds " + lane.name, at)
+        return lanes(name, args, t, at)
     best := try choose(name, module, args, names, at)
+    if best == 0 and simd and wanted > 0 and module.len == 0:
+        return fail(name + " of a simd expects " + counted(wanted, "argument", "arguments") + " but got " + args.len, at)
     if best == 0 and args.len > 0:
         t := args[0].type
         k := comp.types[t].kind
@@ -273,6 +382,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             return truth(true)
         if name == "hash" and args.len == 1 and (k == Struct or k == Union) and try offers("==", ptr([args[0], args[0]]), at):
             return fail(comp.types[t].name + " declares == but not hash, and equal values need equal hashes: declare hash for " + comp.types[t].name + " too", at)
+        if name == "hash" and args.len == 1 and k == Simd:
+            return fail(comp.types[t].name + " has no hash, its == answers each lane: use an array, array[" + comp.types[comp.types[t].elem].name + ", " + comp.types[t].count + "](v)", at)
         if name == "hash" and args.len == 1 and not (k == Bool or k == Ptr or k == Func or k == Struct or k == Union or k == Array or k == Void):
             return fail(comp.types[t].name + " has no hash, declare one for it: func hash(x: " + comp.types[t].name + ") -> u64", at)
         if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:
@@ -314,6 +425,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         for a in args:
             if comp.types[a.type].kind == Union and comp.types[a.type].size > 4 and not is_letter(items(name)[0]):
                 hint = ", a union is narrowed with is before its value is used"
+        if args.len == 2 and comp.types[args[0].type].kind == Array and comp.types[args[1].type].kind == Array and native(name, Int).len > 0:
+            hint = ", an array only holds its elements: a simd computes on its lanes"
         if name == "at" and args.len == 2 and integer(args[1].type):
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
         if name == "slice" and args.len == 3 and integer(args[1].type) and integer(args[2].type) and args[1].type != args[2].type:
@@ -323,10 +436,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         if name == "put" and args.len == 3 and try offers("at", ptr([args[0], args[1]]), at):
             hint = ", x[i] = v calls put(x, i, v) when at gives a copy: declare put for " + comp.types[args[0].type].name + ", or make at give a pointer"
         if name == "put" and args.len == 2:
-            held := args[0].type
-            if comp.types[held].kind == Ptr:
-                held = comp.types[held].elem
-            if comp.types[held].kind == Fat and text(comp.types[held].decl) == "map":
+            holder := args[0].type
+            if comp.types[holder].kind == Ptr:
+                holder = comp.types[holder].elem
+            if comp.types[holder].kind == Fat and text(comp.types[holder].decl) == "map":
                 hint = ", a pointer to a value of a map goes bad when the map grows, so core keeps that put for itself: change the value in place with m[k] += v or m[k].field = v, or pass m[k] where a pointer goes, append(m[k], v)"
         failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said: usize = 0
@@ -346,6 +459,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     order := trust arrange(f, args.len, names)
     taken: &list[usize]
     id := try instantiate_for(f, order, args, ptr(taken), at)
+    if id == comp.entry:
+        return fail(ENTRY, at)
     foreign := body(f) == 0 or comp.insts[id].export
     passes: &list[Pass]
     back: &list[Value]
@@ -371,7 +486,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         for k in order.len..args.len:
             v := args[k]
             t := comp.types[v.type]
-            if aggregate(v.type) or t.kind == Void or t.kind == Func:
+            if aggregate(v.type) or t.kind == Void or t.kind == Func and not t.foreign:
                 return fail(name + " expects integers, floats, bool and pointers after its declared parameters but got " + t.name, at)
             x := load(v).at
             if v.type == F32:
@@ -384,7 +499,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         return fail(name + " takes x[i] where a pointer goes, and a thread could not put the copy back: pass a pointer to a variable", at)
     if threaded:
         comp.insts[id].valued = true
-        return spawn(global(comp.insts[id].name), passes, func_of(taken, comp.insts[id].ret), at)
+        ret := comp.insts[id].ret
+        if ret == NEVER:
+            ret = VOID # its thread is waited for like one that returns nothing
+        return spawn(global(comp.insts[id].name), passes, func_of(taken, ret, false), at)
     result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
     while back.len > 0:
         element := back[back.len - 3:]
@@ -439,7 +557,7 @@ func runtime(name: &strview, args: &list[Value], at: usize) -> Value|Fail:
     return v
 
 func place_of(at: usize) -> Value|Fail:
-    return Value{type = try fat_type("strview", VOID, at), at = text_data(replace(view(location(at)), "\\", "\\\\")), mem = true, lit = true}
+    return Value{type = try fat_type("strview", VOID, at), at = text_data(view(location(at))), mem = true, lit = true}
 
 func written(label: &strview, t: usize, ret: usize, at: usize) -> usize:
     key: &str = label
@@ -553,7 +671,7 @@ func hand(given: Value, to: usize, foreign: bool, at: usize) -> Pass|Fail:
     if foreign or comp.types[to].kind != Fat and not big(to):
         how = try passing(to, foreign, at)
     x := load(v).at
-    if comp.types[to].kind == Func and x.kind != Global:
+    if comp.types[to].kind == Func and not comp.types[to].foreign and x.kind != Global:
         try panic_if(op(W, "ceql", x, int_arg(0)), "an argument is an empty function value", at)
     return Pass{how, x, is_number(x)}
 
@@ -565,7 +683,7 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
     if big(ret) and not foreign:
         result = alloc(ret)
         append(comp.passes, Pass{L, result, false})
-    elif ret != VOID:
+    elif ret != VOID and ret != NEVER:
         i.cls = try passing(ret, foreign, at)
         result = temp()
         i.to = u32(result.n)
@@ -574,6 +692,8 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
     comp.at = at
     add(i)
     comp.at = here
+    if ret == NEVER:
+        terminate("hlt", Arg{})
     if foreign and ret != VOID and not aggregate(ret):
         result = extend(ret, result)
     return Value{type = ret, at = result, mem = aggregate(ret)}
@@ -588,19 +708,20 @@ func bind(f: usize, order: &list[usize], args: &list[Value]) -> i64|Fail:
                     score = -1
                 else:
                     score += got
-    c := kid(f, params(f))
-    while c < node_end(f) and score >= 0:
-        if comp.nodes[c].kind == Where:
-            choosing := comp.choosing
-            comp.choosing = true
-            kept := holds(c + 1)
-            comp.choosing = choosing
-            if kept is Fail:
-                return Fail
-            if not kept:
-                score = -1
-        c = node_end(c)
+    if score >= 0 and not try holds_where(f):
+        score = -1
     return score
+
+func holds_where(f: usize) -> bool|Fail:
+    choosing := comp.choosing
+    comp.choosing = true
+    defer comp.choosing = choosing
+    c := kid(f, params(f))
+    while c < node_end(f):
+        if comp.nodes[c].kind == Where and not try holds(c + 1):
+            return false
+        c = node_end(c)
+    return true
 
 func turn(v: Value) -> i32:
     if v.type == NULL:
@@ -639,8 +760,8 @@ func arrange(f: usize, count: usize, names: &list[&strview]) -> &list[usize]?:
 
 func passing(t: usize, foreign: bool, at: usize) -> u32|Fail:
     ty := comp.types[t]
-    if foreign and ty.kind == Func:
-        return fail(ty.name + " cannot cross the C ABI, C takes the address of an export func: declare the parameter as *bytes and pass ptr(name)", at)
+    if foreign and ty.kind == Func and not ty.foreign:
+        return fail(ty.name + " cannot cross the C ABI, it holds a function of Flag: C takes an extern " + ty.name + ", the value of an export func", at)
     if foreign and ty.kind == Thread:
         return fail(ty.name + " cannot cross the C ABI, a thread of Flag is waited only by Flag", at)
     if foreign and aggregate(t):
@@ -687,7 +808,7 @@ func c_type(t: usize, at: usize) -> u32|Fail:
             one += "s"
         elif cls(e) == D:
             one += "d"
-        elif cls(e) == L and k != Func and k != Thread:
+        elif cls(e) == L and (k != Func or comp.types[e].foreign) and k != Thread:
             one += "l"
         elif numeric(e) or k == Ptr:
             one += "w"
@@ -802,8 +923,11 @@ func match(n: usize, v: Value) -> i64|Fail:
         if inner < 0:
             return -1
         return inner + STEP
-    if text(head) == "array" and comp.nodes[head].module.len == 0:
-        if t.kind != Array or not try arg_fits(kid(head, 1), VOID, t.count):
+    if (text(head) == "array" or text(head) == "simd") and comp.nodes[head].module.len == 0:
+        shape: TypeKind = Array
+        if text(head) == "simd":
+            shape = Simd
+        if t.kind != shape or not try arg_fits(kid(head, 1), VOID, t.count):
             return -1
         inner := try match(head + 1, Value{type = t.elem, at = v.at})
         if inner < 0:

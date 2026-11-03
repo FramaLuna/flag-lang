@@ -15,17 +15,13 @@ struct RMap {
 	int n;
 };
 
-enum {
-	NPm = 64,      /* max copies in a parallel move */
-};
-
 static bits regu;      /* registers used */
 static Tmp *tmp;       /* function temporaries */
 static Mem *mem;       /* function mem references */
 static struct {
 	Ref src, dst;
 	int cls;
-} pm[NPm];             /* parallel move constructed */
+} *pm;                 /* parallel move constructed */
 static int npm;        /* size of pm */
 static int loop;       /* current loop level */
 
@@ -194,8 +190,9 @@ mdump(RMap *m)
 static void
 pmadd(Ref src, Ref dst, int k)
 {
-	if (npm == NPm)
-		die("no more pm slots");
+	if (!pm)
+		pm = vnew(0, sizeof pm[0], PHeap);
+	vgrow(&pm, npm+1);
 	pm[npm].src = src;
 	pm[npm].dst = dst;
 	pm[npm].cls = k;
@@ -218,7 +215,10 @@ pmrec(enum PMStat *status, int i, int *k)
 	}
 	assert(KBASE(pm[i].cls) == KBASE(*k));
 	assert((Kw|Kl) == Kl && (Ks|Kd) == Kd);
-	*k |= pm[i].cls;
+	if (*k == Kv || pm[i].cls == Kv)
+		*k = Kv;
+	else
+		*k |= pm[i].cls;
 	for (j=0; j<npm; j++)
 		if (req(pm[j].dst, pm[i].src))
 			break;

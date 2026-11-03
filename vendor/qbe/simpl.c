@@ -15,7 +15,13 @@ blit(Ref sd[2], int sz, Fn *fn)
 	fwd = sz >= 0;
 	sz = abs(sz);
 	off = fwd ? sz : 0;
-	for (p=tbl; sz; p++)
+	p = tbl;
+	/* a stack slot with no field of 8 bytes was written
+	 * in pieces of 4 at most, and a load of 8 would wait
+	 * for two stores */
+	if (sz % 8 && rtype(sd[0]) == RTmp && astack(fn->tmp[sd[0].val].alias.type))
+		p++;
+	for (; sz; p++)
 		for (n=p->size; sz>=n; sz-=n) {
 			off -= fwd ? n : 0;
 			r = newtmp("blt", Kl, fn);

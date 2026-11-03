@@ -7,9 +7,11 @@ SB = 5
 UB = 6
 SH = 7
 UH = 8
+V = 9
 AGG = 16
 CAGG = 1 << 30
-SMALL = 45
+SMALL = 35
+CUT = 32 # bytes of a slot that QBE cuts into registers
 LARGE = 500
 ROOMY = 4096 # bytes of slots, a page: a function with more is not inlined on its own, every caller's frame would take them
 SNUG = 32 # the same into a recursive caller, each level of the recursion takes them: about what the call takes
@@ -100,8 +102,8 @@ func listing() -> &str:
     defer free(framed)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
-        if not comp.debug and p.name != "$main": # the start of the program, main is never inlined
-            large := size(p) > LARGE
+        if not comp.debug:
+            large := p.end - p.code > LARGE
             top := p.labels
             for i in comp.code[p.code:p.end]:
                 if i.op == "@" and u32(i.a.n) > top:
@@ -135,17 +137,17 @@ func listing() -> &str:
                         inner[at] = given.arg
                         if want.cls >= AGG:
                             t := usize(want.cls - AGG)
-                            inner[at] = pooled(i64(room(t)), g, pool, taken)
+                            inner[at] = pooled(Ins{op = alloc_op(t), a = int_arg(i64(room(t)))}, g, pool, taken)
                             append(body, Ins{op = "blit", a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
                     if i.cls >= AGG:
-                        append(slots, Ins{op = "alloc8", cls = L, to = i.to, a = int_arg(i64(room(usize(i.cls - AGG))))})
+                        append(slots, Ins{op = alloc_op(usize(i.cls - AGG)), cls = L, to = i.to, a = int_arg(i64(room(usize(i.cls - AGG))))})
                     comp.labels += 1
                     after := comp.labels
                     jumped := false
                     for j in q.code..q.end:
                         c := comp.code[j]
-                        if c.op == "alloc8":
-                            inner[c.to - q.temps] = pooled(c.a.n, g, pool, taken)
+                        if starts_with(c.op, "alloc"):
+                            inner[c.to - q.temps] = pooled(c, g, pool, taken)
                             continue
                         c = renamed(c, inner, q.temps, i64(after) - i64(q.labels))
                         if q.file != p.file:
@@ -166,7 +168,7 @@ func listing() -> &str:
                         append(body, Ins{op = "@", a = int_arg(i64(after))})
                     free(inner)
                     free(taken)
-                elif i.op == "alloc8":
+                elif starts_with(i.op, "alloc"):
                     append(slots, i)
                 else:
                     append(body, i)
@@ -182,13 +184,27 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        append(sizes, size(p))
+        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
+        for t in p.temps..p.last + 1:
+            append(cut, false)
+        for k in p.params..p.params + p.count:
+            given := comp.passes[k]
+            if given.cls >= AGG and given.cls < CAGG and comp.types[given.cls - AGG].size <= CUT:
+                cut[given.arg.n - i64(p.temps)] = true
+        stays: usize = 0
         room: i64 = 0
         frame := false
         for i in comp.code[p.code:p.end]:
-            if i.op == "alloc8":
+            if starts_with(i.op, "alloc"):
                 room += i.a.n
+                cut[i.to - p.temps] = i.a.n <= CUT
+            elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
+                cut[i.to - p.temps] = true
+            elif not (i.op == "absent" or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+                stays += 1
             frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == "$flag_frame" # it reads the frame of its caller, panic for the chain
+        free(cut)
+        append(sizes, stays)
         append(rooms, room)
         append(framed, frame)
     live: &list[bool]
@@ -235,7 +251,7 @@ func listing() -> &str:
             shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
             place += shown.len + 1
             places += ", "
-            text_bytes(places, replace(shown, "\\", "\\\\"))
+            text_bytes(places, shown)
             places += "b 0"
     out += places + " }\n"
     out += "function l $flag_frame() {\n@start\n\t%f =l frame\n\t%c =l loadl %f\n\tret %c\n}\n" # the frame of its caller, its own is gone when it returns
@@ -271,7 +287,7 @@ func listing() -> &str:
         slotted := not comp.debug
         for k in f.code..f.end:
             i := comp.code[k]
-            if not slotted and i.op != "alloc8":
+            if not slotted and not starts_with(i.op, "alloc"):
                 slotted = true # the allocs are first, and QBE says where each one went
                 for m in f.mentions..f.mentioned:
                     slot := comp.mentions[m].pointer
@@ -286,7 +302,7 @@ func listing() -> &str:
             next := kept(dropped, k + 1, f.end)
             if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
                 continue
-            if i.pos != 0 and i.pos != shown and i.op != "@" and i.op != "alloc8":
+            if i.pos != 0 and i.pos != shown and i.op != "@" and not starts_with(i.op, "alloc"):
                 shown = i.pos
                 if line_of(i.pos) != line:
                     line = line_of(i.pos)
@@ -346,21 +362,18 @@ func callee(i: Ins, ids: &map[&strview, usize]) -> usize:
     return ids[comp.globals[usize(i.a.n)]] ifnull comp.procs.len
 
 # the inlined bodies of one function share their slots: those of another may give their address to a call, and QBE would keep the shared slot whole
-func pooled(size: i64, callee: usize, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
+func pooled(slot: Ins, callee: usize, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
     k: usize = 0
-    while k < pool.len and (pool[k].a.n != size or pool[k].first != u32(callee) or contains(taken.*, k)):
+    while k < pool.len and (pool[k].a.n != slot.a.n or pool[k].op != slot.op or pool[k].first != u32(callee) or contains(taken.*, k)):
         k += 1
     if k == pool.len:
         comp.temps += 1
-        append(pool, Ins{op = "alloc8", cls = L, to = comp.temps, a = int_arg(size), first = u32(callee)})
+        append(pool, Ins{op = slot.op, cls = L, to = comp.temps, a = slot.a, first = u32(callee)})
     append(taken, k)
     return Arg{Temp, i64(pool[k].to)}
 
-func size(p: Proc) -> usize:
-    count: usize = 0
-    for i in comp.code[p.code:p.end]:
-        count += usize(i.op != "alloc8" and i.op != "absent")
-    return count
+func cut_at(cut: &list[bool], a: Arg, first: u32) -> bool:
+    return a.kind == Temp and cut[a.n - i64(first)]
 
 func fresh(first: u32, last: u32) -> &list[Arg]:
     names: &list[Arg]
@@ -426,6 +439,8 @@ func put_cls(out: *&str, c: u32):
         out.* += "ub"
     case SH:
         out.* += "sh"
+    case V:
+        out.* += "v"
     case:
         out.* += "uh"
 
@@ -436,6 +451,8 @@ func put_arg(out: *&str, a: Arg, first: u32):
     case Const:
         out.* += a.n
     case Global:
+        if comp.shared and comp.system == "linux" and starts_with(comp.globals[usize(a.n)], "thread "):
+            out.* += "extern " # initial-exec, the place of thread data comes from the GOT
         out.* += comp.globals[usize(a.n)]
     case Single, Double:
         if a.kind == Single:

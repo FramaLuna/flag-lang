@@ -14,6 +14,7 @@ BYTES = 14
 EMPTYARRAY = 15
 EMPTYMAP = 16
 ITERATIONEND = 17
+NEVER = 18
 
 HEAD = 64 # core's Started, then the result of a thread
 BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thread[null] when it returns nothing"
@@ -122,9 +123,40 @@ func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
         append(args, Item{name = "", type = elem})
     return make_type(s, args, true, at)
 
+# the tag of a builtin is its place among them, so null is 0, and any other tag is a hash of the type, the same in every program and library that has it
 func add_type(t: Type) -> usize:
     if t.kind != Union:
         comp.spelled += t.name.len
+    t.tag = u32(comp.types.len) - 1
+    if comp.types.len > NEVER:
+        shape: &str
+        defer free(shape)
+        if t.kind == Ptr or t.kind == Array or t.kind == Thread:
+            shape += "" + t.kind + "[" + comp.types[t.elem].tag + ", " + t.count + "]"
+        elif t.kind == Func:
+            shape += t.name[:trust find(t.name, "(")] + "(" + comp.types[t.ret].tag
+            for i in 0..t.count:
+                shape += ", " + comp.types[comp.items[t.first + i].type].tag
+            shape += ")"
+        elif t.kind == Union or t.kind == Untagged:
+            parts: &list[u32]
+            defer free(parts)
+            for i in 0..t.count:
+                append(parts, comp.types[comp.items[t.first + i].type].tag)
+            sort(parts) # the order of the ids changes from one program to another, the order of the tags doesn't
+            shape += "" + t.kind + parts
+        elif t.decl != 0 and type_params(t.decl) > 0:
+            shape += t.name[:trust find(t.name, "[")] + "["
+            for i in 0..type_params(t.decl):
+                arg := comp.items[t.args + i]
+                if arg.type == VOID:
+                    shape += "" + arg.n + ", "
+                else:
+                    shape += "" + comp.types[arg.type].tag + ", "
+            shape += "]"
+        else:
+            shape += t.name
+        t.tag = u32(32 + hash(view(shape)) % 0x7fff_ffe0)
     append(comp.types, t)
     put(comp.type_ids, t.name, comp.types.len - 1)
     return comp.types.len - 1
@@ -184,6 +216,18 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     id := comp.type_ids[view(key)]
     if id is usize:
         return id
+    tags: &list[u32]
+    defer free(tags)
+    for m in flat:
+        append(tags, comp.types[m].tag)
+    sort(tags)
+    for i in 1..tags.len:
+        if kind == Union and tags[i] == tags[i - 1]:
+            same: &list[&strview]
+            for m in flat:
+                if comp.types[m].tag == tags[i]:
+                    append(same, comp.types[m].name)
+            return fail(same[0] + " and " + same[1] + " have the same tag, so a union of them cannot tell which one it holds: rename one of them", at)
     first := comp.items.len
     for m in flat:
         append(comp.items, Item{name = "", type = m})
@@ -214,13 +258,16 @@ func lay_out(t: usize):
         size = 4
         align = 4
     elif comp.types[t].kind == Union:
-        size = 8 + align_up(size, 8)
-        align = 8
+        align = align_up(8, align)
+        size = align + align_up(size, 8)
     comp.types[t].size = align_up(size, align)
     comp.types[t].align = align
 
 func align_up(n: usize, a: usize) -> usize:
     return (n + a - 1) / a * a
+
+func past_tag(member: usize) -> usize:
+    return align_up(8, comp.types[member].align)
 
 func bound(name: &strview) -> usize:
     i := comp.binds.len
@@ -274,9 +321,14 @@ func resolve(n: usize) -> usize|Fail:
             if comp.nodes[c].kind == Var:
                 append(parts, try concrete(try resolve(c + 1), tok.at))
             else:
-                ret = try concrete(try resolve(c), tok.at)
+                ret = try concrete(try result_type(c), tok.at)
             c = node_end(c)
-        return func_of(parts, ret)
+        if tok.text == "extern":
+            for p in parts:
+                try passing(p, true, tok.at)
+            if ret != VOID:
+                try passing(ret, true, tok.at)
+        return func_of(parts, ret, tok.text == "extern")
     if tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:
@@ -285,6 +337,11 @@ func resolve(n: usize) -> usize|Fail:
             return fail(tok.text + " is a number, not a type", tok.at)
         return comp.binds[b - 1].type
     return instance(n, false)
+
+func result_type(n: usize) -> usize|Fail:
+    if comp.nodes[n].kind == TName and comp.nodes[n].module.len == 0 and text(n) == "never" and node_end(n) == n + 1:
+        return NEVER
+    return resolve(n)
 
 func instance(n: usize, fat: bool) -> usize|Fail:
     node := comp.nodes[n]
@@ -300,7 +357,9 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         c = node_end(c)
     if node.module.len == 0 and args.len == 0:
         id := comp.type_ids[tok.text]
-        if id is usize and id >= NULL and id <= ITERATIONEND:
+        if id is usize and id == NEVER:
+            return fail("never is what a function that never returns gives, a value cannot be never", tok.at)
+        if id is usize and id >= NULL and id < NEVER:
             return id
     if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
         if args.len != 1 or args[0].type == VOID:
@@ -314,6 +373,10 @@ func instance(n: usize, fat: bool) -> usize|Fail:
         if comp.types[args[0].type].kind == Bytes:
             return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
         return array_of(try concrete(args[0].type, tok.at), args[1].n)
+    if node.module.len == 0 and tok.text == "simd":
+        if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
+            return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
+        return simd_of(args[0].type, args[1].n, tok.at)
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
@@ -487,6 +550,33 @@ func array_of(elem: usize, count: usize) -> usize:
         return id
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
 
+func simd_of(elem: usize, count: usize, at: usize) -> usize|Fail:
+    e := comp.types[elem]
+    key: &str = "simd["
+    key += e.name + ", " + count + "]"
+    id := comp.type_ids[view(key)]
+    if id is usize:
+        return id
+    if not numeric(elem) and e.kind != Bool:
+        return fail("the lanes of a simd hold numbers or bool, and " + e.name + " is neither", at)
+    if e.kind == Bool and count != 2 and count != 4 and count != 8 and count != 16:
+        return fail(key + " does not split a register of 16 bytes, a mask has 2, 4, 8 or 16 lanes", at)
+    if e.kind != Bool and e.size * count != 16:
+        more: &strview
+        if e.size * count > 16:
+            more = ", or an array of them"
+        return fail(key + " is " + e.size * count + " bytes, and a simd is one register of 16: use simd[" + e.name + ", " + 16 / e.size + "]" + more, at)
+    return add_type(Type{kind = Simd, name = view(key), size = 16, align = 16, elem = elem, count = count})
+
+func lane_type(t: usize) -> usize:
+    ty := comp.types[t]
+    if ty.kind != Simd or ty.elem != BOOL:
+        return ty.elem
+    lane: usize = I8
+    while comp.types[lane].size < 16 / ty.count:
+        lane += 1
+    return lane
+
 func thread_of(result: usize) -> usize:
     key: &str = "Thread["
     key += comp.types[result].name + "]"
@@ -495,8 +585,11 @@ func thread_of(result: usize) -> usize:
         return id
     return add_type(Type{kind = Thread, name = view(key), size = 8, align = 8, elem = result})
 
-func func_of(taken: &list[usize], ret: usize) -> usize:
-    key: &str = "func("
+func func_of(taken: &list[usize], ret: usize, foreign: bool) -> usize:
+    key: &str
+    if foreign:
+        key += "extern "
+    key += "func("
     for i in 0..taken.len:
         if i > 0:
             key += ", "
@@ -510,7 +603,7 @@ func func_of(taken: &list[usize], ret: usize) -> usize:
     first := comp.items.len
     for t in taken:
         append(comp.items, Item{name = "", type = t})
-    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len})
+    return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
 
 func type_params(decl: usize) -> usize:
     count: usize = 0

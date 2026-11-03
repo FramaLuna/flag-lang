@@ -75,6 +75,11 @@ When you give the type, the literal takes it
 a: array[u8, 3] = [1, 2, 3]
 ages: &map[&strview, u8] = {"ana": 30}
 ```
+`ptr` passes the type on to what it points to, so an array literal or a constant can be a slice of another integer type
+```flag
+SHADER = [0x0723_0203, 0x0001_0000, 0x0008_000b]
+words: &slice[u32] = ptr(SHADER)
+```
 
 ## Constants
 A constant is a symbol that the compiler will replace at compilation. They must be declared at the root of the file so they cannot be inside scopes
@@ -341,6 +346,13 @@ To check several types at once use `is` with a union
 if color is Red|Blue:
     pass # the type of color is Red|Blue here
 ```
+`not` turns a check around, so `if not (color is Red):` narrows to `Green|Blue`. A branch that leaves, with `return`, `break`, `continue` or a call that never returns like `panic`, takes its types away after the `if`
+```flag
+data := read_file("config.txt")
+if data is FsError:
+    panic("cannot read the config: " + data)
+print(data.len) # data is a &str here
+```
 A block cannot be empty, `pass` is the statement that does nothing
 ```flag
 if color is Red:
@@ -502,6 +514,16 @@ func log(message: &strview, place: &strview = @here()):
 ```
 #### Variadics
 Only C functions can be variadic, with `...` at the end of the parameters (see [Calling C](#calling-c))
+### Functions that never return
+A function that never comes back, like `panic` or `exit`, says so with `-> never`. The code after a call to it can never run, so it narrows like a `return`, and on the right of `ifnull` or `iferror` it leaves the value without the `null` or the error
+```flag
+func fail(why: &strview) -> never:
+    eprint("error: ", why)
+    exit(1)
+
+func main():
+    port := parse_int("80") ifnull fail("not a number") # port is an i64
+```
 ### Overloading
 Functions can have the same name with different parameters, the call uses the one that fits best
 ```flag
@@ -668,6 +690,11 @@ for i in 0..1000000:
 Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
+
+`@embed("logo.png")` puts a file in the program and gives it as a `&strview`, like a text literal. The compiler reads it when it builds the program, from the folder of the source file
+```flag
+FONT = @embed("fonts/mono.ttf")
+```
 ### Printing
 `print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals, `hex` an integer in hexadecimal and `pad` fills a width with spaces
 ```flag
@@ -687,7 +714,7 @@ a := [1, 2, 3] # array[i32, 3]
 b: array[u8, 16] # starts at zero
 c := array[i32, 2]{4, 5} # you can also name the type
 a[0] = 10 # indexes are checked, going out stops the program with an error
-print(a[-1]) # a negative index counts from the end, so this is 3
+print(a[-1], " ", a.len) # a negative index counts from the end, so this is 3 3
 for x in a:
     print(x)
 ```
@@ -695,7 +722,20 @@ The functions of lists and slices, like `sort`, take an array by its address
 ```flag
 sort(ptr(a))
 ```
-Two arrays of the same type take the operators element by element: `[1, 2] + [10, 20]` is `[11, 22]`, and `==` compares every element.
+Two arrays of the same type compare with `==`, every element. An array holds values and has no arithmetic: numbers that compute together go in a `simd`.
+
+## SIMD
+`simd[T, n]` is `n` numbers in one register of 16 bytes, and its operators work on every lane at once
+```flag
+a: simd[f32, 4] = [1.0, 2.0, 3.0, 4.0]
+b := simd[f32, 4](0.5) # the same number in every lane
+c := a * b + 1.0 # a number beside a simd goes in every lane
+print(c) # [1.5, 2.0, 2.5, 3.0]
+c[0] = 9.0 # a lane, chosen with a constant
+m := a > 2.0 # a mask, simd[bool, 4]
+print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true, true] [0.0, 0.0, 3.0, 4.0] true 10.0
+```
+The lanes are `f32`, `i32` and `u32` by 4, `f64`, `i64` and `u64` by 2, `i16` and `u16` by 8, and `i8` and `u8` by 16. A comparison gives a mask, `select` takes each lane from one side or the other, and `min`, `max`, `abs` and `sqrt` work on each lane. On x86_64 and arm64 an operation is one or a few instructions of the processor, and the values stay in registers, so code on 4 lanes runs about 4 times as fast as on one number. More lanes are an array of them, `array[simd[f32, 4], 8]`. The details are in [SIMD](Reference.md#simd).
 
 ## Lists
 A `&list[T]` is a list that grows as you add elements. It starts empty, and you can also start it from an array on the heap
@@ -730,7 +770,7 @@ ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]`, with keys that it owns, is read and removed with a `&strview` too: `ports[line[:4]]`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -947,7 +987,7 @@ The functions of text, lists, maps, files (`open`, `read_line`, `write`...) and 
 - `fs`, whole files, folders and paths
 - `os`, the arguments, the environment, other programs and the time
 - `json`, reading and writing JSON
-- `net`, TCP connections
+- `net`, TCP connections and UDP
 - `math`, `sqrt`, `sin`, `min`, random numbers...
 - `utf8`, characters of UTF-8 text
 - `bits`, sets of numbers as bits
@@ -1019,19 +1059,29 @@ func main():
     name: cstr = cstr("hola")
     print(strlen(name), " ", strlen("abc"), " ", view(name))
 ```
-`export func` makes a function that C can call, with the plain name and the C calling convention. `ptr` of an export function gives you its address, that's how you pass callbacks to C
+A function can have another name in Flag than in C, after `=`, and so one C function can be declared once for each signature you call it with
+```flag
+extern "objc":
+    func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
+    func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
+```
+`export func` makes a function that C can call, with the plain name and the C calling convention. Its name is a value of type `extern func(...)`, the function type of C, and that's how you pass callbacks to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: *bytes)
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
 
 func main():
     values := [3, 1, 2]
-    qsort(ptr(values) as *bytes, 3, 4, ptr(ascending))
+    qsort(ptr(values) as *bytes, 3, 4, ascending)
 ```
-A callback for C is always an `export func` passed with `ptr`. The function values of Flag don't cross to C.
+An `extern func` is called like C calls, structs too, so it's also what a table of functions of C holds, and what an address that C gives you becomes with `as`: `f := address as extern func(f64) -> f64`. The function values of Flag, `func(...)`, don't cross to C.
+
+`offset_of(T, field)` gives the place of a field, like `sizeof` gives the size, both known when the program compiles.
+
+A library that a program loads is built with `-shared`, and the program loads it with `load` and `symbol` of [os](Library.md#libraries). That's how a game reloads its code while it runs: see [Libraries](Reference.md#libraries).
 
 ## Memory safety
 ### The flag
@@ -1070,6 +1120,7 @@ flagc main.flg other.flg some_folder -o program
 flagc run main.flg -- first second
 ```
 - `-o` the name of the program (`a.out` if you don't give one, `a.exe` on Windows, with `run` the program is removed after it runs unless you give one)
+- `-shared` builds a library instead of a program (see [Libraries](Reference.md#libraries))
 - `-check` only checks the code, without building the program
 - `-memory` checks the memory (see [Memory safety](#memory-safety))
 - `-debug` builds the program for gdb and lldb (see [Debugging](Reference.md#debugging))
@@ -1077,6 +1128,24 @@ flagc run main.flg -- first second
 - anything else goes to the C compiler, that only assembles and links the program, for example `-lm` to link a library or `-static`
 
 The rest of the flags are in [The command line](Reference.md#the-command-line).
+
+### Tests
+`flagc test` builds your files and runs their tests: every `func test_name()`. Each test runs in a process of its own, at the same time as the others, so a failed `assert`, a crash or a test that never ends doesn't stop the rest
+```flag
+func test_gcd():
+    assert(gcd(12, 18) == 6)
+```
+```sh
+flagc test src -- gcd
+```
+What goes after `--` chooses the tests: the ones that have one of those words in their name. A test that takes more than 10 seconds is stopped, `-timeout` changes that. At the end it says which tests failed, where, and what they wrote, and flagc exits with 1 when one failed
+```
+FAIL test_gcd, src/math.flg:3, exit code 134
+flag: assertion failed
+  --> src/math.flg:4:5
+  in test_gcd, src/math.flg:3
+2 passed, 1 failed
+```
 
 The C compiler is `cc`, if yours has another name put it in the `CC` variable
 ```sh

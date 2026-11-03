@@ -1,0 +1,54 @@
+type V2:
+    x: f32
+    y: f32
+
+type Big:
+    a: f64
+    b: f64
+    c: f64
+
+type SizeAlign:
+    size: u64
+    align: u64
+
+type Rect:
+    x: f64
+    y: f64
+    w: f64
+    h: f64
+
+type Table:
+    add: extern func(i32, i32) -> i32
+    twice: extern func(i32) -> i32
+
+extern "c":
+    func lookup(i: i32) -> *bytes
+    func table() -> *Table
+    func apply(f: extern func(i32) -> i32, x: i32) -> i32
+    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
+
+export func descending(a: *i32, b: *i32) -> i32:
+    return b.* - a.*
+
+export func square(x: i32) -> i32:
+    return x * x
+
+func main():
+    v2len2 := lookup(0) as extern func(V2) -> f32
+    print(v2len2(V2{3.0, 4.0}))
+    v2make := lookup(1) as extern func(f32, f32) -> V2
+    print(v2make(5.0, 6.0))
+    bigsum := lookup(2) as extern func(Big) -> f64
+    print(bigsum(Big{1.0, 2.0, 3.0}))
+    bigmake := lookup(3) as extern func(f64) -> Big
+    print(bigmake(10.0))
+    sizes := lookup(4) as extern func(u64) -> SizeAlign
+    print(sizes(1000))
+    frame := lookup(5) as extern func(Rect) -> Rect
+    print(frame(Rect{10.0, 20.0, 640.0, 480.0}))
+    t := table()
+    print(t.add(2, 3), " ", t.twice(21))
+    print(apply(square, 6), " ", apply(t.twice, 4))
+    values := [5, 3, 9, 1, 7]
+    qsort(ptr(values) as *bytes, 5, 4, descending)
+    print(values)

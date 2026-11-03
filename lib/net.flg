@@ -6,10 +6,14 @@ priv extern "c":
     func bind(fd: i64, address: *bytes, size: u32) -> i32
     func listen(fd: i64, backlog: i32) -> i32
     func accept(fd: i64, address: *bytes, size: *u32) -> i32
+    func accept4(fd: i64, address: *bytes, size: *u32, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func setsockopt(fd: i64, level: i32, name: i32, value: *bytes, size: u32) -> i32
     func getaddrinfo(host: cstr, service: cstr, hints: *bytes, found: **bytes) -> i32
     func freeaddrinfo(found: *bytes)
+    func sendto(fd: i64, data: *bytes, size: usize, flags: i32, address: *bytes, address_size: u32) -> i32
+    func recvfrom(fd: i64, into: *bytes, size: usize, flags: i32, address: *bytes, address_size: *u32) -> i32
+    func inet_ntop(family: i32, address: *bytes, into: *u8, size: usize) -> cstr
     func fcntl(fd: i64, command: i32, ...) -> i32
     func close(fd: i64) -> i32
     func SetHandleInformation(handle: i64, mask: u32, flags: u32) -> i32
@@ -17,6 +21,7 @@ priv extern "c":
 priv extern "ws2_32" where @windows():
     func WSAStartup(version: u16, into: *bytes) -> i32
     func WSAGetLastError() -> i32
+    func WSAIoctl(fd: i64, code: u32, given: *bytes, given_size: u32, into: *bytes, into_size: u32, returned: *u32, overlapped: *bytes, done: *bytes) -> i32
     func closesocket(fd: i64) -> i32
 
 type Socket:
@@ -24,6 +29,13 @@ type Socket:
 
 type Server:
     fd: i32
+
+type Udp:
+    fd: i32
+
+type Address:
+    ip: array[u8, 16] # IPv6, and an IPv4 address as ::ffff:a.b.c.d
+    port: u16
 
 type error NetError:
     code: i32
@@ -49,7 +61,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     entry := found
     while entry as usize != 0:
         fields := entry as *array[i32, 4]
-        fd := i64(socket(fields.*[1], fields.*[2], fields.*[3]))
+        fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
         address := ((entry as usize + address_in_info()) as **bytes).*
         size := ((entry as usize + 16) as *u32).*
         if fd >= 0:
@@ -66,7 +78,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
 
 func listen(port: u16) -> Server|NetError:
     start()
-    fd := i64(socket(2, 1, 0))
+    fd := i64(socket(2, sealed(1), 0))
     address := inet_address()
     address[2] = u8(port >> 8)
     address[3] = u8(port and 255)
@@ -80,20 +92,106 @@ func listen(port: u16) -> Server|NetError:
     return Server{i32(fd)}
 
 func accept(server: Server) -> Socket|NetError:
-    fd := i64(accept(i64(server.fd), usize(0) as *bytes, usize(0) as *u32))
+    fd := accepted(i64(server.fd))
     if fd < 0:
         return NetError{failure(), "accept a connection", ""}
     prepare(fd)
     return Socket{i32(fd)}
 
-func port(server: Server) -> u16:
+func port(s: $T) -> u16 where $T is Server|Udp:
     address: array[u8, 128]
     size: u32 = 128
-    getsockname(i64(server.fd), ptr(address) as *bytes, ptr(size))
+    getsockname(i64(s.fd), ptr(address) as *bytes, ptr(size))
     return u16(address[2]) << 8 or u16(address[3])
 
-func close(server: Server):
-    dispose(i64(server.fd))
+func close(s: $T) where $T is Server|Udp:
+    dispose(i64(s.fd))
+
+func udp(port: u16) -> Udp|NetError:
+    start()
+    fd := open_udp()
+    address := socket_address(Address{port = port})
+    if fd < 0 or bind(fd, ptr(address) as *bytes, 28) != 0:
+        failed := NetError{failure(), "open the UDP port", "" + port}
+        if fd >= 0:
+            dispose(fd)
+        return failed
+    return Udp{i32(fd)}
+
+func address(host: &strview, port: u16) -> Address|NetError:
+    start()
+    hints: array[i32, 12]
+    hints[2] = 2 # SOCK_DGRAM, so each address comes once
+    found: *bytes
+    code: i32 = 0
+    with scratch():
+        code = getaddrinfo(cstr(host), usize(0) as cstr, ptr(hints) as *bytes, ptr(found))
+    if code != 0:
+        if code > 0:
+            code = 0 - code
+        return NetError{code, "find", host}
+    raw := ((found as usize + address_in_info()) as **array[u8, 28]).*
+    out := Address{port = port}
+    if (found as *array[i32, 4]).*[1] == 2: # AF_INET
+        out.ip[10] = 255
+        out.ip[11] = 255
+        for i in 0..4:
+            out.ip[12 + i] = raw.*[4 + i]
+    else:
+        for i in 0..16:
+            out.ip[i] = raw.*[8 + i]
+    freeaddrinfo(found)
+    return out
+
+func send(u: Udp, to: Address, data: &strview) -> NetError?:
+    address := socket_address(to)
+    if sendto(i64(u.fd), ptr(data.*), data.len, 0, ptr(address) as *bytes, 28) < 0:
+        return NetError{failure(), "send to", "" + to}
+    return null
+
+func receive(u: Udp, into: *&str) -> Address|NetError:
+    flush() # what you wrote goes out before the program waits for an answer
+    reserve(into, into.len + 65536)
+    address: array[u8, 28]
+    size: u32 = 28
+    got := recvfrom(i64(u.fd), (ptr(into.*.*) as usize + into.len) as *bytes, 65536, 0, ptr(address) as *bytes, ptr(size))
+    if got < 0:
+        return NetError{failure(), "receive", ""}
+    into.len += usize(got)
+    out := Address{port = u16(address[2]) << 8 or u16(address[3])}
+    for i in 0..16:
+        out.ip[i] = address[8 + i]
+    return out
+
+operator +=(s: *&str, a: Address):
+    mapped := a.ip[10] == 255 and a.ip[11] == 255
+    for b in a.ip[:10]:
+        mapped = mapped and b == 0
+    text: array[u8, 64]
+    if mapped:
+        inet_ntop(2, ptr(a.ip[12]) as *bytes, ptr(text) as *u8, 64)
+        s.* += view(ptr(text) as cstr) + ":" + a.port
+    else:
+        inet_ntop(family6(), ptr(a.ip) as *bytes, ptr(text) as *u8, 64)
+        s.* += "[" + view(ptr(text) as cstr) + "]:" + a.port
+
+func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize] where can_assign(Socket|Server|Udp, $T):
+    files: &list[File]
+    defer free(files)
+    for x in waiting:
+        one: Socket|Server|Udp = x
+        switch one:
+        case Socket:
+            append(files, file(one))
+        case Server:
+            append(files, file(Socket{one.fd}))
+        case Udp:
+            append(files, file(Socket{one.fd}))
+    return ready(files, seconds)
+
+func ready(x: $T, seconds: f64 = 0.0) -> bool where can_assign(Socket|Server|Udp, $T):
+    with scratch():
+        return ready(ptr([x]), seconds).len > 0
 
 func write(s: Socket, value: $T, place: &strview = @here()):
     write(file(s), value, place)
@@ -125,17 +223,17 @@ priv func file(s: Socket) -> File where not @windows():
 priv func file(s: Socket) -> File where @windows():
     return File{8192 + s.fd} # core reads a File past the 8192 descriptors of the C runtime as a socket
 
-func timeout(s: Socket, seconds: f64) where @linux():
+func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @linux():
     limit := timeval(seconds)
     setsockopt(i64(s.fd), 1, 20, ptr(limit) as *bytes, 16)
     setsockopt(i64(s.fd), 1, 21, ptr(limit) as *bytes, 16)
 
-func timeout(s: Socket, seconds: f64) where @macos():
+func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @macos():
     limit := timeval(seconds)
     setsockopt(i64(s.fd), 65535, 0x1006, ptr(limit) as *bytes, 16)
     setsockopt(i64(s.fd), 65535, 0x1005, ptr(limit) as *bytes, 16)
 
-func timeout(s: Socket, seconds: f64) where @windows():
+func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @windows():
     limit: u32 = 0
     if seconds > 0.0:
         limit = u32(seconds * 1000.0) + 1 # in milliseconds, rounded up so it is never 0, forever
@@ -155,9 +253,21 @@ priv func start() where @windows():
     data: array[u8, 408]
     WSAStartup(514, ptr(data) as *bytes)
 
+# close on exec from the start, so a program that another thread starts on Linux doesn't take it
+priv func sealed(kind: i32) -> i32 where @linux():
+    return kind or 0x80000 # SOCK_CLOEXEC
+
+priv func sealed(kind: i32) -> i32 where not @linux():
+    return kind
+
+priv func accepted(fd: i64) -> i64 where @linux():
+    return i64(accept4(fd, usize(0) as *bytes, usize(0) as *u32, 0x80000))
+
+priv func accepted(fd: i64) -> i64 where not @linux():
+    return i64(accept(fd, usize(0) as *bytes, usize(0) as *u32))
+
 priv func prepare(fd: i64) where @linux():
     yes: i32 = 1
-    fcntl(fd, 2, 1) # close on exec
     setsockopt(fd, 1, 2, ptr(yes) as *bytes, 4) # SO_REUSEADDR
     setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY, what you flush goes at once
 
@@ -174,7 +284,10 @@ priv func prepare(fd: i64) where @windows():
     setsockopt(fd, 6, 1, ptr(yes) as *bytes, 4) # TCP_NODELAY
 
 priv func failure() -> i32 where not @windows():
-    return errno()
+    code := errno()
+    if code == 11 or code == 35: # EAGAIN on Linux and on macOS, what a socket gives when its timeout runs out
+        return TIMED_OUT
+    return code
 
 priv func failure() -> i32 where @windows():
     return 0 - WSAGetLastError()
@@ -184,6 +297,56 @@ priv func dispose(fd: i64) where not @windows():
 
 priv func dispose(fd: i64) where @windows():
     closesocket(fd)
+
+priv func open_udp() -> i64 where @linux():
+    fd := i64(socket(10, 0x80002, 0)) # AF_INET6, and SOCK_DGRAM with SOCK_CLOEXEC
+    no: i32 = 0
+    setsockopt(fd, 41, 26, ptr(no) as *bytes, 4) # IPV6_V6ONLY off, so it takes IPv4 too
+    return fd
+
+priv func open_udp() -> i64 where @macos():
+    fd := i64(socket(30, 2, 0))
+    no: i32 = 0
+    fcntl(fd, 2, 1)
+    setsockopt(fd, 41, 27, ptr(no) as *bytes, 4)
+    return fd
+
+priv func open_udp() -> i64 where @windows():
+    fd := i64(socket(23, 2, 0))
+    no: i32 = 0
+    got: u32 = 0
+    SetHandleInformation(fd, 1, 0)
+    setsockopt(fd, 41, 27, ptr(no) as *bytes, 4)
+    WSAIoctl(fd, 0x9800_000c, ptr(no) as *bytes, 4, usize(0) as *bytes, 0, ptr(got), usize(0) as *bytes, usize(0) as *bytes) # SIO_UDP_CONNRESET off: an old ICMP port unreachable would fail the next receive
+    return fd
+
+priv func family6() -> i32 where @linux():
+    return 10
+
+priv func family6() -> i32 where @macos():
+    return 30
+
+priv func family6() -> i32 where @windows():
+    return 23
+
+priv func socket_address(a: Address) -> array[u8, 28] where not @macos():
+    out: array[u8, 28] # a struct sockaddr_in6
+    out[0] = u8(family6())
+    out[2] = u8(a.port >> 8)
+    out[3] = u8(a.port and 255)
+    for i in 0..16:
+        out[8 + i] = a.ip[i]
+    return out
+
+priv func socket_address(a: Address) -> array[u8, 28] where @macos():
+    out: array[u8, 28]
+    out[0] = 28 # sin6_len
+    out[1] = u8(family6())
+    out[2] = u8(a.port >> 8)
+    out[3] = u8(a.port and 255)
+    for i in 0..16:
+        out[8 + i] = a.ip[i]
+    return out
 
 priv func address_in_info() -> usize where @linux():
     return 24

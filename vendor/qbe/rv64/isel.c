@@ -22,13 +22,29 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 	char buf[32];
 	Ref r0, r1;
 	int s, n, op;
-	Con *c;
+	Con *c, cc;
 
 	r0 = r1 = *r;
 	op = i ? i->op : Ocopy;
 	switch (rtype(r0)) {
 	case RCon:
 		c = &fn->con[r0.val];
+		if (c->type == CAddr && (c->sym.type & SExt)) {
+			/* the address comes from the GOT,
+			 * and the offset is added to it
+			 */
+			cc = *c;
+			r1 = newtmp("isel", Kl, fn);
+			r0 = r1;
+			if (cc.bits.i) {
+				r0 = newtmp("isel", Kl, fn);
+				emit(Oadd, Kl, r1, r0, getcon(cc.bits.i, fn));
+				fixarg(&curi->arg[1], Kl, curi, fn);
+			}
+			cc.bits.i = 0;
+			emit(Ocopy, Kl, r0, newcon(&cc, fn), R);
+			break;
+		}
 		if (c->type == CAddr && memarg(r, op, i))
 			break;
 		if (KBASE(k) == 0)
@@ -222,7 +238,7 @@ rv64_isel(Fn *fn)
 	/* assign slots to fast allocs */
 	b = fn->start;
 	/* specific to NAlign == 3 */ /* or change n=4 and sz /= 4 below */
-	for (al=Oalloc, n=4; al<=Oalloc1; al++, n*=2)
+	for (al=Oalloc1, n=16; al>=Oalloc; al--, n/=2) /* the widest first, so each stays aligned */
 		for (i=b->ins; i<&b->ins[b->nins]; i++)
 			if (i->op == al) {
 				if (rtype(i->arg[0]) != RCon)
@@ -239,6 +255,7 @@ rv64_isel(Fn *fn)
 				*i = (Ins){.op = Onop};
 			}
 
+	fn->slot = (fn->slot + 3) & -4;
 	for (b=fn->start; b; b=b->link) {
 		curi = &insb[NIns];
 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)

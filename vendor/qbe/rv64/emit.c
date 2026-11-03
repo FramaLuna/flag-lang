@@ -255,7 +255,11 @@ loadaddr(Con *c, char *rn, FILE *f)
 			rn, rn, str(c->sym.id), off);
 		break;
 	case SExtThr:
-		die("extern thread unavailable on rv64");
+		/* initial-exec TLS: the offset from
+		 * tp is in the GOT */
+		fprintf(f, "\tla.tls.ie %s, %s\n", rn, str(c->sym.id));
+		fprintf(f, "\tadd %s, %s, tp\n", rn, rn);
+		break;
 	}
 }
 
@@ -339,6 +343,16 @@ emitins(Ins *i, Fn *fn, FILE *f)
 		}
 		emitf(omap[o].fmt, i, fn, f);
 		break;
+	case Osar:
+	case Oshr:
+	case Oshl:
+		/* an immediate count goes in 5 bits for w and 6 for l,
+		 * as the hardware takes the count of a register */
+		if (rtype(i->arg[1]) == RCon) {
+			con = &fn->con[i->arg[1].val];
+			i->arg[1] = getcon(con->bits.i & (i->cls == Kw ? 31 : 63), fn);
+		}
+		goto Table;
 	case Ocopy:
 		if (req(i->to, i->arg[0]))
 			break;
@@ -371,6 +385,7 @@ emitins(Ins *i, Fn *fn, FILE *f)
 				case Ks: i->op = Ostores; break;
 				case Kd: i->op = Ostored; break;
 				}
+				i->cls = Kw; /* the class of a store, its width is in the op */
 				fixmem(&i->arg[1], fn, f);
 				goto Table;
 			}

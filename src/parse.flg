@@ -162,7 +162,14 @@ func parse() -> Fail?:
                     return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
                 if not peek("func"):
                     return fail("an extern block declares functions only", here().at)
+                f := comp.nodes.len
                 try func_decl(true)
+                if comp.nodes[n + 1].kind == Where: # the where of the block holds for each of its functions
+                    back := comp.pos
+                    comp.pos = comp.nodes[n + 1].tok
+                    try where_clause()
+                    comp.pos = back
+                    finish(f)
             finish(n)
         elif t.kind == Name and after.text == "=":
             try new_name(true)
@@ -239,7 +246,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
         return null
     at := comp.tokens[comp.nodes[n].tok].at
     id := comp.type_ids[sym.name]
-    if id is usize and id <= ITERATIONEND and kind != Func:
+    if id is usize and id <= NEVER and kind != Func:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     s := first_sym(sym.name)
     while s != 0:
@@ -250,17 +257,16 @@ func declare(n: usize, sym: Sym) -> Fail?:
         elif old.module == sym.module and old.library == sym.library:
             problem: &strview
             if kind == Func and other == Func:
-                new_body := body(n)
-                old_body := body(old.node)
-                if new_body == 0 and old_body == 0:
-                    return null
-                twin := new_body != 0 and old_body != 0 and new_body - n == old_body - old.node
-                i: usize = 1
-                while twin and n + i < new_body:
-                    x := comp.nodes[old.node + i]
-                    y := comp.nodes[n + i]
-                    twin = x.kind == y.kind and x.size == y.size and x.module == y.module and (x.kind == Var or text(old.node + i) == text(n + i))
-                    i += 1
+                new_end := body(n)
+                old_end := body(old.node)
+                if new_end == 0:
+                    new_end = node_end(n)
+                if old_end == 0:
+                    old_end = node_end(old.node)
+                taken := kid(n, params(n))
+                new_where := where_start(n)
+                old_where := where_start(old.node)
+                twin := taken - n == kid(old.node, params(old.node)) - old.node and same_nodes(n + 1, old.node + 1, taken - n - 1) and new_end - new_where == old_end - old_where and same_nodes(new_where, old_where, new_end - new_where)
                 if twin:
                     problem = " is declared twice with the same parameters"
             elif kind == Func or other == Func:
@@ -285,6 +291,20 @@ func declare(n: usize, sym: Sym) -> Fail?:
     append(comp.syms, made)
     put(comp.names, sym.name, comp.syms.len - 1)
     return null
+
+func same_nodes(a: usize, b: usize, count: usize) -> bool:
+    for i in 0..count:
+        x := comp.nodes[a + i]
+        y := comp.nodes[b + i]
+        if x.kind != y.kind or x.size != y.size or x.module != y.module or x.kind != Var and text(a + i) != text(b + i):
+            return false
+    return true
+
+func where_start(f: usize) -> usize:
+    c := kid(f, params(f))
+    while c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
+        c = node_end(c)
+    return c
 
 func func_decl(external: bool) -> Fail?:
     keyword := here().text
@@ -337,6 +357,18 @@ func func_decl(external: bool) -> Fail?:
     if peek("->"):
         comp.pos += 1
         try type_expr()
+    if peek("=") and not external:
+        return fail("only a func of an extern block takes = \"symbol\", the C function it calls", here().at)
+    if peek("="):
+        comp.pos += 1
+        named := here().kind == Str and here().text.len > 2
+        if named:
+            for i, b in items(here().text[1:here().text.len - 1]):
+                named = named and (is_letter(b) or b == '.' or i > 0 and (is_digit(b) or b == '$'))
+        if not named:
+            return unexpected("= expects the symbol of the C function as text, a name of letters, digits, _, . and $: = \"objc_msgSend\"")
+        finish(begin(Literal, comp.pos))
+        comp.pos += 1
     try where_clause()
     if not external:
         try block()
@@ -600,17 +632,22 @@ func unary() -> Fail?:
     t = comp.tokens[name]
     after := comp.tokens[name + 1].text
     brace := after == "{"
+    converts := false
     if t.kind == Name and after == "[":
         depth: usize = 0
+        listed := false
         i := name + 1
         while comp.tokens[i].kind != Line and comp.tokens[i].kind != End:
-            if comp.tokens[i].text == "[":
+            word := comp.tokens[i].text
+            if word == "[" or word == "(" or word == "{":
                 depth += 1
-            elif comp.tokens[i].text == "]":
+            elif word == "]" or word == ")" or word == "}":
                 depth -= 1
                 if depth == 0:
                     brace = comp.tokens[i + 1].text == "{"
+                    converts = listed and comp.tokens[i + 1].text == "(" # an index has no comma, simd[f32, 4](x) names a type
                     break
+            listed = listed or word == "," and depth == 1
             i += 1
     if t.kind == Name and not brace:
         j := name
@@ -623,11 +660,17 @@ func unary() -> Fail?:
         try expect("{")
         try arguments("}")
         finish(n)
+    elif t.kind == Name and converts:
+        n := begin(Call, name)
+        try type_expr()
+        try expect("(")
+        try arguments(")")
+        finish(n)
     elif (t.kind == Name or t.kind == Builtin) and after == "(":
         n := qualified(Call)
         comp.pos += 1
         while not peek(")"):
-            if comp.nodes[n].module.len == 0 and (t.text == "sizeof" or t.text == "can_assign"):
+            if comp.nodes[n].module.len == 0 and (t.text == "sizeof" or t.text == "can_assign" or t.text == "offset_of" and comp.nodes.len == n + 1):
                 try type_expr()
             else:
                 try argument()
@@ -751,9 +794,10 @@ func type_expr() -> Fail?:
             comp.pos += 1
             prefixes += 1
         t := here()
-        if t.text == "func" and comp.tokens[comp.pos + 1].text == "(":
+        foreign := t.text == "extern" and comp.tokens[comp.pos + 1].text == "func" and comp.tokens[comp.pos + 2].text == "("
+        if foreign or t.text == "func" and comp.tokens[comp.pos + 1].text == "(":
             n := begin(TFunc, comp.pos)
-            comp.pos += 2
+            comp.pos += 2 + usize(foreign)
             while not peek(")"):
                 if here().kind == Name and comp.tokens[comp.pos + 1].text == ":":
                     return unexpected("a function type lists types without names: func(i32, i32) -> bool")

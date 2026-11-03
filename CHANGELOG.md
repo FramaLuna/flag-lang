@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.5.0
+
+A release about reaching past the program: numbers in lanes of one register, libraries that a program loads and reloads while it runs, the functions of C with their types, other programs that run beside yours, UDP, and tests that run each in a process of its own. Structs, `switch` and signed indexes got faster, and Windows takes text in UTF-16 everywhere.
+
+New
+- `simd[T, n]`: n lanes in one register of 16 bytes, with operators that work on every lane, comparisons that give a mask `simd[bool, n]`, `select`, `any`, `all`, `sum`, and `min`, `max`, `abs` and `sqrt` on each lane. On x86_64 and arm64 they are instructions of the processor and the values stay in registers: a contact solver in 4 lanes runs at 1.46 ns per contact, next to the 1.36 of C with SSE, where one number at a time takes 5.3
+- A lane is read and changed with a constant index, `v[2]`, a literal takes the type of its place and can shuffle lanes, and `T(x)` converts: a number to every lane, an array to a `simd` and back, and lane by lane between two `simd`
+- `Name[a, b](x)` converts to a type with two parameters, like `simd[f32, 4](x)` and `array[f32, 4](v)`
+- `clamp(v, low, high)` takes a `simd` and two numbers
+- `flagc test` runs the tests of your files, every `func test_name()`, each one in a process of its own, as many at once as there are cores, so a failed `assert`, a crash or a test that never ends fails only that test. A test reads an empty input, its output and errors come back through a pipe, and a test whose `where` doesn't hold on the target is not built. The words after `--` choose the tests by name, `-timeout` gives the seconds each one can take, 10 by default and up to 2000000, and a test out of time says where it was, with the chain of calls. At the end it writes each test that failed, with its place, its exit code and what it wrote, and `3 passed, 1 failed`, and exits with 1 when one failed. `-o` keeps the program of the tests, that runs the test it names, for a debugger
+- `@embed("file")` puts a file in the program as a `&strview` of static data, read when it compiles from the folder of the source file, its path a text literal with its escapes. The bytes go to the assembler with `.incbin`, so 1.5 MB compile in 0.06 s
+- `-> never` says that a function never returns, like `panic` and `exit`. The code after a call to it can never run, it narrows like a `return`, so after `if data is FsError: panic(...)` the variable is the value, and on the right of `ifnull` or `iferror` it leaves the value without the `null` or the error: `port := parse_int(text) ifnull panic("not a number")`
+- `a.len` of an array is its count, an integer literal like `sizeof`
+- `at`, `contains` and `remove` of a `&map[&str, V]` take a `&strview` too, so `m["port"]`, `m[line[:4]]` and `remove(m, "port")` work
+- `-shared` builds a library that a program loads while it runs, on Linux and macOS as on Windows: no `main`, its `export` functions are what it gives, and on Linux its contexts are initial-exec thread data and it links with `-fPIC -Wl,-Bsymbolic`. Its name is `a.so`, `a.dylib` or `a.dll` without `-o`
+- A library starts on its own: the first time a thread calls one of its `export` functions, its contexts get their tags, and the first time of all its file variables. An `export func` of a program does the same for a thread that C starts, which saw its contexts without tags
+- A library doesn't catch crashes, the program that loads it does, with the chain of its calls
+- `load`, `symbol` and `close` in `os`, with `dlopen` and `LoadLibraryW`, a `Library` and a `LoadError` with the words of the system: `cannot load ./game.so: cannot open shared object file: No such file or directory`
+- `tests/reload.flg`: a program builds two versions of a library, loads the first one, replaces it with the second and keeps its state
+- `extern func(T) -> U`, the type of a function of C: a call through it passes structs the way C does, it crosses to C as a parameter, a field and a variadic argument, and the name of a C function, of an `extern` block or an `export func`, is a value of it. Typed callbacks, the loaders of Vulkan and OpenGL and the tables of COM need no `*bytes`
+- A function of an `extern` block takes the name of C after `=`: `func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"`, one signature for each way you call a C function
+- `offset_of(T, field)`, the place of a field as an integer literal, like `sizeof`
+- Programs that run beside yours, in `os`: `start(program)` gives a `Process` whose `input` and `output` are files, `done(p)` asks if it ended, `wait p` waits and gives its exit code, and `kill(p)` ends it. Writing to a program that ended is a failed write, not a signal that ends yours
+- `ready(f, seconds)` and `ready(files, seconds)` say which files have something to read, waiting up to that long, and `ready` of `net` does it for sockets, servers and UDP
+- `random_bytes(into)` fills bytes from the system, `getrandom`, `getentropy` or `BCryptGenRandom`, for keys and tokens
+- `modified(path)` of `fs` and `Status.modified`, the time a file last changed, in seconds with their fractions
+- UDP in `net`: `udp(port)`, `address(host, port)`, `send`, `receive` and an `Address` for IPv4 and IPv6
+- `try_reserve` of a list, a text, a map and an `Arena` gives `NoMemory` when the system has no more memory, where the program stopped, and `reserve` takes a map and an `Arena` too
+- `wstr(text)` and `temp(w)` turn text into the UTF-16 of Windows and back, and `windows_errno(code)` gives the errno of an error of Windows
+
+Changed
+- The operators of arrays are gone, except `==`: an array holds values, and arithmetic on lanes is a `simd`. `a + b` between two arrays now says so
+- `abs` of a float clears the sign bit, like `fabs`, so it also takes the sign off a NaN
+- On x86_64 a program whose code names `simd` needs x86-64-v2 (SSE4.2) and says so when it starts
+- Arenas give pieces aligned to 16, and a stack slot aligned to 16 is aligned again: QBE could lay it out 8 bytes off after smaller ones. A `simd` in a tagged union goes at byte 16, so `simd[f32, 4]?` takes 32 and the `simd` is aligned there too
+- `hash` of a `simd` is an error that says why, `simd[i32, 4] has no hash, its == answers each lane: use an array, array[i32, 4](v)`, so a map with `simd` keys says it first. So is the `==` of a struct, a union or an array that holds `simd`, and an `operator` between a `simd` and a number, that belongs to the language. An `operator` between a `simd` and a type of yours is yours, like `m * v` of a `Mat4`
+- `select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` with a `simd` are the language's with their number of arguments and no module, or `math`. With other arguments a function of yours with that name is called, like a `max(v)` that gives the largest lane
+- `never` is only what a function returns: a variable, a parameter or a member of a union cannot be `never`
+- `not (x is T)` narrows, like the `else` of `x is T`
+- An array literal takes its element type from a `*array[T, N]` or a `&slice[T]` through `ptr`, so a constant of integers can be a `&slice[u32]`: `words: &slice[u32] = ptr(SHADER)`
+- `[...]` takes the one array or `simd` of a union, and `{k: v}` its one map, like `{...}` takes its one struct: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`
+- Your `main` is the `main` of C, so `break main` stops once, in your code, and nothing in the program can call `main` or take it as a value
+- `panic`, `exit`, `out_of_memory` and `out_of_bounds` return `never`
+- The tag of a union member is a hash of its type, the same in every program and library, where it was the id of that compilation: a union crosses between a program and a library it loads. The builtin types keep the first tags, `null` is still 0, and two types whose hashes meet can't be in one union
+- A function whose `where` doesn't hold on the target is not checked, it's checked when you build for its system: code of one system can call helpers that only that system has
+- The `where` of an `extern` block holds for each of its functions, not only for its library: compiling for Windows takes the Windows signature
+- Two functions with the same parameters in one module are `declared twice`, also when they return different types or, in an `extern` block, call different symbols: no call could choose between them. An `extern` block dropped the second one without a word, and with different parameters they are overloads
+- The name of a C function is a value of an `extern func` type, where it was an error, and the error of a call through a function value says `this func(i64) takes i64 here but the call gives i32`
+- `wait x` of a value that is not a thread calls `join(x)`, so `wait p` waits for a `Process` and a type of yours can be waited too. A `Process` is waited once, like a thread: on Linux and macOS waiting a copy waited already stops the program
+- On Windows text goes to the system in UTF-16: files, folders, the environment, the arguments, other programs, the messages of errors and the paths of the compiler take letters outside ASCII, where they went through the code page of the system. `rename` gives an errno, where it gave the code of Windows
+- `run` and `output` of a command start `/bin/sh -c` or `cmd.exe /d /s /c` the way they start a program, so a program you run gets only its three files, also when another thread opens a file or starts another program at that moment: Linux opens pipes and sockets close on exec, macOS starts programs with `posix_spawn` and `POSIX_SPAWN_CLOEXEC_DEFAULT`, and Windows with `CreateProcessW` and the list of the three handles, where `_spawnvp`, `system`, `popen` and a `dup2` of the standard output were not safe with threads
+- The parameters of an `extern func(...)` type and what it returns are checked where the type is written, like those of an `extern` function, and a `= "symbol"` is a C name of letters, digits, `_`, `.` and `$`, where any text went to QBE and failed there
+- `-memory` warns about a thread that runs alone in a library, where nothing waits for it and the program may close the library while it runs
+- `-memory` names the function as you wrote it, `release cannot release p`, where a C function with a symbol of its own was named `free`
+- `test.sh` gives the program of a test the compiler in `FLAGC`
+- gdb goes from the line of a `switch` on a union to the case that runs, the search for it is on the line of the `switch`
+- QBE has fifteen more changes, forty-six in all: the class `v` and its operations for amd64 and arm64, with 16-byte pieces of `v` in the cut of small slots, whose lanes are read and written in the register, `cpuid`, slots of `alloc` laid out to keep 16 aligned, structs aligned to 16 on arm64, `extern thread` on arm64 and rv64, the offset of an address from the GOT added after it is read, copies of 4 bytes out of stack slots that are not a multiple of 8, its files opened with `_wfopen` on Windows, and the fixes below
+
+Faster
+- `v[i]` reads or writes one lane of a `simd` in its register, with one instruction on x86_64 and arm64, where it kept the `simd` in memory in all its function: a loop that sets a lane and then multiplies the whole `simd` is 4 times as fast, and one that reads two lanes 2.9 times. A shuffle in a literal, `sum`, `any`, `all` and the operations that go lane by lane, like `*` of `i64`, take the lanes the same way: a loop on the lanes of a `simd[i16, 8]` is 6.7 times as fast
+- `x[i]` with a signed index costs about what it costs with `usize`: a negative index is turned around with two instructions and no jump, and the counter of a range that starts at a literal that is not negative is never negative, so `for i in 0..n` with `n: i64` indexes like `usize`. A loop over a million elements with an `i64` index takes 0.76 ms, it took 1.99
+- A struct or array literal that gives its values in order puts small values together in a word only when they are all constants, which costs nothing, and writes a word with a computed value field by field, like a literal with names: positional literals take what named ones take, 24 ms where they took 66, and `json` parses as fast as before
+- The inliner measures a function by what is left after its small slots are cut into registers, without the loads, stores and copies of small structs, and inlines up to 35: the integration of rigid bodies takes 155 ns per body, it took 400, 2.4 times C where it was 5.9, and the compiler builds itself with 1.4 % more instructions
+- A `switch` on a union finds its case with a binary search on the tags, and compares up to 8 one after another at the end: walking a tree of 120 kinds of node is 10 % faster
+- A copy out of a stack slot whose size is not a multiple of 8, a struct without fields of 8 bytes, goes 4 bytes at a time and doesn't wait for the stores that wrote it: the poses of a skeleton are 17 % faster
+
+Fixed
+- `x := f() iferror ""` and `ifnull ""` on a `&str` took the text made from the literal into a place that was not zero, so in a loop it wrote into the block of the round before and freed it twice
+- An `operator +=` of a union that holds `&str` took the text that `+` made inside it and called itself until `flag: stack overflow`: text goes into text as text
+- On Windows a parameter that comes on the stack, the fifth and the ones after it, was read as an integer, so an `f32` or `f64` there ended in a register of integers and the assembler refused the program
+- `reserve` of a size that a 64-bit number can't hold wrapped around and wrote outside the list: more than the system can give at once is out of memory
+- `accept` and `receive` with a timeout on Linux and macOS give `TIMED_OUT` when the time runs out, like a `Socket` did
+- QBE on arm64 stopped with an assertion for a field of a context past 4 KiB, rv64 stopped with `no match for stores(s)` when a float went from a register to the stack and refused a shift of a `w` by a constant of 32 or more, and the register allocator stopped with `no more pm slots` with more than 64 values alive in a loop, like 64 floats or 16 `simd` on rv64, and arm64 with `invalid class` with more floats alive than its registers
+- A positional literal whose fields share a word, like `Narrow{x, bump(ptr(x))}` with two `i32`, read `x` after `bump` changed it, so it gave another value than with names or with fields of 8 bytes
+- `simd[f32, 4](m)` of a mask gave -1.0 for true on x86_64 and arm64, and `simd[u8, 16]([..., 300])` cut 300 to 44 where it is an error
+- `start` with the standard input of yours closed gave the program no input
+
 ## 0.4.0
 
 A release about threads, arenas, speed and failing well: a program uses every core with two words, `parallel` and `wait`, memory can be released all at once, with the same lists, text and maps as always, small functions and structs cost what they cost in C, and a program that fails says the chain of calls that led there. Flag still checks what it checked, the types, the errors that can't be dropped and `-memory`.

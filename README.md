@@ -10,6 +10,7 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Manual memory management with `defer`, no garbage collector, and arenas that release everything at once, with the same lists, text and maps
 - Optional Memory-safety at comptime using -memory flag (makes compiling slower)
 - Runtime errors and crashes print the chain of calls of your code, and `-debug` builds for gdb and lldb
+- `flagc test` runs every `func test_name()` in a process of its own, in parallel and with a timeout
 - Errors as values that can carry data, handled with `try`, `trust`, `iferror` or a `switch`, and a dropped error doesn't compile
 - Tagged unions, narrowed by `is` and by the cases of a `switch`, and fat pointers built into the syntax
 - Structs compare and hash themselves, so they work as map keys
@@ -19,8 +20,9 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures
 - Small functions are inlined and small structs live in registers, `inline func` inlines at every call
-- ABI FFI to interop with other languages (both ways)
-- A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP and raylib
+- `simd[T, n]`, lanes of numbers in one register with operators that work on all of them, on SSE and NEON
+- ABI FFI to interop with other languages (both ways), with typed C function values, and shared libraries that a program loads and reloads while it runs
+- A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP, UDP and raylib
 - QBE backend for really fast compilation, for example, the compiler builds itself in about a second and a half
 - Support for Linux, macOS and Windows
 
@@ -62,16 +64,16 @@ Except for the lexer which is the base of the code style, all the code in the co
 
 ## Installation
 
-Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.4.0-linux-x86_64.tar.gz`, `flag-0.4.0-macos-arm64.tar.gz` or `flag-0.4.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
+Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.5.0-linux-x86_64.tar.gz`, `flag-0.5.0-macos-arm64.tar.gz` or `flag-0.5.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
 
 ```sh
-tar -xzf flag-0.4.0-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.4.0-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.5.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.5.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
 `flagc` is a single file, the standard library is inside it. You also need a C compiler, see [Requirements](#requirements).
-- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.4.0-macos-arm64/bin/flagc`
+- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.5.0-macos-arm64/bin/flagc`
 - On Windows, unpack it the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell
 
 For errors, hover and go to definition in your editor, see [flag-lsp](https://github.com/FramaLuna/flag-lsp).

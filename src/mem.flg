@@ -1300,6 +1300,8 @@ func visit(block: usize):
                 mem.fn.objs[h].thread = true
         case Detach:
             first := target_of(mem.args[o.first])
+            if mem.speak and comp.shared:
+                warn("this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close", o.pos, "", 0, false)
             if mem.speak and not mem.fn.settles:
                 leaving(first, o.pos) # a thread that runs alone may outlive this function
             for h in objects(first.live) and mem.fn.heaps:
@@ -1315,8 +1317,6 @@ func visit(block: usize):
                 blocks = Set{}
             if mem.speak and why.len > 0:
                 who := comp.tokens[token_at(o.pos)].text
-                if who != "wait":
-                    who = "free"
                 refuse(who, name, why, first, false)
             for h in blocks:
                 condemn(h, first.must[h], true)

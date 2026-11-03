@@ -1,0 +1,64 @@
+use fs
+use os
+
+type Circle:
+    r: f64
+
+type Square:
+    side: f64
+
+type State:
+    count: i64
+    shape: Circle|Square|null
+    fresh: bool
+    calm: bool
+
+func build(version: &strview) -> &strview:
+    library := dir_of(args()[0]) + "reload_game_" + version + ".so"
+    compiler := env("FLAGC") ifnull "build/flagc"
+    code := run(ptr([compiler, "tests/reload_game_" + version + ".flg", "-shared", "-o", library]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library)
+    return library
+
+func open(version: &strview) -> Library:
+    library := load(build(version))
+    if library is LoadError:
+        panic("" + library)
+    return library
+
+func call(step: extern func(*State), state: *State):
+    step(state)
+
+func show(state: State):
+    shape := state.shape
+    if shape is Circle:
+        print(state.count, " circle ", shape.r, " fresh ", state.fresh, " calm ", state.calm)
+    elif shape is Square:
+        print(state.count, " square ", shape.side, " fresh ", state.fresh, " calm ", state.calm)
+
+func main():
+    state: State
+    library := open("v1")
+    version := trust symbol(library, "version") as extern func() -> i32
+    step := trust symbol(library, "step") as extern func(*State)
+    print("version ", version(), ", a missing symbol is null: ", symbol(library, "missing") is null)
+    step(ptr(state))
+    show(state)
+    step(ptr(state))
+    show(state)
+    wait parallel call(step, ptr(state))
+    show(state)
+    close(library)
+    library = open("v2")
+    version = trust symbol(library, "version") as extern func() -> i32
+    step = trust symbol(library, "step") as extern func(*State)
+    print("version ", version())
+    step(ptr(state))
+    show(state)
+    step(ptr(state))
+    show(state)
+    close(library)
+    missing := load("build/tests/no_such_library.so")
+    if missing is LoadError:
+        print("cannot load ", missing.path, ", and the system says why: ", missing.reason.len > 0)

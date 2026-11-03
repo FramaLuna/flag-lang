@@ -1,0 +1,44 @@
+use net
+
+func main() -> i32:
+    server := udp(0)
+    client := udp(0)
+    if server is NetError or client is NetError:
+        print("cannot open a UDP port")
+        return 1
+    to := address("127.0.0.1", port(server))
+    if to is NetError:
+        print(to)
+        return 1
+    print(to == Address{[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1], port(server)}, " ", "" + to == "127.0.0.1:" + port(server))
+    print(ready(server), " ", send(client, to, "hello over udp"), " ", ready(server, 30.0))
+    got: &str
+    defer free(got)
+    from := receive(server, got)
+    if from is NetError:
+        print(from)
+        return 1
+    print(got, " ", from.port == port(client), " ", "" + from == "127.0.0.1:" + port(client))
+    got.len = 0
+    print(send(server, from, "and back"), " ", ready(ptr([server, client]), 30.0), " ", receive(client, got) is Address, " ", got)
+    print(address("::1", 80))
+    timeout(server, 0.05)
+    late := receive(server, got)
+    if late is NetError:
+        print(late.code == TIMED_OUT, " ", late)
+    huge: &str
+    defer free(huge)
+    for i in 0..70000:
+        add_byte(huge, 'x')
+    big := send(client, to, huge) # more than a datagram holds
+    if big is NetError:
+        print(big.action, " ", big.address == "127.0.0.1:" + port(server))
+    unknown := address("nosuch.invalid", 1)
+    if unknown is NetError:
+        print(unknown.code < 0, " ", starts_with("" + unknown, "cannot find nosuch.invalid: "))
+    taken := udp(port(server))
+    if taken is NetError:
+        print(taken.action, " ", taken.address == "" + port(server))
+    close(server)
+    close(client)
+    return 0
