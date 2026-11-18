@@ -32,7 +32,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         while not comp.syms[s].library:
             s = comp.syms[s].next
     if s == 0 and not check and not comp.shared:
-        eprint(ERR, "this program has no func main() to start from")
+        eprint(comp.err, "this program has no func main() to start from")
         return Fail
     comp.entry = NONE
     comp.settler = NONE
@@ -48,13 +48,11 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     for k in 1..comp.syms.len:
         test := comp.syms[k]
         f := test.node
-        if testing and starts_with(test.name, "test_") and comp.nodes[f].kind == Func and body(f) != 0 and not test.library and try holds_where(f):
-            if params(f) > 0 or generic(f) or try result(f) != VOID:
-                return fail(test.name + " is a test, so it takes nothing and returns nothing", comp.tokens[comp.nodes[f].tok].at)
+        if testing and starts_with(test.name, "test_") and comp.nodes[f].kind == Func and body(f) != 0 and not test.library and params(f) == 0 and not generic(f) and try result(f) == VOID and try holds_where(f):
             comp.insts[try instantiate(f, 0)].valued = true
             append(comp.tests, k)
     if testing and comp.tests.len == 0 and not check:
-        eprint(ERR, "these files have no test, a test is a func whose name starts with test_")
+        eprint(comp.err, "these files have no test, a test is a func test_name() with no parameters and no result")
         return Fail
     for k in 1..comp.syms.len:
         if comp.syms[k].export:

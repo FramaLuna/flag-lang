@@ -84,9 +84,9 @@ $cc -O2 -c build/embed/index.c -o build/embed/index.o
 objects="$objects build/embed/files.o build/embed/index.o"
 build/qbe -o build/seed.s boot/$system.ssa
 $cc -o build/flagc0 build/seed.s $objects $linking
-build/flagc0 src/*.flg $objects $linking -o build/flagc1
-build/flagc1 src/*.flg $objects $linking -o build/flagc2 -keep
-build/flagc2 src/*.flg $objects $linking -o build/flagc -keep
+build/flagc0 src/*.flg -o build/flagc1 -cc $objects $linking
+build/flagc1 src/*.flg -o build/flagc2 -keep -cc $objects $linking
+build/flagc2 src/*.flg -o build/flagc -keep -cc $objects $linking
 cmp build/flagc2.ssa build/flagc.ssa
 if [ "${1:-}" = seed ]; then
     for target in linux-x86_64 macos-arm64 windows-x86_64; do

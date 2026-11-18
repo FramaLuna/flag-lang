@@ -1125,7 +1125,7 @@ flagc run main.flg -- first second
 - `-memory` checks the memory (see [Memory safety](#memory-safety))
 - `-debug` builds the program for gdb and lldb (see [Debugging](Reference.md#debugging))
 - `-target` builds for another system, like `-target windows-x86_64` (see [Platforms](Reference.md#platforms))
-- anything else goes to the C compiler, that only assembles and links the program, for example `-lm` to link a library or `-static`
+- `-cc` passes what goes after it to the C compiler, that only assembles and links the program, for example `-cc -lm` to link a library or `-cc -static`
 
 The rest of the flags are in [The command line](Reference.md#the-command-line).
 

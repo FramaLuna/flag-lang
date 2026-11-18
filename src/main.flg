@@ -2,10 +2,6 @@
 use fs
 use os
 
-ERR = "\e[1;31merror:\e[0m "
-NOTE = "\e[1;36mnote:\e[0m "
-WARN = "\e[1;33mwarning:\e[0m "
-
 type error Fail
 
 type enum TokenKind:
@@ -256,6 +252,9 @@ context comp:
     choosing: bool
     debug: bool
     shared: bool
+    err: &strview # error:, note: and warning:, in color when the errors go to a terminal
+    note: &strview
+    warn: &strview
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
@@ -266,8 +265,17 @@ extern "c":
     func flag_version() -> *u8
     func flag_stamp() -> *u8
     func flag_target() -> *u8
+    func isatty(fd: i32) -> i32
 
 func main() -> i32:
+    comp.err = "error: "
+    comp.note = "note: "
+    comp.warn = "warning: "
+    plain := env("NO_COLOR") ifnull ""
+    if isatty(2) != 0 and plain.len == 0:
+        comp.err = "\e[1;31merror:\e[0m "
+        comp.note = "\e[1;36mnote:\e[0m "
+        comp.warn = "\e[1;33mwarning:\e[0m "
     output: &str
     keep := false
     check := false
@@ -282,16 +290,21 @@ func main() -> i32:
     running := arguments.len > 1 and arguments[1] == "run" or testing
     program: &list[&strview]
     seconds: i64 = 10
+    passing := false
     i := 1 + usize(running)
     while i < arguments.len:
         a := arguments[i]
         if running and a == "--":
             append(program, arguments[i + 1:])
             break
-        if a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
+        if passing:
+            append(rest, a)
+        elif a == "-cc":
+            passing = true
+        elif a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
             i += 1
             if i == arguments.len:
-                eprint(ERR, a, " expects a value after it")
+                eprint(comp.err, a, " expects a value after it")
                 return 2
             if a == "-o":
                 output = arguments[i]
@@ -302,7 +315,7 @@ func main() -> i32:
             elif a == "-timeout":
                 seconds = parse_int(arguments[i]) ifnull 0
                 if seconds < 1 or seconds > 2000000:
-                    eprint(ERR, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
+                    eprint(comp.err, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
                     return 2
             else:
                 query = arguments[i]
@@ -329,21 +342,56 @@ func main() -> i32:
                     if ends_with(path, ".flg"):
                         append(inputs, path)
             if inputs.len == before:
-                eprint(ERR, "the folder ", a, " has no .flg file to compile")
+                eprint(comp.err, "the folder ", a, " has no .flg file to compile")
                 return 2
+        elif a == "run" or a == "test":
+            line: &str = "flagc " + a
+            for j in 1..arguments.len:
+                if j != i:
+                    line += " " + arguments[j]
+            eprint(comp.err, a, " has to be the first argument: ", line)
+            return 2
+        elif a == "--":
+            line: &str = "flagc run"
+            for b in arguments[1:]:
+                line += " " + b
+            eprint(comp.err, "-- passes what follows it to the program, so it goes after run or test: ", line)
+            return 2
+        elif starts_with(a, "-") or exists(a):
+            line: &str = "flagc"
+            moved := false
+            for j in 1..arguments.len:
+                b := arguments[j]
+                if j == i:
+                    continue
+                if not moved and b == "--":
+                    line += " -cc " + a
+                    moved = true
+                line += " " + b
+                if not moved and b == "-cc":
+                    line += " " + a
+                    moved = true
+            if not moved:
+                line += " -cc " + a
+            if starts_with(a, "-"):
+                eprint(comp.err, a, " is not an option of flagc, and an option of the C compiler goes after -cc: ", line)
+            else:
+                eprint(comp.err, a, " goes to the C compiler, after -cc: ", line)
+            return 2
         else:
-            append(rest, a)
+            eprint(comp.err, a, " is not an option of flagc, a .flg file or a folder")
+            return 2
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]")
+        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-cc anything for the C compiler] [-- arguments for run, or names for test]")
         return 2
     if running and comp.shared:
-        eprint(ERR, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
+        eprint(comp.err, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
     if backend is null:
-        eprint(ERR, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
+        eprint(comp.err, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
@@ -351,7 +399,7 @@ func main() -> i32:
     if overlay.len > 0:
         given := read_file(overlay)
         if given is FsError:
-            eprint(ERR, given)
+            eprint(comp.err, given)
             return 1
         rest_of := view(given)
         while rest_of.len > 0:
@@ -363,7 +411,7 @@ func main() -> i32:
             if path_end is usize and size_end is usize:
                 size = parse_int(rest_of[path_end + 1:path_end + 1 + size_end])
             if path_end is null or size_end is null or size is null or size < 0 or usize(size) > rest_of.len - path_end - size_end - 2:
-                eprint(ERR, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
+                eprint(comp.err, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
                 return 1
             from := path_end + size_end + 2
             put(texts, real_path(rest_of[:path_end]), rest_of[from:from + usize(size)])
@@ -449,7 +497,7 @@ func main() -> i32:
             _ = rename(view(part), lib[:-1])
             _ = remove(view(part))
         if not exists(join_path(lib, "core.flg")):
-            eprint(ERR, "cannot unpack the library into ", lib)
+            eprint(comp.err, "cannot unpack the library into ", lib)
             return 1
     core: &str = join_path(lib, "core.flg")
     loaded: &list[&strview]
@@ -486,7 +534,7 @@ func main() -> i32:
             line = parse_int(parts[-2])
             column = parse_int(parts[-1])
         if line is null or column is null or line < 1 or column < 1:
-            eprint(ERR, "-at expects file:line:column but got ", query)
+            eprint(comp.err, "-at expects file:line:column but got ", query)
             return 2
         path := query[:query.len - parts[-2].len - parts[-1].len - 2]
         wanted := real_path(path)
@@ -494,7 +542,7 @@ func main() -> i32:
         while f < comp.files.len and real_path(view(comp.files[f].path)) != wanted:
             f += 1
         if f == comp.files.len:
-            eprint(ERR, "-at names ", path, ", which is not one of the files compiled")
+            eprint(comp.err, "-at names ", path, ", which is not one of the files compiled")
             return 2
         code := comp.files[f].code
         first: usize = 0
@@ -507,10 +555,10 @@ func main() -> i32:
         while last < code.len and items(code)[last] != '\n':
             last += 1
         if row < line:
-            eprint(ERR, "-at ", query, " is past the end of the file, its last line is ", row)
+            eprint(comp.err, "-at ", query, " is past the end of the file, its last line is ", row)
             return 2
         if first + usize(column) - 1 > last:
-            eprint(ERR, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
+            eprint(comp.err, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
             return 2
         at := comp.files[f].start + first + usize(column) - 1
         for t in 0..comp.tokens.len:
@@ -538,7 +586,7 @@ func main() -> i32:
     asm: &str = view(output)
     asm += ".s"
     if write_file(view(ssa), listing()) is FsError:
-        eprint(ERR, "cannot write ", ssa)
+        eprint(comp.err, "cannot write ", ssa)
         return 1
     args := array[*u8, 8]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8, usize(0) as *u8}
     if comp.debug:
@@ -549,7 +597,7 @@ func main() -> i32:
     if comp.debug:
         comp.assembly += dwarf()
     if append_file(view(asm), comp.assembly) is FsError:
-        eprint(ERR, "cannot write ", asm)
+        eprint(comp.err, "cannot write ", asm)
         return 1
     cc: &list[&strview]
     compiler: &strview = "cc"
@@ -616,7 +664,7 @@ func main() -> i32:
                 if words.len > 0:
                     words += " or "
                 words += word
-            eprint(ERR, "no test has ", words, " in its name")
+            eprint(comp.err, "no test has ", words, " in its name")
             code = 2
         commands: &list[&list[&strview]]
         codes: &list[i32|FsError]
@@ -662,7 +710,7 @@ func main() -> i32:
     if fleeting:
         _ = remove(view(output))
     if code is FsError:
-        eprint(ERR, code)
+        eprint(comp.err, code)
         return 1
     return code
 
@@ -683,7 +731,7 @@ func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], co
 func ran(command: &slice[&strview], why: &strview) -> bool:
     code := run(command)
     if code is FsError:
-        eprint(ERR, code, why)
+        eprint(comp.err, code, why)
         return false
     return code == 0
 
@@ -725,16 +773,16 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
         append(comp.files, Source{path, code, start, view(own), library})
         try lex(comp.files.len - 1)
         return parse()
-    eprint(ERR, code)
+    eprint(comp.err, code)
     return Fail
 
 func fail(message: &strview, at: usize) -> Fail:
-    eprint(ERR, message)
+    eprint(comp.err, message)
     show(at)
     return Fail
 
 func note(message: &strview, at: usize):
-    eprint(NOTE, message)
+    eprint(comp.note, message)
     show(at)
 
 func show(at: usize):
@@ -742,7 +790,7 @@ func show(at: usize):
     comp.blame = 0
     if blamed != 0 and comp.insts[comp.inst].library and blamed != at:
         show(blamed)
-        eprint(NOTE, "it fails here, inside ", text(comp.insts[comp.inst].node), ", with ", made(comp.inst))
+        eprint(comp.note, "it fails here, inside ", text(comp.insts[comp.inst].node), ", with ", made(comp.inst))
     f := comp.files[file_of(at)]
     bytes := items(f.code)
     local := at - f.start

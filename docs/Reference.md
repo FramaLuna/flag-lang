@@ -48,7 +48,7 @@ The IL and the assembly are written next to the program, `program.ssa` and `prog
 
 ## The command line
 ```
-flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]
+flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-cc anything for the C compiler] [-- arguments for run, or names for test]
 ```
 - An argument that ends in `.flg` is a file to compile, and a folder adds every `.flg` inside it and inside its folders, sorted by name, without going into links to folders. The order of the files doesn't matter, all of them are compiled together
 - `run` has to be the first argument. It compiles and then runs the program with what goes after `--`. Without `-o` the program is written in the temporary folder (`TEMP`, or `/tmp` if it's not set) as `flag-run-<number>.out` (`.exe` on Windows) and removed after it runs. The exit code of flagc is the exit code of the program
@@ -62,11 +62,15 @@ flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-m
 - `-target` builds for another system (see [Platforms](#platforms)). A target that doesn't exist is a wrong command line
 - `-overlay` and `-at` are for editors (see [Editor support](#editor-support))
 - `-version` prints the version and the commit it was built from
-- Anything else goes to the C compiler, in the same order: `.c`, `.o` and `.a` files, `-l` flags, `-static`...
+- `-cc` passes everything after it to the C compiler, in the same order, until the `--` of `run` or `test`: `.c`, `.o` and `.a` files, `-l` flags, `-static`... A second `-cc` goes to the C compiler too
+- The colors of `error:`, `warning:` and `note:` are written only when the errors go to a terminal, and never when the `NO_COLOR` variable is set
 
-flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay`, `-at` or `-timeout` is the last argument, when `-at` is not a place inside one of the files, when `-timeout` is not a number of seconds from 1 to 2000000, about 23 days, and when no test has the words after `--` in its name
+flagc exits with 0 when everything worked, 1 when there is an error in the code or when a step fails, and 2 when the command line is wrong. It's wrong when there is no file to compile, when a folder has no `.flg` file inside, when `-o`, `-target`, `-overlay`, `-at` or `-timeout` is the last argument, when `-at` is not a place inside one of the files, when `-timeout` is not a number of seconds from 1 to 2000000, about 23 days, when no test has the words after `--` in its name, and when an argument is none of these. The error gives the command line it expected
 ```
 error: -target expects a value after it
+error: run has to be the first argument: flagc run -memory hi.flg
+error: vec.c goes to the C compiler, after -cc: flagc main.flg -cc vec.c
+error: check is not an option of flagc, a .flg file or a folder
 error: the folder notes has no .flg file to compile
 error: no test has parse or lex in its name
 ```
@@ -74,7 +78,7 @@ error: no test has parse or lex in its name
 ### The C compiler
 The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link of a program is
 ```
-cc -o program program.s -L<library folder> -L<folder of each input> -l<each extern library> <anything else>
+cc -o program program.s -L<library folder> -L<folder of each input> -l<each extern library> <what goes after -cc>
 ```
 A library, with `-shared`, has `-shared` before what you give, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
 
@@ -933,10 +937,9 @@ On macOS the linker leaves the DWARF in the object file, so `-debug` assembles t
 On Windows gdb and lldb read the DWARF too. The debugger of Visual Studio reads PDB, which flagc doesn't write.
 
 ## Tests
-`flagc test` builds the tests of your files into a program and runs them. A test is a function whose name starts with `test_`, declared in a file you give to flagc, not in the library, and it takes nothing and returns nothing. One that takes or returns something is an error, and so are files without a test, like a program without `main`
+`flagc test` builds the tests of your files into a program and runs them. A test is a `func test_name()` with no parameters and no result, declared in a file you give to flagc, not in the library. A function whose name starts with `test_` and that has parameters or a result is a common function, a helper of the tests. Files without a test are an error, like a program without `main`
 ```
-error: test_parse is a test, so it takes nothing and returns nothing
-error: these files have no test, a test is a func whose name starts with test_
+error: these files have no test, a test is a func test_name() with no parameters and no result
 ```
 The name of a test is the one of its function, after its module when it has one: `mathx.test_gcd`. A `priv` test in a file without a module has the file as its module: `parse.flg.test_lines`. The words after `--` choose by that name: a test runs when its name has one of them, so `-- parse` runs `test_parse_int` and `test_parse_float`.
 
@@ -991,7 +994,7 @@ extern "objc":
 ```
 The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't start with a digit or `$`, and goes after what the function returns, before its `where`. Only a function of an `extern` block takes one: `only a func of an extern block takes = "symbol", the C function it calls`.
 
-You can also give the compiler `.c`, `.o` and `.a` files, they go to the C compiler with the rest.
+`.c`, `.o` and `.a` files go to the C compiler after `-cc`: `flagc game.flg -cc vec.c`.
 
 ### export
 `export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. Its name is a value of its C function type, the callback you give to C

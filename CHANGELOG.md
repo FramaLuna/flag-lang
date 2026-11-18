@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 (not released yet)
+
+Changed
+- What goes to the C compiler goes after `-cc`, until the `--` of `run` or `test`: `flagc game.flg -cc vec.c -lm`. An argument that flagc doesn't know is an error that gives the command line it expected, `run has to be the first argument: flagc run -memory hi.flg`, where before it went to the C compiler and `flagc -memory run hi.flg` ended in `ld: cannot find run`
+- A test is a `func test_name()` with no parameters and no result. A function whose name starts with `test_` and that has parameters or a result is a helper, where before it was an error
+- `error:`, `warning:` and `note:` are in color only when the errors go to a terminal, and never with `NO_COLOR`
+
+New
+- `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
+- Tests that pin the order of evaluation: left to right, named arguments as written and then the default values, and the cases of a `switch` until one matches
+
 ## 0.5.0
 
 A release about reaching past the program: numbers in lanes of one register, libraries that a program loads and reloads while it runs, the functions of C with their types, other programs that run beside yours, UDP, and tests that run each in a process of its own. Structs, `switch` and signed indexes got faster, and Windows takes text in UTF-16 everywhere.
