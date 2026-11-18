@@ -106,6 +106,40 @@ if [ "${1:-}" = sanitize ]; then
     done
     echo "qbe: no memory errors and no undefined behavior on the seeds, for every target"
 fi
+if [ "${1:-}" = cross ]; then
+    case $system in
+    linux) targets="linux-arm64=aarch64-linux-gnu linux-riscv64=riscv64-linux-gnu" ;;
+    macos) targets="macos-x86_64=x86_64-apple-macos11" ;;
+    *) targets= ;;
+    esac
+    for pair in $targets; do
+        target=${pair%=*}
+        out=build/cross/$target
+        rm -rf "$out"
+        mkdir -p "$out"
+        for source in src tests/*.out tests/*.warn examples/*.flg; do
+            name=$(basename "${source%.*}")
+            files=$source
+            flags=
+            case $source in
+            src) files=src/*.flg ;;
+            tests/*)
+                files=tests/$name.flg
+                [ -d "tests/$name" ] && files=tests/$name
+                [ -f "tests/$name.args" ] && flags=$(cat "tests/$name.args")
+                [ -f "tests/$name.env" ] && continue
+                ;;
+            esac
+            case " $flags " in
+            *" -check "*|*" -o "*|*" -target "*|*" -overlay "*|*" -timeout "*|*" -at "*|*" tests/"*) continue ;;
+            esac
+            [ "$system" = macos ] && flags=$(echo " $flags " | sed 's/ -debug / /') # dsymutil reads a linked program, and the C compiler here is true
+            CC=true build/flagc $files -target "$target" -o "$out/$name" -keep $flags > "$out/$name.log" 2>&1 || { echo "cross: $source does not compile for $target"; cat "$out/$name.log"; exit 1; }
+            clang --target="${pair#*=}" -c "$out/$name.s" -o "$out/$name.o" || { echo "cross: $source does not assemble for $target"; exit 1; }
+        done
+        echo "cross: flagc, the tests and the examples compile and assemble for $target"
+    done
+fi
 if [ "${1:-}" = package ]; then
     name=flag-$version-$system-$machine
     rm -rf "build/$name"

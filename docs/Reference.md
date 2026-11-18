@@ -312,7 +312,7 @@ A call sees the functions of its own module, the global ones (from files without
 ### Arguments
 The arguments fill the parameters in order, and named arguments fill their parameter. After a named argument the rest must be named too, and a parameter can't be filled twice.
 
-A default value is computed at the call, every time it's used. It can use constants, file variables, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
+A default value is computed at the call, every time it's used, after the arguments that are written (see [Order](#order)). It can use constants, file variables, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
 ```flag
 func pick(a: i32 = 1, b: i32) -> i32:
     return a * 10 + b
@@ -459,6 +459,9 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
+### Order
+An expression runs in the order it's written, left to right: the operands of an operator, also in `a - b * c`, what is indexed before the index, the function before its arguments, the keys and values of a map literal, and the two sides of an operator of yours. The arguments of a call run in the order written, named or not, and then the default values of the parameters that no argument filled, in the order of the declaration. The fields of a literal run in the order written too. An assignment is the exception, its right side runs first.
+
 ### Assignments
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
 
@@ -521,7 +524,7 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 
 ## Control flow
 ### switch
-Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last.
+Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last. The subject runs once, before the cases, and the cases run in order until one matches: the values after it don't run, also those in the same `case a, b`.
 
 Over a value that is not a tagged union, each case is compared with `==`, in order, and a case can be any expression, a range (`>=` the start and `<` the end) or several of them separated by `,`. A switch over a `bool` with `case true:` and `case false:` handles every value, like a switch with a default, so a function can end with it when both cases return.
 
@@ -1089,14 +1092,16 @@ A program that reloads its game keeps its state in memory of its own, and gives 
 
 ## Platforms
 Flag builds programs for Linux, macOS and Windows
-| Target | QBE backend |
-|---|---|
-| `linux-x86_64` | `amd64_sysv` |
-| `linux-arm64` | `arm64` |
-| `linux-riscv64` | `rv64` |
-| `macos-x86_64` | `amd64_apple` |
-| `macos-arm64` | `arm64_apple` |
-| `windows-x86_64` | `amd64_win` |
+| Target | QBE backend | Class |
+|---|---|---|
+| `linux-x86_64` | `amd64_sysv` | first |
+| `linux-arm64` | `arm64` | second |
+| `linux-riscv64` | `rv64` | second |
+| `macos-x86_64` | `amd64_apple` | second |
+| `macos-arm64` | `arm64_apple` | first |
+| `windows-x86_64` | `amd64_win` | first |
+
+A target of the first class has its seed, its package and a CI that builds the compiler on it and runs every test. A target of the second class is compiled and assembled on every change, flagc, the tests and the examples, with `./build.sh cross`, but nothing runs on it. A target moves to the first class when CI runs on it.
 
 By default the target is the system flagc was built on. On x86_64 a program with `simd` needs x86-64-v2 (see [SIMD](#simd)). The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
 
@@ -1163,7 +1168,7 @@ error: the line ends here, ':' goes here
 
 `./build.sh package` makes `build/flag-<version>-<system>-<machine>.tar.gz` with the compiler.
 
-`./build.sh sanitize` builds QBE with AddressSanitizer and UndefinedBehaviorSanitizer, and turns the three seeds into assembly for the six targets, with and without `-g`: a read out of an array, a memory freed twice or a shift that's too big stops it. CI runs it on Linux, since such a bug can pass on one system and break on another, as a read past an array of the slots that are cut did on macOS. QBE is built with `-fwrapv`: it adds offsets and folds constants with signed numbers that wrap around, as the target does, and C would leave that undefined.
+`./build.sh sanitize` builds QBE with AddressSanitizer and UndefinedBehaviorSanitizer, and turns the three seeds into assembly for the six targets, with and without `-g`: a read out of an array, a memory freed twice or a shift that's too big stops it. CI runs it on Linux, since such a bug can pass on one system and break on another, as a read past an array of the slots that are cut did on macOS. `./build.sh cross` builds flagc, the tests and the examples for the targets of the second class with `-target` and assembles them with clang, `linux-arm64` and `linux-riscv64` on Linux and `macos-x86_64` on macOS. CI runs it, so the `where` blocks of each system and the lane by lane path of `rv64` are compiled on every change. A host of the second class starts from the seed of its system, made for another machine, which works while the IL of the seed doesn't depend on the machine in what stage 0 uses. QBE is built with `-fwrapv`: it adds offsets and folds constants with signed numbers that wrap around, as the target does, and C would leave that undefined.
 
 `./test.sh build/flagc` runs every test in `tests/`
 - `name.flg` with `name.out` must print that, and the compiler must build it without printing anything. The program gets the compiler in the variable `FLAGC`, so a test can build what it needs, like the libraries that `reload.flg` loads
