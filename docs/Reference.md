@@ -118,7 +118,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `$T` is a type parameter and `$$n` a number parameter
 - Integers: `42`, `0xff`, `0b101`, and one `_` can go between two digits to read them better, `1_000_000`, `0xff_ff`. There are no octal numbers
 - Floats: `2.5`, `1e3`, `1.5e-3`. A float needs digits on both sides of the `.` (`.5` and `5.` are not floats) and has one exponent
-- Characters: `'a'` is one ASCII character or one escape, and it's the number of that character. A tab or any other control byte is written as its escape, `'\t'`
+- Characters: `'a'` is one ASCII character or one escape, and it's the number of that character, an integer literal like `97`: `b == 'a'` with `b: u8` compares bytes, and `c := 'a'` is an `i64` that prints as 97. A tab or any other control byte is written as its escape, `'\t'`
 - Text: `"..."`, with the escapes `\n \t \r \0 \\ \" \' \e` and `\x41`, a byte by its two hexadecimal digits. It can cross lines, and then its line breaks and the indentation of its lines are part of the text, a `\r\n` of the file as a `\n`. A `\` before a line break is an error, `'\' cannot continue a line, a text literal keeps its line breaks`. A text that never closes says where it opens: `this text literal never closes, it expects a '"' before the end of the file`
 - The symbols of more than one character are `== != <= >= += -= *= /= %= -> := .. ..= .* << >> ||`
 - A `(` right after a name, with no space, makes a call: `twice(3)`, `@here()`, `u8(x)`, `steps[i](x)`, `pick(true)(x)`. After a keyword it goes after a space, `not (x)`, `if (a) and (b)`, `return (x)`. The other two are errors that write the good form: `twice (3)` is `a call writes its ( right after what it calls: twice(3)`, and `for x in reverse(l)` is `'reverse' is a keyword of the language, not a function, so a space goes after it: reverse l`. In a declaration the name of an operator is a name, so `operator and(a: Set, b: Set)` keeps its `(` right after it, like `func` in a function type, `func(i32) -> bool`
@@ -166,7 +166,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
-`@sizeof(T)` gives the size as an integer literal, so `n := @sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = @sizeof(i64)`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
+`@sizeof(T)` gives the size as an integer literal, so it takes the type of its place and alone it's an `i64`: `n := @sizeof(Point)` is an `i64` and `n: usize = @sizeof(Point)` a `usize`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
 
 Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together when all of them are constants, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces. A word with a value computed when the program runs is written one field at a time: joining the fields costs instructions, and when the value lives in registers they have to be taken apart again.
 
@@ -221,15 +221,18 @@ Assigning a fat pointer copies its address and fields, not the data, so the two 
 
 ## Numbers
 ### Literals
-An integer literal has no type until you use it. It takes the type of where it goes if it fits, and alone it's an `i32`, or an `i64` or `u64` if it doesn't fit
+An integer literal has no type until you use it. It takes the type of where it goes if it fits, and alone it's an `i64`, or an `u64` above the largest `i64`
 ```flag
-a: u8 = 200     # fits
-b: u8 = 300     # error: 300 does not fit in u8, the largest u8 is 255
-c := 5000000000 # i64
+a: u8 = 200                   # fits
+b: u8 = 300                   # error: 300 does not fit in u8, the largest u8 is 255
+c := 5                        # i64
+d := 0xffff_ffff_ffff_ffff    # u64
 ```
-Arithmetic between literals is done by the compiler with the exact value, it doesn't wrap: `2147483647 + 1` is the `i64` literal `2147483648`. Dividing a literal by the literal `0` is an error, and so is a result that doesn't fit in 64 bits.
+So are the other numbers the compiler knows: `'a'`, `@sizeof`, `@offset_of`, the `len` of an array, a `$$n` and the variable of a range with two literal ends. A variable takes the type of its literal, so after `n := 5` the `n` is an `i64` and doesn't go where an `i32` goes, like in Go: write `n: i32 = 5`, or `i32(n)` where it goes. An argument doesn't give its type to a literal of array either (see [Rough edges](#rough-edges)), so `f(ptr([1, 2]))` is a `*array[i64, 2]`.
 
-A float literal is `f64` alone and fits any float. An integer literal also goes to a float type when needed.
+Arithmetic between literals is done by the compiler with the exact value, it doesn't wrap: `x: u8 = 300 - 100` is 200, and `0x7fff_ffff_ffff_ffff + 1` is the `u64` literal `0x8000_0000_0000_0000`. Dividing a literal by the literal `0` is an error, and so is a result that doesn't fit in 64 bits.
+
+A float literal is `f64` alone and fits any float. An integer literal also goes to a float type when needed, but it goes to an integer before a float: `x: i32|f64 = 3` is an `i32`, and `f(3)` with `f(i32)` and `f(f64)` calls `f(i32)`. Among integers it goes to `i64` if there is one, and else to the first where it fits, in the order a union writes its members: `i8`, `i16`, `i32`, `u8`, `u16`, `u32`, `u64`. So `x: u8|i8 = 5` is an `i8`, and `w: u16|u64 = 70000` an `u64`.
 
 `inf` and `nan` are the floats that are not numbers, written as `print` writes them and `parse_float` reads them, and they are literals like the others: `LOW = -inf`, `x: f32 = inf`. They are keywords like `true`, so nothing can take their name. Arithmetic between finite literals has to give a finite float, so `1.0 / 0.0` is an error, `the result of this literal arithmetic is not finite: write inf or nan`, and so is a literal too big for `f64`, `1e999 does not fit in f64, the largest f64 is 1.7976931348623157e+308: write inf for infinity`. With `inf` or `nan` on a side it follows IEEE, `inf - inf` is `nan`.
 
@@ -244,7 +247,7 @@ A float literal is `f64` alone and fits any float. An integer literal also goes 
 - `-x` only works on signed integers and floats
 - `<<` and `>>` shift, `>>` keeps the sign on signed integers. The result has the type of the left side and the amount can be of any integer type: `u8(1) << n` with `n: i32` is an `u8`. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
 - `and`, `or` and `xor` on integers work on the bits: `0xf0 and 0x3c` is `0x30`, and `not` flips the bits with the width of the type: `not u8(1)` is `254`. On `bool` they are logic, and `and` and `or` skip the right side when the left side already decides
-- `not` of a literal takes the type of its place, like a literal: `mask: u32 = not 0xff` is `0xffff_ff00`, and `flags and not 1` clears the lowest bit of `flags` whatever its type. Alone it follows the literal, so `not 5` is the `i32` `-6`
+- `not` of a literal takes the type of its place, like a literal: `mask: u32 = not 0xff` is `0xffff_ff00`, and `flags and not 1` clears the lowest bit of `flags` whatever its type. Alone it follows the literal, so `not 5` is the `i64` `-6`
 - There is no `**`, `~`, `^`, `&` or `|`
 
 ### Precedence
@@ -360,10 +363,10 @@ func main():
 ### Choosing an overload
 Every overload that can take the arguments gets a score for each argument
 - the same type gives 2
-- a conversion gives 1 (`&str` to `&strview`, a literal to another type...)
+- a conversion gives 1 (`&str` to `&strview`, a literal of text to a `cstr`...)
+- an integer literal gives a little less than 1 to each integer it fits, less the later the integer is in the order `i8`, `i16`, `i32`, `u8`, `u16`, `u32`, `u64`, and its own `i64` gives 2. To a float it gives almost nothing, a little more to `f64` than to `f32`, so it goes to an integer first: with `f(i32)` and `f(f64)`, `f(3)` calls `f(i32)`, and with `f(u8)` and `f(i16)` it calls `f(i16)`
 - an integer that grows gives a little less than 1, and less the bigger the type it grows to, so the shortest growth fits best: with `f(i32)` and `f(i64)`, an `i16` goes to `f(i32)`. Growths to two types of one size fit the same, so an `u8` with `f(i16)` and `f(u16)` is ambiguous
 - a value into a union gives what it gives to the member it goes in through
-- an integer literal to `f32` gives 0, so `f64` wins
 - a `$T` that is still free gives 0 and takes the type of the argument. A `type $T` is matched the same way, with a type for an argument (see [Type parameters](#type-parameters))
 - a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives what its inside gives and a little more, so it still fits better than a bare `$T`
 - a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &slice[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
@@ -483,7 +486,7 @@ func main():
     items := make(&list[i32])
     print(p, " ", items.len) # Point{x = 0, y = 0} 0
 ```
-- the argument is any type: `Point`, `m.Point`, `Box[i32]`, `Car.motor`, `&list[i32]`, `i32?`, `func(i32) -> bool`. A name that is a variable or a constant is a value, and a `type $T` doesn't take a value: `no overload of make matches (i32)`
+- the argument is any type: `Point`, `m.Point`, `Box[i32]`, `Car.motor`, `&list[i32]`, `i32?`, `func(i32) -> bool`. A name that is a variable or a constant is a value, and a `type $T` doesn't take a value: `no overload of make matches (i64)`
 - after `type` goes a bare `$T`, with no shape and no default value: `type expects a bare $T after it, with no shape and no default value: kind: type $T`. It goes only in a parameter of a `func` with a body, not in an operator, an `extern func`, a function type, a field or a variable
 - it takes nothing when the program runs, and its name is not a value: `kind is the type the call gives, not a value: write $T`. The name is there for a named argument, `make(kind = Point)`
 - a function with one has no function value (see [Function values](#function-values)), and `parallel make(Point)` runs it like any call
@@ -598,7 +601,7 @@ On x86_64 and arm64 most operations are one instruction or a few, and a `simd` t
 
 ## Iteration
 ### Ranges
-`a..b` goes from `a` to `b - 1` and `a..=b` from `a` to `b`. `reverse` walks them from the end, `reverse a..b` from `b - 1` down to `a` and `reverse a..=b` from `b` down to `a`. If `b <= a`, or `b < a` with `..=`, it doesn't run. The loop never computes a number past the last one it visits, so `a..=b` reaches the last value of the type: with `last: u8 = 255`, `for b in 0..=last` runs 256 times, where `0..last + 1` is `0..0` and doesn't run. The variable has the type of the end that is not a literal, or `i32` if both are literals, and both ends must have the same type. The ends are computed once, before the loop.
+`a..b` goes from `a` to `b - 1` and `a..=b` from `a` to `b`. `reverse` walks them from the end, `reverse a..b` from `b - 1` down to `a` and `reverse a..=b` from `b` down to `a`. If `b <= a`, or `b < a` with `..=`, it doesn't run. The loop never computes a number past the last one it visits, so `a..=b` reaches the last value of the type: with `last: u8 = 255`, `for b in 0..=last` runs 256 times, where `0..last + 1` is `0..0` and doesn't run. The variable has the type of the end that is not a literal, or `i64` if both are literals. Two ends of different integer types give the wider one, in either order: `for i in a..b` with `a: i32` and `b: i64` counts in `i64`. When neither holds every value of the other it's an error, `a range cannot mix i32 and u32, neither holds every value of the other: convert one end with i32(...) or u32(...)`. The ends are computed once, before the loop.
 
 The variable counts the loop, so it cannot be assigned: `i counts this loop, so it cannot be assigned: copy it to a variable to change it`. `ptr(i)` and a `*T` parameter get a copy of it, like for any value that is not a variable. That's why `a[i]` needs no bounds check when `a` is an array and the range has literal ends that fit in it, as in `for i in 0..4` or `for i in 0..=3` over an `array[i32, 4]`.
 
@@ -618,7 +621,7 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 ### a if c else b
 `a if c else b` is `a` when `c` is true and `b` when it's false. `c` runs first, and then only the side it chose, so `n := 100 / x if x != 0 else 0` never divides by zero. It narrows like `and` and `or`, `a` sees what `c` narrowed and `b` what `not c` narrowed: `name := user.name if user is User else "nobody"`. It's the loosest operator, so `a or b if c else d` is `(a or b) if c else d`, and it nests to the right: `a if c else b if d else e` is `a if c else (b if d else e)`. Without its `else` it's an error, `an if inside an expression expects its else: a if c else b`.
 
-Its type follows the rule of `ifnull` (see [Errors](#errors)). Where the place gives a type, like `x: i64 = 1 if c else 2` or a `return`, both sides convert to it. Anywhere else it's the type of `a` when `b` fits it, a literal `a` takes the type of `b` like it takes the type of the other side of `+`, and if not it's the union of both: with `small: u8`, `0 if c else small` is a `u8`, and `1 if c else "one"` is an `i32|&strview`. A side can be a call that never returns, and then the result has the type of the other side: `n := given if given is i64 else panic("no number")`. A side that gives nothing is an error, `a function that returns nothing is a statement, not a value`.
+Its type follows the rule of `ifnull` (see [Errors](#errors)). Where the place gives a type, like `x: i64 = 1 if c else 2` or a `return`, both sides convert to it. Anywhere else a literal side takes the type of the other side, like it takes the type of the other side of `+`, then it's the type of `a` when `b` fits it, the wider of two integers in either order, and if not the union of both: with `small: u8` and `big: i64`, `0 if c else small` is a `u8`, `small if c else big` an `i64`, `1 if c else 2` an `i64`, and `1 if c else "one"` an `i64|&strview`. A side can be a call that never returns, and then the result has the type of the other side: `n := given if given is i64 else panic("no number")`. A side that gives nothing is an error, `a function that returns nothing is a statement, not a value`.
 
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last. The subject runs once, before the cases, and the cases run in order until one matches: the values after it don't run, also those in the same `case a, b`.
@@ -694,7 +697,7 @@ If you keep the result in a variable, you can't use its value until you check it
 
 `trust` removes the errors without checking, or the `null` if there are no errors. If it was an error you get garbage, and printing it can crash the program.
 
-`a iferror b` is the value of `a` without its errors, or `b` when `a` has an error, and `a ifnull b` is the same with `null`. `b` only runs when it's needed. When `b` gives nothing, like a call to a function that returns nothing, `a iferror b` is a statement that runs `b` when `a` failed. If `b` fits the type left from `a` the result has that type, and if not it's the union of both. They bind tighter than comparisons and looser than arithmetic, so `m[k] ifnull 0 > 3` compares the result and `m[k] ifnull 0 + 1` adds to the default, put parentheses when you mean the other one.
+`a iferror b` is the value of `a` without its errors, or `b` when `a` has an error, and `a ifnull b` is the same with `null`. `b` only runs when it's needed. When `b` gives nothing, like a call to a function that returns nothing, `a iferror b` is a statement that runs `b` when `a` failed. If `b` fits the type left from `a` the result has that type, between two integers it's the wider one (`x ifnull big` with `x: i32?` and `big: i64` is an `i64`), and if not it's the union of both. They bind tighter than comparisons and looser than arithmetic, so `m[k] ifnull 0 > 3` compares the result and `m[k] ifnull 0 + 1` adds to the default, put parentheses when you mean the other one.
 
 The last link of the chain can also be `return`, `break` or `continue`, that leave like a call that never returns, so the value has no error or `null` after them
 ```flag
@@ -912,8 +915,8 @@ name += " final" # grows in level too
 ```
 - `arena(a, v)` copies the value into `a` and gives a pointer to it, like `heap(v)`. The pieces are aligned to 16 bytes, the most any type needs, which is a `simd`
 - `arena(a, text)` with a `&strview` or a `&str` gives a `&str` with a copy of the text
-- `arena(a, [...])` and `arena(a, {...})` build the literal as a `&list` or a `&map` that lives in `a`, with the type of the place where it lands, also of a union with one list or map in it: `bytes: &list[u8] = arena(a, [1, 2])`. Without one the literal gives its own, `arena(a, [1, 2])` is a `&list[i32]`, and an empty literal needs one: `this empty list lives in an arena and gets its type from where it lands, and nothing here gives a &list: x: &list[i32] = arena(a, [])`, and one that lands in another type is an error too: `this empty list lives in an arena as a &list, which cannot land in &ring.ring[i32]`. The compiler builds these, so `arena` with a list or map literal is always this one, also when you declare an `arena` of yours
-- `a` is the `Arena` or a pointer to one, and anything else is an error: `arena(a, ...) expects the Arena it allocates in, or a pointer to one, but got i32`
+- `arena(a, [...])` and `arena(a, {...})` build the literal as a `&list` or a `&map` that lives in `a`, with the type of the place where it lands, also of a union with one list or map in it: `bytes: &list[u8] = arena(a, [1, 2])`. Without one the literal gives its own, `arena(a, [1, 2])` is a `&list[i64]`, and an empty literal needs one: `this empty list lives in an arena and gets its type from where it lands, and nothing here gives a &list: x: &list[i32] = arena(a, [])`, and one that lands in another type is an error too: `this empty list lives in an arena as a &list, which cannot land in &ring.ring[i32]`. The compiler builds these, so `arena` with a list or map literal is always this one, also when you declare an `arena` of yours
+- `a` is the `Arena` or a pointer to one, and anything else is an error: `arena(a, ...) expects the Arena it allocates in, or a pointer to one, but got i64`
 - `clear(a)` releases everything in `a` and keeps its blocks to give them out again, for the memory of one frame of a game. `free(a)` releases everything and returns the blocks to the heap. After both the arena is empty and ready to use again
 
 A `&str`, `&list` or `&map` keeps its arena in the field `arena` and grows there: it takes a new piece and copies, and the old piece stays until `free(a)` or `clear(a)`. A `&str` or a `&list` whose memory is the last piece of the block grows in its place, and a `&map` takes a new table each time it grows. `free` of one leaves it empty and releases nothing, so a function that frees what it is given works with a list from anywhere, and it keeps its arena, so growing it again uses the same arena. Assigning an address to it by hand (`text = ptr(buf) as *bytes`) changes only the address, like for any fat pointer.
@@ -1169,7 +1172,7 @@ func drop(object: *Unknown):
 Tagged unions, fat pointers, the function values of Flag and `simd` can't cross to C, pass their parts or a pointer: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
-A C function can end with `...`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, and text is not converted there, use `cstr`.
+A C function can end with `...`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, an integer literal goes as an `i32`, the `int` of C, when it fits, so `printf("%d", 7)` is right, and text is not converted there, use `cstr`.
 
 ### Text
 `cstr` is `*u8`, a text that ends with a zero byte
@@ -1336,7 +1339,7 @@ Things that work in a way that may surprise you, so be aware
 - A text literal is static data that every use shares, and so do the literals with the same text and the constants kept in data (see [Constants](#constants)). Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
-- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i32, 2]` even where `f` takes a `&slice[u32]`: give it to a variable with its type first
+- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i64, 2]` even where `f` takes a `&slice[i32]`: give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
 - `receive` of a `Channel` gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in channel`, that ends only when it's closed
 - A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable

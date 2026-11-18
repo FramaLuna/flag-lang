@@ -48,7 +48,7 @@ A function or a type can share its name with a variable: `twice := 4` leaves `tw
 
 The type of a variable can also be inferred with ':='
 ```flag
-a := 3 # declares 'a' to be of type 'i32' and sets it to 3
+a := 3 # declares 'a' to be of type 'i64' and sets it to 3
 b := 2.5 # 'b' is 'f64'
 ```
 Assignments can do some transformations between types, for example:
@@ -56,10 +56,11 @@ Assignments can do some transformations between types, for example:
 view: &strview = "hello" # a text literal is a '&strview'
 text: &str = view # the text is copied into a new '&str' that you own
 back: &strview = text # a '&str' can be used as a '&strview' without copying
-n: i64 = a # smaller integers grow to bigger ones
-maybe: i32|null = a # a value goes into a union that has its type
-b: *array[i32, 2] = heap([1, 2])
-l: &list[i32] = b # here '*array[i32, 2]' is transformed to '&list[i32]' at assignment
+small: u8 = 7
+n: i64 = small # smaller integers grow to bigger ones
+maybe: i64|null = a # a value goes into a union that has its type
+b: *array[i64, 2] = heap([1, 2])
+l: &list[i64] = b # here '*array[i64, 2]' is transformed to '&list[i64]' at assignment
 ```
 The other conversions are written like a call to the type
 ```flag
@@ -68,13 +69,13 @@ d := u8(a)
 ```
 
 ## Literals
-- Integers: `3`, `-3`, `0xff`, `0b101`, and `_` can separate the digits, `1_000_000`. They take the type they are used with, and alone they are `i32` (or `i64`/`u64` if they don't fit)
+- Integers: `3`, `-3`, `0xff`, `0b101`, and `_` can separate the digits, `1_000_000`. They take the type they are used with, and alone they are `i64` (`u64` above the largest `i64`), so after `n := 5` the `n` is an `i64`: write `n: i32 = 5` for an `i32`. Where an integer and a float could take it, it goes to the integer
 - Floats: `2.5`, `1e3`. Alone they are `f64`. `inf` and `nan` are written like `print` writes them, `low := -inf`, and a computation between finite literals that gives one of them, like `1.0 / 0.0`, is an error
-- Characters: `'a'` is the number of that character (97), so it works with `u8`
+- Characters: `'a'` is the number of that character (97), an integer literal, so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
-- Arrays: `[1, 2]` is an `array[i32, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i32|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
-- Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i32]` and `{}` is an empty map (see [Maps](#maps))
+- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
+- Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i64]` and `{}` is an empty map (see [Maps](#maps))
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types))
 
 When you give the type, the literal takes it
@@ -263,7 +264,7 @@ It can also take a type out of a union, but it does not check the tag, so check 
 A pointer is written with '*' before the type. `ptr(x)` gives you the address of `x` and `.*` reads or writes what the pointer points to
 ```flag
 x := 5
-p := ptr(x) # 'p' is '*i32'
+p := ptr(x) # 'p' is '*i64'
 p.* = 6 # now x is 6
 ```
 Fields are reached through the pointer without `.*`
@@ -774,7 +775,7 @@ operator +=(s: *&str, p: Point):
 ## Arrays
 An array has a fixed size that is part of its type, it is a value like a struct, so assigning it copies it
 ```flag
-a := [1, 2, 3] # array[i32, 3]
+a := [1, 2, 3] # array[i64, 3]
 b: array[u8, 16] # starts at zero
 c := array[i32, 2]{4, 5} # you can also name the type
 a[0] = 10 # indexes are checked, going out stops the program with an error
@@ -804,8 +805,8 @@ The lanes are `f32`, `i32` and `u32` by 4, `f64`, `i64` and `u64` by 2, `i16` an
 ## Lists
 A `&list[T]` is a list that grows as you add elements. It starts empty, and you can also start it from an array on the heap
 ```flag
-empty: &list[i32] = heap([])
-start: &list[i32] = heap([1, 2, 3]) # the list owns the heap array, with len and cap 3
+empty: &list[i64] = heap([])
+start: &list[i64] = heap([1, 2, 3]) # the list owns the heap array, with len and cap 3
 ```
 ```flag
 nums: &list[i32]
@@ -824,11 +825,11 @@ Also `find` (gives the index or null), `contains`, `flip` (turns the list around
 ## Maps
 A `&map[K, V]` is a hash map, you can start it empty or with a literal
 ```flag
-ages := {"bo": 25} # &map[&strview, i32]
+ages := {"bo": 25} # &map[&strview, i64]
 defer free(ages)
 ages["ana"] = 30 # the same as put(ages, "ana", 30)
-age := ages["ana"] # i32|null, null when there is no ana
-if age is i32:
+age := ages["ana"] # i64|null, null when there is no ana
+if age is i64:
     print("ana is ", age)
 ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
@@ -1146,7 +1147,7 @@ export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
 
 func main():
-    values := [3, 1, 2]
+    values: array[i32, 3] = [3, 1, 2] # the size C reads, 4 bytes
     qsort(ptr(values) as *bytes, 3, 4, ascending)
 ```
 An `extern func` is called like C calls, structs too, so it's also what a table of functions of C holds, and what an address that C gives you becomes with `as`: `f := address as extern func(f64) -> f64`. The function values of Flag, `func(...)`, don't cross to C.
@@ -1173,7 +1174,7 @@ It sees the elements of a list, an array or a map as one, so freeing them in a l
 ### @trust @check
 `@trust` hides the warnings of the code you already checked. At the end of a line it covers that line and the block it opens, and on a line of its own it covers everything after it at that indentation, so at the top of a file it covers all the file
 ```flag
-func risky(p: *i32): @trust
+func risky(p: *i64): @trust
     p.* = 3
 
 func main():

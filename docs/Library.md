@@ -138,7 +138,7 @@ func add(times: i32):
         with lock(counter.lock):
             counter.count += 1
 
-func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     for n in jobs:
         send(results, n * n)
     close(results)
@@ -152,8 +152,8 @@ func main():
         wait(w)
     print(counter.count) # 1000 for each core
 
-    jobs: Channel[i32, 8]
-    results: Channel[i32, 8]
+    jobs: Channel[i64, 8]
+    results: Channel[i64, 8]
     t := parallel square_all(jobs, results)
     for n in 1..4:
         send(jobs, n)
@@ -288,7 +288,7 @@ None of them skip spaces, the whole text must be the number.
 
 And three helpers
 - `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. A value that rounds to zero has no sign, `fixed(-0.4, 0)` is `0`. Negative `places` are 0
-- `hex(value: $I) -> Hex` prints the bits of the integer in hexadecimal, as many as its type has: `hex(255)` is `0xff`, and `hex(i8(-1))` is `0xff` too
+- `hex(value: $I) -> Hex` prints the bits of the integer in hexadecimal, as many as its type has: `hex(255)` is `0xff`, `hex(i8(-1))` is `0xff` too, and `hex(-1)` is `0xffffffffffffffff`, the literal alone is an `i64`
 - `pad(value: $T, width: i32) -> Padded[$T]` prints the value with spaces before it to fill `width` characters, or after it when `width` is negative: `pad(42, 5)` is `   42` and `pad("ab", -4)` is `ab  `. A longer value is not cut. It takes any value, so `pad(fixed(x, 2), 8)` works
 
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).

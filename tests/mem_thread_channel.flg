@@ -9,7 +9,7 @@ func add(times: i32):
         with lock(counter.lock):
             counter.count += 1
 
-func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     for n in jobs:
         send(results, n * n)
     close(results)
@@ -23,8 +23,8 @@ func main():
         wait(w)
     print(counter.count) # 1000 for each core
 
-    jobs: Channel[i32, 8]
-    results: Channel[i32, 8]
+    jobs: Channel[i64, 8]
+    results: Channel[i64, 8]
     t := parallel square_all(jobs, results)
     for n in 1..4:
         send(jobs, n)

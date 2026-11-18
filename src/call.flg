@@ -517,6 +517,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         append(passes, Pass{})
         for k in order.len..args.len:
             v := args[k]
+            if v.lit and integer(v.type) and fits(v, I32): # the int of C
+                v = try convert(v, I32, Arg{}, at)
             t := comp.types[v.type]
             if aggregate(v.type) or t.kind == Void or t.kind == Func and not t.foreign:
                 return fail(name + " expects integers, floats, bool and pointers after its declared parameters but got " + t.name, at)
@@ -754,7 +756,7 @@ func bind(f: usize, order: &list[usize], args: &list[Value]) -> &list[i64]?|Fail
     c := f + 1
     for k in 0..order.len:
         if order[k] < args.len and turn(args[order[k]]) > 0:
-            scores[order[k]] = -1 - i64(turn(args[order[k]]))
+            scores[order[k]] = -1 - turn(args[order[k]])
         elif order[k] < args.len and loose(c + 1):
             scores[order[k]] = -1
         c = node_end(c)
@@ -803,10 +805,10 @@ func holds_where(f: usize) -> bool|Fail:
         c = node_end(c)
     return true
 
-func turn(v: Value) -> i32:
+func turn(v: Value) -> i64:
     if v.type == NULL:
         return 2
-    return i32(v.lit) + i32(v.lit and integer(v.type))
+    return i64(v.lit) + i64(v.lit and integer(v.type))
 
 func arrange(f: usize, count: usize, names: &list[&strview]) -> &list[usize]?:
     fixed := params(f)
@@ -1118,19 +1120,19 @@ func accepts(to: usize, v: Value) -> i64:
     target := comp.types[to]
     if v.lit and integer(v.type) and integer(to):
         if fits(v, to):
-            return STEP
+            return STEP - i64(to) # the first integer where it fits, in the order of a union
         return -1
     if widens(v.type, to):
         return STEP - i64(target.size) # the shortest widening fits best
     if v.lit and comp.types[v.type].kind == Float and target.kind == Float:
         return STEP
     if v.lit and integer(v.type) and target.kind == Float:
-        return STEP * i64(to == F64)
+        return i64(to == F64) # below any integer
     if (v.lit or comp.types[v.type].name == "&str") and comp.types[v.type].kind == Fat and target.kind == Ptr and target.elem == U8:
         return STEP
     if untagged_member(to, v.type) or untagged_member(v.type, to) or target.kind == Union and within(v.type, to):
         return STEP
-    best: i64 = -1
+    best := -1
     if target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged:
         for i in 0..target.count:
             score := accepts(comp.items[target.first + i].type, v)
@@ -1263,7 +1265,7 @@ func member_for(to: usize, v: Value, at: usize) -> usize|Fail:
     target := comp.types[to]
     found: usize = VOID
     tied: usize = VOID
-    best: i64 = -1
+    best := -1
     for i in 0..target.count:
         m := comp.items[target.first + i].type
         score := accepts(m, v)
@@ -1431,7 +1433,7 @@ func convert_number(v: Value, to: usize, at: usize) -> Value|Fail:
             wide = op1(D, "exts", x)
         top := Arg{Double, f64(largest(to)) as i64}
         bottom := Arg{Double, 0.0 as i64}
-        low: i64 = 0
+        low := 0
         if target.kind == Int:
             low = 0 - i64(largest(to)) - 1
             bottom = Arg{Double, f64(low) as i64}

@@ -1362,13 +1362,14 @@ func iterate(n: usize) -> Fail?:
     if range:
         start = try value(subject + 1, VOID)
         end = try value(node_end(subject + 1), VOID)
+        for side in [start, end]:
+            if not integer(side.type):
+                return fail("a range expects integers at both ends, this one is " + comp.types[side.type].name, at)
         t = start.type
-        if start.lit:
+        if start.lit or not end.lit and widens(start.type, end.type):
             t = end.type
-        if not integer(t):
-            return fail("a range expects integers at both ends, this one is " + comp.types[t].name, at)
-        if not start.lit and not end.lit and start.type != end.type:
-            return fail("a range expects both ends of one type, got " + comp.types[start.type].name + " and " + comp.types[end.type].name, at)
+        if not end.lit and end.type != t and not widens(end.type, t):
+            return fail("a range cannot mix " + comp.types[start.type].name + " and " + comp.types[end.type].name + ", neither holds every value of the other: convert one end with " + comp.types[start.type].name + "(...) or " + comp.types[end.type].name + "(...)", at)
         if start.lit and not start.neg:
             limit = usize(1) << 63 # it never goes below where it starts, so it is never negative
         if limit != 0 and end.lit and not end.neg:
@@ -2152,12 +2153,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 jump(l_good)
                 open_block(l_good)
                 return none
-            result := kept
-            if not try assignable(kept, other.type, at) and not (other.lit and accepts(kept, other) >= 0):
-                both_sides: &list[usize]
-                append(both_sides, kept)
-                append(both_sides, other.type)
-                result = try union_of(both_sides, Union, at)
+            result := try either(Value{type = kept}, other, at)
             slot := alloc(result)
             zero(result, slot)
             try assign(slot, result, other, at_of(right))
@@ -2289,11 +2285,7 @@ func choice(n: usize, want: usize) -> Value|Fail:
         return a
     result := want
     if want == VOID:
-        result = a.type
-        if a.type == NEVER or a.lit and b.type != NEVER and accepts(b.type, a) >= 0:
-            result = b.type
-        elif b.type != NEVER and not (b.lit and accepts(a.type, b) >= 0) and not try assignable(a.type, b.type, at):
-            result = try union_of(ptr([a.type, b.type]), Union, at)
+        result = try either(a, b, at)
     slot := alloc(result)
     l_done := label()
     for k, side in [n + 1, node_end(cond)]:
@@ -2304,6 +2296,16 @@ func choice(n: usize, want: usize) -> Value|Fail:
             jump(l_done)
     open_block(l_done)
     return Value{type = result, at = slot, mem = true}
+
+# the type of a value that is a or b: the one that takes the other, or a union of both
+func either(a: Value, b: Value, at: usize) -> usize|Fail:
+    if a.type == NEVER or a.lit and b.type != NEVER and accepts(b.type, a) >= 0:
+        return b.type
+    if b.type == NEVER or b.lit and accepts(a.type, b) >= 0 or try assignable(a.type, b.type, at):
+        return a.type
+    if widens(a.type, b.type):
+        return b.type
+    return union_of(ptr([a.type, b.type]), Union, at)
 
 # each lane of to is the scalar o of the same lane of args, where a number stands in every lane
 func lanes(o: &strview, args: &list[Value], to: usize, at: usize) -> Value|Fail:
@@ -3327,9 +3329,7 @@ func literal(neg: bool, n: usize) -> Value:
     x := i64(n)
     if neg:
         x = 0 - x
-    v := Value{type = I32, at = int_arg(x), lit = true, neg = neg and n != 0, n = n}
-    if not fits(v, I32):
-        v.type = I64
+    v := Value{type = I64, at = int_arg(x), lit = true, neg = neg and n != 0, n = n}
     if not fits(v, I64):
         v.type = U64
     return v

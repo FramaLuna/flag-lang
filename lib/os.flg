@@ -489,7 +489,7 @@ priv func finish(process: i64, place: &strview = @here()) -> i32 where @windows(
 # without taking it, so the pid is not reused until wait
 priv func ended(pid: i64) -> bool where not @windows():
     info: array[u32, 32]
-    waitid(1, u32(pid), ptr(info) as *bytes, 0x100_0005 if @linux() else 0x25) # P_PID, and WEXITED, WNOHANG and WNOWAIT
+    waitid(1, u32(pid), ptr(info) as *bytes, i32(0x100_0005 if @linux() else 0x25)) # P_PID, and WEXITED, WNOHANG and WNOWAIT
     return info[0] != 0 and info[2] >= 1 and info[2] <= 3 # si_code CLD_EXITED, CLD_KILLED or CLD_DUMPED, macOS gives a stopped one too
 
 priv func ended(process: i64) -> bool where @windows():
@@ -638,7 +638,7 @@ operator +=(s: *&str, e: LoadError):
 func load(path: &strview) -> Library|LoadError where not @windows():
     handle := usize(0) as *bytes
     with scratch():
-        handle = dlopen(cstr(path), 2 if @linux() else 6) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
+        handle = dlopen(cstr(path), i32(2 if @linux() else 6)) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
     if handle as usize != 0:
         return Library{handle}
     reason := view(dlerror())

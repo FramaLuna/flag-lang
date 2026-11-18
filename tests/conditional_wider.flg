@@ -1,0 +1,27 @@
+# between two integer types, a if c else b, ifnull and iferror give the wider one in either order
+type error Bad
+
+func kind(x: i64) -> &strview:
+    return "i64"
+
+func kind(x: i32) -> &strview:
+    return "i32"
+
+func kind(x: u8) -> &strview:
+    return "u8"
+
+func get(ok: bool) -> i32|Bad:
+    if ok:
+        return 1
+    return Bad
+
+func main():
+    yes := true
+    small: i32 = 1
+    big: i64 = 2
+    print(kind(small if yes else big), " ", kind(big if yes else small), " ", small if yes else big)
+    maybe: i32? = null
+    wide: i64? = null
+    print(kind(maybe ifnull big), " ", kind(wide ifnull small), " ", kind(get(true) iferror big), " ", get(false) iferror big)
+    tiny: u8 = 7
+    print(kind(tiny if yes else 0), " ", kind(0 if yes else tiny), " ", kind(1 if yes else 2))
