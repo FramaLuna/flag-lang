@@ -64,7 +64,7 @@ d := u8(a)
 - Integers: `3`, `-3`, `0xff`, `0b101`, and `_` can separate the digits, `1_000_000`. They take the type they are used with, and alone they are `i32` (or `i64`/`u64` if they don't fit)
 - Floats: `2.5`, `1e3`. Alone they are `f64`
 - Characters: `'a'` is the number of that character (97), so it works with `u8`
-- Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number
+- Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
 - Arrays: `[1, 2]` is an `array[i32, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i32|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
 - Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i32]` and `{}` is an empty map (see [Maps](#maps))
@@ -79,6 +79,11 @@ ages: &map[&strview, u8] = {"ana": 30}
 ```flag
 SHADER = [0x0723_0203, 0x0001_0000, 0x0008_000b]
 words: &slice[u32] = ptr(SHADER)
+```
+A text that crosses lines keeps them as they are
+```flag
+USAGE = "usage: flagc file.flg
+  -check   only check"
 ```
 
 ## Constants

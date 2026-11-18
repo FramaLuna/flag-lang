@@ -1970,6 +1970,8 @@ func operation(n: usize, want: usize) -> Value|Fail:
         return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
     if o == "..":
         return fail("a range goes in a for header or a case label, nothing else reads it", tok.at)
+    if o == "..=":
+        return fail("'..=' is not supported yet, write: a..b + 1", tok.at)
     if o == "+":
         return concat(n, none, comp.body.len)
     if o == "iferror" or o == "ifnull":
@@ -2065,7 +2067,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 known = node_end(k + 1)
                 l = try gen(known, VOID)
                 if comp.types[l.type].kind == Simd:
-                    return fail("a bool " + o + " a " + comp.types[l.type].name + " stops at the bool when it decides, like a condition: write the mask first, m " + o + " b, so both sides run on every lane", at_of(known))
+                    return fail("bool " + o + " " + comp.types[l.type].name + " stops at the bool when it decides, like a condition: write the mask first, m " + o + " b, so both sides run on every lane", at_of(known))
                 l = try condition_of(l, known)
                 if i == 0 or text(chain[i - 1]) != o:
                     break
@@ -3603,20 +3605,22 @@ func text_bytes(into: *&str, text: &strview) -> usize:
         into.* += "\", "
     return text.len
 
-# the text of a literal, without its quotes and with its escapes made bytes
+# the text of a literal, without its quotes, with its escapes made bytes and the \r\n of the file made \n
 func unquoted(literal: &strview) -> &strview:
     out: &str
     defer free(out)
-    raw := literal[1:literal.len - 1]
-    bytes := items(raw)
-    i: usize = 0
-    while i < raw.len:
+    bytes := items(literal)
+    i: usize = 1
+    while i < literal.len - 1:
         b := bytes[i]
         if b == '\\':
             i += 1
-            b = escaped(raw, i)
+            b = escaped(literal, i)
             if bytes[i] == 'x':
                 i += 2
+        elif b == '\r' and bytes[i + 1] == '\n':
+            b = '\n'
+            i += 1
         add_byte(out, b)
         i += 1
     return temp(out)

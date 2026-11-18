@@ -102,12 +102,13 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 
 ## Syntax
 ### Lines and blocks
-- A block is the lines after a `:` that are more indented than the line with the `:`. The width of the block is the indentation of its first line, and a line deeper than that is an error. Tabs and spaces count one each, so don't mix them
+- A block is the lines after a `:` that are more indented than the line with the `:`. The width of the block is the indentation of its first line, and a line deeper than that is an error
+- The indentation can be tabs, spaces or both, as long as the blocks don't depend on how wide a tab is. Like Python, the compiler measures each indentation twice, with a tab that goes to the next column that is a multiple of 8 and with a tab that counts one, and if the two don't give the same blocks it's an error: `this indentation mixes tabs and spaces, and its block depends on how wide a tab is`. So a block of `\t` can hold a block of `\t    `, but `\t\t` and `\t ` in the same block, or `\t` and 8 spaces, are errors
 - A line that goes back to a column where no block started is an error too: `unexpected indentation, this line matches no block open above it`. The fields of a type, the variants of an enum block and the functions of an `extern` block are blocks like any other
 - A `:` always needs an indented block after it, there is no `if x: print(x)` in one line. `pass` is the statement that does nothing, for a block that must be empty. Only an `extern` block can have nothing after its `:`
 - Declarations (`func`, `type`, constants, `extern`...) start at the first column, and code goes inside functions
 - `module` goes in the first line of the file, and `use` goes before the first declaration
-- Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation. There is no `\` to continue a line
+- Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation, and the lines inside a text literal are text, not code. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
 - Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time and memory in proportion to its length: 2500 `elif` on a value known only when the program runs, each with a `print`, compile in 0.3 s, 20000 in 2.8 s with 0.5 GB of memory, and so does a switch of 20000 cases. A `case` with 20000 values takes 0.3 s
 
@@ -118,8 +119,8 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - Integers: `42`, `0xff`, `0b101`, and one `_` can go between two digits to read them better, `1_000_000`, `0xff_ff`. There are no octal numbers
 - Floats: `2.5`, `1e3`, `1.5e-3`. A float needs digits on both sides of the `.` (`.5` and `5.` are not floats) and has one exponent
 - Characters: `'a'` is one ASCII character or one escape, and it's the number of that character. A tab or any other control byte is written as its escape, `'\t'`
-- Text: `"..."` in one line, with the escapes `\n \t \r \0 \\ \" \' \e` and `\x41`, a byte by its two hexadecimal digits
-- The two character symbols are `== != <= >= += -= *= /= %= -> := .. .* << >> ||`
+- Text: `"..."`, with the escapes `\n \t \r \0 \\ \" \' \e` and `\x41`, a byte by its two hexadecimal digits. It can cross lines, and then its line breaks and the indentation of its lines are part of the text, a `\r\n` of the file as a `\n`. A `\` before a line break is an error, `'\' cannot continue a line, a text literal keeps its line breaks`. A text that never closes says where it opens: `this text literal never closes, it expects a '"' before the end of the file`
+- The symbols of more than one character are `== != <= >= += -= *= /= %= -> := .. ..= .* << >> ||`
 
 `!`, `&&` and `||` are not the logical operators, it's `not`, `and` and `or`. The compiler tells you: `'!' is not an operator, write: not`.
 
@@ -233,7 +234,7 @@ From the loosest to the tightest
 4. `==`, `!=`
 5. `<`, `>`, `<=`, `>=`
 6. `iferror`, `ifnull`
-7. `..`, `<<`, `>>`
+7. `..`, `..=`, `<<`, `>>`
 8. `+`, `-`
 9. `*`, `/`, `%`
 10. `as`
@@ -514,7 +515,7 @@ On x86_64 and arm64 most operations are one instruction or a few, and a `simd` t
 
 The variable counts the loop, so it cannot be assigned: `i counts this loop, so it cannot be assigned: copy it to a variable to change it`. `ptr(i)` and a `*T` parameter get a copy of it, like for any value that is not a variable. That's why `a[i]` needs no bounds check when `a` is an array and the range has literal ends that fit in it, as in `for i in 0..4` over an `array[i32, 4]`.
 
-A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`.
+A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`. `a..=b`, the range that ends at `b`, is not supported yet: `'..=' is not supported yet, write: a..b + 1`.
 
 ### Everything else
 Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that starts at 0, also with `reverse`. The counter counts the loop like the variable of a range, so it cannot be assigned either.

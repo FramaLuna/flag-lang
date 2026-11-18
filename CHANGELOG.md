@@ -6,10 +6,13 @@ Changed
 - What goes to the C compiler goes after `-cc`, until the `--` of `run` or `test`: `flagc game.flg -cc vec.c -lm`. An argument that flagc doesn't know is an error that gives the command line it expected, `run has to be the first argument: flagc run -memory hi.flg`, where before it went to the C compiler and `flagc -memory run hi.flg` ended in `ld: cannot find run`
 - A test is a `func test_name()` with no parameters and no result. A function whose name starts with `test_` and that has parameters or a result is a helper, where before it was an error
 - `error:`, `warning:` and `note:` are in color only when the errors go to a terminal, and never with `NO_COLOR`
+- The indentation can mix tabs and spaces when the blocks don't depend on how wide a tab is, like in Python: a tab goes to the next column that is a multiple of 8 and also counts one, and when the two measures give different blocks it's an error, `this indentation mixes tabs and spaces, and its block depends on how wide a tab is`. Before, a tab and a space counted one each, so `\t\t` and `\t ` made one block and `\t` and 8 spaces didn't
+- A text literal can cross lines, with its line breaks and the indentation of its lines, and a `\r\n` of the file is a `\n` in it. A `\` before a line break is an error, `'\' cannot continue a line, a text literal keeps its line breaks`, and a text that never closes expects its `"` before the end of the file
 
 New
 - `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
 - Tests that pin the order of evaluation: left to right, named arguments as written and then the default values, and the cases of a `switch` until one matches
+- The token `..=`, with the precedence of `..`, for the ranges that end at their last number. They are not supported yet: `'..=' is not supported yet, write: a..b + 1`
 
 ## 0.5.0
 
