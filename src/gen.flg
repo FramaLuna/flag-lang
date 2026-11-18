@@ -164,7 +164,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 owned = false
                 if params(f) > 1 and (sequence(target) or textual(target) or comp.types[target].kind == Array):
                     second := try resolve(kid(f, 1) + 1)
-                    for t in I8..USIZE + 1:
+                    for t in I8..=USIZE:
                         owned = owned or accepts(second, Value{type = usize(t)}) >= 0
             close_frame(saved)
             shown := comp.types[target].name
@@ -1301,7 +1301,8 @@ func iterate(n: usize) -> Fail?:
     backward := comp.nodes[subject].kind == Unary and text(subject) == "reverse"
     if backward:
         subject += 1
-    range := comp.nodes[subject].kind == Binary and text(subject) == ".."
+    inclusive := comp.nodes[subject].kind == Binary and text(subject) == "..="
+    range := inclusive or comp.nodes[subject].kind == Binary and text(subject) == ".."
     if range and counter != 0:
         return fail("a for over a range cannot count, the number it gives is already the index", comp.tokens[comp.nodes[counter].tok].at)
     before := comp.vars.len
@@ -1311,6 +1312,7 @@ func iterate(n: usize) -> Fail?:
     l_step := label()
     l_exit := label()
     slot := Arg{}
+    stop := Arg{}
     t: usize = VOID
     at := at_of(subject)
     start := literal(false, 0)
@@ -1332,7 +1334,7 @@ func iterate(n: usize) -> Fail?:
         if start.lit and not start.neg:
             limit = usize(1) << 63 # it never goes below where it starts, so it is never negative
         if limit != 0 and end.lit and not end.neg:
-            limit = end.n
+            limit = end.n + usize(inclusive)
     else:
         walked = try value(subject, VOID)
         pointee := comp.types[walked.type].elem
@@ -1349,27 +1351,23 @@ func iterate(n: usize) -> Fail?:
             end = load(Value{type = USIZE, at = offset(addr, 8), mem = true})
             addr = op1(L, "loadl", addr)
     if range or elem != VOID:
-        start = try convert(start, t, Arg{}, at)
-        end = try convert(end, t, Arg{}, at)
-        from := start
-        to := end
+        low := load(try convert(start, t, Arg{}, at)).at
+        high := load(try convert(end, t, Arg{}, at)).at
+        last := high
+        runs := cmp_name("csle", t)
+        if not inclusive:
+            last = op(cls(t), "sub", high, int_arg(1))
+            runs = cmp_name("cslt", t)
+        from := low
+        stop = last
         if backward:
-            from = end
-            to = start
-        stop := load(to).at
+            from = last
+            stop = low
         slot = alloc(t)
-        store(t, from, slot)
-        jump(l_head)
-        open_block(l_head)
+        store(t, Value{type = t, at = from}, slot)
+        branch(op(W, runs, low, high), l_body, l_exit)
+        open_block(l_body)
         current := load(Value{type = t, at = slot, mem = true}).at
-        if backward:
-            branch(op(W, cmp_name("cslt", t), stop, current), l_body, l_exit)
-            open_block(l_body)
-            current = op(cls(t), "sub", current, int_arg(1))
-            store(t, Value{type = t, at = current}, slot)
-        else:
-            branch(op(W, cmp_name("cslt", t), current, stop), l_body, l_exit)
-            open_block(l_body)
         if range:
             mention(tok.text, slot, t, node.tok)
             append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false})
@@ -1379,18 +1377,14 @@ func iterate(n: usize) -> Fail?:
             mention(tok.text, place, elem, node.tok)
             append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
-            round := current
-            if backward:
-                round = op(L, "sub", op(L, "sub", load(end).at, int_arg(1)), current)
             count := alloc(USIZE)
-            store(USIZE, Value{type = USIZE, at = round}, count)
+            store(USIZE, Value{type = USIZE, at = current}, count)
             mention(text(counter), count, USIZE, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
-        if backward:
-            append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
-        else:
-            append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
+        append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
     else:
+        if backward and counter != 0:
+            return fail("reverse over " + comp.types[walked.type].name + " has no index to give " + text(counter) + ", only an array, a list or a slice knows the index of each element: count in a variable", comp.tokens[comp.nodes[counter].tok].at)
         chars := textual(walked.type)
         walker := walked
         if chars:
@@ -1404,7 +1398,7 @@ func iterate(n: usize) -> Fail?:
         else:
             if comp.types[walked.type].kind == Simd:
                 lanes_of := comp.types[walked.type]
-                return fail("for doesn't walk the lanes of a simd, convert it to an array: for x in array[" + comp.types[lanes_of.elem].name + ", " + lanes_of.count + "](v)", at)
+                return fail("for does not walk the lanes of a simd, convert it to an array: for x in array[" + comp.types[lanes_of.elem].name + ", " + lanes_of.count + "](v)", at)
             args: &list[Value]
             append(args, walked)
             walk: &strview = "iter"
@@ -1497,11 +1491,17 @@ func iterate(n: usize) -> Fail?:
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
     try statements(node_end(subject))
     comp.at = tok.at
-    if (range or elem != VOID) and not backward:
+    if range or elem != VOID:
         jump(l_step)
         open_block(l_step)
-        store(t, Value{type = t, at = op(cls(t), "add", load(Value{type = t, at = slot, mem = true}).at, int_arg(1))}, slot)
-    jump(l_head)
+        current := load(Value{type = t, at = slot, mem = true}).at
+        step: &strview = "add"
+        if backward:
+            step = "sub"
+        store(t, Value{type = t, at = op(cls(t), step, current, int_arg(1))}, slot)
+        branch(op(W, cmp_name("cne", t), current, stop), l_body, l_exit)
+    else:
+        jump(l_head)
     close_scope(outer)
     comp.loops.len -= 1
     try forget(before)
@@ -1587,9 +1587,12 @@ func cases(n: usize) -> Fail?:
                 if last and not peek(":"):
                     return expect(":")
                 eq: Value
-                if comp.nodes[l].kind == Binary and text(l) == "..":
+                if comp.nodes[l].kind == Binary and (text(l) == ".." or text(l) == "..="):
+                    below: &strview = "<"
+                    if text(l) == "..=":
+                        below = "<="
                     low := try binary(">=", subject, try value(l + 1, VOID), first.at)
-                    high := try binary("<", subject, try value(node_end(l + 1), VOID), first.at)
+                    high := try binary(below, subject, try value(node_end(l + 1), VOID), first.at)
                     eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
                 else:
                     label := try value(l, subject.type)
@@ -2023,10 +2026,8 @@ func operation(n: usize, want: usize) -> Value|Fail:
         if from.size == dest.size and aggregate(v.type) and aggregate(to):
             return Value{type = to, at = v.at, mem = v.mem, place = v.place, lit = v.lit}
         return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
-    if o == "..":
+    if o == ".." or o == "..=":
         return fail("a range goes in a for header or a case label, nothing else reads it", tok.at)
-    if o == "..=":
-        return fail("'..=' is not supported yet, write: a..b + 1", tok.at)
     if o == "+":
         return concat(n, none, comp.body.len)
     if o == "iferror" or o == "ifnull":
@@ -2097,7 +2098,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
     c := n
     while comp.nodes[c].kind == Binary:
         switch text(c):
-        case "is", "as", "..", "+", "iferror", "ifnull":
+        case "is", "as", "..", "..=", "+", "iferror", "ifnull":
             break
         case:
             append(chain, c)

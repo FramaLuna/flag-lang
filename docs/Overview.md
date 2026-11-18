@@ -390,9 +390,12 @@ for element in iterable:
 for index, element in iterable:
     print(index, " ", element)
 ```
-To iterate over a range you can do (the end is not included). The `i` counts the loop, so you can read it but not assign it
+To iterate over a range you can do (`..` leaves the end out and `..=` takes it). The `i` counts the loop, so you can read it but not assign it
 ```flag
-for i in 0..10:
+for i in 0..10: # from 0 to 9
+    print(i)
+
+for i in 1..=10: # from 1 to 10
     print(i)
 ```
 Iterating a text gives you each character as a `&strview`, and iterating a map gives you each entry with `.key` and `.value`
@@ -408,7 +411,7 @@ for element in reverse iterable:
 for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
-With `for index, element in reverse iterable` the index still counts 0, 1, 2... from the first element you get. The index and the variable of a range count the loop, so they cannot be assigned.
+With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and slices know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
 
 You can make your own types iterable. `for` calls `iter` with your value and then `next` with a pointer to what `iter` gave, until `next` gives `IterationEnd`. `reverse` calls `reverse_iter` instead of `iter`
 ```flag
@@ -439,6 +442,8 @@ case 0:
     print("zero")
 case 1..10, 100:
     print("small")
+case 10..=99:
+    print("two digits")
 case:
     print("other")
 ```
@@ -505,6 +510,7 @@ A `close` that can return an error doesn't go in a `with`, the error would be lo
 func add(a: i32, b: i32) -> i32:
     return a + b
 ```
+A call writes its `(` right after the name, `add(1, 2)`, and a keyword leaves a space before it, `not (a and b)`, `if (x) or (y)`. So `add (1, 2)` and `not(x)` are errors that tell you the good form.
 ### Parameters
 The parameters are copies of what you pass. To let a function change your value, pass a pointer (see [Pointers](#pointers) and [Passing them to functions](#passing-them-to-functions)).
 #### Named Arguments
@@ -771,7 +777,7 @@ print(nums[-1], " ", nums[-2]) # 9 5, negative indexes count from the end
 last := pop(nums) # the last element, or null if the list is empty
 first := remove(nums, 0) # takes out the element at 0
 ```
-Also `find` (gives the index or null), `contains`, `reverse` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and slices](Library.md#lists-and-slices). Two lists or slices compare with `==` element by element.
+Also `find` (gives the index or null), `contains`, `flip` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and slices](Library.md#lists-and-slices). Two lists or slices compare with `==` element by element.
 
 ## Maps
 A `&map[K, V]` is a hash map, you can start it empty or with a literal

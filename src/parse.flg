@@ -687,6 +687,8 @@ func unary() -> Fail?:
         operand := comp.pos
         try unary()
         return fail("not is looser than " + tighter + ", write (not " + excerpt(operand, comp.pos - 1) + ")", t.at)
+    if t.text == "reverse":
+        return fail("reverse goes only after the in of a for, as in for x in reverse items, and flip(items) turns the items around in place", t.at)
     if t.text == "-" or t.text == "try" or t.text == "trust" or t.text == "parallel":
         n := begin(Unary, comp.pos)
         comp.pos += 1
@@ -696,7 +698,8 @@ func unary() -> Fail?:
             return fail("parallel goes before a call, it runs that call in a new thread: parallel f(x)", at_of(n + 1))
         return null
     start := comp.nodes.len
-    name := comp.pos
+    first := comp.pos
+    name := first
     if qualifier().len > 0:
         name += 2
     t = comp.tokens[name]
@@ -733,11 +736,13 @@ func unary() -> Fail?:
     elif t.kind == Name and converts:
         n := begin(Call, name)
         try type_expr()
+        try paren(first)
         try expect("(")
         try arguments(")")
         finish(n)
     elif (t.kind == Name or t.kind == Builtin) and after == "(":
         n := qualified(Call)
+        try paren(first)
         comp.pos += 1
         while not peek(")"):
             if comp.nodes[n].module.len == 0 and (t.text == "sizeof" or t.text == "can_assign" or t.text == "offset_of" and comp.nodes.len == n + 1):
@@ -755,6 +760,7 @@ func unary() -> Fail?:
         finish(begin(Literal, comp.pos))
         comp.pos += 1
     elif t.text == "(":
+        try paren(comp.pos)
         comp.pos += 1
         try expr(1)
         try expect(")")
@@ -799,6 +805,7 @@ func unary() -> Fail?:
             finish(start)
         elif peek("("):
             wrap(start, Call, comp.pos)
+            try paren(first)
             comp.pos += 1
             try arguments(")")
             finish(start)
@@ -827,6 +834,26 @@ func unary() -> Fail?:
         try deeper(here().at)
         links += 1
     return null
+
+# here() is a (, and callee up to it is what it calls, nothing for a group
+func paren(callee: usize) -> Fail?:
+    open := comp.pos
+    last := comp.tokens[open - 1]
+    glued := last.at + last.text.len == here().at
+    keyword := glued and last.kind == Name and reserved(last.text)
+    if not keyword and (glued or callee == open):
+        return null
+    close := open
+    depth: i64 = 1
+    while depth > 0:
+        close += 1
+        depth += unclosed(close, close)
+    if not keyword:
+        return fail("a call writes its ( right after what it calls: " + excerpt(callee, open - 1) + excerpt(open, close), here().at)
+    inside := excerpt(open, close)
+    if close == open + 2:
+        inside = excerpt(open + 1, open + 1)
+    return fail("'" + last.text + "' is a keyword of the language, not a function, so a space goes after it: " + last.text + " " + inside, last.at)
 
 func deeper(at: usize) -> Fail?:
     comp.depth += 1
@@ -907,6 +934,7 @@ func type_expr() -> Fail?:
                 try expect("]")
             finish(n)
         elif t.text == "(":
+            try paren(comp.pos)
             comp.pos += 1
             try type_expr()
             try expect(")")
@@ -947,7 +975,7 @@ func qualified(kind: NodeKind) -> usize:
 
 func new_name(of_value: bool) -> Fail?:
     t := here()
-    if reserved(t.text) or of_value and t.text == "reverse":
+    if reserved(t.text):
         return fail("'" + t.text + "' is a keyword of the language, it cannot be used as a name", t.at)
     if of_value and module_of(t.text, comp.files.len - 1).len > 0:
         return fail(t.text + " names a module in this file, a variable or a constant cannot take it", t.at)
@@ -955,7 +983,7 @@ func new_name(of_value: bool) -> Fail?:
 
 func reserved(word: &strview) -> bool:
     switch word:
-    case "if", "elif", "else", "while", "for", "in", "switch", "case", "break", "continue", "return", "assert", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "iferror", "ifnull", "true", "false", "null":
+    case "if", "elif", "else", "while", "for", "in", "reverse", "switch", "case", "break", "continue", "return", "assert", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "iferror", "ifnull", "true", "false", "null":
         return true
     return false
 

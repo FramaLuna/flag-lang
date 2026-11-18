@@ -638,6 +638,7 @@ rv64_emitfn(Fn *fn, FILE *f)
 			}
 			if (rtype(b->jmp.arg) == RSlot) {
 				ii.arg[0] = b->jmp.arg;
+				fixmem(&ii.arg[0], fn, f);
 				emitf("lw t6, %M0", &ii, fn, f);
 				b->jmp.arg = TMP(T6);
 			}

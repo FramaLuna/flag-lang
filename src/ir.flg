@@ -185,7 +185,7 @@ func listing() -> &str:
             comp.procs[f] = p
         put(ids, p.name, f)
         cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
-        for t in p.temps..p.last + 1:
+        for t in p.temps..=p.last:
             append(cut, false)
         for k in p.params..p.params + p.count:
             given := comp.passes[k]
@@ -230,7 +230,7 @@ func listing() -> &str:
     comp.procs = written
     out: &str
     moved: &list[i64]
-    for l in 0..comp.labels + 1:
+    for l in 0..=comp.labels:
         append(moved, 0)
     dropped: &list[bool]
     for i in comp.code:
@@ -377,7 +377,7 @@ func cut_at(cut: &list[bool], a: Arg, first: u32) -> bool:
 
 func fresh(first: u32, last: u32) -> &list[Arg]:
     names: &list[Arg]
-    for k in first..last + 1:
+    for k in first..=last:
         comp.temps += 1
         append(names, Arg{Temp, i64(comp.temps)})
     return names

@@ -154,7 +154,7 @@ func windows_errno(code: u32) -> i32:
     switch code:
     case 2, 3, 15, 18, 53, 67, 161, 206:
         return 2 # ENOENT
-    case 5, 16, 19..37, 65, 82, 83, 108, 132, 158, 167:
+    case 5, 16, 19..=36, 65, 82, 83, 108, 132, 158, 167:
         return 13 # EACCES
     case 1, 12, 13, 87, 124, 131:
         return 22 # EINVAL
@@ -164,7 +164,7 @@ func windows_errno(code: u32) -> i32:
         return 9 # EBADF
     case 80, 183:
         return 17 # EEXIST
-    case 11, 188..203:
+    case 11, 188..=202:
         return 8 # ENOEXEC
     case 89, 164, 215:
         return 11 # EAGAIN
@@ -358,7 +358,7 @@ operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
             return false
     return true
 
-func reverse(items: &slice[$T]):
+func flip(items: &slice[$T]):
     for i in 0..items.len / 2:
         swap(items, i, items.len - 1 - i)
 
@@ -725,7 +725,7 @@ func find_last(s: &strview, part: &strview) -> usize|null: @trust
     if part.len == 0:
         return s.len
     first := part[0]
-    for at in reverse 0..s.len - part.len + 1:
+    for at in reverse 0..=s.len - part.len:
         hit := (ptr(s.*) as usize + at) as *u8
         if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
             return at
@@ -991,7 +991,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
         s.* += shown[:point] + "." + shown[point:]
     else:
         s.* += shown
-        for k in shown.len..usize(exponent) + 1:
+        for k in shown.len..=usize(exponent):
             add_byte(s, '0')
         s.* += ".0"
 
@@ -1025,7 +1025,7 @@ operator +=(s: *&str, f: Fixed):
     if places < 0:
         places = 0
     halves := value
-    for k in 0..places + 1:
+    for k in 0..=places:
         halves *= 2.0
     tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 # 2^53
     bits := ptr(value) as *u64

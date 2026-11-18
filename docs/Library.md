@@ -224,7 +224,7 @@ On slices, so also on lists
 - `binary_search(items: &slice[$T], v: $T) -> usize|null` the index of `v` in a sorted slice, using `<`
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
 - `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
-- `reverse(items: &slice[$T])` turns the elements around in place
+- `flip(items: &slice[$T])` turns the elements around in place
 - `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements, the indexes can be negative like in `s[i]`
 
 An array goes to these functions by its address: `sort(ptr(values))`.
