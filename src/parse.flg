@@ -2,8 +2,8 @@
 func parse() -> Fail?:
     file := comp.files.len - 1
     first := comp.pos
-    start := comp.nodes.len
     module: &strview
+    header := true
     while here().kind != End:
         t := here()
         if t.kind == Line:
@@ -11,11 +11,7 @@ func parse() -> Fail?:
                 return fail("a declaration starts at the first column", t.at)
             comp.pos += 1
             continue
-        if t.text == "module" or t.text == "use":
-            if t.text == "module" and comp.pos != first + 1:
-                return fail("module goes on the first line of its file", t.at)
-            if comp.nodes.len != start:
-                return fail(t.text + " goes in the header of the file, before the first declaration", t.at)
+        if t.text == "module" and comp.pos == first + 1 or t.text == "use" and header:
             comp.pos += 1
             if here().kind != Name:
                 return unexpected(t.text + " expects the name of a module after it")
@@ -43,158 +39,179 @@ func parse() -> Fail?:
                 append(comp.uses, Use{file, given, alias, t.at})
             try end_line()
             continue
-        sym := Sym{module = module, library = comp.files[file].library}
-        sym.priv = t.text == "priv"
-        if sym.priv:
-            sym.module = comp.files[file].module
-            comp.pos += 1
-        sym.packed = peek("packed")
-        sym.export = peek("export")
-        inline := peek("inline")
-        after := comp.tokens[comp.pos + 1]
-        if sym.export and after.text == "inline" or inline and after.text == "export":
-            return fail("an export function cannot be inline, other languages call it and cannot take its body", here().at)
-        if sym.export and after.text != "func":
-            return fail("export goes before a func declaration: export func name():", here().at)
-        if inline and after.text != "func" and after.text != "operator":
-            return fail("inline goes before a func or an operator declaration: inline func name():", here().at)
-        if sym.packed or sym.export or inline:
-            comp.pos += 1
-        t = here()
-        after = comp.tokens[comp.pos + 1]
-        n := comp.nodes.len
-        if t.text == "type" or t.text == "context":
-            comp.pos += 1
-            sym.error = t.text == "type" and peek("error")
-            if sym.error:
-                comp.pos += 1
-            form := t.text
-            if t.text == "type" and (peek("enum") or peek("fatptr")):
-                form = here().text
-                comp.pos += 1
-            if here().kind != Name:
-                return unexpected("a type declaration expects a name")
-            try new_name(false)
-            begin(Void, comp.pos)
-            comp.pos += 1
-            if peek("[") and (form == "context" or form == "enum"):
-                why: &strview = "its variants carry no data to shape"
-                if form == "context":
-                    why = "it is one value and not a family of types"
-                return fail(form + " " + text(n) + " cannot have type parameters, " + why, here().at)
-            if peek("["):
-                comp.pos += 1
-                while true:
-                    if here().kind != Generic:
-                        return unexpected("a type parameter is a $name or a $$name")
-                    finish(begin(TName, comp.pos))
-                    comp.pos += 1
-                    if not peek(","):
-                        break
-                    comp.pos += 1
-                try expect("]")
-            if form == "enum" and (peek("=") or peek(":")):
-                comp.nodes[n].kind = Alias
-                union := begin(TUnion, comp.pos)
-                indented := peek(":")
-                comp.pos += 1
-                separator: &strview = "|"
-                width: usize = 0
-                if indented:
-                    separator = ","
-                    width = here().text.len
-                    if here().kind != Line or width == 0:
-                        return fail("enum " + text(n) + " expects its variants in an indented block after ':'", comp.tokens[comp.pos - 1].at)
-                while true:
-                    if indented and here().kind == Line and not try next_line(0, width):
-                        break
-                    if here().kind != Name:
-                        return unexpected("enum variants are plain names")
-                    try new_name(false)
-                    finish(begin(TName, comp.pos))
-                    comp.pos += 1
-                    if peek(separator):
-                        comp.pos += 1
-                    elif not indented or here().kind != Line:
-                        break
-                finish(union)
-            elif peek("=") and form == "type":
-                if sym.error:
-                    return fail("an alias cannot be marked error, " + text(n) + " is just the type it names: declare type error " + text(n) + " on its own or with fields", here().at)
-                comp.nodes[n].kind = Alias
-                comp.pos += 1
-                try type_expr()
-            elif peek(":") and form != "enum":
-                comp.nodes[n].kind = Struct
-                if form == "fatptr":
-                    comp.nodes[n].kind = Fat
-                elif form == "context":
-                    comp.nodes[n].kind = Context
-                comp.pos += 1
-                if here().kind != Line or here().text.len == 0:
-                    return fail(form + " " + text(n) + " expects its fields in an indented block after ':'", comp.tokens[comp.pos - 1].at)
-                try fields(0)
-            elif form != "type":
-                what: &strview = "fields in an indented block after ':'"
-                if form == "enum":
-                    what = "variants after '=' or in an indented block after ':'"
-                return unexpected(form + " " + text(n) + " expects its " + what)
-            finish(n)
-            if form == "enum":
-                for c in n + 2..node_end(n):
-                    finish(begin(Void, comp.nodes[c].tok))
-        elif t.text == "func" or t.text == "operator":
-            try func_decl(false)
-            if inline and text(n) == "main" and module.len == 0 and params(n) == 0:
-                return fail("main is the entry point of the program, it cannot be inline", comp.tokens[comp.nodes[n].tok].at)
-        elif t.text == "extern":
-            if after.kind != Str:
-                return fail("extern expects the library name as text: extern \"c\":", t.at)
-            begin(Extern, comp.pos + 1)
-            comp.pos += 2
-            try where_clause()
-            try expect(":")
-            if here().kind != Line:
-                return unexpected("an extern block holds its functions on the lines below it")
-            width := here().text.len
-            while try next_line(0, width):
-                if peek("inline"):
-                    return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
-                if not peek("func"):
-                    return fail("an extern block declares functions only", here().at)
-                f := comp.nodes.len
-                try func_decl(true)
-                if comp.nodes[n + 1].kind == Where: # the where of the block holds for each of its functions
-                    back := comp.pos
-                    comp.pos = comp.nodes[n + 1].tok
-                    try where_clause()
-                    comp.pos = back
-                    finish(f)
-            finish(n)
-        elif t.kind == Name and after.text == "=":
-            try new_name(true)
-            begin(Constant, comp.pos)
-            comp.pos += 2
-            try expr(1)
-            finish(n)
-        elif t.kind == Name and after.text == ":":
-            try variable()
-        elif sym.priv:
-            return unexpected("priv expects a declaration after it")
-        else:
-            return unexpected("only declarations go here and code belongs inside a function")
-        if sym.packed and comp.nodes[n].kind != Struct:
-            return fail("packed goes before a type with fields: packed type Name:", comp.tokens[comp.nodes[n].tok].at)
-        c := n
-        while c < comp.nodes.len:
-            sym.name = text(c)
-            try declare(c, sym)
-            try nested(c, sym)
-            c = node_end(c)
-        try end_line()
+        header = false
+        try declaration(module, true)
     while comp.pos < comp.tokens.len and here().kind == End:
         comp.pos += 1
     return null
+
+# kept is false inside a where block that does not hold on the target: its declarations are read and dropped
+func declaration(module: &strview, kept: bool) -> Fail?:
+    file := comp.files.len - 1
+    t := here()
+    after := comp.tokens[comp.pos + 1]
+    if t.text == "module" and after.kind == Name:
+        return fail("module goes on the first line of its file", t.at)
+    if t.text == "use" and after.kind == Name:
+        return fail("use goes in the header of the file, before the first declaration", t.at)
+    if where_block():
+        holds := try on_target()
+        try deeper(t.at)
+        try expect(":")
+        outer := comp.width
+        inner := here().text.len
+        if here().kind != Line or inner <= outer:
+            return fail("':' expects an indented block of declarations after it", comp.tokens[comp.pos - 1].at)
+        comp.width = inner
+        while try next_line(outer, inner):
+            try declaration(module, kept and holds)
+        comp.width = outer
+        comp.depth -= 1
+        return null
+    sym := Sym{module = module, library = comp.files[file].library}
+    sym.priv = t.text == "priv"
+    if sym.priv:
+        sym.module = comp.files[file].module
+        comp.pos += 1
+    sym.packed = peek("packed")
+    sym.export = peek("export")
+    inline := peek("inline")
+    after = comp.tokens[comp.pos + 1]
+    if sym.export and after.text == "inline" or inline and after.text == "export":
+        return fail("an export function cannot be inline, other languages call it and cannot take its body", here().at)
+    if sym.export and after.text != "func":
+        return fail("export goes before a func declaration: export func name():", here().at)
+    if inline and after.text != "func" and after.text != "operator":
+        return fail("inline goes before a func or an operator declaration: inline func name():", here().at)
+    if sym.packed or sym.export or inline:
+        comp.pos += 1
+    t = here()
+    after = comp.tokens[comp.pos + 1]
+    n := comp.nodes.len
+    if t.text == "type" or t.text == "context":
+        comp.pos += 1
+        sym.error = t.text == "type" and peek("error")
+        if sym.error:
+            comp.pos += 1
+        form := t.text
+        if t.text == "type" and (peek("enum") or peek("fatptr")):
+            form = here().text
+            comp.pos += 1
+        if here().kind != Name:
+            return unexpected("a type declaration expects a name")
+        try new_name(false)
+        begin(Void, comp.pos)
+        comp.pos += 1
+        if peek("[") and (form == "context" or form == "enum"):
+            why: &strview = "its variants carry no data to shape"
+            if form == "context":
+                why = "it is one value and not a family of types"
+            return fail(form + " " + text(n) + " cannot have type parameters, " + why, here().at)
+        if peek("["):
+            comp.pos += 1
+            while true:
+                if here().kind != Generic:
+                    return unexpected("a type parameter is a $name or a $$name")
+                finish(begin(TName, comp.pos))
+                comp.pos += 1
+                if not peek(","):
+                    break
+                comp.pos += 1
+            try expect("]")
+        if form == "enum" and (peek("=") or peek(":")):
+            comp.nodes[n].kind = Alias
+            union := begin(TUnion, comp.pos)
+            indented := peek(":")
+            comp.pos += 1
+            separator: &strview = "|"
+            width: usize = 0
+            if indented:
+                separator = ","
+                width = here().text.len
+                if here().kind != Line or width <= comp.width:
+                    return fail("enum " + text(n) + " expects its variants in an indented block after ':'", comp.tokens[comp.pos - 1].at)
+            while true:
+                if indented and here().kind == Line and not try next_line(comp.width, width):
+                    break
+                if here().kind != Name:
+                    return unexpected("enum variants are plain names")
+                try new_name(false)
+                finish(begin(TName, comp.pos))
+                comp.pos += 1
+                if peek(separator):
+                    comp.pos += 1
+                elif not indented or here().kind != Line:
+                    break
+            finish(union)
+        elif peek("=") and form == "type":
+            if sym.error:
+                return fail("an alias cannot be marked error, " + text(n) + " is just the type it names: declare type error " + text(n) + " on its own or with fields", here().at)
+            comp.nodes[n].kind = Alias
+            comp.pos += 1
+            try type_expr()
+        elif peek(":") and form != "enum":
+            comp.nodes[n].kind = Struct
+            if form == "fatptr":
+                comp.nodes[n].kind = Fat
+            elif form == "context":
+                comp.nodes[n].kind = Context
+            comp.pos += 1
+            if here().kind != Line or here().text.len <= comp.width:
+                return fail(form + " " + text(n) + " expects its fields in an indented block after ':'", comp.tokens[comp.pos - 1].at)
+            try fields(comp.width)
+        elif form != "type":
+            what: &strview = "fields in an indented block after ':'"
+            if form == "enum":
+                what = "variants after '=' or in an indented block after ':'"
+            return unexpected(form + " " + text(n) + " expects its " + what)
+        finish(n)
+        if form == "enum":
+            for c in n + 2..node_end(n):
+                finish(begin(Void, comp.nodes[c].tok))
+    elif t.text == "func" or t.text == "operator":
+        try func_decl(false)
+        if inline and text(n) == "main" and module.len == 0 and params(n) == 0:
+            return fail("main is the entry point of the program, it cannot be inline", comp.tokens[comp.nodes[n].tok].at)
+    elif t.text == "extern":
+        if after.kind != Str:
+            return fail("extern expects the library name as text: extern \"c\":", t.at)
+        begin(Extern, comp.pos + 1)
+        comp.pos += 2
+        kept = try on_target() and kept
+        try expect(":")
+        if here().kind != Line:
+            return unexpected("an extern block holds its functions on the lines below it")
+        width := here().text.len
+        while try next_line(comp.width, width):
+            if peek("inline"):
+                return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
+            if not peek("func"):
+                return fail("an extern block declares functions only", here().at)
+            try func_decl(true)
+        finish(n)
+    elif t.kind == Name and after.text == "=":
+        try new_name(true)
+        begin(Constant, comp.pos)
+        comp.pos += 2
+        try expr(1)
+        finish(n)
+    elif t.kind == Name and after.text == ":":
+        try variable()
+    elif sym.priv:
+        return unexpected("priv expects a declaration after it")
+    else:
+        return unexpected("only declarations go here and code belongs inside a function")
+    if sym.packed and comp.nodes[n].kind != Struct:
+        return fail("packed goes before a type with fields: packed type Name:", comp.tokens[comp.nodes[n].tok].at)
+    c := n
+    while kept and c < comp.nodes.len:
+        sym.name = text(c)
+        try declare(c, sym)
+        try nested(c, sym)
+        c = node_end(c)
+    if not kept:
+        comp.nodes.len = n
+    return end_line()
 
 func fields(outer: usize) -> Fail?:
     width := here().text.len
@@ -238,10 +255,9 @@ func declare(n: usize, sym: Sym) -> Fail?:
     if kind == Extern:
         c := n + 1
         while c < node_end(n):
-            if comp.nodes[c].kind != Where:
-                inner := sym
-                inner.name = text(c)
-                try declare(c, inner)
+            inner := sym
+            inner.name = text(c)
+            try declare(c, inner)
             c = node_end(c)
         return null
     at := comp.tokens[comp.nodes[n].tok].at
@@ -398,7 +414,7 @@ func func_decl(external: bool) -> Fail?:
             if not bound:
                 return fail(g.text + " is not bound here, a generic gets its type from a parameter: take it as kind: type " + g.text, g.at)
     if peek("=") and not external:
-        return fail("only a func of an extern block takes = \"symbol\", the C function it calls", here().at)
+        return fail("only a func of an extern block names its C function with = \"symbol\"", here().at)
     if peek("="):
         comp.pos += 1
         named := here().kind == Str and here().text.len > 2
@@ -424,6 +440,36 @@ func where_clause() -> Fail?:
         try expr(1)
         finish(w)
     return null
+
+# a where that opens a block, and not a variable named where
+func where_block() -> bool:
+    t := here()
+    after := comp.tokens[comp.pos + 1]
+    return t.text == "where" and (after.kind != Symbol and after.kind != Line or after.text == "(" and after.at > t.at + t.text.len)
+
+# a where outside a function holds or not before anything is declared, so it reads only the target
+func on_target() -> bool|Fail:
+    start := comp.nodes.len
+    try where_clause()
+    values: &list[bool]
+    defer free(values)
+    for n in reverse start + 1..comp.nodes.len:
+        o := text(n)
+        k := comp.nodes[n].kind
+        built := platform(o)
+        if k == Unary and o == "not":
+            values[-1] = not values[-1]
+        elif k == Binary and (o == "and" or o == "or"):
+            left := trust pop(values)
+            values[-1] = left and values[-1] if o == "and" else left or values[-1]
+        elif k == Name and (o == "true" or o == "false"):
+            append(values, o == "true")
+        elif k == Call and kids(n) == 0 and built is bool:
+            append(values, built)
+        else:
+            return fail("a where outside a function reads only the system and the processor, like @linux() and not @arm64()", at_of(n))
+    comp.nodes.len = start
+    return values.len == 0 or values[0]
 
 func block() -> Fail?:
     try deeper(here().at)
@@ -499,6 +545,8 @@ func stmt() -> Fail?:
         name := comp.pos + 1 + 2 * usize(counted)
         if comp.tokens[comp.pos + 1].kind != Name or comp.tokens[name].kind != Name or comp.tokens[name + 1].text != "in":
             return fail("for expects a name and 'in' after it: for x in items: or for i, x in items:", t.at)
+        if counted and comp.tokens[comp.pos + 1].text == comp.tokens[name].text:
+            return fail("variable " + comp.tokens[name].text + " is already declared and still in scope", comp.tokens[name].at)
         comp.pos += 1
         try new_name(true)
         comp.pos = name
@@ -551,6 +599,12 @@ func stmt() -> Fail?:
         if here().kind == Int:
             finish(begin(Literal, comp.pos))
             comp.pos += 1
+        finish(n)
+    elif where_block():
+        n := begin(Where, comp.pos)
+        comp.pos += 1
+        try expr(1)
+        try block()
         finish(n)
     elif t.text == "assert":
         n := begin(Assert, comp.pos)
@@ -1016,7 +1070,7 @@ func new_name(of_value: bool) -> Fail?:
 
 func reserved(word: &strview) -> bool:
     switch word:
-    case "if", "elif", "else", "while", "for", "in", "reverse", "switch", "case", "break", "continue", "return", "assert", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "iferror", "ifnull", "true", "false", "null":
+    case "if", "elif", "else", "while", "for", "in", "reverse", "switch", "case", "break", "continue", "return", "assert", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "iferror", "ifnull", "true", "false", "null", "inf", "nan":
         return true
     return false
 

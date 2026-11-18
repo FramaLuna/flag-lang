@@ -128,9 +128,10 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
         return FsError{errno(), "list", path}
     names: &list[&strview]
     defer free(names)
+    name_at: usize = 19 if @linux() else 21 if @arm64() else 8 # d_name, on macOS x86_64 in the dirent of 32-bit inodes that the plain readdir gives
     entry := readdir(dir)
     while entry as usize != 0:
-        part := view((entry as usize + name_in_entry()) as *u8)
+        part := view((entry as usize + name_at) as *u8)
         if part != "." and part != "..":
             append(names, temp(part))
         entry = readdir(dir)
@@ -277,20 +278,8 @@ priv func make_one(path: &strview) -> i32 where not @windows():
 priv func make_one(path: &strview) -> i32 where @windows():
     return _wmkdir(wstr(path))
 
-priv func name_in_entry() -> usize where @linux():
-    return 19
-
-priv func name_in_entry() -> usize where @macos() and @arm64():
-    return 21
-
-priv func name_in_entry() -> usize where @macos() and @x86_64():
-    return 8 # the dirent of 32-bit inodes, the one of the plain readdir
-
-priv func slash(c: u8) -> bool where not @windows():
-    return c == '/'
-
-priv func slash(c: u8) -> bool where @windows():
-    return c == '/' or c == '\\'
+priv func slash(c: u8) -> bool:
+    return c == '/' or @windows() and c == '\\'
 
 priv func name_start(path: &strview) -> usize:
     for k in reverse 0..path.len:

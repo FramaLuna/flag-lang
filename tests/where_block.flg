@@ -1,0 +1,60 @@
+# a where block at the root holds declarations that exist only on the systems where it holds
+where @linux() or @macos() or @windows():
+    SIDE = "known"
+
+    type Stat:
+        size: i64
+        mode: u32
+
+    func describe(s: Stat) -> &strview:
+        return "stat of " + s.size
+
+    where @x86_64() or @arm64() or @riscv64():
+        BITS = 64
+
+where not (@linux() or @macos() or @windows()):
+    SIDE = 3
+
+    type Stat:
+        size: Missing
+
+    func describe(s: Stat) -> &strview:
+        return s.size.nothing
+
+    BITS = "other"
+
+func errno_like() -> i32:
+    where @linux():
+        return 11
+    where @macos():
+        return 11
+    where @windows():
+        return 11
+    where not (@linux() or @macos() or @windows()):
+        n: i32 = "not checked here"
+        return n
+
+func kind(x: $T) -> &strview:
+    where $T == i32:
+        return "i32"
+    where $T is f32|f64:
+        return "float"
+    where @can_assign(&strview, $T) and $T != i32:
+        return "text"
+    where not ($T == i32 or $T is f32|f64 or @can_assign(&strview, $T)):
+        return "other"
+
+func first_word(text: &strview) -> &strview:
+    found := find(text, " ")
+    where @linux() or @macos() or @windows():
+        if found is null:
+            return text
+        inner := 2
+    return text[:found]
+
+func main():
+    print(SIDE, " ", BITS, " ", describe(Stat{size = 7}), " ", errno_like())
+    print(kind(1), " ", kind(2.5), " ", kind("x"), " ", kind(true))
+    print(first_word("hello there"), " ", first_word("alone"))
+    inner := "after the block"
+    print(inner)

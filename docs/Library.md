@@ -37,7 +37,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 The arguments of the program are `args()` of [os](#os).
 
 ### Files
-A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open.
+A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open. They are constants of core, so no variable takes those names.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
@@ -603,7 +603,7 @@ while true:
 
 ## math
 It links the C math library.
-- `PI`, `TAU` and `E`
+- `PI`, `TAU` and `E`, so in a file that uses `math` without an alias a variable cannot take those names. Infinity is `inf`, a word of the language
 - `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round` and `trunc` take one float, and `atan2(y, x)`, `pow(x, y)`, `hypot(x, y)` and `fmod(x, y)` take two. They are the C functions for `f64`, and each one has an `f32` version that gives an `f32`. The angles are in radians, `log` is the natural one and `round` takes the halves away from zero
 - `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128. A float loses its sign bit, like `fabs` in C, so `abs(-0.0)` is `0.0` and a NaN loses its sign too
 - `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`. `clamp` also takes a `simd` with two numbers, `clamp(v, 0.0, 1.0)`, and `min`, `max`, `abs` and `sqrt` of a `simd` are the language's (see [simd](#simd))

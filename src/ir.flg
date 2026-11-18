@@ -454,15 +454,9 @@ func put_arg(out: *&str, a: Arg, first: u32):
         if comp.shared and comp.system == "linux" and starts_with(comp.globals[usize(a.n)], "thread "):
             out.* += "extern " # initial-exec, the place of thread data comes from the GOT
         out.* += comp.globals[usize(a.n)]
-    case Single, Double:
-        if a.kind == Single:
-            out.* += "s_"
-        else:
-            out.* += "d_"
-        buf: array[u8, 40]
-        printed: &strview
-        printed = ptr(buf) as *bytes
-        printed.len = usize(snprintf(ptr(buf) as *u8, 40, "%.17g", a.n as f64))
-        out.* += printed
+    case Single:
+        out.* += f32(a.n as f64) as u32 # QBE reads the bits of a float from an integer
+    case Double:
+        out.* += a.n
     case:
         return

@@ -9,13 +9,11 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     for k in 1..comp.syms.len:
         if comp.nodes[comp.syms[k].node].kind == Void:
             try make_type(k, none, false, comp.tokens[comp.nodes[comp.syms[k].node].tok].at)
-    comp.choosing = true
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
             lib := text(e)[1:text(e).len - 1]
-            if lib != "c" and not contains(comp.libs, lib) and (node_end(e) == e + 1 or comp.nodes[e + 1].kind != Where or try holds(e + 2)):
+            if lib != "c" and not contains(comp.libs, lib):
                 append(comp.libs, lib)
-    comp.choosing = false
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         kind := comp.nodes[d].kind
@@ -430,6 +428,7 @@ func gen_from(from: usize) -> usize|Fail:
             continue
         for k in 0..params(f):
             c := kid(f, k)
+            try untaken(comp.nodes[c].tok)
             t := try resolve(c + 1)
             if comp.types[t].kind == Bytes:
                 return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
@@ -519,7 +518,7 @@ func gen_from(from: usize) -> usize|Fail:
             if (name == "==" or name == "<") and inst.ret != BOOL:
                 return fail("operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name, comp.at)
             if name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
-                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side where you use it", comp.at)
+                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side before the operator", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
             right := second
@@ -591,7 +590,7 @@ func proc_name(f: Proc) -> &str:
     elif f.node == 0 and inst.ret == U64:
         name += "hash of " + comp.types[comp.inst_binds[inst.binds].type].name
     elif f.node == 0:
-        name += "start of a thread that runs a " + comp.types[comp.inst_binds[inst.binds].type].name
+        name += "start of a thread that runs " + comp.types[comp.inst_binds[inst.binds].type].name
     else:
         if comp.tokens[comp.nodes[f.node].tok].kind != Name or reserved(text(f.node)):
             name += "operator "
@@ -702,8 +701,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         try statements(n)
         return none
     case Var:
-        if lookup(tok.text) != 0:
-            return fail("variable " + tok.text + " is already declared and still in scope", tok.at)
+        try untaken(node.tok)
         t: usize = VOID
         c := n + 1
         if comp.tokens[node.tok + 1].text == ":":
@@ -921,6 +919,14 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 return fail("a deferred statement runs on the way out, it cannot hold " + t.text, t.at)
         append(comp.defers, Deferred{n + 1, comp.vars.len, none})
         return none
+    case Where:
+        if try holds(n + 1):
+            before := comp.vars.len
+            ends: &list[Local]
+            try statements(node_end(n + 1))
+            if try keep(before, before, ends):
+                try join(ends, 1, tok.at)
+        return none
     case With:
         subject := try value(n + 1, VOID)
         if not subject.mem:
@@ -947,6 +953,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if node.module.len == 0:
             if tok.text == "true" or tok.text == "false":
                 return truth(tok.text == "true")
+            if tok.text == "inf":
+                return float_literal(u64(0x7ff0_0000_0000_0000) as f64)
+            if tok.text == "nan":
+                return float_literal(u64(0x7ff8_0000_0000_0000) as f64)
             if tok.text == "null" or tok.text == "IterationEnd":
                 return Value{type = trust comp.type_ids[tok.text]}
             found := lookup(tok.text)
@@ -995,13 +1005,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 s = comp.syms[s].next
             if seen:
                 if found == 0 and variadic:
-                    return fail(tok.text + " takes more arguments after its parameters, and a function type cannot say that: wrap it in a func that calls it", tok.at)
+                    return fail(tok.text + " can have more arguments after its parameters, and a function type cannot say that: wrap it in a func that calls it", tok.at)
                 if found == 0 and given:
                     return fail(tok.text + " has a type parameter, and a function value cannot give it a type: wrap it in a func that calls it", tok.at)
                 if found == 0 and untyped:
                     return fail(tok.text + " is generic and nothing here gives it its types: give it to a variable that says its function type first", tok.at)
                 if found == 0:
-                    return fail("no overload of " + tok.text + " is a " + comp.types[wanted].name + ", a function value takes the one with exactly those parameters", tok.at)
+                    return fail("no overload of " + tok.text + " is " + comp.types[wanted].name + ", a function value is the overload with exactly those parameters", tok.at)
                 if tied and wanted == VOID:
                     return fail(tok.text + " names several functions and nothing here says which: give it to a variable that says its function type first", tok.at)
                 if tied:
@@ -1014,11 +1024,11 @@ func gen(n: usize, want: usize) -> Value|Fail:
                 comp.insts[id].valued = true
                 made := func_of(taken, comp.insts[id].ret, body(f) == 0 or comp.insts[id].export)
                 if wanted != VOID and comp.types[made].foreign and not comp.types[wanted].foreign:
-                    return fail(tok.text + " is a C function, so its value is an " + comp.types[made].name + " and not the " + comp.types[wanted].name + " this place takes", tok.at)
+                    return fail(tok.text + " is a C function, so its value is " + comp.types[made].name + " and this place expects " + comp.types[wanted].name, tok.at)
                 if wanted != VOID and comp.types[wanted].foreign and not comp.types[made].foreign:
-                    return fail(tok.text + " is a function of Flag, and the " + comp.types[wanted].name + " this place takes holds a C function: declare it export func", tok.at)
+                    return fail(tok.text + " is a function of Flag, and this place expects " + comp.types[wanted].name + ", which holds a C function: declare it export func", tok.at)
                 if wanted != VOID and made != wanted:
-                    return fail(tok.text + " is a " + comp.types[made].name + ", not the " + comp.types[wanted].name + " this place takes", tok.at)
+                    return fail(tok.text + " is " + comp.types[made].name + " and this place expects " + comp.types[wanted].name, tok.at)
                 if noted(tok.at):
                     mark(comp.nodes[f].tok)
                 if body(f) == 0 and comp.system != "windows":
@@ -1032,7 +1042,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
             if reserved(tok.text):
                 return fail("'" + tok.text + "' is a keyword of the language, it is not a value", tok.at)
             if comp.choosing:
-                return fail("a where reads types, numbers and constants known when the call is chosen, and " + tok.text + " is not one", tok.at)
+                return fail("a where reads types, numbers and constants that the compiler knows, and " + tok.text + " is not one", tok.at)
             if comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
                 return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
             return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
@@ -1054,7 +1064,10 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if tok.kind == Int:
             return literal(false, try int_value(tok.text, tok.at))
         if tok.kind == Float:
-            return float_literal(strtod(cstr(replace(tok.text, "_", "")), usize(0) as *bytes), tok.at)
+            x := strtod(cstr(replace(tok.text, "_", "")), usize(0) as *bytes)
+            if x - x != 0.0:
+                return fail(tok.text + " does not fit in f64, the largest f64 is 1.7976931348623157e+308: write inf for infinity", tok.at)
+            return float_literal(x)
         return Value{type = try fat_type("strview", VOID, tok.at), at = text_data(unquoted(tok.text)), mem = true, lit = true}
     case Named:
         return value(n + 1, want)
@@ -1165,7 +1178,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
         if comp.types[t].kind == Array and tok.text == "len":
             return literal(false, comp.types[t].count)
         if comp.tokens[node.tok + 1].text == "(":
-            return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function takes its value as an argument: " + tok.text + "(...)", tok.at)
+            return fail(comp.types[t].name + " has no field " + tok.text + " to call, a function is called with the value as an argument: " + tok.text + "(...)", tok.at)
         how: &strview
         for m in members(t):
             member := comp.types[m]
@@ -1316,15 +1329,13 @@ func placed(t: usize, arena: Value, at: usize) -> Value|Fail:
 func iterate(n: usize) -> Fail?:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
-    if lookup(tok.text) != 0:
-        return fail("variable " + tok.text + " is already declared and still in scope", tok.at)
+    try untaken(node.tok)
     subject := n + 1
     counter: usize = 0
     if kids(n) == 3:
         counter = subject
         subject = node_end(subject)
-        if lookup(text(counter)) != 0:
-            return fail("variable " + text(counter) + " is already declared and still in scope", comp.tokens[comp.nodes[counter].tok].at)
+        try untaken(comp.nodes[counter].tok)
     backward := comp.nodes[subject].kind == Unary and text(subject) == "reverse"
     if backward:
         subject += 1
@@ -1755,11 +1766,11 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             to := comp.items[shape.first + passes.len].type
             given := try value(c, to)
             if accepts(to, given) < 0 and not (comp.types[to].kind == Ptr and comp.types[to].elem == given.type):
-                return fail("this " + shape.name + " takes " + comp.types[to].name + " here but the call gives " + comp.types[given.type].name, at_of(c))
+                return fail("this " + shape.name + " expects " + comp.types[to].name + " here but got " + comp.types[given.type].name, at_of(c))
             append(passes, try hand(given, to, shape.foreign, at_of(c)))
             c = node_end(c)
         if threaded and shape.foreign:
-            return fail("parallel cannot run an " + shape.name + ", it is called the way C calls: wrap the call in a func", tok.at)
+            return fail("parallel cannot run " + shape.name + ", it is called the way C calls: wrap the call in a func", tok.at)
         if threaded:
             return spawn(code, passes, callee.type, tok.at)
         return emit(code, passes, shape.ret, shape.foreign, tok.at)
@@ -1802,8 +1813,10 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             if comp.nodes[c].kind == Named:
                 return fail(name + " is a builtin, its arguments cannot be named", at_of(c))
             c = node_end(c)
+        if name == "@can_assign" and kids(n) != 2:
+            return fail("@can_assign expects two types: @can_assign(&strview, $T)", tok.at)
         if name == "@can_assign":
-            return fail("@can_assign() cannot appear outside a where, it chooses between overloads", tok.at)
+            return truth(try assignable(try spelled_type(n + 1), try spelled_type(node_end(n + 1)), tok.at))
         if conversion and target >= I8 and target <= F64:
             return convert_number(try value(first, VOID), target, tok.at)
         if conversion:
@@ -1856,8 +1869,8 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             try put_words(line, "\n", tok.at)
             try runtime("print_line", values, tok.at) # one line at a time, so two threads never mix theirs
             return none
-        platform := name == "@linux" or name == "@macos" or name == "@windows" or name == "@x86_64" or name == "@arm64" or name == "@riscv64"
-        if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@embed" and name != "@compile_error" and name != "@sizeof" and name != "@offset_of" and not platform:
+        built := platform(name)
+        if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@embed" and name != "@compile_error" and name != "@sizeof" and name != "@offset_of" and built is null:
             return fail("there is no builtin named " + name, tok.at)
         if name == "@compile_error":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
@@ -1875,7 +1888,7 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             if id == i64(comp.globals.len):
                 size := file_size(path)
                 if size is FsError:
-                    return fail("" + size + ", and @embed takes the file when it compiles, with its path from the folder of this file", at_of(n + 1))
+                    return fail("" + size + ", and @embed reads the file when it compiles, with its path from the folder of this file", at_of(n + 1))
                 pair: &str = "$flag.embed."
                 pair += id
                 global(view(pair))
@@ -1905,10 +1918,8 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
             return fail(name + " expects no arguments", tok.at)
         if one and kids(n) != 1:
             return fail(name + " expects one argument", tok.at)
-        if platform and not comp.choosing:
-            return fail(name + "() cannot appear outside a where, it chooses between overloads", tok.at)
-        if platform:
-            return truth(name[1:] == comp.system or name[1:] == comp.machine)
+        if built is bool:
+            return truth(built)
         if name == "@here":
             site := tok.at
             if comp.site != 0:
@@ -1973,6 +1984,13 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
         c = node_end(c)
     return call(name, node.module, values, names, tok.at, threaded)
 
+# whether the program is built for the system or the processor that a builtin like @linux names, null for any other name
+func platform(name: &strview) -> bool?:
+    switch name:
+    case "@linux", "@macos", "@windows", "@x86_64", "@arm64", "@riscv64":
+        return name[1:] == comp.system or name[1:] == comp.machine
+    return null
+
 func operation(n: usize, want: usize) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
@@ -1994,7 +2012,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 return fail("-" + v.n + " does not fit in i64, the smallest i64 is -9223372036854775808", tok.at)
             return literal(not v.neg, v.n)
         if o == "-" and v.lit and t.kind == Float:
-            return float_literal(-v.f, tok.at)
+            return float_literal(-v.f)
         lane := comp.types[v.type]
         if t.kind == Simd:
             lane = comp.types[t.elem]
@@ -3316,9 +3334,7 @@ func literal(neg: bool, n: usize) -> Value:
         v.type = U64
     return v
 
-func float_literal(x: f64, at: usize) -> Value|Fail:
-    if x != x or x - x != 0.0:
-        return fail("this float literal has no finite value", at)
+func float_literal(x: f64) -> Value:
     return Value{type = F64, at = Arg{Double, x as i64}, lit = true, f = x}
 
 func real(v: Value) -> f64:
@@ -3445,9 +3461,9 @@ func run_defers(from: usize) -> Fail?:
             append(closing, d.subject)
             closed := try invoke("close", closing, at)
             if fails(closed.type):
-                return fail("close of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: call close yourself where you can handle it", at)
+                return fail("close of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: call close without with and handle what it gives", at)
         else:
-            try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it")
+            try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it without defer and handle the error")
         if comp.nodes[d.node].kind == Assign and local_of(d.node + 1) != 0:
             kept := declaration(text(d.node + 1))
             comp.vars[kept].unread = must_read(comp.vars[kept].type)
@@ -3481,7 +3497,7 @@ func statements(n: usize) -> Fail?:
     outer := open_scope()
     c := n + 1
     while c < node_end(n):
-        if not comp.live:
+        if not comp.live and (comp.nodes[c].kind != Where or try holds(c + 1)):
             return fail("this code can never run, the block already left", at_of(c))
         comp.at = at_of(c)
         try statement(c, "this statement drops an error: test it with is, pass it up with try or drop it with _ =")
@@ -3530,7 +3546,7 @@ func statement(n: usize, dropped: &strview) -> Fail?:
             hint = ", an assignment is written with one ="
         return fail("this statement makes a value and never uses it" + hint, at_of(n))
     if fails(v.type) and comp.nodes[n].kind == Assign:
-        return fail("this assignment calls put, which gives " + comp.types[v.type].name + ", and an assignment cannot pass on an error: call put yourself and handle what it gives, try put(x, i, v)", at_of(n))
+        return fail("this assignment calls put, which gives " + comp.types[v.type].name + ", and an assignment cannot pass on an error: call put and handle what it gives, try put(x, i, v)", at_of(n))
     if fails(v.type):
         return fail(dropped, at_of(n))
     return null
@@ -3574,6 +3590,27 @@ func local_of(n: usize) -> usize:
     if comp.nodes[n].kind != Name or comp.nodes[n].module.len > 0:
         return 0
     return lookup(text(n))
+
+func untaken(tok: usize) -> Fail?:
+    t := comp.tokens[tok]
+    if lookup(t.text) != 0:
+        return fail("variable " + t.text + " is already declared and still in scope", t.at)
+    library := comp.files[file_of(t.at)].library # the library does not see the names of the program
+    s := first_sym(t.text)
+    while s != 0:
+        d := comp.syms[s].node
+        k := comp.nodes[d].kind
+        if visible(s, "", t.at) and (comp.syms[s].library or not library) and (k == Constant or k == Var or k == Context):
+            if k == Constant:
+                _ = fail(t.text + " is a constant, a variable cannot take its name", t.at)
+            elif k == Var:
+                _ = fail(t.text + " is a file variable, a variable cannot take its name", t.at)
+            else:
+                _ = fail(t.text + " is a context, a variable cannot take its name", t.at)
+            note(t.text + " is declared here", comp.tokens[comp.nodes[d].tok].at)
+            return Fail
+        s = comp.syms[s].next
+    return null
 
 func lookup(name: &strview) -> usize:
     i := comp.vars.len

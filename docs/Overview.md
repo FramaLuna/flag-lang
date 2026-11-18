@@ -37,7 +37,14 @@ b: u32 = 3 # declares 'b' to be of type 'u32' and sets it to 3
 if true:
     a: u32 # error, 'a' is already declared in this scope
 ```
-You can't declare a name that is already visible, not even inside an inner scope.
+You can't declare a name that is already visible, not even inside an inner scope. That goes for parameters and the variables of a `for` too, and for the constants that a function sees, yours, core's like `stdout` and those of a module you `use`
+```flag
+N = 3
+
+func main():
+    N := 5 # error: N is a constant, a variable cannot take its name
+```
+A function or a type can share its name with a variable: `twice := 4` leaves `twice(3)` to the function.
 
 The type of a variable can also be inferred with ':='
 ```flag
@@ -62,7 +69,7 @@ d := u8(a)
 
 ## Literals
 - Integers: `3`, `-3`, `0xff`, `0b101`, and `_` can separate the digits, `1_000_000`. They take the type they are used with, and alone they are `i32` (or `i64`/`u64` if they don't fit)
-- Floats: `2.5`, `1e3`. Alone they are `f64`
+- Floats: `2.5`, `1e3`. Alone they are `f64`. `inf` and `nan` are written like `print` writes them, `low := -inf`, and a computation between finite literals that gives one of them, like `1.0 / 0.0`, is an error
 - Characters: `'a'` is the number of that character (97), so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
@@ -626,7 +633,24 @@ func kind(v: $T) -> &strview where $T is i32|i64:
 func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
-It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`.
+It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`. Those are a `bool` in any expression too, `if @windows():`, but an `if` checks both branches on every system.
+
+A `where` at the start of a line opens a block that exists only where it holds. Inside a function it holds statements, so code that calls a C function of one system goes there, and at the root it holds declarations, only for a system or a processor
+```flag
+where @windows():
+    LINE_END = "\r\n"
+
+where not @windows():
+    LINE_END = "\n"
+
+func errno() -> i32:
+    where @linux():
+        return __errno_location().*
+    where @macos():
+        return __error().*
+    where @windows():
+        return _errno().*
+```
 
 `@compile_error` stops the compilation with your message, at the call that chose that overload
 ```flag
@@ -1078,7 +1102,7 @@ func main() -> i32:
 Every function is in the [Library](Library.md).
 
 ## Calling C
-You declare C functions inside an `extern` block with the library they come from, `"c"` is the C library. A block can have a `where` like a function, and then its library is linked only on the systems where it holds
+You declare C functions inside an `extern` block with the library they come from, `"c"` is the C library. A block can have a `where` on the system, and then its library is linked and its functions exist only on the systems where it holds
 ```flag
 extern "c":
     func abs(x: i32) -> i32

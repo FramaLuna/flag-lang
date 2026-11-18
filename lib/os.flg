@@ -489,14 +489,8 @@ priv func finish(process: i64, place: &strview = @here()) -> i32 where @windows(
 # without taking it, so the pid is not reused until wait
 priv func ended(pid: i64) -> bool where not @windows():
     info: array[u32, 32]
-    waitid(1, u32(pid), ptr(info) as *bytes, peeking()) # P_PID
+    waitid(1, u32(pid), ptr(info) as *bytes, 0x100_0005 if @linux() else 0x25) # P_PID, and WEXITED, WNOHANG and WNOWAIT
     return info[0] != 0 and info[2] >= 1 and info[2] <= 3 # si_code CLD_EXITED, CLD_KILLED or CLD_DUMPED, macOS gives a stopped one too
-
-priv func peeking() -> i32 where @linux():
-    return 0x100_0005 # WEXITED, WNOHANG and WNOWAIT
-
-priv func peeking() -> i32 where @macos():
-    return 0x25
 
 priv func ended(process: i64) -> bool where @windows():
     return WaitForSingleObject(usize(process), 0) == 0
@@ -540,14 +534,8 @@ func executable() -> &strview where @windows():
         return ""
     return replace(temp(ptr(buf) as wstr), "\\", "/")
 
-func system_name() -> &strview where @linux():
-    return "Linux"
-
-func system_name() -> &strview where @macos():
-    return "Darwin"
-
-func system_name() -> &strview where @windows():
-    return "Windows"
+func system_name() -> &strview:
+    return "Windows" if @windows() else "Darwin" if @macos() else "Linux"
 
 func current_dir() -> &strview where not @windows():
     buf: array[u8, 4096]
@@ -650,7 +638,7 @@ operator +=(s: *&str, e: LoadError):
 func load(path: &strview) -> Library|LoadError where not @windows():
     handle := usize(0) as *bytes
     with scratch():
-        handle = dlopen(cstr(path), loading())
+        handle = dlopen(cstr(path), 2 if @linux() else 6) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
     if handle as usize != 0:
         return Library{handle}
     reason := view(dlerror())
@@ -669,12 +657,6 @@ func load(path: &strview) -> Library|LoadError where @windows():
     text: array[u16, 512]
     FormatMessageW(0x1200, usize(0) as *bytes, code, 0, ptr(text) as wstr, 512, usize(0) as *bytes)
     return LoadError{path, trim_end(temp(ptr(text) as wstr))}
-
-priv func loading() -> i32 where @linux():
-    return 2 # RTLD_NOW, and RTLD_LOCAL is 0
-
-priv func loading() -> i32 where @macos():
-    return 6 # RTLD_NOW and RTLD_LOCAL
 
 func symbol(library: Library, name: &strview) -> *bytes?:
     found := usize(0) as *bytes

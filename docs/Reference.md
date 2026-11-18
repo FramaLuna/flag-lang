@@ -40,7 +40,7 @@ The compiler is one program, `flagc`, written in Flag. When you compile it goes 
 
 With `-memory` there is one more step between 3 and 4, `src/mem.flg` reads the instructions and checks the memory (see [The memory checker](#the-memory-checker)). It runs before the inlining, so its messages name the functions you wrote. With `-debug` there is one between 4 and 5, `src/dwarf.flg` writes what a debugger reads at the end of the assembly (see [Debugging](#debugging)).
 
-The generator starts from `main`, from the tests with `flagc test` (see [Tests](#tests)), or from the `export` functions of a library, and only the code that they can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` doesn't hold on the target is the exception: it's for another system, like `func f() where @windows():` on Linux, and it's checked when you build for that one, where the C functions it calls have the signatures of that system. The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
+The generator starts from `main`, from the tests with `flagc test` (see [Tests](#tests)), or from the `export` functions of a library, and only the code that they can reach ends up in the program. But every function that is not generic is checked, even if nothing calls it, so an error in a function you don't use still stops the compilation. A function whose `where` doesn't hold on the target is the exception: it's for another system, like `func f() where @windows():` on Linux, and it's checked when you build for that one, where the C functions it calls have the signatures of that system. So is a `where` block that doesn't hold, at the root or inside a function (see [where](#where)). The C functions of an `extern` block are checked too, their types must exist and be types that cross to C. Generic functions are checked when a call makes an instance of them.
 
 The compiler stops at the first error. It checks a function, then the instances its calls made, each one with the instances it made before the next, so of two failing calls in one function the first one is reported.
 
@@ -131,27 +131,27 @@ A call with `@` is answered by the compiler while it compiles. Its arguments are
 |---|---|
 | `@sizeof(T)` | the size of `T` in bytes, an integer literal (see [Sizes](#sizes)) |
 | `@offset_of(T, field)` | the place of a field in bytes, an integer literal |
-| `@can_assign(A, B)` | in a `where`, whether a `B` can be assigned to an `A` (see [where](#where)) |
-| `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()` | in a `where`, whether the program is built for that system or that processor |
+| `@can_assign(A, B)` | whether a `B` can be assigned to an `A`, a `bool` the compiler knows (see [where](#where)) |
+| `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()` | whether the program is built for that system or that processor, a `bool` the compiler knows |
 | `@here()` | the place in the code as text, `"main.flg:12:5"`, and in a default value the place of the call |
 | `@embed("path")` | a file read when the program compiles (see [Files in the program](#files-in-the-program)) |
 | `@argc()`, `@argv()` | the count and the array of the arguments of the program, as C gives them to `main`: an `i32` and a `*bytes` |
 | `@compile_error("text")` | stops the compilation with that text, at the call that made the instance (see [where](#where)) |
 
-Without `@` go the operations of a type of the language, which run with the program, like `+`: `sum`, `min`, `max`... of a `simd` (see [SIMD](#simd)). `true`, `false` and `null` are values, not calls. And `ptr`, `print` and `eprint` are names of the language, so nothing can be declared with them (see [Modules](#modules)). The old spelling is an error that writes the new one: `sizeof is a builtin of the compiler, write @sizeof(i64)`, and `sizeof`, `offset_of` and `can_assign` are free names for your functions.
+Without `@` go the operations of a type of the language, which run with the program, like `+`: `sum`, `min`, `max`... of a `simd` (see [SIMD](#simd)). `true`, `false`, `null`, `inf` and `nan` are values, not calls. And `ptr`, `print` and `eprint` are names of the language, so nothing can be declared with them (see [Modules](#modules)). The old spelling is an error that writes the new one: `sizeof is a builtin of the compiler, write @sizeof(i64)`, and `sizeof`, `offset_of` and `can_assign` are free names for your functions.
 
 ### Keywords
 These words are the language, so nothing you declare can have one as its name, not a variable, a parameter, a constant, a function, a type, a field or a module
 ```
 if elif else while for in reverse switch case break continue return assert defer with pass
-and or xor not is as try trust parallel iferror ifnull true false null
+and or xor not is as try trust parallel iferror ifnull true false null inf nan
 ```
 ```
 error: 'return' is a keyword of the language, it cannot be used as a name
 ```
 `reverse` only goes after the `in` of a `for`. The function that turns a list around in place is `flip(items)`, and `reverse(l)` says so: `reverse goes only after the in of a for, as in for x in reverse items, and flip(items) turns the items around in place`.
 
-The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `inline`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field. Where a type goes, `type` starts a type parameter, `kind: type $T` (see [Type parameters](#type-parameters)).
+The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `inline`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field. At the start of a line `where` opens a block when a condition follows it (see [where](#where)), and it's a name when a symbol follows it, like in `where := 6` or `where.x = 1`, unless the symbol is a `(` after a space. Where a type goes, `type` starts a type parameter, `kind: type $T` (see [Type parameters](#type-parameters)).
 
 ## Types in memory
 ### Sizes
@@ -231,11 +231,14 @@ Arithmetic between literals is done by the compiler with the exact value, it doe
 
 A float literal is `f64` alone and fits any float. An integer literal also goes to a float type when needed.
 
+`inf` and `nan` are the floats that are not numbers, written as `print` writes them and `parse_float` reads them, and they are literals like the others: `LOW = -inf`, `x: f32 = inf`. They are keywords like `true`, so nothing can take their name. Arithmetic between finite literals has to give a finite float, so `1.0 / 0.0` is an error, `the result of this literal arithmetic is not finite: write inf or nan`, and so is a literal too big for `f64`, `1e999 does not fit in f64, the largest f64 is 1.7976931348623157e+308: write inf for infinity`. With `inf` or `nan` on a side it follows IEEE, `inf - inf` is `nan`.
+
 ### Arithmetic
 - Two numbers of different types never mix, not even in comparisons, you convert one of them: `+ expects two numbers of one type but got u64 and u32, convert one side with u64(...) or u32(...)`. A literal takes the type of the other side
 - Integers wrap around when they overflow
 - `/` on integers rounds toward zero, and `%` has the sign of the left side: `-7 / 2` is `-3` and `-7 % 2` is `-1`
 - Dividing an integer by zero stops the program with `flag: division by zero`. Floats are not checked, you get `inf` or `nan`
+- `==` on floats follows IEEE: `nan` equals nothing, itself included, so `x != x` asks whether `x` is `nan` and `x == nan` is always `false`, also lane by lane in a `simd`
 - `%` is only for integers, for floats there is `fmod` in `math`
 - `-x` only works on signed integers and floats
 - `<<` and `>>` shift, `>>` keeps the sign on signed integers. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
@@ -407,7 +410,7 @@ func main():
 - a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
-- the name of a C function, of an `extern` block or an `export func`, is a value of an `extern func` type, the type of a function of C, and never of a `func` type: `sqrt is a C function, so its value is an extern func(f64) -> f64 and not the func(f64) -> f64 this place takes` (see [C function types](#c-function-types)). A `func` type cannot be in the signature of a C function
+- the name of a C function, of an `extern` block or an `export func`, is a value of an `extern func` type, the type of a function of C, and never of a `func` type: `sqrt is a C function, so its value is extern func(f64) -> f64 and this place expects func(f64) -> f64` (see [C function types](#c-function-types)). A `func` type cannot be in the signature of a C function
 - there are no closures, no functions inside functions and no functions without a name. A function gets what it needs as arguments
 
 ### Inlining
@@ -490,11 +493,32 @@ A `where` condition can be
 - `not`, `and`, `or` and parentheses
 - anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `@sizeof($T) >= 8`, `$$n <= 16`
 
-The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `a where reads types, numbers and constants known when the call is chosen, and x is not one`.
+The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `a where reads types, numbers and constants that the compiler knows, and x is not one`.
 
-The platform builtins and `@can_assign` only work inside a `where`.
+The platform builtins and `@can_assign` are a `bool` that the compiler knows, so they go in any expression too: `if @windows():`, `wide := @x86_64() or @arm64()`. An `if` checks both of its branches on every system, so a branch can only call what every system has.
 
-`@compile_error("text")` in a function stops the compilation with that text, pointing at the call that made that instance of the function. A function that nothing calls doesn't fail, so it's the way to say that an overload chosen by `where` can't be used.
+A `where` at the start of a line, with a condition after it, opens a block. What is inside exists only where the condition holds, and elsewhere it's read but not checked or generated, like a function whose `where` doesn't hold: a mistake of syntax shows on every system, and a C function of one system can be called there. There is no `else`, the conditions are written so they don't overlap.
+
+At the root the block holds declarations of any kind, but not `module` or `use`, so each system can have its own `Stat` or its own value of a constant. The block is decided before anything is declared, so its condition reads only the system and the processor, with `not`, `and` and `or`: `a where outside a function reads only the system and the processor, like @linux() and not @arm64()`. The `where` of an `extern` block is the same.
+```flag
+where @windows():
+    LINE_END = "\r\n"
+
+where not @windows():
+    LINE_END = "\n"
+```
+Inside a function the block holds statements, and its condition reads what any `where` reads, the `$T` of a generic too. A block that doesn't hold is no code, so it can follow a block that already returned, and each system returns in its own block. On a target where none of them holds, the function ends without a `return`, and that's the usual error there: `not every path of this function returns a value`
+```flag
+func errno() -> i32:
+    where @linux():
+        return __errno_location().*
+    where @macos():
+        return __error().*
+    where @windows():
+        return _errno().*
+```
+
+`@compile_error("text")` in a function stops the compilation with that text, pointing at the call that made that instance of the function. A function that nothing calls doesn't fail, so it's the way to say that an overload chosen by `where` can't be used, or, in a block like `where not (@linux() or @macos()):`, that a system has none of its own.
 
 ## Operators
 You can overload `+ - * / % == < << >> and or xor not` for your types, and also `=` and `+=`, that are explained below. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `-=`, `*=`, `/=` and `%=` from `-`, `*`, `/` and `%`, and declaring them is an error that tells you which one to declare
@@ -619,11 +643,11 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - It only sees the variables declared before the `defer`, and the ones it declares itself
 - It cannot have `return`, `break`, `continue` or `try` inside, not even in a loop inside it
 - It cannot be a declaration or another `defer`, there would be nothing to run when the block ends
-- It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it where you can handle it`. Write `defer _ = f()` when losing it is what you want
+- It's checked like any other statement when it runs: one that drops an error doesn't compile, `this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it without defer and handle the error`. Write `defer _ = f()` when losing it is what you want
 - A deferred `x = f()` into a variable that can hold an error must be read after it runs, the same rule as for a declaration, so `defer x = f()` in the block of `x` doesn't compile: nothing is left to read it
 
 ### with
-`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of Lock can fail, and with would drop the error: call close yourself where you can handle it`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
+`with value:` calls `close(value)` when the block ends, also when you leave it early. With a variable it's like a `defer close(x)`: what gets closed is what the variable holds then. A value that `close` returns is dropped, but an error cannot be, so a `close` that can fail doesn't go in a `with`: `close of Lock can fail, and with would drop the error: call close without with and handle what it gives`. `with scratch():` is the same thing with the scratch memory (see [Memory](#memory)).
 
 ### Returns
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
@@ -750,7 +774,7 @@ func main():
     small: u8 = N
     print(small, " ", BIG)
 ```
-Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. The names in it are the ones of the root of the file, so in `NEXT = LIMIT + 1` the `LIMIT` is the constant, also where a local variable `LIMIT` hides it. When the expression fails for one of them, a note says which: `PAIR is read here`.
+Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. The names in it are the ones of the root of the file, so in `SHOW = show` the `show` is the function, also where a local variable is called `show`. When the expression fails for one of them, a note says which: `PAIR is read here`.
 
 A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `@sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
 
@@ -759,7 +783,7 @@ An array literal takes its elements from the type of the place too: an `array[T,
 ### Files in the program
 `@embed("path")` is the file at that path, read when the program compiles, as a `&strview` of static data like a text literal. The path is a text literal, escapes and all, from the folder of the file that has the `@embed`, written with `/`. The bytes go to the assembler with `.incbin`, so a big file costs about nothing to compile: 1.5 MB build in 0.06 s, where the same bytes as a text literal take 0.66 s and five times the memory. A file named twice is in the program once, and one the compiler cannot read is an error
 ```
-error: cannot read the size of assets/logo.png: No such file or directory, and @embed takes the file when it compiles, with its path from the folder of this file
+error: cannot read the size of assets/logo.png: No such file or directory, and @embed reads the file when it compiles, with its path from the folder of this file
 ```
 The bytes start at an address aligned to 8 and a `0` follows them, so a view of them as other numbers works: `words: &slice[u32]`, `words = ptr(SHADER.*) as *bytes`, `words.len = SHADER.len / 4`. A constant that is an `@embed`, `LOGO = @embed("logo.png")`, is the same data wherever you read it, and like a text literal, writing into it is wrong.
 
@@ -779,7 +803,7 @@ error: a file variable starts with a value the compiler knows, made of literals 
 ```
 A text literal doesn't go to a `&str`, so a file variable of text you own starts empty and `main` gives it its text. A table that never changes is a file variable too, so it's not built again every time a function uses it.
 
-Who sees it follows the module rules, like a function: `priv` keeps it in its module, and from another module it's `module.name`. A local variable or a parameter with the same name hides it. A file variable that holds a function is called by its name, `handler(3)`. It's not narrowed by `is` or a `case`, like a field: copy it to a local variable first. It's not a type, `x: count` is `count is a variable, not a type`.
+Who sees it follows the module rules, like a function: `priv` keeps it in its module, and from another module it's `module.name`. A local variable or a parameter cannot take its name, `count is a file variable, a variable cannot take its name`. A file variable that holds a function is called by its name, `handler(3)`. It's not narrowed by `is` or a `case`, like a field: copy it to a local variable first. It's not a type, `x: count` is `count is a variable, not a type`.
 
 The threads share the file variables and nothing protects them, so what more than one thread changes goes behind a `Lock` (see [Threads](#threads)).
 
@@ -830,6 +854,7 @@ The compiler writes a start function for each type of function that runs in a th
 - when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
 - `ptr`, `print` and `eprint` belong to the language and not to core, so they are not names you can take: declaring a function, a type or a constant with one of them is an error, `print belongs to the language, it cannot be declared again`
+- a local variable, a parameter, the variable of a `for` and its counter cannot take a name that is visible where they are declared: another local variable, or a constant, a file variable or a context, also one of core or of a module the file uses without an alias, `stdout is a constant, a variable cannot take its name`, with a note at the declaration. Functions and types don't count, a local variable `twice` leaves the calls `twice(3)` to the function. The library doesn't see the names of your files here, so a file variable of yours never stops it from compiling
 - the global names of the library, those of core like `File`, `Integer`, `FsError` or `stdout`, give way to yours. Declare a `type File` and your files see yours while the library keeps its own, which the messages then call `core.File`. A function of yours with the same parameters as one of core's is the one your files call, and core keeps calling its own
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).
@@ -893,7 +918,7 @@ The pointer of `arena(a, v)` doesn't know its arena, and `free` of it is a mista
 - threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait(t)` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it, that goes with a thread that runs alone, or that goes to a `Channel` that is not a local variable of the function. `main` waits for the threads that run alone before its variables end, so there they are clean. A library has no `main`, so there a thread that runs alone is a warning of its own: `this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close`
 - `send` of a `Channel` gives what the value owns to the thread that receives it: the memory of a `&str`, `&list` or `&map`, the heap block that a pointer points to the start of, and a `Thread`. It's not yours to free any more, and using it after is using memory that may be freed already. A view, the arena of a text and a pointer inside a block stay yours
 - a temporary that a thread may still use when its `with scratch():` releases it, given to `parallel f(x)` or sent with `send`: `a thread may still use this temporary when its with scratch() releases it: wait for the thread inside it, or give it a &str`, with a note at the `with`. A thread waited inside the same `with scratch():` is clean. A thread that runs alone, in a function that is not `main`, can outlive any scratch: `a thread may still use this temporary when the with scratch() of a caller releases it: give the thread a &str`. What a thread gives back lives in the scratch of the thread that waits, until the `with scratch():` around the `wait`, and that follows a `wait` inside a function into its callers
-- a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct or an element of a list: an `Arena` that gave memory, a `Lock` that was taken, a `Channel` that was used. `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it` and `this copies the Channel jobs in pool, that may be in use: the copy is another channel, use a pointer to it`. A copy at zero, like `w := World{}` or `append(worlds, World{})`, is clean. A function of yours that takes one by value warns at every call: `make takes level by value, a copy of an Arena: make it take *Arena`
+- a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct or an element of a list: an `Arena` that gave memory, a `Lock` that was taken, a `Channel` that was used. `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it` and `this copies the Channel jobs in pool, that may be in use: the copy is another channel, use a pointer to it`. A copy at zero, like `w := World{}` or `append(worlds, World{})`, is clean. A function of yours that takes one by value warns at every call: `level goes by value to make, a copy of an Arena: declare the parameter *Arena`
 - memory of an arena used after `free` or `clear` of the arena, like a temporary after its `with scratch():`: `boss points to memory that may be freed already`, with a note at the `free` or `clear`. Through a function too, `reset(level)` that calls `clear`
 - freeing what lives in an arena: `free cannot release boss, it lives in level, free(level) releases it`, and with the arena in a struct, `free cannot release level.boss, it lives in level.arena, free(level.arena) releases it`
 - an `Arena` that is never freed: its blocks are on the heap, so `the memory allocated here for level is never freed`, at the first allocation in it
@@ -1054,7 +1079,7 @@ An `extern` block declares C functions and says which library they come from. `"
 extern "m":
     func cbrt(x: f64) -> f64
 ```
-A block can have a `where` like a function. Then its library is linked only when the condition holds, and its functions exist only there, as if each one had that `where`, so two systems can give one function two signatures. A block without functions just links its library, that's how a library says that it needs another one
+A block can have a `where`, that reads only the system and the processor like a `where` block at the root (see [where](#where)). Then its library is linked only when the condition holds, and its functions exist only there, so two systems can give one function two signatures, and a call to one of another system is `no function named GetLastError is visible here`. A block without functions just links its library, that's how a library says that it needs another one
 ```flag
 extern "c" where not @windows():
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
@@ -1187,7 +1212,7 @@ Flag builds programs for Linux, macOS and Windows
 
 A target of the first class has its seed, its package and a CI that builds the compiler on it and runs every test. A target of the second class is compiled and assembled on every change, flagc, the tests and the examples, with `./build.sh cross`, but nothing runs on it. A target moves to the first class when CI runs on it.
 
-By default the target is the system flagc was built on. On x86_64 a program with `simd` needs x86-64-v2 (see [SIMD](#simd)). The code chooses between systems with `where` and the platform builtins, the standard library does it this way.
+By default the target is the system flagc was built on. On x86_64 a program with `simd` needs x86-64-v2 (see [SIMD](#simd)). The code chooses between systems with the platform builtins, in a `where` or in any expression, and with `where` blocks, the standard library does it this way.
 
 ### Cross compiling
 `-target` builds for another system, and you need a C compiler that links for that system. For example, from Linux to Windows with [zig](https://ziglang.org)

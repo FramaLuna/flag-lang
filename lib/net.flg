@@ -254,11 +254,8 @@ priv func start() where @windows():
     WSAStartup(514, ptr(data) as *bytes)
 
 # close on exec from the start, so a program that another thread starts on Linux doesn't take it
-priv func sealed(kind: i32) -> i32 where @linux():
-    return kind or 0x80000 # SOCK_CLOEXEC
-
-priv func sealed(kind: i32) -> i32 where not @linux():
-    return kind
+priv func sealed(kind: i32) -> i32:
+    return kind or 0x80000 if @linux() else kind # SOCK_CLOEXEC
 
 priv func accepted(fd: i64) -> i64 where @linux():
     return i64(accept4(fd, usize(0) as *bytes, usize(0) as *u32, 0x80000))
@@ -320,14 +317,8 @@ priv func open_udp() -> i64 where @windows():
     WSAIoctl(fd, 0x9800_000c, ptr(no) as *bytes, 4, usize(0) as *bytes, 0, ptr(got), usize(0) as *bytes, usize(0) as *bytes) # SIO_UDP_CONNRESET off: an old ICMP port unreachable would fail the next receive
     return fd
 
-priv func family6() -> i32 where @linux():
-    return 10
-
-priv func family6() -> i32 where @macos():
-    return 30
-
-priv func family6() -> i32 where @windows():
-    return 23
+priv func family6() -> i32:
+    return 23 if @windows() else 30 if @macos() else 10
 
 priv func socket_address(a: Address) -> array[u8, 28] where not @macos():
     out: array[u8, 28] # a struct sockaddr_in6
@@ -348,11 +339,8 @@ priv func socket_address(a: Address) -> array[u8, 28] where @macos():
         out[8 + i] = a.ip[i]
     return out
 
-priv func address_in_info() -> usize where @linux():
-    return 24
-
-priv func address_in_info() -> usize where @macos() or @windows():
-    return 32
+priv func address_in_info() -> usize:
+    return 24 if @linux() else 32
 
 priv func inet_address() -> array[u8, 16] where @linux() or @windows():
     return array[u8, 16]{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
