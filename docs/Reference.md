@@ -110,7 +110,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - `module` goes in the first line of the file, and `use` goes before the first declaration
 - Inside `()`, `[]` and `{}` the lines continue, so you can break long calls and literals at any indentation, and the lines inside a text literal are text, not code. There is no `\` to continue a line
 - `#` comments until the end of the line, there are no multiline comments. Files with `\r\n` line ends work, and a `\r` that is not before a `\n` is an error
-- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. A long chain costs compile time and memory in proportion to its length: 2500 `elif` on a value known only when the program runs, each with a `print`, compile in 0.3 s, 20000 in 2.8 s with 0.5 GB of memory, and so does a switch of 20000 cases. A `case` with 20000 values takes 0.3 s
+- Blocks, expressions and types nest up to 500 levels: `this code nests more than 500 levels deep, move the inner part to a function or a variable`. A chain is not nesting, so a chain of `elif` or `case`, or of operators like `a - b - c`, `a and b and c` or `a ifnull b ifnull c`, has no limit. `a if c else b if d else e` does nest, one level for each `else`. A long chain costs compile time and memory in proportion to its length: 2500 `elif` on a value known only when the program runs, each with a `print`, compile in 0.3 s, 20000 in 2.8 s with 0.5 GB of memory, and so does a switch of 20000 cases. A `case` with 20000 values takes 0.3 s
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
@@ -223,23 +223,31 @@ A float literal is `f64` alone and fits any float. An integer literal also goes 
 - `%` is only for integers, for floats there is `fmod` in `math`
 - `-x` only works on signed integers and floats
 - `<<` and `>>` shift, `>>` keeps the sign on signed integers. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
-- `and`, `or` and `xor` on integers work on the bits: `0xf0 and 0x3c` is `0x30`. On `bool` they are logic, and `and` and `or` skip the right side when the left side already decides
+- `and`, `or` and `xor` on integers work on the bits: `0xf0 and 0x3c` is `0x30`, and `not` flips the bits with the width of the type: `not u8(1)` is `254`. On `bool` they are logic, and `and` and `or` skip the right side when the left side already decides
+- `not` of a literal takes the type of its place, like a literal: `mask: u32 = not 0xff` is `0xffff_ff00`, and `flags and not 1` clears the lowest bit of `flags` whatever its type. Alone it follows the literal, so `not 5` is the `i32` `-6`
 - There is no `**`, `~`, `^`, `&` or `|`
 
 ### Precedence
 From the loosest to the tightest
-1. `or`
-2. `and`, `xor`
-3. `is`
-4. `==`, `!=`
-5. `<`, `>`, `<=`, `>=`
-6. `iferror`, `ifnull`
-7. `..`, `..=`, `<<`, `>>`
-8. `+`, `-`
-9. `*`, `/`, `%`
-10. `as`
+1. `a if c else b` (see [a if c else b](#a-if-c-else-b))
+2. `or`
+3. `and`, `xor`
+4. `not`
+5. `is`
+6. `==`, `!=`, `<`, `>`, `<=`, `>=`
+7. `iferror`, `ifnull`
+8. `..`, `..=`, `<<`, `>>`
+9. `+`, `-`
+10. `*`, `/`, `%`
+11. `as`
 
-The unary operators (`-`, `not`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them. So `not x == 3` is `(not x) == 3`, write `x != 3` or `not (x == 3)`. And `x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
+The other unary operators (`-`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them.
+
+`not` takes everything up to the next `and`, `or` or `xor`, like in Python: `not x == 3` is `not (x == 3)`, and `if not line is &strview:` narrows like the `else` of `is`. On the right of an operator tighter than it, `not` goes in parentheses: `x == not y` is `not is looser than ==, write (not y)`. A `not` followed by arithmetic, `as` or a shift can be read two ways, so it's an error that gives both: `not x + 1 needs parentheses, write (not x) + 1 to flip the bits of x, or not (x + 1)`.
+
+Comparisons are one level and don't chain: a comparison on a side of another one, without parentheses, is an error, also between `bool`: `comparisons do not chain, write a < b and b < c, or (a < b) < c`.
+
+`x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
 
 ## Conversions
 ### Implicit ones
@@ -302,7 +310,8 @@ if found is Card:
 The rules
 - `if x is T:` narrows the block, and the `elif` and `else` get what is left
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
-- `not` turns around what it narrows, so `if not (x is T):` narrows like the `else` of `if x is T:`
+- `not` turns around what it narrows, so `if not x is T:` narrows like the `else` of `if x is T:`
+- `a if c else b` checks `a` with what `c` narrowed and `b` with what `not c` narrowed, so `x.n if x is P else 0` works
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it. A branch leaves with `return`, `break`, `continue`, or a call to a function that returns `never`, like `panic` (see [Returns](#returns))
@@ -448,13 +457,13 @@ The platform builtins and `can_assign` only work inside a `where`.
 `@compile_error("text")` in a function stops the compilation with that text, pointing at the call that made that instance of the function. A function that nothing calls doesn't fail, so it's the way to say that an overload chosen by `where` can't be used.
 
 ## Operators
-You can overload `+ - * / % == < << >> and or xor` for your types, and also `=` and `+=`, that are explained below. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `-=`, `*=`, `/=` and `%=` from `-`, `*`, `/` and `%`, and declaring them is an error that tells you which one to declare
+You can overload `+ - * / % == < << >> and or xor not` for your types, and also `=` and `+=`, that are explained below. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `-=`, `*=`, `/=` and `%=` from `-`, `*`, `/` and `%`, and declaring them is an error that tells you which one to declare
 ```
 error: operator >= follows from <, declare operator < instead
 ```
-Any other operator is an error too: `operator foo cannot be declared, the operators to declare are + - * / % == < << >> and or xor = +=`.
+Any other operator is an error too: `operator foo cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = +=`.
 
-An operator has two parameters, its left side and its right side, there are no unary operators to overload. It can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and one between two numbers of different types could never run, numbers of different types don't mix. `==` and `<` return `bool`.
+An operator has two parameters, its left side and its right side, and `not` has one, the value on its right: `operator not(b: *Bits[$$w]) -> Bits[$$w]` gives the numbers that are not in `b`. It's the only unary operator you can declare. An operator can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and so does `not` on `bool`, an integer or a `simd`. One between two numbers of different types could never run, numbers of different types don't mix. `==` and `<` return `bool`.
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
@@ -465,7 +474,7 @@ A struct, a tagged union or a void type without its own `==` gets one from the c
 `operator =(dest: T, src: U) -> T` returns the `T` made from an `U`, and then assignments, declarations and `T(x)` convert for you. Calls don't use it, the argument must already be a `T`.
 
 ### Order
-An expression runs in the order it's written, left to right: the operands of an operator, also in `a - b * c`, what is indexed before the index, the function before its arguments, the keys and values of a map literal, and the two sides of an operator of yours. The arguments of a call run in the order written, named or not, and then the default values of the parameters that no argument filled, in the order of the declaration. The fields of a literal run in the order written too. An assignment is the exception, its right side runs first.
+An expression runs in the order it's written, left to right: the operands of an operator, also in `a - b * c`, what is indexed before the index, the function before its arguments, the keys and values of a map literal, and the two sides of an operator of yours. The arguments of a call run in the order written, named or not, and then the default values of the parameters that no argument filled, in the order of the declaration. The fields of a literal run in the order written too. There are two exceptions: an assignment runs its right side first, and `a if c else b` runs `c` first and then only the side it chose.
 
 ### Assignments
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
@@ -489,7 +498,7 @@ chunk.* = chunk.* * k + 1.0
 They work lane by lane, between two `simd` of one type, or with a number of the type of the lanes on one side, which goes in every lane: `v * k`, `1.0 - v`, `v < 0.0`
 - `+`, `-`, `*` and `-v` for numbers. Integers wrap around, like one number does
 - `/` for floats. Integers have no `/` or `%`: `a simd of i32 has no /, no processor divides integer lanes: convert it to an array`
-- `and`, `or`, `xor` and `not` for integers and masks. On masks both sides run, there is no short cut, and a mask goes first: `b and m`, with a `bool` first, is a condition that stops at the `bool`. `not` of integer lanes flips their bits, which one integer writes `x xor -1`
+- `and`, `or`, `xor` and `not` for integers and masks. On masks both sides run, there is no short cut, and a mask goes first: `b and m`, with a `bool` first, is a condition that stops at the `bool`. `not` of integer lanes flips their bits, like `not` of one integer
 - `<<` and `>>` by a number, the same for every lane, as one number shifts: `v << 3`
 - `<`, `<=`, `>`, `>=`, `==` and `!=` give a mask, and each one is exact with NaN
 
@@ -528,6 +537,11 @@ Over an array, a list, a slice or text the compiler writes the loop itself: it r
 - The length is read when the loop starts, what you append during the loop is not visited, and if the list grows the loop keeps reading the old memory, so don't grow a list you are walking
 
 ## Control flow
+### a if c else b
+`a if c else b` is `a` when `c` is true and `b` when it's false. `c` runs first, and then only the side it chose, so `n := 100 / x if x != 0 else 0` never divides by zero. It narrows like `and` and `or`, `a` sees what `c` narrowed and `b` what `not c` narrowed: `name := user.name if user is User else "nobody"`. It's the loosest operator, so `a or b if c else d` is `(a or b) if c else d`, and it nests to the right: `a if c else b if d else e` is `a if c else (b if d else e)`. Without its `else` it's an error, `an if inside an expression expects its else: a if c else b`.
+
+Its type follows the rule of `ifnull` (see [Errors](#errors)). Where the place gives a type, like `x: i64 = 1 if c else 2` or a `return`, both sides convert to it. Anywhere else it's the type of `a` when `b` fits it, a literal `a` takes the type of `b` like it takes the type of the other side of `+`, and if not it's the union of both: with `small: u8`, `0 if c else small` is a `u8`, and `1 if c else "one"` is an `i32|&strview`. A side can be a call that never returns, and then the result has the type of the other side: `n := given if given is i64 else panic("no number")`. A side that gives nothing is an error, `a function that returns nothing is a statement, not a value`.
+
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last. The subject runs once, before the cases, and the cases run in order until one matches: the values after it don't run, also those in the same `case a, b`.
 
@@ -575,7 +589,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 - A function that returns a value must return on every path: `not every path of this function returns a value`. A `while true` without `break` counts as never ending
 - Code after `return`, `break` or `continue` in the same block is an error: `this code can never run, the block already left`
 - `main` has no parameters, is outside every module, and returns nothing (exit code 0) or an integer, the exit code. It is the `main` of C, the program starts there, so nothing in the program can call it or take it as a value: `main is where the program starts, the main of C, so nothing in the program can call it or take it as a value`
-- A function that never returns, like `panic` or `exit`, says so with `-> never`. A call to it is a statement and ends the path like `return`, so the code after it is an error and it narrows like a `return`. On the right of `ifnull` and `iferror` it leaves the value without the `null` or the error: `port := parse_int(text) ifnull panic("not a number")`. Anywhere else it's an error, it gives no value: `a function that never returns is a statement, not a value`. The function itself cannot `return` or reach its end: `this function returns never, and a path reaches its end: end each path with a call that never returns, like exit`. A C function can return `never` too, like `exit`. `parallel` of one gives a `Thread[null]`, like a function that returns nothing. `never` is only what a function returns, a variable, a parameter or a member of a union cannot be one: `never is what a function that never returns gives, a value cannot be never`
+- A function that never returns, like `panic` or `exit`, says so with `-> never`. A call to it is a statement and ends the path like `return`, so the code after it is an error and it narrows like a `return`. On the right of `ifnull` and `iferror` it leaves the value without the `null` or the error: `port := parse_int(text) ifnull panic("not a number")`, and as a side of `a if c else b` it leaves the other side. Anywhere else it's an error, it gives no value: `a function that never returns is a statement, not a value`. The function itself cannot `return` or reach its end: `this function returns never, and a path reaches its end: end each path with a call that never returns, like exit`. A C function can return `never` too, like `exit`. `parallel` of one gives a `Thread[null]`, like a function that returns nothing. `never` is only what a function returns, a variable, a parameter or a member of a union cannot be one: `never is what a function that never returns gives, a value cannot be never`
 - `_ = value` throws the value away, also when there is a variable named `_`
 - A call can be a statement and its value is dropped, but a statement that only makes a value, like `x == 2` or `a[0]`, is an error: `this statement makes a value and never uses it`. For `x == 2` it goes on with `, an assignment is written with one =`
 

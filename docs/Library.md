@@ -424,7 +424,7 @@ func main():
     close(p.input)
     while true:
         line := read_line(p.output)
-        if not (line is &strview):
+        if not line is &strview:
             break
         print(line) # apple, then pear
     close(p.output)
@@ -639,7 +639,7 @@ func main():
 - `b[i] -> bool` if `i` is in the set, and `b[i] = true` or `false` adds or removes it. `i` is any integer, and one below 0 or past the room stops the program
 - `a or b` the union, `a and b` the intersection, `a - b` the numbers of `a` that are not in `b`, and `a xor b` the ones in only one of them
 - `a == b` and `a != b`
-- `complement(b)` the numbers that are not in `b`
+- `not b` the numbers that are not in `b`
 - `empty(b) -> bool` and `count(b) -> usize`
 - `for n in b` gives the numbers from the smallest, and `print` writes `{3, 70}`
 

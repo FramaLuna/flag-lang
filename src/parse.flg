@@ -315,9 +315,9 @@ func func_decl(external: bool) -> Fail?:
     if keyword == "func":
         try new_name(false)
     else:
-        problem: &strview = " cannot be declared, the operators to declare are + - * / % == < << >> and or xor = +="
+        problem: &strview = " cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = +="
         switch name.text:
-        case "+", "-", "*", "/", "%", "==", "<", "<<", ">>", "and", "or", "xor", "=", "+=":
+        case "+", "-", "*", "/", "%", "==", "<", "<<", ">>", "and", "or", "xor", "not", "=", "+=":
             problem = ""
         case "!=":
             problem = " follows from ==, declare operator == instead"
@@ -346,13 +346,17 @@ func func_decl(external: bool) -> Fail?:
         for i in param..comp.nodes.len:
             if comp.nodes[i].kind == Unary and text(i) == "try":
                 return fail("a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust", comp.tokens[comp.nodes[i].tok].at)
-        if keyword == "operator" and count > 2 and kids(param) == 1:
-            return fail("operator " + name.text + " takes its left side and its right side, a parameter after them needs a default value", comp.tokens[comp.nodes[param].tok].at)
+        if keyword == "operator" and name.text == "not" and count > 1 and kids(param) == 1:
+            return fail("operator not expects the value on its right, a parameter after it needs a default value", comp.tokens[comp.nodes[param].tok].at)
+        if keyword == "operator" and name.text != "not" and count > 2 and kids(param) == 1:
+            return fail("operator " + name.text + " expects its left side and its right side, a parameter after them needs a default value", comp.tokens[comp.nodes[param].tok].at)
         if not peek(","):
             break
         comp.pos += 1
     try expect(")")
-    if keyword == "operator" and count < 2:
+    if keyword == "operator" and name.text == "not" and count == 0:
+        return fail("operator not expects one parameter, the value on its right", name.at)
+    if keyword == "operator" and name.text != "not" and count < 2:
         return fail("operator " + name.text + " expects two parameters, its left side and its right side", name.at)
     if peek("->"):
         comp.pos += 1
@@ -561,34 +565,42 @@ func assignment() -> Fail?:
 
 func expr(min: usize) -> Fail?:
     start := comp.nodes.len
-    try unary()
+    first := comp.pos
+    if peek("not") and min <= 4:
+        try deeper(here().at)
+        n := begin(Unary, comp.pos)
+        comp.pos += 1
+        try expr(4)
+        finish(n)
+        comp.depth -= 1
+    else:
+        try unary()
     operators: &list[usize]
     defer free(operators)
+    last: usize = 0
     while true:
         t := here()
         prec: usize = 0
         if t.kind == Symbol or t.kind == Name:
             switch t.text:
             case "or":
-                prec = 1
-            case "and", "xor":
                 prec = 2
-            case "is":
+            case "and", "xor":
                 prec = 3
-            case "==", "!=":
-                prec = 4
-            case "<", ">", "<=", ">=":
+            case "is":
                 prec = 5
-            case "iferror", "ifnull":
+            case "==", "!=", "<", ">", "<=", ">=":
                 prec = 6
-            case "..", "..=", "<<", ">>":
+            case "iferror", "ifnull":
                 prec = 7
-            case "+", "-":
+            case "..", "..=", "<<", ">>":
                 prec = 8
-            case "*", "/", "%":
+            case "+", "-":
                 prec = 9
-            case "as":
+            case "*", "/", "%":
                 prec = 10
+            case "as":
+                prec = 11
             case "||":
                 return fail("'||' is not an operator, write: or", t.at)
         if prec == 0 or prec < min:
@@ -599,6 +611,19 @@ func expr(min: usize) -> Fail?:
             try type_expr()
         else:
             try expr(prec + 1)
+        if prec == 6 and last == 6:
+            o := comp.tokens[operators[-2]].text
+            a := excerpt(first, operators[-2] - 1)
+            b := excerpt(operators[-2] + 1, operators[-1] - 1)
+            c := excerpt(operators[-1] + 1, comp.pos - 1)
+            return fail("comparisons do not chain, write " + a + " " + o + " " + b + " and " + b + " " + t.text + " " + c + ", or (" + a + " " + o + " " + b + ") " + t.text + " " + c, t.at)
+        last = prec
+    if operators.len > 0 and comp.tokens[first - 1].text == "not": # the operand of a not
+        switch comp.tokens[operators[0]].text:
+        case "+", "-", "*", "/", "%", "<<", ">>", "as":
+            x := excerpt(first, operators[0] - 1)
+            whole := excerpt(first, comp.pos - 1)
+            return fail("not " + whole + " needs parentheses, write (not " + x + ") " + excerpt(operators[0], comp.pos - 1) + " to flip the bits of " + x + ", or not (" + whole + ")", comp.tokens[first - 1].at)
     for o in operators:
         begin(Binary, o)
     i := comp.nodes.len
@@ -611,13 +636,31 @@ func expr(min: usize) -> Fail?:
         n -= 1
         end = node_end(end)
         comp.nodes[n] = Node{Binary, o, end - n, ""}
+    if min > 1 or not peek("if"):
+        return null
+    try deeper(here().at)
+    wrap(start, Choice, comp.pos)
+    comp.pos += 1
+    try expr(2)
+    if not peek("else"):
+        return unexpected("an if inside an expression expects its else: a if c else b")
+    comp.pos += 1
+    try expr(1)
+    finish(start)
+    comp.depth -= 1
     return null
 
 func unary() -> Fail?:
     try deeper(here().at)
     defer comp.depth -= 1
     t := here()
-    if t.text == "-" or t.text == "not" or t.text == "try" or t.text == "trust" or t.text == "parallel" or t.text == "wait":
+    if t.text == "not":
+        tighter := comp.tokens[comp.pos - 1].text
+        comp.pos += 1
+        operand := comp.pos
+        try unary()
+        return fail("not is looser than " + tighter + ", write (not " + excerpt(operand, comp.pos - 1) + ")", t.at)
+    if t.text == "-" or t.text == "try" or t.text == "trust" or t.text == "parallel" or t.text == "wait":
         n := begin(Unary, comp.pos)
         comp.pos += 1
         try unary()

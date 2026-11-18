@@ -518,6 +518,8 @@ func gen_from(from: usize) -> usize|Fail:
                 right = comp.types[second].elem
             if name != "=" and name != "+=" and (comp.types[target].kind == Simd or comp.types[right].kind == Simd) and (comp.types[target].kind == Simd or numeric(target) or target == BOOL) and (comp.types[right].kind == Simd or numeric(right) or right == BOOL):
                 return fail("operator " + name + " between " + comp.types[target].name + " and " + comp.types[right].name + " works on the lanes, it belongs to the language and cannot be declared", comp.at)
+        if name == "not" and (target == BOOL or integer(target) or comp.types[target].kind == Simd):
+            return fail("operator not on " + comp.types[target].name + " belongs to the language, it cannot be declared again", comp.at)
         try statements(body(f))
         if comp.live:
             comp.at = comp.tokens[comp.nodes[f].tok].at
@@ -1089,6 +1091,8 @@ func gen(n: usize, want: usize) -> Value|Fail:
         return indexed(n, 0)
     case Binary, Unary:
         return operation(n, want)
+    case Choice:
+        return choice(n, want)
     case:
         return collection(n, want, 0)
 
@@ -1890,9 +1894,21 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 return lanes("not", ptr([v]), v.type, tok.at)
             if t.kind == Simd:
                 return fail("not works on lanes of integers and masks, and " + t.name + " holds floats: reinterpret it as bits with as simd[u" + 8 * lane.size + ", " + t.count + "]", tok.at)
-            if v.type != BOOL:
-                return fail("not works on bool, this is " + t.name, tok.at)
-            return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
+            if v.type == BOOL:
+                return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
+            if v.lit and integer(v.type) and v.neg:
+                return literal(false, v.n - 1)
+            if v.lit and integer(v.type):
+                bits := literal(true, v.n + 1)
+                bits.flipped = true
+                return bits
+            if integer(v.type):
+                return Value{type = v.type, at = extend(v.type, op(cls(v.type), "xor", load(v).at, int_arg(-1)))}
+            operand: &list[Value]
+            append(operand, v)
+            if not try offers("not", operand, tok.at):
+                return fail("not expects bool, an integer or a type with operator not on its right, this is " + t.name, tok.at)
+            return invoke("not", operand, tok.at)
         if t.kind != Union:
             return fail(o + " expects a union on its right, " + t.name + " has nothing to remove", tok.at)
         removed: &list[usize]
@@ -2081,6 +2097,47 @@ func operation(n: usize, want: usize) -> Value|Fail:
         else:
             l = try binary(o, l, try value(node_end(k + 1), VOID), comp.tokens[comp.nodes[k].tok].at)
     return l
+
+func choice(n: usize, want: usize) -> Value|Fail:
+    at := comp.tokens[comp.nodes[n].tok].at
+    cond := node_end(n + 1)
+    c := try condition(cond)
+    l_sides := array[u32, 2]{label(), label()}
+    l_ends := array[u32, 2]{label(), label()}
+    branch(c.at, l_sides[0], l_sides[1])
+    sides: &list[Value]
+    for k, side in [n + 1, node_end(cond)]:
+        open_block(l_sides[k])
+        before := comp.vars.len
+        try narrow(cond, k == 0)
+        v := try gen(side, want)
+        comp.vars.len = before
+        if v.type == VOID:
+            return fail("a function that returns nothing is a statement, not a value", at_of(side))
+        reads(side)
+        append(sides, v)
+        jump(l_ends[k])
+    a := sides[0]
+    b := sides[1]
+    if a.type == NEVER and b.type == NEVER:
+        return a
+    result := want
+    if want == VOID:
+        result = a.type
+        if a.type == NEVER or a.lit and b.type != NEVER and accepts(b.type, a) >= 0:
+            result = b.type
+        elif b.type != NEVER and not (b.lit and accepts(a.type, b) >= 0) and not try assignable(a.type, b.type, at):
+            result = try union_of(ptr([a.type, b.type]), Union, at)
+    slot := alloc(result)
+    l_done := label()
+    for k, side in [n + 1, node_end(cond)]:
+        if sides[k].type != NEVER:
+            open_block(l_ends[k])
+            zero(result, slot)
+            try assign(slot, result, sides[k], at_of(side))
+            jump(l_done)
+    open_block(l_done)
+    return Value{type = result, at = slot, mem = true}
 
 # each lane of to is the scalar o of the same lane of args, where a number stands in every lane
 func lanes(o: &strview, args: &list[Value], to: usize, at: usize) -> Value|Fail:

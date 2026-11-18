@@ -108,17 +108,22 @@ It lives as long as the program, and all the threads share it (see [Threads](#th
 
 ## Operators
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers
-- Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
+- Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`. They don't chain, `a < b < c` is an error that tells you to write `a < b and b < c`
 - Logic: `and`, `or` and `not` on `bool`. `and` and `or` don't run the right side when the left side already decides
-- Bits: `and`, `or` and `xor` on integers work on the bits, and `<<` and `>>` shift them
+- Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them
+- Choosing: `a if c else b` is `a` when `c` is true and `b` when it's not, and only the side it chose runs
 - Assignments: `=`, and `+=`, `-=`, `*=`, `/=`, `%=`
 ```flag
 flags := 0b1010 and 0b0110 # 0b0010
+even := 0b1011 and not 1   # 0b1010
 big := 1 << 20
 if x > 0 and not done:
     count += 1
+mode := "-check" if check else "run"
 ```
 Both sides must have the same type, a literal takes the type of the other side and anything else you convert (see [Variables and Assignments](#variables-and-assignments)). Integers wrap around when they overflow, and dividing by zero stops the program with an error.
+
+`not` takes everything up to the next `and`, `or` or `xor`, so `not x == 3` is `not (x == 3)`. Before arithmetic it needs parentheses, `(not x) + 1`, because `not x + 1` could mean either one.
 
 ## Types
 ### Builtin types
@@ -351,7 +356,7 @@ To check several types at once use `is` with a union
 if color is Red|Blue:
     pass # the type of color is Red|Blue here
 ```
-`not` turns a check around, so `if not (color is Red):` narrows to `Green|Blue`. A branch that leaves, with `return`, `break`, `continue` or a call that never returns like `panic`, takes its types away after the `if`
+`not` turns a check around, so `if not color is Red:` narrows to `Green|Blue`. A branch that leaves, with `return`, `break`, `continue` or a call that never returns like `panic`, takes its types away after the `if`
 ```flag
 data := read_file("config.txt")
 if data is FsError:
@@ -539,7 +544,7 @@ func describe(t: &strview) -> &strview:
     return "a text"
 ```
 ### Operator overloading
-You can overload `+ - * / % == < << >> and or xor` for your types, with a function of two parameters. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `a += b` uses `+`
+You can overload `+ - * / % == < << >> and or xor` for your types, with a function of two parameters, and `not` with a function of one. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `a += b` uses `+`
 ```flag
 type V:
     x: i32

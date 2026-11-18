@@ -1518,7 +1518,7 @@ func merge(a: State, b: State, s: usize) -> State:
     out.marks = Marks{x.live or y.live, x.freed or y.freed, x.killed or y.killed, x.sure and y.sure, x.gone and y.gone, x.used or y.used, x.made or y.made}
     la := alive(x)
     lb := alive(y)
-    dying := complement(la or lb)
+    dying := not (la or lb)
     views: &list[u64]
     defer free(views)
     i: usize = 0
@@ -1705,7 +1705,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out := a
     out.live = a.live or b.live
     out.dead = a.dead or b.dead
-    out.must = (a.must or complement(la)) and (b.must or complement(lb)) and out.live
+    out.must = (a.must or not la) and (b.must or not lb) and out.live
     out.element = a.element and (b.element or plain(b)) or b.element and plain(a)
     if a.writer != b.writer:
         out.writer = 0
@@ -2483,7 +2483,7 @@ func killed_at(dead: Set) -> usize:
     return 0
 
 func alive(m: Marks) -> Set:
-    return m.live or complement(mem.fn.heaps or m.gone)
+    return m.live or not (mem.fn.heaps or m.gone)
 
 func objects(x: Set) -> Set:
     x[NOWHERE] = false

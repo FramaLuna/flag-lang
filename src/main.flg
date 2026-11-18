@@ -35,7 +35,7 @@ type enum NodeKind:
     Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Constant, Assign
     TName, TUnary, TUnion, TFunc
     Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
-    Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Items, Pairs
+    Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Choice, Items, Pairs
 
 type Node:
     kind: NodeKind
@@ -165,6 +165,7 @@ type Value:
     place: bool
     lit: bool
     neg: bool
+    flipped: bool # a literal made by not, its bits wrap at the width of an unsigned place
     n: usize
     f: f64
     element: usize
@@ -859,7 +860,10 @@ func header(tok: usize) -> &strview:
     last := tok
     while comp.tokens[last + 1].kind != Line:
         last += 1
-    f := comp.files[file_of(comp.tokens[tok].at)]
+    return excerpt(first, last)
+
+func excerpt(first: usize, last: usize) -> &strview:
+    f := comp.files[file_of(comp.tokens[first].at)]
     return f.code[comp.tokens[first].at - f.start:comp.tokens[last].at + comp.tokens[last].text.len - f.start]
 
 func mark(tok: usize, hover: &strview = ""):

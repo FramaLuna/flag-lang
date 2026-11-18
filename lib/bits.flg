@@ -17,7 +17,7 @@ func put(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is 
     if on:
         b.words[n / 64] = b.words[n / 64] or one
     else:
-        b.words[n / 64] = b.words[n / 64] and (one xor 0xffff_ffff_ffff_ffff)
+        b.words[n / 64] = b.words[n / 64] and not one
 
 operator or(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
@@ -40,13 +40,13 @@ operator xor(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
 operator -(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
     for i in 0..$$w:
-        out.words[i] = a.words[i] and (b.words[i] xor 0xffff_ffff_ffff_ffff)
+        out.words[i] = a.words[i] and not b.words[i]
     return out
 
-func complement(b: *Bits[$$w]) -> Bits[$$w]:
+operator not(b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
     for i in 0..$$w:
-        out.words[i] = b.words[i] xor 0xffff_ffff_ffff_ffff
+        out.words[i] = not b.words[i]
     return out
 
 func empty(b: *Bits[$$w]) -> bool:

@@ -8,11 +8,17 @@ Changed
 - `error:`, `warning:` and `note:` are in color only when the errors go to a terminal, and never with `NO_COLOR`
 - The indentation can mix tabs and spaces when the blocks don't depend on how wide a tab is, like in Python: a tab goes to the next column that is a multiple of 8 and also counts one, and when the two measures give different blocks it's an error, `this indentation mixes tabs and spaces, and its block depends on how wide a tab is`. Before, a tab and a space counted one each, so `\t\t` and `\t ` made one block and `\t` and 8 spaces didn't
 - A text literal can cross lines, with its line breaks and the indentation of its lines, and a `\r\n` of the file is a `\n` in it. A `\` before a line break is an error, `'\' cannot continue a line, a text literal keeps its line breaks`, and a text that never closes expects its `"` before the end of the file
+- `not` goes between `and` and `is`, like in Python, where it was tighter than every operator: `not a == b` is `not (a == b)`, and `if not line is &strview:` narrows without parentheses. On the right of a tighter operator it goes in parentheses, `not is looser than ==, write (not y)`, and a `not` followed by arithmetic, `as` or a shift is an error that gives both readings: `not x + 1 needs parentheses, write (not x) + 1 to flip the bits of x, or not (x + 1)`
+- The comparisons are one level and don't chain: `a < b < c`, `a == b == c` and `a < b == c` are errors, `comparisons do not chain, write a < b and b < c, or (a < b) < c`. Before, `<` was tighter than `==`, and with three `false` `a == b == c` compiled to `false`
+- `complement(b)` of `bits` is `not b`
 
 New
 - `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
 - Tests that pin the order of evaluation: left to right, named arguments as written and then the default values, and the cases of a `switch` until one matches
 - The token `..=`, with the precedence of `..`, for the ranges that end at their last number. They are not supported yet: `'..=' is not supported yet, write: a..b + 1`
+- `not` of an integer flips its bits with the width of its type, `not u8(1)` is `254`, and `not` of a literal takes the type of its place like the literal does: `mask: u32 = not 0xff` is `0xffff_ff00`
+- `operator not`, with one parameter, the only unary operator a type can declare
+- `a if c else b`, the loosest operator. `c` runs first and then only the side it chose, `a` sees what `c` narrowed and `b` what `not c` narrowed, and it nests to the right. Its type follows the rule of `ifnull`, and a side can be a call that never returns: `n := given if given is i64 else panic("no number")`
 
 ## 0.5.0
 

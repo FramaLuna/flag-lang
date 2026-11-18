@@ -589,7 +589,7 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
     for a in args:
         key += "|" + a.type
         if a.lit:
-            key += " " + a.neg + " " + a.n
+            key += " " + a.neg + " " + a.n + " " + a.flipped
     for given in names:
         key += "|" + given
     known := comp.chosen[view(key)]
@@ -1041,7 +1041,7 @@ func accepts(to: usize, v: Value) -> i64:
 
 func fits(v: Value, t: usize) -> bool:
     if comp.types[t].kind == Uint:
-        return not v.neg and v.n <= largest(t)
+        return not v.neg and v.n <= largest(t) or v.flipped and v.n - 1 <= largest(t)
     if v.neg:
         return v.n <= largest(t) + 1
     return v.n <= largest(t)
@@ -1079,13 +1079,18 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
     from := comp.types[v.type]
     target := comp.types[to]
     if v.lit and integer(v.type) and integer(to):
+        if fits(v, to) and v.neg and target.kind == Uint:
+            return Value{type = to, at = int_arg(i64(largest(to) - v.n + 1))}
         if fits(v, to):
             return Value{type = to, at = v.at}
         shown: &str
-        if v.neg:
-            shown += "-"
-        shown += v.n
-        if v.neg and target.kind == Uint:
+        if v.flipped:
+            shown += "not " + (v.n - 1)
+        elif v.neg:
+            shown += "-" + v.n
+        else:
+            shown += v.n
+        if v.neg and target.kind == Uint and not v.flipped:
             return fail(shown + " does not fit in " + target.name + ", the smallest " + target.name + " is 0", at)
         return fail(shown + " does not fit in " + target.name + ", the largest " + target.name + " is " + largest(to), at)
     if v.lit and numeric(v.type) and target.kind == Float:
