@@ -248,6 +248,8 @@ func declare(n: usize, sym: Sym) -> Fail?:
     id := comp.type_ids[sym.name]
     if id is usize and id <= NEVER and kind != Func:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
+    if sym.name == "ptr" or sym.name == "print" or sym.name == "eprint":
+        return fail(sym.name + " belongs to the language, it cannot be declared again", at)
     s := first_sym(sym.name)
     while s != 0:
         old := comp.syms[s]
@@ -341,7 +343,25 @@ func func_decl(external: bool) -> Fail?:
         if here().kind != Name or comp.tokens[comp.pos + 1].text != ":":
             return unexpected("a parameter is written name: type")
         param := comp.nodes.len
-        try variable()
+        if comp.tokens[comp.pos + 2].text == "type" and keyword == "func" and not external:
+            try new_name(true)
+            begin(Var, comp.pos)
+            begin(TUnary, comp.pos + 2)
+            comp.pos += 3
+            given := here()
+            after := comp.tokens[comp.pos + 1]
+            bare := given.kind == Generic and not starts_with(given.text, "$$")
+            if not bare or after.text != "," and after.text != ")":
+                at := given.at
+                if bare:
+                    at = after.at
+                return fail("type expects a bare $T after it, with no shape and no default value: kind: type $T", at)
+            finish(begin(TName, comp.pos))
+            comp.pos += 1
+            finish(param + 1)
+            finish(param)
+        else:
+            try variable()
         count += 1
         for i in param..comp.nodes.len:
             at := comp.tokens[comp.nodes[i].tok].at
@@ -366,7 +386,17 @@ func func_decl(external: bool) -> Fail?:
         return fail("operator " + name.text + " expects two parameters, its left side and its right side", name.at)
     if peek("->"):
         comp.pos += 1
+        result := comp.nodes.len
         try type_expr()
+        for i in result..comp.nodes.len:
+            g := comp.tokens[comp.nodes[i].tok]
+            bound := g.kind != Generic
+            for j in n + 1..result:
+                bound = bound or text(j) == g.text
+            if not bound and starts_with(g.text, "$$"):
+                return fail(g.text + " is not bound here, a generic gets its number from a parameter: take it from a type, values: array[$T, " + g.text + "]", g.at)
+            if not bound:
+                return fail(g.text + " is not bound here, a generic gets its type from a parameter: take it as kind: type " + g.text, g.at)
     if peek("=") and not external:
         return fail("only a func of an extern block takes = \"symbol\", the C function it calls", here().at)
     if peek("="):
@@ -697,6 +727,8 @@ func unary() -> Fail?:
         if t.text == "parallel" and comp.nodes[n + 1].kind != Call:
             return fail("parallel goes before a call, it runs that call in a new thread: parallel f(x)", at_of(n + 1))
         return null
+    if t.text == "&" or t.text == "*" or t.kind == Generic and not starts_with(t.text, "$$") or t.text == "func" and comp.tokens[comp.pos + 1].text == "(" or t.text == "extern" and comp.tokens[comp.pos + 1].text == "func":
+        return type_expr() # only a type starts so, as in make(&list[i32])
     start := comp.nodes.len
     first := comp.pos
     name := first
@@ -706,9 +738,9 @@ func unary() -> Fail?:
     after := comp.tokens[name + 1].text
     brace := after == "{"
     converts := false
+    listed := false
     if t.kind == Name and after == "[":
         depth: usize = 0
-        listed := false
         i := name + 1
         while comp.tokens[i].kind != Line and comp.tokens[i].kind != End:
             word := comp.tokens[i].text
@@ -740,19 +772,13 @@ func unary() -> Fail?:
         try expect("(")
         try arguments(")")
         finish(n)
+    elif listed:
+        return type_expr() # Pair[i32, f64], an index has no comma
     elif (t.kind == Name or t.kind == Builtin) and after == "(":
         n := qualified(Call)
         try paren(first)
         comp.pos += 1
-        while not peek(")"):
-            if comp.nodes[n].module.len == 0 and (t.text == "sizeof" or t.text == "can_assign" or t.text == "offset_of" and comp.nodes.len == n + 1):
-                try type_expr()
-            else:
-                try argument()
-            if not peek(","):
-                break
-            comp.pos += 1
-        try expect(")")
+        try arguments(")")
         finish(n)
     elif t.kind == Name or t.kind == Generic:
         finish(qualified(Name))
@@ -833,6 +859,11 @@ func unary() -> Fail?:
         comp.depth += links
         try deeper(here().at)
         links += 1
+    k := comp.nodes[start].kind
+    if (peek("?") or peek("|") or peek("||")) and (k == Name or k == Field or k == Index or k == TName or k == TUnary or k == TUnion or k == TFunc):
+        comp.nodes.len = start
+        comp.pos = first
+        return type_expr() # Point?, i32|null and u8||u64 are types
     return null
 
 # here() is a (, and callee up to it is what it calls, nothing for a group
@@ -891,6 +922,8 @@ func type_expr() -> Fail?:
             comp.pos += 1
             prefixes += 1
         t := here()
+        if t.text == "type":
+            return fail("type $T goes only in a parameter of a func with a body, where each call gives the type: func make(kind: type $T)", t.at)
         foreign := t.text == "extern" and comp.tokens[comp.pos + 1].text == "func" and comp.tokens[comp.pos + 2].text == "("
         if foreign or t.text == "func" and comp.tokens[comp.pos + 1].text == "(":
             n := begin(TFunc, comp.pos)

@@ -301,6 +301,8 @@ func resolve(n: usize) -> usize|Fail:
         return instance(n + 1, true)
     if node.kind == TUnary and tok.text == "*":
         return pointer(try resolve(n + 1))
+    if node.kind == TUnary and tok.text == "type":
+        return given_of(try resolve(n + 1))
     parts: &list[usize]
     if node.kind == TUnary:
         append(parts, try resolve(n + 1))
@@ -584,6 +586,15 @@ func thread_of(result: usize) -> usize:
     if id is usize:
         return id
     return add_type(Type{kind = Thread, name = view(key), size = 8, align = 8, elem = result})
+
+# a type given as an argument, the value a type $T parameter takes
+func given_of(t: usize) -> usize:
+    key: &str = "type "
+    key += comp.types[t].name
+    id := comp.type_ids[view(key)]
+    if id is usize:
+        return id
+    return add_type(Type{kind = Given, name = view(key), align = 1, elem = t})
 
 func func_of(taken: &list[usize], ret: usize, foreign: bool) -> usize:
     key: &str

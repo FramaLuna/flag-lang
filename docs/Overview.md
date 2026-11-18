@@ -132,7 +132,7 @@ Both sides must have the same type, a literal takes the type of the other side a
 - `f32`, `f64`
 - `bytes`, raw memory of unknown size, only used behind a pointer
 
-`sizeof(T)` gives the size of a type in bytes.
+`@sizeof(T)` gives the size of a type in bytes. A call with `@` is one the compiler answers while it compiles, like `@here()`, the place in the code as text.
 
 In flag you can declare 3 kinds of types, and aliases
 ### Void Types
@@ -604,6 +604,16 @@ func biggest(a: $T, b: $T) -> $T:
 func size(a: array[$T, $$n]) -> usize:
     return $$n
 ```
+A `$T` that no argument gives comes from a parameter that takes a type, `type $T`. The call names the type, and the parameter takes nothing when the program runs
+```flag
+func make(kind: type $T) -> $T:
+    x: $T
+    return x
+
+func main():
+    p := make(Point)
+    items := make(&list[i32])
+```
 ### Where
 `where` chooses an overload at compile time, with conditions over the types and numbers of the call
 ```flag
@@ -613,14 +623,14 @@ func kind(v: $T) -> &strview where $T is u8|u16|u32:
 func kind(v: $T) -> &strview where $T is i32|i64:
     return "signed"
 
-func wide(v: $T) -> bool where sizeof($T) >= 8:
+func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
-It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `can_assign(&str, $T)`.
+It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`.
 
 `@compile_error` stops the compilation with your message, at the call that chose that overload
 ```flag
-func small(n: $T) -> i32 where sizeof($T) > 4:
+func small(n: $T) -> i32 where @sizeof($T) > 4:
     @compile_error("small takes numbers of 4 bytes or less")
 ```
 
@@ -1109,7 +1119,7 @@ func main():
 ```
 An `extern func` is called like C calls, structs too, so it's also what a table of functions of C holds, and what an address that C gives you becomes with `as`: `f := address as extern func(f64) -> f64`. The function values of Flag, `func(...)`, don't cross to C.
 
-`offset_of(T, field)` gives the place of a field, like `sizeof` gives the size, both known when the program compiles.
+`@offset_of(T, field)` gives the place of a field, like `@sizeof` gives the size, both known when the program compiles.
 
 A library that a program loads is built with `-shared`, and the program loads it with `load` and `symbol` of [os](Library.md#libraries). That's how a game reloads its code while it runs: see [Libraries](Reference.md#libraries).
 

@@ -87,7 +87,7 @@ priv extern "ws2_32" where @windows():
 type Integer = i8|i16|i32|i64|u8|u16|u32|u64|usize
 
 func heap(v: $T) -> *$T:
-    p := malloc(sizeof($T)) as *$T
+    p := malloc(@sizeof($T)) as *$T
     if p as usize == 0:
         out_of_memory()
     p.* = v
@@ -215,7 +215,7 @@ func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice
     if first > last or last > s.len:
         out_of_bounds(from, to, s.len, place)
     out: &slice[$T]
-    out = (ptr(s.*) as usize + first * sizeof($T)) as *bytes
+    out = (ptr(s.*) as usize + first * @sizeof($T)) as *bytes
     out.len = last - first
     return out
 
@@ -227,7 +227,7 @@ priv type Walk[$T]:
 func next(w: *Walk[$T]) -> $T|IterationEnd:
     if w.i >= w.len:
         return IterationEnd
-    p := (w.base as usize + w.i * sizeof($T)) as *$T
+    p := (w.base as usize + w.i * @sizeof($T)) as *$T
     w.i += 1
     return p.*
 
@@ -246,10 +246,10 @@ func reserve(l: *&list[$T], want: usize):
     if want <= l.cap:
         return
     cap := doubled(l.cap, want, 8)
-    bytes := cap * sizeof($T)
-    if bytes / cap != sizeof($T) or bytes > MOST:
+    bytes := cap * @sizeof($T)
+    if bytes / cap != @sizeof($T) or bytes > MOST:
         out_of_memory()
-    grown := resize(l.arena, ptr(l.*.*), l.cap * sizeof($T), bytes)
+    grown := resize(l.arena, ptr(l.*.*), l.cap * @sizeof($T), bytes)
     if grown as usize == 0 and bytes > 0:
         out_of_memory()
     l.* = grown
@@ -260,13 +260,13 @@ func try_reserve(l: *&list[$T], want: usize) -> NoMemory?:
     if want <= l.cap:
         return null
     cap := doubled(l.cap, want, 8)
-    bytes := cap * sizeof($T)
-    if bytes / cap != sizeof($T) or bytes > MOST:
+    bytes := cap * @sizeof($T)
+    if bytes / cap != @sizeof($T) or bytes > MOST:
         return NoMemory
     grown := resize(l.arena, usize(0) as *bytes, 0, bytes)
     if grown as usize == 0 and bytes > 0:
         return NoMemory
-    memcpy(grown, ptr(l.*.*), l.len * sizeof($T))
+    memcpy(grown, ptr(l.*.*), l.len * @sizeof($T))
     discard(l.arena, ptr(l.*.*))
     l.* = grown
     l.cap = cap
@@ -283,24 +283,24 @@ priv func doubled(cap: usize, want: usize, least: usize) -> usize:
 func append(l: *&list[$T], v: $T):
     if l.len == l.cap:
         reserve(l, l.len + 1)
-    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    p := (ptr(l.*.*) as usize + l.len * @sizeof($T)) as *$T
     p.* = v
     l.len += 1
 
 func append(l: *&list[$T], items: &slice[$T]):
-    if ptr(items.*) as usize - ptr(l.*.*) as usize < l.cap * sizeof($T):
+    if ptr(items.*) as usize - ptr(l.*.*) as usize < l.cap * @sizeof($T):
         with scratch():
             append(l, temp(items))
         return
     reserve(l, l.len + items.len)
-    memcpy((ptr(l.*.*) as usize + l.len * sizeof($T)) as *bytes, ptr(items.*), items.len * sizeof($T))
+    memcpy((ptr(l.*.*) as usize + l.len * @sizeof($T)) as *bytes, ptr(items.*), items.len * @sizeof($T))
     l.len += items.len
 
 func pop(l: *&list[$T]) -> $T|null:
     if l.len == 0:
         return null
     l.len -= 1
-    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    p := (ptr(l.*.*) as usize + l.len * @sizeof($T)) as *$T
     return p.*
 
 func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
@@ -308,8 +308,8 @@ func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is
     if n > l.len:
         out_of_bounds(at, l.len, place)
     append(l, v)
-    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
-    memmove((first as usize + sizeof($T)) as *bytes, first, (l.len - 1 - n) * sizeof($T))
+    first := (ptr(l.*.*) as usize + n * @sizeof($T)) as *bytes
+    memmove((first as usize + @sizeof($T)) as *bytes, first, (l.len - 1 - n) * @sizeof($T))
     l[n] = v
 
 func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
@@ -317,8 +317,8 @@ func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is 
     if n >= l.len:
         out_of_bounds(at, l.len, place)
     kept := l[n]
-    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
-    memmove(first, (first as usize + sizeof($T)) as *bytes, (l.len - 1 - n) * sizeof($T))
+    first := (ptr(l.*.*) as usize + n * @sizeof($T)) as *bytes
+    memmove(first, (first as usize + @sizeof($T)) as *bytes, (l.len - 1 - n) * @sizeof($T))
     l.len -= 1
     return kept
 
@@ -382,7 +382,7 @@ func sort(s: &slice[$T], before: func($T, $T) -> bool):
     if s.len < 2:
         return
     spare: &slice[$T]
-    spare = malloc(s.len / 2 * sizeof($T))
+    spare = malloc(s.len / 2 * @sizeof($T))
     if ptr(spare.*) as usize == 0:
         out_of_memory()
     spare.len = s.len / 2
@@ -404,7 +404,7 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
     merge_sort(s[half:], spare, before)
     if not before(s[half], s[half - 1]):
         return
-    memcpy(ptr(spare.*), ptr(s.*), half * sizeof($T))
+    memcpy(ptr(spare.*), ptr(s.*), half * @sizeof($T))
     i: usize = 0
     j := half
     k: usize = 0
@@ -504,7 +504,7 @@ type Arena:
     used: usize
 
 func arena(a: *Arena, v: $T) -> *$T:
-    p := take(a, sizeof($T)) as *$T
+    p := take(a, @sizeof($T)) as *$T
     if p as usize == 0:
         out_of_memory()
     p.* = v
@@ -617,9 +617,9 @@ func temp(text: &strview) -> &strview:
 
 func temp(items: &slice[$T]) -> &slice[$T]:
     out: &slice[$T]
-    out = temp(items.len * sizeof($T))
+    out = temp(items.len * @sizeof($T))
     out.len = items.len
-    memcpy(ptr(out.*), ptr(items.*), items.len * sizeof($T))
+    memcpy(ptr(out.*), ptr(items.*), items.len * @sizeof($T))
     return out
 
 operator +=(s: *&str, v: &strview):
@@ -821,7 +821,7 @@ func split(s: &strview, separator: &strview) -> &slice[&strview]:
         rest = rest[cut + separator.len:]
         cut = find(rest, separator)
     parts: &slice[&strview]
-    parts = temp(count * sizeof(&strview))
+    parts = temp(count * @sizeof(&strview))
     parts.len = count
     rest = s
     for k in 0..count - 1:
@@ -1047,8 +1047,8 @@ type Hex:
 
 func hex(value: $I) -> Hex where $I is Integer:
     bits := u64(value)
-    if sizeof($I) < 8:
-        bits = bits and (u64(1) << u64(sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
+    if @sizeof($I) < 8:
+        bits = bits and (u64(1) << u64(@sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
     return Hex{bits}
 
 operator +=(s: *&str, h: Hex):
@@ -1914,18 +1914,18 @@ func reserve(m: *&map[$K, $V], want: usize):
 func try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?:
     if want <= m.cap / 2:
         return null
-    if want > MOST / 2 / sizeof(Slot[$K, $V]):
+    if want > MOST / 2 / @sizeof(Slot[$K, $V]):
         return NoMemory
     cap := m.cap
     if cap < 16:
         cap = 16
     while cap < want * 2:
         cap *= 2
-    grown := resize(m.arena, usize(0) as *bytes, 0, cap * sizeof(Slot[$K, $V]))
+    grown := resize(m.arena, usize(0) as *bytes, 0, cap * @sizeof(Slot[$K, $V]))
     if grown as usize == 0:
         return NoMemory
     old := slots(m.*)
-    memset(grown, 0, cap * sizeof(Slot[$K, $V]))
+    memset(grown, 0, cap * @sizeof(Slot[$K, $V]))
     m.* = grown
     m.cap = cap
     table := slots(m.*)

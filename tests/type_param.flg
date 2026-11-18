@@ -1,0 +1,57 @@
+type Point:
+    x: i32
+    y: i32
+
+type Box[$T]:
+    item: $T
+
+type Pair[$A, $B]:
+    a: $A
+    b: $B
+
+type Car:
+    motor:
+        power: i32
+
+type enum Color = Red | Green
+
+func make(kind: type $T) -> $T:
+    x: $T
+    return x
+
+func size(kind: type $T) -> i64:
+    return @sizeof($T)
+
+func check(x: $T, kind: type $T) -> $T:
+    return x
+
+func fill(kind: type $T, count: i64) -> &list[$T]:
+    out: &list[$T]
+    for i in 0..count:
+        x: $T
+        append(out, x)
+    return out
+
+func pick(kind: type $T) -> &strview where $T is i32|i64:
+    return "integer"
+
+func pick(kind: type $T) -> &strview where not $T is i32|i64:
+    return "other"
+
+func scaled(a: i64, kind: type $T, b: i64) -> i64:
+    return (a + b) * @sizeof($T)
+
+func main():
+    p := make(Point)
+    p.x = 3
+    print(p, " ", make(i32), " ", make(&strview).len, " ", make(Box[u8]).item)
+    print(size(Point), " ", size(&list[i32]), " ", size(Box[Pair[u8, i64]]), " ", size(Car.motor))
+    print(size(i32?), " ", size(Pair[i32, f64]), " ", size(*Point), " ", size(func(i32) -> bool), " ", size(u8||u64))
+    print(size(Red), " ", size(Color), " ", size(kind = Box[&strview]))
+    print(check(u8(7), u8), " ", check(9, i64), " ", check(Point{1, 2}, Point))
+    l := fill(Point, 2)
+    defer free(l)
+    print(l.len, " ", l[1])
+    print(pick(i32), " ", pick(Point), " ", scaled(1, i32, 2))
+    t := parallel scaled(1, Point, 2)
+    print(wait(t))

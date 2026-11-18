@@ -114,7 +114,7 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 
 ### Tokens
 - Names are letters, digits and `_`, and don't start with a digit
-- `@name` is a builtin (`@linux()`, `@argc()`...), and `@trust`/`@check` are markers for the memory checker
+- `@name` is a builtin, something the compiler answers while it compiles (see [Builtins](#builtins)), and `@trust`/`@check` are markers for the memory checker
 - `$T` is a type parameter and `$$n` a number parameter
 - Integers: `42`, `0xff`, `0b101`, and one `_` can go between two digits to read them better, `1_000_000`, `0xff_ff`. There are no octal numbers
 - Floats: `2.5`, `1e3`, `1.5e-3`. A float needs digits on both sides of the `.` (`.5` and `5.` are not floats) and has one exponent
@@ -123,7 +123,22 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 - The symbols of more than one character are `== != <= >= += -= *= /= %= -> := .. ..= .* << >> ||`
 - A `(` right after a name, with no space, makes a call: `twice(3)`, `@here()`, `u8(x)`, `steps[i](x)`, `pick(true)(x)`. After a keyword it goes after a space, `not (x)`, `if (a) and (b)`, `return (x)`. The other two are errors that write the good form: `twice (3)` is `a call writes its ( right after what it calls: twice(3)`, and `for x in reverse(l)` is `'reverse' is a keyword of the language, not a function, so a space goes after it: reverse l`. In a declaration the name of an operator is a name, so `operator and(a: Set, b: Set)` keeps its `(` right after it, like `func` in a function type, `func(i32) -> bool`
 
-`!`, `&&` and `||` are not the logical operators, it's `not`, `and` and `or`. The compiler tells you: `'!' is not an operator, write: not`.
+`!`, `&&` and `||` are not the logical operators, it's `not`, `and` and `or`. The compiler tells you: `'!' is not an operator, write: not`. Neither are the `&x` and `*p` of C, the address of a variable is `ptr(x)` and what a pointer points to is `p.*`: `'&' is not an operator, write: ptr(x)`.
+
+### Builtins
+A call with `@` is answered by the compiler while it compiles. Its arguments are types where it takes types, written like anywhere else
+| Builtin | Gives |
+|---|---|
+| `@sizeof(T)` | the size of `T` in bytes, an integer literal (see [Sizes](#sizes)) |
+| `@offset_of(T, field)` | the place of a field in bytes, an integer literal |
+| `@can_assign(A, B)` | in a `where`, whether a `B` can be assigned to an `A` (see [where](#where)) |
+| `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()` | in a `where`, whether the program is built for that system or that processor |
+| `@here()` | the place in the code as text, `"main.flg:12:5"`, and in a default value the place of the call |
+| `@embed("path")` | a file read when the program compiles (see [Files in the program](#files-in-the-program)) |
+| `@argc()`, `@argv()` | the count and the array of the arguments of the program, as C gives them to `main`: an `i32` and a `*bytes` |
+| `@compile_error("text")` | stops the compilation with that text, at the call that made the instance (see [where](#where)) |
+
+Without `@` go the operations of a type of the language, which run with the program, like `+`: `sum`, `min`, `max`... of a `simd` (see [SIMD](#simd)). `true`, `false` and `null` are values, not calls. And `ptr`, `print` and `eprint` are names of the language, so nothing can be declared with them (see [Modules](#modules)). The old spelling is an error that writes the new one: `sizeof is a builtin of the compiler, write @sizeof(i64)`, and `sizeof`, `offset_of` and `can_assign` are free names for your functions.
 
 ### Keywords
 These words are the language, so nothing you declare can have one as its name, not a variable, a parameter, a constant, a function, a type, a field or a module
@@ -136,7 +151,7 @@ error: 'return' is a keyword of the language, it cannot be used as a name
 ```
 `reverse` only goes after the `in` of a `for`. The function that turns a list around in place is `flip(items)`, and `reverse(l)` says so: `reverse goes only after the in of a for, as in for x in reverse items, and flip(items) turns the items around in place`.
 
-The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `inline`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field.
+The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `context`, `operator`, `priv`, `packed`, `export`, `inline`, `enum`, `fatptr`, `error`, `where`) only mean something there, so `type` or `module` can be the name of a variable or of a field. Where a type goes, `type` starts a type parameter, `kind: type $T` (see [Type parameters](#type-parameters)).
 
 ## Types in memory
 ### Sizes
@@ -151,7 +166,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
-`sizeof(T)` gives the size as an integer literal, so `n := sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = sizeof(i64)`. `offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `offset_of(Car.motor, power)`.
+`@sizeof(T)` gives the size as an integer literal, so `n := @sizeof(i64)` makes an `i32`. Give the type when you want a `usize`: `n: usize = @sizeof(i64)`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
 
 Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together when all of them are constants, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces. A word with a value computed when the program runs is written one field at a time: joining the fields costs instructions, and when the value lives in registers they have to be taken apart again.
 
@@ -172,10 +187,10 @@ A `packed type` has no padding, each field starts where the one before ends and 
 A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. A list of values `[...]` takes the one array or `simd` of a union the same way, and a literal of pairs `{k: v}` its one map: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with everything at zero.
 
 ### Arrays
-`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `sizeof` that takes the type of where you use it.
+`array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `@sizeof` that takes the type of where you use it.
 
 ### Fixed maps
-`fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `sizeof(fixmap[i32, i32, 2])` is 24.
+`fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `@sizeof(fixmap[i32, i32, 2])` is 24.
 
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A `simd` goes at byte 16, where its alignment puts it, so `simd[f32, 4]?` takes 32. A union of void types is only the tag, 4 bytes, that's why enums are small.
@@ -343,7 +358,7 @@ Every overload that can take the arguments gets a score, and the highest one win
 - the same type gives 2
 - a conversion gives 1 (`&str` to `&strview`, a literal to another type, a value into a union...)
 - an integer literal to `f32` gives 0, so `f64` wins
-- a `$T` that is still free gives 0 and takes the type of the argument
+- a `$T` that is still free gives 0 and takes the type of the argument. A `type $T` is matched the same way, with a type for an argument (see [Type parameters](#type-parameters))
 - a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives only what its inside gives
 - a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &slice[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
 
@@ -383,7 +398,8 @@ func main():
     print(f(4), " ", apply(double, 5)) # 8 10
 ```
 - `->` takes everything after it, so `func(i32) -> bool?` returns a `bool?`. A function that may be missing is `(func(i32) -> bool)?`, or `func(i32)?` when it returns nothing, and it's checked with `is` like any union
-- when the place says the type (a variable with its type, an assignment, a `return`, a field of a literal, an element of an array with its type), the name gives the overload with exactly those parameters. A union says it only when it has one function type, and a generic function gets its types from them: `top: func(f64, f64) -> f64 = biggest`
+- when the place says the type (a variable with its type, an assignment, a `return`, a field of a literal, an element of an array with its type), the name gives the overload with exactly those parameters. A union says it only when it has one function type, and a generic function gets the types of its parameters from them: `top: func(f64, f64) -> f64 = biggest`
+- a function with a type parameter has no function value, each call gives it a type: `make has a type parameter, and a function value cannot give it a type: wrap it in a func that calls it`
 - when nothing says the type, like in `f := show` or in an argument, the name must have one function and it cannot be generic: `show names several functions and nothing here says which: give it to a variable that says its function type first`
 - the parameters must be exactly those, defaults included, and there is no conversion between function types. Overloads are chosen by their parameters, never by what they return
 - a call is `(` after any value: `f(x)`, `button.on_click(x)`, `steps[i](x)`, `pick(true)(x)`. `name(...)` calls the variable `name` only when it holds a function, any other variable leaves the functions of that name reachable. A constant that holds a function is called by its name too, when no function has that name
@@ -433,7 +449,29 @@ For arrays, lists, slices and text the compiler writes `x[i]` with an integer it
 
 ## Generics and where
 ### Type parameters
-`$T` gets its type only from the parameters, there is no way to give it by hand (`ident[i32](3)` doesn't exist). A `$T` that is only in the return type is an error when you call the function: `$T is not bound here, a generic gets its type from a parameter`.
+`$T` gets its type only from the parameters. A `$T` or a `$$n` that is in the result and in no parameter is an error in the signature, also when nothing calls the function: `$T is not bound here, a generic gets its type from a parameter: take it as kind: type $T`. The place that takes the result doesn't give it either, so `p: Point = make()` cannot choose a `$T`.
+
+A parameter `name: type $T` takes a type instead of a value, and that is how a call gives a `$T` by hand
+```flag
+type Point:
+    x: i32
+    y: i32
+
+func make(kind: type $T) -> $T:
+    x: $T
+    return x
+
+func main():
+    p := make(Point)
+    items := make(&list[i32])
+    print(p, " ", items.len) # Point{x = 0, y = 0} 0
+```
+- the argument is any type: `Point`, `m.Point`, `Box[i32]`, `Car.motor`, `&list[i32]`, `i32?`, `func(i32) -> bool`. A name that is a variable or a constant is a value, and a `type $T` doesn't take a value: `no overload of make matches (i32)`
+- after `type` goes a bare `$T`, with no shape and no default value: `type expects a bare $T after it, with no shape and no default value: kind: type $T`. It goes only in a parameter of a `func` with a body, not in an operator, an `extern func`, a function type, a field or a variable
+- it takes nothing when the program runs, and its name is not a value: `kind is the type the call gives, not a value: write $T`. The name is there for a named argument, `make(kind = Point)`
+- a function with one has no function value (see [Function values](#function-values)), and `parallel make(Point)` runs it like any call
+- it's matched like a `$T` (see [Choosing an overload](#choosing-an-overload)): a free one gives 0, and one that another parameter bound takes that type and no other, so `func check(x: $T, kind: type $T)` with `check(u8(3), i64)` is an error. A void type is a type and its only value at once, so `make(Red)` goes to a `type $T` and to a `$T` alike, and with both overloads it's ambiguous. A context is a value in a call, it doesn't go to a `type $T`
+- `$$n` is not given by hand, it comes from a type like `array[$T, $$n]`
 
 `$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array. It comes through a generic alias too (`func get(x: Opt[$T])` with `type Opt[$T] = $T|null`), and from inside a function type (`less: func($T, $T) -> bool`). In a union one member can carry it, `$T|null` or `(func($T) -> bool)?`, and a `null` given there is fine when another parameter already says what `$T` is.
 
@@ -447,14 +485,14 @@ An instance is checked when a call makes it, so an error inside it comes with a 
 A `where` condition can be
 - `$T is i8|i16`, true when the type of `$T` is inside that union
 - `$T == i32` and `$T != i32`, with the type parameter on either side
-- `can_assign(&strview, $T)`, true when a `$T` can be assigned to a `&strview`
+- `@can_assign(&strview, $T)`, true when a `$T` can be assigned to a `&strview`
 - `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()`, for the system the program is built for
 - `not`, `and`, `or` and parentheses
-- anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `sizeof($T) >= 8`, `$$n <= 16`
+- anything else that the compiler can compute to `true` or `false` with the types and numbers of the call: `@sizeof($T) >= 8`, `$$n <= 16`
 
 The values of the parameters are not known when the call is chosen, so `where x > 0` is an error: `a where reads types, numbers and constants known when the call is chosen, and x is not one`.
 
-The platform builtins and `can_assign` only work inside a `where`.
+The platform builtins and `@can_assign` only work inside a `where`.
 
 `@compile_error("text")` in a function stops the compilation with that text, pointing at the call that made that instance of the function. A function that nothing calls doesn't fail, so it's the way to say that an overload chosen by `where` can't be used.
 
@@ -714,7 +752,7 @@ func main():
 ```
 Any other expression is written again where you use the constant, like a macro, so `NOW = now()` calls `now()` every time, and a literal without a type, like `PAIR = {3, 4}` or `SHOW = show`, takes its type from each place that reads it. The names in it are the ones of the root of the file, so in `NEXT = LIMIT + 1` the `LIMIT` is the constant, also where a local variable `LIMIT` hides it. When the expression fails for one of them, a note says which: `PAIR is read here`.
 
-A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
+A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `@sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal. A constant that uses itself is an error.
 
 An array literal takes its elements from the type of the place too: an `array[T, N]`, and through `ptr` a `*array[T, N]` or a `&slice[T]`, so `words: &slice[u32] = ptr(SHADER)` keeps `SHADER = [0x0723_0203, 3]` as `u32` words. A literal that doesn't fit is an error at the literal, with a note at the place that reads the constant. The arguments of a call don't give their type, they are computed before the overload is chosen: give the slice to a variable with its type first, like a struct literal (see [Rough edges](#rough-edges)).
 
@@ -791,6 +829,7 @@ The compiler writes a start function for each type of function that runs in a th
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
 - when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
+- `ptr`, `print` and `eprint` belong to the language and not to core, so they are not names you can take: declaring a function, a type or a constant with one of them is an error, `print belongs to the language, it cannot be declared again`
 - the global names of the library, those of core like `File`, `Integer`, `FsError` or `stdout`, give way to yours. Declare a `type File` and your files see yours while the library keeps its own, which the messages then call `core.File`. A function of yours with the same parameters as one of core's is the one your files call, and core keeps calling its own
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).

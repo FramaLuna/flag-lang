@@ -10,13 +10,18 @@ func pop(s: *Stack[$T]) -> $T|null:
 func free(s: *Stack[$T]):
     free(s.items)
 
+func stack(kind: type $T, first: $T) -> Stack[$T]:
+    s: Stack[$T]
+    push(s, first)
+    return s
+
 func describe(v: $T) -> &strview where $T is i8|i16|i32|i64:
     return "a signed number"
 
 func describe(v: $T) -> &strview where $T is u8|u16|u32|u64|usize:
     return "an unsigned number"
 
-func describe(v: $T) -> &strview where can_assign(&strview, $T):
+func describe(v: $T) -> &strview where @can_assign(&strview, $T):
     return "some text"
 
 func sum(values: array[$T, $$n]) -> $T:
@@ -34,5 +39,8 @@ func main():
     while top is &strview:
         print(top)
         top = pop(words)
+    sizes := stack(u8, 200)
+    defer free(sizes)
+    print(pop(sizes), " ", pop(sizes))
     print(describe(-3), ", ", describe(u8(3)), ", ", describe("hi"))
     print(sum([1, 2, 3, 4]), " ", sum([0.5, 0.25]))

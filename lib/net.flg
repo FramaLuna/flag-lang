@@ -175,7 +175,7 @@ operator +=(s: *&str, a: Address):
         inet_ntop(family6(), ptr(a.ip) as *bytes, ptr(text) as *u8, 64)
         s.* += "[" + view(ptr(text) as cstr) + "]:" + a.port
 
-func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize] where can_assign(Socket|Server|Udp, $T):
+func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize] where @can_assign(Socket|Server|Udp, $T):
     files: &list[File]
     defer free(files)
     for x in waiting:
@@ -189,7 +189,7 @@ func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize] where can_a
             append(files, file(Socket{one.fd}))
     return ready(files, seconds)
 
-func ready(x: $T, seconds: f64 = 0.0) -> bool where can_assign(Socket|Server|Udp, $T):
+func ready(x: $T, seconds: f64 = 0.0) -> bool where @can_assign(Socket|Server|Udp, $T):
     with scratch():
         return ready(ptr([x]), seconds).len > 0
 
