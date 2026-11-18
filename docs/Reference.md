@@ -234,14 +234,15 @@ A float literal is `f64` alone and fits any float. An integer literal also goes 
 `inf` and `nan` are the floats that are not numbers, written as `print` writes them and `parse_float` reads them, and they are literals like the others: `LOW = -inf`, `x: f32 = inf`. They are keywords like `true`, so nothing can take their name. Arithmetic between finite literals has to give a finite float, so `1.0 / 0.0` is an error, `the result of this literal arithmetic is not finite: write inf or nan`, and so is a literal too big for `f64`, `1e999 does not fit in f64, the largest f64 is 1.7976931348623157e+308: write inf for infinity`. With `inf` or `nan` on a side it follows IEEE, `inf - inf` is `nan`.
 
 ### Arithmetic
-- Two numbers of different types never mix, not even in comparisons, you convert one of them: `+ expects two numbers of one type but got u64 and u32, convert one side with u64(...) or u32(...)`. A literal takes the type of the other side
+- Two integers of different types mix when one holds every value of the other, the rule of an assignment, and the operation is done in the wider one: `u8 + i32` is an `i32`, `u32 + i64` an `i64`, and `x += y` works with `x: i64` and `y: i32`. `u8 + u8` stays an `u8`. A pair where neither holds the other, the same size with a different sign or a signed type with an unsigned one as wide or wider, is an error: `+ cannot mix u64 and i64, neither holds every value of the other: convert one side with u64(...) or i64(...)`. An integer and a float never mix: `+ expects two numbers of one type but got i32 and f64, convert one side with i32(...) or f64(...)`. A literal takes the type of the other side
+- Comparisons take any two integers and compare their values: `i64(-1) < u64(0)` is `true`, and `i < l.len` works with `i: i32`. A literal still has to fit the other side, so `x < 300` with `x: u8` is an error, it would always be true
 - Integers wrap around when they overflow
 - `/` on integers rounds toward zero, and `%` has the sign of the left side: `-7 / 2` is `-3` and `-7 % 2` is `-1`
 - Dividing an integer by zero stops the program with `flag: division by zero`. Floats are not checked, you get `inf` or `nan`
 - `==` on floats follows IEEE: `nan` equals nothing, itself included, so `x != x` asks whether `x` is `nan` and `x == nan` is always `false`, also lane by lane in a `simd`
 - `%` is only for integers, for floats there is `fmod` in `math`
 - `-x` only works on signed integers and floats
-- `<<` and `>>` shift, `>>` keeps the sign on signed integers. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
+- `<<` and `>>` shift, `>>` keeps the sign on signed integers. The result has the type of the left side and the amount can be of any integer type: `u8(1) << n` with `n: i32` is an `u8`. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
 - `and`, `or` and `xor` on integers work on the bits: `0xf0 and 0x3c` is `0x30`, and `not` flips the bits with the width of the type: `not u8(1)` is `254`. On `bool` they are logic, and `and` and `or` skip the right side when the left side already decides
 - `not` of a literal takes the type of its place, like a literal: `mask: u32 = not 0xff` is `0xffff_ff00`, and `flags and not 1` clears the lowest bit of `flags` whatever its type. Alone it follows the literal, so `not 5` is the `i32` `-6`
 - There is no `**`, `~`, `^`, `&` or `|`
@@ -272,22 +273,22 @@ Comparisons are one level and don't chain: a comparison on a side of another one
 ### Implicit ones
 When you pass an argument, the value is converted only if it's
 - the same type
+- an integer that grows: to a bigger type of the same sign, or from unsigned to a bigger signed (`u32` to `i64`)
 - a `&str` going to a `&strview`, or a `&list[T]` going to a `&slice[T]`
 - a `*array[T, N]` going to a fat pointer of `T` (a list, a slice, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
 - `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
-- a value going to a union that has its type, or a union going to a bigger union. A value that converts to exactly one member goes in through it: a `&str` into `&strview|i32`, a `&list[i32]` into `&slice[i32]?`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`: the element type of a literal leaves out a type that converts to another one in it
+- a value going to a union that has its type, or a union going to a bigger union. A value that converts to members goes in through the one it fits best (see [Choosing an overload](#choosing-an-overload)): a `&str` into `&strview|i32`, an `i32` into `i64|&strview`, a `&list[i32]` into `&slice[i32]?`, and an `i16` into `i32|i64` goes in as an `i32`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`, and `[a, b]` with `a: i32` and `b: i64` an `array[i64, 2]`: the element type of a literal leaves out a type that converts to another one in it
 - a member going in or out of an untagged union
 
 Assignments, declarations and `return` do all of that and also
-- grow integers: to a bigger type of the same sign, or from unsigned to a bigger signed (`u32` to `i64`)
 - take a union into one of its members when every member converts (`i32|i64` into `i64`)
 - use your `operator =` (see [Operators](#operators))
 
-So `f(x)` with `x: i32` and `func f(n: i64)` doesn't find `f`, write `f(i64(x))`, but `n: i64 = x` works.
+So `f(x)` with `x: i32` and `func f(n: i64)` passes `x` as an `i64`, like `n: i64 = x` does.
 
-Never implicit: signed to unsigned, types of the same size (`u64` and `usize` too), making a number smaller, integer to float and back, `f32` to `f64`, and a pointer to another pointer. `null` is not a pointer, a pointer that can be missing is `*T?`.
+Never implicit: signed to unsigned, types of the same size (`u64` and `usize` too), making a number smaller, integer to float and back, `f32` to `f64`, and a pointer to another pointer. Between integers the error says how: `cannot assign i64 to i32, an integer only grows by itself: convert it with i32(...)`. `null` is not a pointer, a pointer that can be missing is `*T?`.
 
 ### T(x)
 Calling a number type converts
@@ -357,23 +358,36 @@ func main():
 ```
 
 ### Choosing an overload
-Every overload that can take the arguments gets a score, and the highest one wins
+Every overload that can take the arguments gets a score for each argument
 - the same type gives 2
-- a conversion gives 1 (`&str` to `&strview`, a literal to another type, a value into a union...)
+- a conversion gives 1 (`&str` to `&strview`, a literal to another type...)
+- an integer that grows gives a little less than 1, and less the bigger the type it grows to, so the shortest growth fits best: with `f(i32)` and `f(i64)`, an `i16` goes to `f(i32)`. Growths to two types of one size fit the same, so an `u8` with `f(i16)` and `f(u16)` is ambiguous
+- a value into a union gives what it gives to the member it goes in through
 - an integer literal to `f32` gives 0, so `f64` wins
 - a `$T` that is still free gives 0 and takes the type of the argument. A `type $T` is matched the same way, with a type for an argument (see [Type parameters](#type-parameters))
-- a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives only what its inside gives
+- a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives what its inside gives and a little more, so it still fits better than a bare `$T`
 - a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &slice[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
 
-When two overloads have the same score, the one that takes more arguments through a shape like `&slice[$T]`, instead of a bare `$T`, wins.
+An overload wins when it fits each argument at least as well as every other overload, and one of them better. The scores are not added, so an overload that fits one argument better and another one worse ties with the other, and the call is ambiguous
+```flag
+func f(a: i32, b: $T) -> &strview:
+    return "fixed"
 
-The arguments that are not literals are matched first, so `$T` comes from your variables and the literals adapt to it: `biggest(2, u8(7))` makes `$T` an `u8`.
+func f(a: $T, b: i32|&strview) -> &strview:
+    return "union"
+
+func main():
+    n: i32 = 4
+    print(f(n, n)) # error: ambiguous call to f, no overload matches (i32, i32) at least as well as the others in every argument
+```
+
+The arguments that are not literals are matched first, so `$T` comes from your variables and the literals adapt to it: `biggest(2, u8(7))` makes `$T` an `u8`. A type with a `$T` inside, like `&list[$T]` or `type $T`, fixes `$T` before the others, and an integer given to a bare `$T` grows to it: `append(l, k)` with `l: &list[i64]` and `k: i32` appends `k` as an `i64`. When nothing fixes it, a bare `$T`, or one in a union, takes the widest of the integers given to it: `biggest(a, b)` with `a: i32` and `b: i64` is an `i64` in either order. With `a: i32` and `b: u32` neither holds the other, and nothing matches.
 
 Then `where` removes the overloads whose condition is false.
 
 A module that has a `priv` function with the name of the call chooses among its own functions before the others (see [Modules](#modules)).
 
-If they are still tied the nearest one wins: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one
+When two overloads fit every argument the same, the nearest one wins: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one
 ```
 error: ambiguous call to show, several overloads match (i32) equally
 ```
@@ -473,7 +487,7 @@ func main():
 - after `type` goes a bare `$T`, with no shape and no default value: `type expects a bare $T after it, with no shape and no default value: kind: type $T`. It goes only in a parameter of a `func` with a body, not in an operator, an `extern func`, a function type, a field or a variable
 - it takes nothing when the program runs, and its name is not a value: `kind is the type the call gives, not a value: write $T`. The name is there for a named argument, `make(kind = Point)`
 - a function with one has no function value (see [Function values](#function-values)), and `parallel make(Point)` runs it like any call
-- it's matched like a `$T` (see [Choosing an overload](#choosing-an-overload)): a free one gives 0, and one that another parameter bound takes that type and no other, so `func check(x: $T, kind: type $T)` with `check(u8(3), i64)` is an error. A void type is a type and its only value at once, so `make(Red)` goes to a `type $T` and to a `$T` alike, and with both overloads it's ambiguous. A context is a value in a call, it doesn't go to a `type $T`
+- it's matched like a `$T` inside a type (see [Choosing an overload](#choosing-an-overload)): a free one gives 0 and fixes `$T`, so `func check(x: $T, kind: type $T)` with `check(u8(3), i64)` passes the `u8` as an `i64`, and `check(i64(3), u8)` matches nothing. A void type is a type and its only value at once, so `make(Red)` goes to a `type $T` and to a `$T` alike, and with both overloads it's ambiguous. A context is a value in a call, it doesn't go to a `type $T`
 - `$$n` is not given by hand, it comes from a type like `array[$T, $$n]`
 
 `$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array. It comes through a generic alias too (`func get(x: Opt[$T])` with `type Opt[$T] = $T|null`), and from inside a function type (`less: func($T, $T) -> bool`). In a union one member can carry it, `$T|null` or `(func($T) -> bool)?`, and a `null` given there is fine when another parameter already says what `$T` is.
@@ -527,7 +541,7 @@ error: operator >= follows from <, declare operator < instead
 ```
 Any other operator is an error too: `operator foo cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = +=`.
 
-An operator has two parameters, its left side and its right side, and `not` has one, the value on its right: `operator not(b: *Bits[$$w]) -> Bits[$$w]` gives the numbers that are not in `b`. It's the only unary operator you can declare. An operator can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and so does `not` on `bool`, an integer or a `simd`. One between two numbers of different types could never run, numbers of different types don't mix. `==` and `<` return `bool`.
+An operator has two parameters, its left side and its right side, and `not` has one, the value on its right: `operator not(b: *Bits[$$w]) -> Bits[$$w]` gives the numbers that are not in `b`. It's the only unary operator you can declare. An operator can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and so does `not` on `bool`, an integer or a `simd`. One between two numbers of different types could never run either, the language mixes them or rejects them: `operator + between i32 and i64 can never run, the language handles every pair of numbers`. `==` and `<` return `bool`.
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 

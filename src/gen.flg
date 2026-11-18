@@ -518,7 +518,7 @@ func gen_from(from: usize) -> usize|Fail:
             if (name == "==" or name == "<") and inst.ret != BOOL:
                 return fail("operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name, comp.at)
             if name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
-                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, two numbers of different types do not mix: convert one side before the operator", comp.at)
+                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, the language handles every pair of numbers", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
             right := second
@@ -991,7 +991,7 @@ func gen(n: usize, want: usize) -> Value|Fail:
                         untyped = true
                     elif wanted == VOID or params(f) == order.len:
                         saved := open_frame()
-                        fits = try bind(f, order, typed) >= 0
+                        fits = try bind(f, order, typed) is &list[i64]
                         k: usize = 0
                         while fits and k < order.len:
                             fits = try resolve(kid(f, k) + 1) == typed[k].type

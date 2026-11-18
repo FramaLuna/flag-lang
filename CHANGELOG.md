@@ -30,6 +30,15 @@ Changed
 - A float literal too big for `f64` says so and names infinity, `1e999 does not fit in f64, the largest f64 is 1.7976931348623157e+308: write inf for infinity`, and arithmetic between literals that is not finite is `the result of this literal arithmetic is not finite: write inf or nan`. Both were `this float literal has no finite value`
 - The messages say `expects` and not `takes`, and don't talk to the reader: `this func(i64) expects i64 here but got i32`, `no overload of show is func(f64), a function value is the overload with exactly those parameters`, `close of Lock can fail, and with would drop the error: call close without with and handle what it gives`, and `-memory` says `level goes by value to make, a copy of an Arena: declare the parameter *Arena`
 - A float goes to QBE as its bits, an integer that QBE reads in a float place, where it went as 17 digits that QBE read back: the number is the same, `inf` and `nan` go too, and an `f32` literal is the `f64` rounded once
+- Two integers of different types mix when one holds every value of the other, and the operation is done in the wider one: `u8 + i32` is an `i32`, and `x += y` works with `x: i64` and `y: i32`, where every mix was an error. `u8 + u8` is still an `u8`, and a pair where neither holds the other is `+ cannot mix u64 and i64, neither holds every value of the other: convert one side with u64(...) or i64(...)`
+- Comparisons take any two integers and compare their values: `i64(-1) < u64(0)` is `true`, and `i < l.len` works with `i: i32`, where it was `< expects two numbers of one type`. A literal still has to fit the other side
+- The result of `<<` and `>>` has the type of the left side, and the amount can be of any integer type: `u8(1) << n` with `n: i32` is an `u8`. A literal amount keeps its own type and no longer has to fit the left side
+- An integer argument grows like in an assignment: `f(x)` with `x: i32` calls `func f(n: i64)`, also through a function value, and an integer grows into a union, in a call, an assignment or a `return`: `y: i64|&strview = x`, `return x` in a function that returns `i64?`. The exact type still wins, and between two growths the shorter one: an `i16` goes to `f(i32)` before `f(i64)`. A call that went to a generic `g(v: $T)` can go to a `g(n: i64)` now
+- A bare `$T` that integers give takes the widest of them, in any order: `biggest(a, b)` with `a: i32` and `b: i64` is an `i64`, and `pair(i32(1), u8(2))` matches `pair(a: $T, b: $T)`. A type with a `$T` inside, like `&list[$T]` or `type $T`, fixes `$T` first, and a value for a bare `$T` converts to it: `append(l, k)` with `l: &list[i64]` and `k: i32`, and `check(u8(3), i64)` with `check(x: $T, kind: type $T)`, which were errors
+- An overload is chosen argument by argument: it wins when it fits each argument at least as well as every other overload and one better. Before the scores of the arguments were added, so a call that one overload won by one argument and lost by another is ambiguous now: `ambiguous call to f, no overload matches (i32, i32) at least as well as the others in every argument`
+- The element type of an array literal leaves out an integer that grows into another one in it: `[a, b]` with `a: i32` and `b: i64` is an `array[i64, 2]`, where it was an `array[i32|i64, 2]`
+- An `operator +` between two numbers of different types says why it never runs, `the language handles every pair of numbers`, where it said that they don't mix
+- An integer that does not grow to its place says how to convert it, `cannot assign i64 to i32, an integer only grows by itself: convert it with i32(...)`, where it said `and no operator = makes i32 from it`. `x += y` with `x: i32` and `y: i64` is that error now
 
 New
 - `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
@@ -51,6 +60,10 @@ Fixed
 - QBE stopped with an assertion on rv64 when a big function spilled the condition of a branch more than 2 KiB below its frame pointer, and so did flagc with `-target linux-riscv64`: the address of the slot goes through a register, as for a load. QBE has forty-seven changes
 - `-memory` took the text `join` of core for the wait of a thread, so it lost the temporary that `join(words, "-")` gives, and a `with scratch():` that released it before a read said nothing
 - `func f(a: i32, a: i32)` compiled, and `f(1, 2)` gave 2: two parameters with one name are `variable a is already declared and still in scope`, and so is `for x, x in l`, where the counter hid the element
+- A type with a `$T` inside matches only the type it names: `count(m: &map[$K, &strview])` took a `&map[&strview, &str]` and then failed with `cannot assign &map[&strview, &str] to &map[&strview, &strview]`, and `*$T`, `array[$T, $$n]` and `Thread[$T]` took another type than the `$T` that a parameter before them bound. Now they are `no overload of count matches (&map[&strview, &str])`
+
+Faster
+- Checking the compiler takes 4 % fewer instructions, 918 M where it took 958 M: a call to a function without `$T` makes its instance without matching its arguments again, which choosing the overload already did
 
 ## 0.5.0
 

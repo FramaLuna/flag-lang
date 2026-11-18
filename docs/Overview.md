@@ -128,7 +128,7 @@ if x > 0 and not done:
     count += 1
 mode := "-check" if check else "run"
 ```
-Both sides must have the same type, a literal takes the type of the other side and anything else you convert (see [Variables and Assignments](#variables-and-assignments)). Integers wrap around when they overflow, and dividing by zero stops the program with an error.
+Two integers of different types mix when one holds every value of the other, and the operation is done in the wider one: `u8 + i32` is an `i32`. Otherwise, like `u64` with `i64` or an integer with a float, you convert one side (see [Variables and Assignments](#variables-and-assignments)), and a literal takes the type of the other side. Comparisons take any two integers and compare their values, so `i64(-1) < u64(0)` is `true`. A shift has the type of its left side. Integers wrap around when they overflow, and dividing by zero stops the program with an error.
 
 `not` takes everything up to the next `and`, `or` or `xor`, so `not x == 3` is `not (x == 3)`. Before arithmetic it needs parentheses, `(not x) + 1`, because `not x + 1` could mean either one.
 
@@ -554,13 +554,20 @@ func main():
     port := parse_int("80") ifnull fail("not a number") # port is an i64
 ```
 ### Overloading
-Functions can have the same name with different parameters, the call uses the one that fits best
+Functions can have the same name with different parameters, the call uses the one that fits best: the one that fits each argument at least as well as the others, and one better. An integer grows to a bigger parameter like in an assignment, and the exact type wins
 ```flag
 func describe(n: i32) -> &strview:
     return "an integer"
 
 func describe(t: &strview) -> &strview:
     return "a text"
+
+func twice(n: i64) -> i64:
+    return 2 * n
+
+func main():
+    small: i16 = 4
+    print(describe(small), " ", twice(small)) # an integer 8
 ```
 ### Operator overloading
 You can overload `+ - * / % == < << >> and or xor` for your types, with a function of two parameters, and `not` with a function of one. `!=`, `>`, `<=` and `>=` come from `==` and `<`, and `a += b` uses `+`
@@ -611,6 +618,7 @@ func biggest(a: $T, b: $T) -> $T:
 func size(a: array[$T, $$n]) -> usize:
     return $$n
 ```
+Given integers of different types, a `$T` takes the widest: `biggest(a, b)` with an `i32` and an `i64` is an `i64`. A `$T` inside a type like `&list[$T]` is fixed by it, so `append(l, k)` on a `&list[i64]` takes a `k: i32`.
 A `$T` that no argument gives comes from a parameter that takes a type, `type $T`. The call names the type, and the parameter takes nothing when the program runs
 ```flag
 func make(kind: type $T) -> $T:

@@ -105,6 +105,7 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
             return truth(x > y)
         case ">=":
             return truth(x >= y)
+    compares := o == "==" or o == "!=" or o == "<" or o == "<=" or o == ">" or o == ">="
     if (comp.types[l.type].kind == Simd or comp.types[r.type].kind == Simd) and not try offers(o, ptr([l, r]), at):
         sides: &list[Value]
         append(sides, l)
@@ -129,18 +130,39 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
             return fail("a simd of " + comp.types[lane].name + " has no " + o + ", no processor divides integer lanes: convert it to an array", at)
         if o == "%":
             return fail("% works on integers, and " + shown + " holds floats", at)
-        if o == "==" or o == "!=" or o == "<" or o == "<=" or o == ">" or o == ">=":
+        if compares:
             t = try simd_of(BOOL, comp.types[t].count, at)
         return lanes(o, sides, t, at)
     if (o == "==" or o == "!=") and comp.types[l.type].kind == Array and holds_lanes(l.type):
         return fail(comp.types[l.type].name + " holds simd, whose == answers each lane: compare them with all(a[i] == b[i])", at)
+    amount := (o == "<<" or o == ">>") and integer(l.type) and integer(r.type)
     if l.lit and not r.lit and numeric(l.type) and numeric(r.type):
         l = try convert(l, r.type, Arg{}, at)
-    if r.lit and not l.lit and numeric(r.type) and numeric(l.type):
+    if r.lit and not l.lit and numeric(r.type) and numeric(l.type) and not amount:
         r = try convert(r, l.type, Arg{}, at)
     lt := comp.types[l.type]
     rt := comp.types[r.type]
-    if numeric(l.type) and numeric(r.type) and l.type != r.type:
+    if integer(l.type) and integer(r.type) and l.type != r.type and not amount:
+        if widens(l.type, r.type):
+            return binary(o, try convert(l, r.type, Arg{}, at), r, at)
+        if widens(r.type, l.type):
+            return binary(o, l, try convert(r, l.type, Arg{}, at), at)
+        if not compares:
+            return fail(o + " cannot mix " + lt.name + " and " + rt.name + ", neither holds every value of the other: convert one side with " + lt.name + "(...) or " + rt.name + "(...)", at)
+        if lt.size < 8 and rt.size < 8:
+            return binary(o, try convert(l, I64, Arg{}, at), try convert(r, I64, Arg{}, at), at)
+        unsigned := r.type
+        signed := l
+        if rt.kind == Int:
+            unsigned = l.type
+            signed = r
+        raw := try binary(o, try convert_number(l, unsigned, at), try convert_number(r, unsigned, at), at)
+        if lt.kind != Int and rt.kind != Int:
+            return raw
+        if o == "!=" or o != "==" and (signed.type == l.type) == (o == "<" or o == "<="):
+            return binary("or", try binary("<", try convert(signed, I64, Arg{}, at), literal(false, 0), at), raw, at)
+        return binary("and", try binary(">=", try convert(signed, I64, Arg{}, at), literal(false, 0), at), raw, at)
+    if numeric(l.type) and numeric(r.type) and l.type != r.type and not amount:
         return fail(o + " expects two numbers of one type but got " + lt.name + " and " + rt.name + ", convert one side with " + lt.name + "(...) or " + rt.name + "(...)", at)
     if (o == "and" or o == "or" or o == "xor") and (integer(l.type) and r.type == BOOL or l.type == BOOL and integer(r.type)):
         return fail(o + " expects two integers or two bool but got " + lt.name + " and " + rt.name, at)
@@ -164,16 +186,16 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
         if comp.types[empty].kind == Void and not contains(members(whole), empty):
             return fail(comp.types[whole].name + " can never be " + comp.types[empty].name + ", so this is always true", at)
     k := lt.kind
-    if l.type != r.type or not (k == Bool or k == Int or k == Uint or k == Float or k == Ptr or k == Func):
+    if l.type != r.type and not amount or not (k == Bool or k == Int or k == Uint or k == Float or k == Ptr or k == Func):
         return operate(o, l, r, at)
     x := load(l).at
     y := load(r).at
     name := native(o, k)
     if name.len == 0:
         return operate(o, l, r, at)
-    if o == "==" or o == "!=" or o == "<" or o == "<=" or o == ">" or o == ">=":
+    if compares:
         return Value{type = BOOL, at = op(W, cmp_name(name, l.type), x, y)}
-    if (o == "<<" or o == ">>") and lt.size == 8:
+    if amount and rt.size == 8:
         y = op1(W, "copy", y)
     if k != Float and (o == "/" or o == "%") and y.kind == Const and y.n == 0:
         return fail("division by zero", at)
@@ -588,7 +610,8 @@ func written(label: &strview, t: usize, ret: usize, at: usize) -> usize:
 
 func instantiate_for(f: usize, order: &list[usize], args: &list[Value], taken: *&list[usize], at: usize) -> usize|Fail:
     saved := open_frame()
-    try bind(f, order, args)
+    if generic(f):
+        try bind(f, order, args)
     for k in 0..params(f):
         if text(kid(f, k)) != "..":
             append(taken, try resolve(kid(f, k) + 1))
@@ -609,17 +632,14 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
     if known is usize:
         free(key)
         return known
-    best: usize = 0
-    best_score: i64 = -1
-    best_near: usize = 0
-    tied := false
-    scores: &list[i64]
     here := comp.files[file_of(at)].module
     kept := false
     s := first_sym(name)
     while s != 0:
         kept = kept or comp.syms[s].priv and callable(s, module, args, at)
         s = comp.syms[s].next
+    fits: &list[usize]
+    scores: &list[&list[i64]]
     s = first_sym(name)
     while s != 0:
         f := comp.syms[s].node
@@ -629,33 +649,48 @@ func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&
                 saved := open_frame()
                 score := try bind(f, order, args)
                 close_frame(saved)
-                if score >= 0 and kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
-                    score += PRIVATE
-                append(scores, score)
-                if score > best_score or score >= 0 and score == best_score and near(s, at) < best_near:
-                    best = s
-                    best_score = score
-                    best_near = near(s, at)
-                    tied = false
-                elif score >= 0 and score == best_score and near(s, at) == best_near:
-                    tied = true
+                if score is &list[i64]:
+                    if kept and comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].module == here:
+                        for k in 0..score.len:
+                            score[k] += PRIVATE
+                    append(score, 0 - i64(near(s, at)))
+                    append(fits, s)
+                    append(scores, score)
         s = comp.syms[s].next
-    if tied:
-        failed := fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
-        k: usize = 0
-        s = first_sym(name)
-        while s != 0:
-            if callable(s, module, args, at) and arrange(comp.syms[s].node, args.len, names) is &list[usize]:
-                if scores[k] == best_score:
-                    decl := comp.nodes[comp.syms[s].node].tok
+    best: usize = 0
+    for k in 1..fits.len:
+        if beats(scores[k], scores[best]):
+            best = k
+    for k in 0..fits.len:
+        if k != best and not beats(scores[best], scores[k]):
+            if scores[k] == scores[best]:
+                _ = fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
+            else:
+                _ = fail("ambiguous call to " + name + ", no overload matches (" + listed(args) + ") at least as well as the others in every argument", at)
+            for i in 0..fits.len:
+                beaten := false
+                for j in 0..fits.len:
+                    beaten = beaten or beats(scores[j], scores[i])
+                if not beaten:
+                    decl := comp.nodes[comp.syms[fits[i]].node].tok
                     note("an overload of " + name + " is declared here", comp.tokens[decl].at)
                     if noted(at, name):
                         mark(decl)
-                k += 1
-            s = comp.syms[s].next
-        return failed
-    put(comp.chosen, view(key), best)
-    return best
+            return Fail
+    found: usize = 0
+    if fits.len > 0:
+        found = fits[best]
+    put(comp.chosen, view(key), found)
+    return found
+
+# a fits each argument at least as well as b and one better, or each as well and is declared nearer, which its last score says
+func beats(a: &list[i64], b: &list[i64]) -> bool:
+    better := false
+    for k in 0..a.len - 1:
+        if a[k] < b[k]:
+            return false
+        better = better or a[k] > b[k]
+    return better or a[-1] > b[-1]
 
 func listed(args: &list[Value]) -> &str:
     shown: &str
@@ -711,19 +746,51 @@ func emit(callee: Arg, passes: &list[Pass], ret: usize, foreign: bool, at: usize
         result = extend(ret, result)
     return Value{type = ret, at = result, mem = aggregate(ret)}
 
-func bind(f: usize, order: &list[usize], args: &list[Value]) -> i64|Fail:
-    score: i64 = 0
-    for round in 0..3:
+# the score of each argument, matched in rounds: first what fixes a $T, then a $T alone or in a union, which takes the widest of its integers, then the literals, which take what is bound
+func bind(f: usize, order: &list[usize], args: &list[Value]) -> &list[i64]?|Fail:
+    scores: &list[i64] # -r until round r matches its argument
+    for a in args:
+        append(scores, 0)
+    c := f + 1
+    for k in 0..order.len:
+        if order[k] < args.len and turn(args[order[k]]) > 0:
+            scores[order[k]] = -1 - i64(turn(args[order[k]]))
+        elif order[k] < args.len and loose(c + 1):
+            scores[order[k]] = -1
+        c = node_end(c)
+    for round in 0..4:
+        if round == 1:
+            fixed := comp.binds.len
+            c = f + 1
+            for k in 0..order.len:
+                if order[k] < args.len and scores[order[k]] == -1 and integer(args[order[k]].type):
+                    saved := open_frame()
+                    alone := Item{} # what this integer binds by itself
+                    if try match(c + 1, args[order[k]]) >= 0 and comp.binds.len > comp.frame:
+                        alone = comp.binds[-1]
+                    close_frame(saved)
+                    b := bound(alone.name)
+                    if b == 0 and alone.name.len > 0:
+                        append(comp.binds, alone)
+                    elif b > fixed and widens(comp.binds[b - 1].type, alone.type):
+                        comp.binds[b - 1].type = alone.type
+                c = node_end(c)
+        c = f + 1
         for k in 0..order.len:
-            if order[k] < args.len and turn(args[order[k]]) == round:
-                got := try match(kid(f, k) + 1, args[order[k]])
-                if got < 0 or score < 0:
-                    score = -1
-                else:
-                    score += got
-    if score >= 0 and not try holds_where(f):
-        score = -1
-    return score
+            if order[k] < args.len and scores[order[k]] == -i64(round):
+                got := try match(c + 1, args[order[k]])
+                if got < 0:
+                    return null
+                scores[order[k]] = got
+            c = node_end(c)
+    if not try holds_where(f):
+        return null
+    return scores
+
+# a $T alone or in a union, which takes a value that widens or converts
+func loose(n: usize) -> bool:
+    node := comp.nodes[n]
+    return node.kind == TUnion or node.kind == TUnary and text(n) == "?" or node.kind == TName and comp.tokens[node.tok].kind == Generic
 
 func holds_where(f: usize) -> bool|Fail:
     choosing := comp.choosing
@@ -901,7 +968,7 @@ func match(n: usize, v: Value) -> i64|Fail:
     if node.kind == TUnary and tok.text == "*":
         if t.kind == Ptr:
             inner := try match(n + 1, Value{type = t.elem, at = v.at})
-            if inner < 0:
+            if inner < 0 or try resolve(n + 1) != t.elem:
                 return -1
             return inner + STEP
         pointee := comp.nodes[n + 1]
@@ -948,7 +1015,7 @@ func match(n: usize, v: Value) -> i64|Fail:
         if t.kind != Thread or kids(head) != 1:
             return -1
         inner := try match(head + 1, Value{type = t.elem, at = v.at})
-        if inner < 0:
+        if inner < 0 or try resolve(head + 1) != t.elem:
             return -1
         return inner + STEP
     if (text(head) == "array" or text(head) == "simd") and comp.nodes[head].module.len == 0:
@@ -958,7 +1025,7 @@ func match(n: usize, v: Value) -> i64|Fail:
         if t.kind != shape or not try arg_fits(kid(head, 1), VOID, t.count):
             return -1
         inner := try match(head + 1, Value{type = t.elem, at = v.at})
-        if inner < 0:
+        if inner < 0 or try resolve(head + 1) != t.elem:
             return -1
         return inner + STEP
     if spreads:
@@ -980,7 +1047,7 @@ func match(n: usize, v: Value) -> i64|Fail:
                 return -1
         else:
             inner := try match(c, Value{type = arg.type, at = v.at})
-            if inner < 0:
+            if inner < 0 or try resolve(c) != arg.type:
                 return -1
             score += inner
         c = node_end(c)
@@ -1053,6 +1120,8 @@ func accepts(to: usize, v: Value) -> i64:
         if fits(v, to):
             return STEP
         return -1
+    if widens(v.type, to):
+        return STEP - i64(target.size) # the shortest widening fits best
     if v.lit and comp.types[v.type].kind == Float and target.kind == Float:
         return STEP
     if v.lit and integer(v.type) and target.kind == Float:
@@ -1061,11 +1130,13 @@ func accepts(to: usize, v: Value) -> i64:
         return STEP
     if untagged_member(to, v.type) or untagged_member(v.type, to) or target.kind == Union and within(v.type, to):
         return STEP
+    best: i64 = -1
     if target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged:
         for i in 0..target.count:
-            if accepts(comp.items[target.first + i].type, v) >= 0:
-                return STEP
-    return -1
+            score := accepts(comp.items[target.first + i].type, v)
+            if score > best:
+                best = score
+    return best
 
 func fits(v: Value, t: usize) -> bool:
     if comp.types[t].kind == Uint:
@@ -1184,6 +1255,8 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
         terminate("hlt", Arg{})
         open_block(l_done)
         return Value{type = to, at = slot, mem = true}
+    if integer(v.type) and integer(to):
+        return fail("cannot assign " + from.name + " to " + target.name + ", an integer only grows by itself: convert it with " + target.name + "(...)", at)
     return fail("cannot assign " + from.name + " to " + target.name + ", and no operator = makes " + target.name + " from it", at)
 
 func member_for(to: usize, v: Value, at: usize) -> usize|Fail:
@@ -1327,7 +1400,7 @@ func assignable(to: usize, from: usize, at: usize) -> bool|Fail:
     args: &list[Value]
     append(args, Value{type = to, mem = true})
     append(args, v)
-    if accepts(to, v) >= 0 or widens(from, to) or try offers("=", args, at):
+    if accepts(to, v) >= 0 or try offers("=", args, at):
         return true
     if comp.types[from].kind != Union:
         return false
