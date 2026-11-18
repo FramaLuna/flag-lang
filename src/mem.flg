@@ -39,7 +39,7 @@ MEMBERS = 1 << 14
 UNSETTLED = "its memory use does not settle"
 
 type enum Code:
-    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Join, Detach, Give, Taken, Copy, Fill, Absent, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Give, Taken, Copy, Fill, Absent, Parse, Stop, Extern, Goto, Fork, Leave, Halt
 
 type enum Kind:
     Pinned, Heap, Entry, Shared, Slot
@@ -135,6 +135,7 @@ type Marks:
     gone: Set
     used: Set
     made: Set
+    waited: Set
 
 type State:
     ids: &list[u32]
@@ -488,8 +489,8 @@ func check_memory():
                         mem.ops[k].code = Detach
                     elif core and text(node) == "launch":
                         mem.ops[k].code = Launch
-                    elif core and text(node) == "join":
-                        mem.ops[k].code = Join
+                    elif core and text(node) == "reap":
+                        mem.ops[k].code = Reap
                     elif core and text(node) == "settle":
                         mem.ops[k].code = Plain
                         mem.fns[g].settles = true
@@ -897,7 +898,7 @@ func analyze(f: usize) -> bool:
             ret.dead = ret.dead or bit(GONE)
         relevant = relevant or mem.fn.outer or escaping or ret.live or ret.dead
         m := mem.exit.marks
-        sum.marks = Marks{m.live and relevant, m.freed and relevant, m.killed and relevant, m.sure and relevant, m.gone and relevant, m.used and relevant, m.made and relevant}
+        sum.marks = Marks{m.live and relevant, m.freed and relevant, m.killed and relevant, m.sure and relevant, m.gone and relevant, m.used and relevant, m.made and relevant, m.waited and relevant}
         global = global and mem.fn.heaps
     old := mem.fns[f]
     changed := true
@@ -1184,6 +1185,8 @@ func visit(block: usize):
                             home := home_of(arena_of(ob))
                             for h in passed:
                                 mem.fn.objs[h].home = home
+                    if marks.waited[x]:
+                        reap(b)
                 sweep()
                 if o.blob:
                     h := mem.fn.heads[SLOTS + usize(o.slot)]
@@ -1289,12 +1292,10 @@ func visit(block: usize):
             if empty(out.live):
                 out.live = bit(NOWHERE)
             define(o.to, out)
-        case Join:
-            waited := target_of(mem.args[o.first])
-            touch(waited, mem.fn.names[mem.args[o.first].temp])
-            for h in reach(waited, FromValue) and mem.fn.arenas:
-                if mem.fn.objs[h].born == NONE:
-                    mem.fn.objs[h].born = usize(i) # wait moves the scratch of the thread to the one of this thread
+        case Reap:
+            thread := target_of(mem.args[o.first])
+            touch(thread, mem.fn.names[mem.args[o.first].temp])
+            reap(thread)
         case Launch:
             for h in objects(target_of(mem.args[o.first]).live) and mem.fn.heaps:
                 mem.fn.objs[h].thread = true
@@ -1452,6 +1453,13 @@ func visit(block: usize):
                         escape(cell_value(id), o.pos)
             mem.seen = false
 
+# wait moves the scratch of the thread to the one of this thread, or of the caller when the thread came from it
+func reap(thread: Target):
+    mem.marks.waited = mem.marks.waited or thread.live and mem.fn.outer
+    for h in reach(thread, FromValue) and mem.fn.arenas:
+        if mem.fn.objs[h].born == NONE:
+            mem.fn.objs[h].born = usize(mem.here)
+
 func pass_back(owner: usize, given: Target):
     for views in [false, true]: # settling a word drops its views
         k := mem.fn.heads[owner]
@@ -1515,7 +1523,7 @@ func merge(a: State, b: State, s: usize) -> State:
         return out
     x := a.marks
     y := b.marks
-    out.marks = Marks{x.live or y.live, x.freed or y.freed, x.killed or y.killed, x.sure and y.sure, x.gone and y.gone, x.used or y.used, x.made or y.made}
+    out.marks = Marks{x.live or y.live, x.freed or y.freed, x.killed or y.killed, x.sure and y.sure, x.gone and y.gone, x.used or y.used, x.made or y.made, x.waited or y.waited}
     la := alive(x)
     lb := alive(y)
     dying := not (la or lb)
@@ -2039,7 +2047,7 @@ func birth(key: u64, given: Obj) -> usize:
                 h = c.next
             m := mem.marks
             pair := bit(r) or bit(t)
-            mem.marks = Marks{shift(m.live, r, t), shift(m.freed, r, t), shift(m.killed, r, t), m.sure - pair, m.gone - pair, shift(m.used, r, t), shift(m.made, r, t)}
+            mem.marks = Marks{shift(m.live, r, t), shift(m.freed, r, t), shift(m.killed, r, t), m.sure - pair, m.gone - pair, shift(m.used, r, t), shift(m.made, r, t), shift(m.waited, r, t)}
     b := bit(r)
     mem.marks.live = mem.marks.live or b
     mem.marks.freed = mem.marks.freed - b

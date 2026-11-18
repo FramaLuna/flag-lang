@@ -363,6 +363,12 @@ if data is FsError:
     panic("cannot read the config: " + data)
 print(data.len) # data is a &str here
 ```
+`assert` narrows the same way, and when its condition is false it stops the program and says what was there (see [When the program fails](#when-the-program-fails))
+```flag
+data := read_file("config.txt")
+assert data is &str
+print(data.len)
+```
 A block cannot be empty, `pass` is the statement that does nothing
 ```flag
 if color is Red:
@@ -517,7 +523,7 @@ func main():
     label("b", 10)
     label("c", bold = true)
 ```
-The default is computed where you call the function, so `@here()` as a default gives the function the place of the call, that's how `assert` and the index errors know where they happened
+The default is computed where you call the function, so `@here()` as a default gives the function the place of the call, that's how `panic` and the index errors know where they happened
 ```flag
 func log(message: &strview, place: &strview = @here()):
     print(place, ": ", message)
@@ -832,7 +838,7 @@ func deeper():
 What all the threads share is a file variable (see [File variables](#file-variables)).
 
 ## Threads
-`parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait t` waits for the thread to end and gives its result. A computation split in pieces
+`parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait(t)` waits for the thread to end and gives its result. A computation split in pieces
 ```flag
 func sum(from: i64, to: i64) -> i64:
     total: i64 = 0
@@ -848,7 +854,7 @@ func main():
         append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
     total: i64 = 0
     for p in pieces:
-        total += wait p
+        total += wait(p)
     print(total)
 ```
 The arguments are computed where you call and copied to the new thread, and the result can be anything a function returns, text you own, an error to handle or a temporary: `wait` takes the temporaries of the thread into the ones of the thread that waits, as if a call had made them. `done(t)` asks if the thread ended without waiting, like a game that loads its level while it keeps drawing
@@ -856,7 +862,7 @@ The arguments are computed where you call and copied to the new thread, and the 
 level := parallel load("castle.map")
 while not done(level):
     draw_loading_screen()
-start(try wait level)
+start(try wait(level))
 ```
 `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements, so the thread can use what `main` keeps. A thread you keep must be read, by `wait` or `done`, and `-memory` warns about one that is never waited. A function that can fail can't run alone, its error would be lost.
 
@@ -890,7 +896,7 @@ func main():
         send(jobs, owned)
     close(jobs)
     for w in workers:
-        wait w
+        wait(w)
 ```
 `print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it. What the threads change at once in shared memory is yours to guard.
 
@@ -963,7 +969,7 @@ flag: index 5 is out of bounds, length 3
   in load, main.flg:20
   in main, main.flg:31
 ```
-`assert` checks a condition, and it can take a message: `assert(total > 0, "the total cannot be empty")`.
+`assert` checks a condition and says what was there when it's false: `assert total == 4` stops with `flag: total == 4 is false, total is 3`, and `assert f is File` with `flag: f is FsError, not File: cannot open config.txt: No such file or directory`. A message after a comma replaces that, `assert total > 0, "the total cannot be empty"`.
 
 A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own.
 
@@ -1151,7 +1157,7 @@ The rest of the flags are in [The command line](Reference.md#the-command-line).
 `flagc test` builds your files and runs their tests: every `func test_name()`. Each test runs in a process of its own, at the same time as the others, so a failed `assert`, a crash or a test that never ends doesn't stop the rest
 ```flag
 func test_gcd():
-    assert(gcd(12, 18) == 6)
+    assert gcd(12, 18) == 6
 ```
 ```sh
 flagc test src -- gcd

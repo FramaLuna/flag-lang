@@ -32,7 +32,6 @@ The functions that take an index or a `File` also have a last parameter `place: 
 - `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
 - `eprint(values...)` the same to the error output
 - `panic(message: &strview) -> never` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
-- `assert(condition: bool, message: &strview = "assertion failed")` panics with the message when the condition is false
 - `exit(code: i32) -> never` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
 The arguments of the program are `args()` of [os](#os).
@@ -112,8 +111,9 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 - `windows_errno(code: u32) -> i32` the errno of a code of `GetLastError`, the one the C library of Windows gives for it, and the code negative when errno has none: `FsError{windows_errno(GetLastError()), "lock", path}`
 
 ### Threads
-`parallel f(x)`, `wait t` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
-- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait t` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
+`parallel f(x)` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
+- `wait(t: Thread[$T]) -> $T` waits for the thread to end and gives what its function returned, `null` for a `Thread[null]`. It frees the block of the thread, so a thread is waited once, and the temporaries of the thread go to the scratch of the one that waits. A `wait` of yours for a `Thread` is an error, `wait of Thread belongs to the language, it cannot be declared again`, and for any other type it's an overload like any other. Of a `Thread` that never got a thread it stops the program: `flag: wait of a thread that was never started`
+- `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait(t)` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
 - `cores() -> usize` how many processors the system has online, to split a job in as many threads
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
@@ -149,7 +149,7 @@ func main():
     for k in 0..cores():
         append(workers, parallel add(1000))
     for w in workers:
-        wait w
+        wait(w)
     print(counter.count) # 1000 for each core
 
     jobs: Channel[i32, 8]
@@ -160,7 +160,7 @@ func main():
     close(jobs)
     for r in results:
         print(r) # 1, 4 and 9
-    wait t
+    wait(t)
 ```
 
 ### Memory
@@ -408,7 +408,7 @@ A program can also run while yours goes on, talking to it through its standard i
 - `start(program: &slice[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
 - `p.input` is a `File` that the program reads as its standard input, and `p.output` one with what it writes to its standard output. They are files like any other, so `write`, `read_line`, `read`, `ready` and `close` work on them. `close(p.input)` gives the program the end of its input, and close `p.output` when you no longer read it
 - `done(p: Process) -> bool` if it ended, without waiting
-- `wait p` waits for it to end and gives its exit code, like `run`. It's `join(p: *Process) -> i32` (see [Protocol functions](Reference.md#protocol-functions)), and it leaves `p.id` at 0: like a thread, a process is waited once, and a copy of it that you wait again is gone. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
+- `wait(p: *Process) -> i32` waits for it to end and gives its exit code, like `run`, and it leaves `p.id` at 0: like a thread, a process is waited once, and a copy of it that you wait again is gone. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
 - `kill(p: Process)` ends it at once, and `wait` then gives 137, 128 plus `SIGKILL`, on every system
 - `id` is the number of the system for it, the pid, or a handle on Windows. `done`, `wait` and `kill` of a `Process` with `id` 0, one never started or waited already, stop the program: `flag: kill of a process that is not running: it was never started, or it was waited already`. So does `wait` of a copy waited already on Linux and macOS. On Windows the handle of a copy may be another one by then, so don't keep copies of a `Process` you wait
 
@@ -428,7 +428,7 @@ func main():
             break
         print(line) # apple, then pear
     close(p.output)
-    print(wait p) # 0
+    print(wait(p)) # 0
 ```
 What you write to `p.input` waits in the file like any other, and it goes out with `flush`, before your program waits to read, and in `ready`, `done` and `wait`. Writing to a program that ended is a failed write, that `flush` tells you, and not a signal that ends yours.
 

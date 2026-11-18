@@ -127,8 +127,8 @@ A file given twice is loaded once. The paths in the errors are the ones you gave
 ### Keywords
 These words are the language, so nothing you declare can have one as its name, not a variable, a parameter, a constant, a function, a type, a field or a module
 ```
-if elif else while for in switch case break continue return defer with pass
-and or xor not is as try trust parallel wait iferror ifnull true false null
+if elif else while for in switch case break continue return assert defer with pass
+and or xor not is as try trust parallel iferror ifnull true false null
 ```
 ```
 error: 'return' is a keyword of the language, it cannot be used as a name
@@ -241,7 +241,7 @@ From the loosest to the tightest
 10. `*`, `/`, `%`
 11. `as`
 
-The other unary operators (`-`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them, and they take the whole chain of calls, fields and indexes after them: `try get().x` is `try (get().x)`. A field of what `try` or `trust` leaves goes after parentheses, and without them the error says so: `try applies to the whole of get().x, and Bad|P has no field x: write (try get()).x`.
+The other unary operators (`-`, `try`, `trust`, `parallel`) are tighter than all of them, and they take the whole chain of calls, fields and indexes after them: `try get().x` is `try (get().x)`. A field of what `try` or `trust` leaves goes after parentheses, and without them the error says so: `try applies to the whole of get().x, and Bad|P has no field x: write (try get()).x`.
 
 `not` takes everything up to the next `and`, `or` or `xor`, like in Python: `not x == 3` is `not (x == 3)`, and `if not line is &strview:` narrows like the `else` of `is`. On the right of an operator tighter than it, `not` goes in parentheses: `x == not y` is `not is looser than ==, write (not y)`. A `not` followed by arithmetic, `as` or a shift can be read two ways, so it's an error that gives both: `not x + 1 needs parentheses, write (not x) + 1 to flip the bits of x, or not (x + 1)`.
 
@@ -316,6 +316,7 @@ The rules
 - `while x is T:` narrows the body, not after the loop
 - `switch x:` narrows each case to the types it names, and the default to the rest (see [switch](#switch))
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it. A branch leaves with `return`, `break`, `continue`, or a call to a function that returns `never`, like `panic` (see [Returns](#returns))
+- `assert c` narrows what follows like `if not c: panic(...)`, so `assert x is T` leaves `x` a `T` and `assert x != null` leaves it without `null` (see [assert](#assert))
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
 `==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Like `is`, a `==` with a void type that the other side can never be is an error, `Green|Blue can never be Red, so this is always false`, and with `!=` it is always true. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
@@ -421,7 +422,6 @@ The compiler calls some functions by their name, so you make your types work wit
 | `for v in x` | `iter(x)` and then `next(ptr(state))` |
 | `for v in reverse x` | `reverse_iter(x)` and then `next` |
 | `with x:` | `close(x)` |
-| `wait x` | `join(x)`, when `x` is not a `Thread`. A `Process` of `os` has one (see [Other programs](Library.md#other-programs)) |
 | `{k: v}` | `put` |
 | `print(a, b)` | formats the values with `+=` into one line, and `write(stdout, line)` |
 | `"a" + x`, `s += x` | `operator +=(s: *&str, x: T)` |
@@ -630,6 +630,20 @@ for text in texts:
 
 When `a ifnull b` or `a iferror b` is a whole statement, its last link can also be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Anywhere else the right side gives the value, so an assignment there is an error: `an assignment on the right of ifnull is a statement of its own, n would be left without a value`.
 
+### assert
+`assert c` stops the program when `c` is false, with exit code 134, the place and the chain of calls, like `panic`. Its message says what was false and what was there, written as `print` writes it
+- a comparison gives each side that is computed when the program runs, not a literal or a constant: `flag: total == 4 is false, total is 3`, `flag: first(l) == last is false, first(l) is 1 and last is 2`
+- `x is T` gives what `x` holds, and its value when it has one: `flag: f is FsError, not File: cannot open config.txt: No such file or directory`, `flag: last is null, not i32`
+- any other condition gives itself: `flag: ready is false`
+
+`assert c, message` writes the message instead, any value `print` writes, computed only when `c` is false: `assert total > 0, "the total cannot be empty"`. After it `c` holds, so it narrows like `if not c: panic(...)` (see [Unions and narrowing](#unions-and-narrowing))
+```flag
+f := open("config.txt")
+assert f is File
+print(trust read_line(f))
+```
+Unlike `panic`, `assert false` doesn't end the path, so a function still returns on every path after it: code that is never reached calls `panic`. `assert` is a keyword, so a function of yours cannot take its name.
+
 ### Runtime errors
 These stop the program, and write the message to the error output
 | Message | Exit code |
@@ -637,7 +651,7 @@ These stop the program, and write the message to the error output
 | `flag: index 5 is out of bounds, length 3` | 134 |
 | `flag: slice 2:9 is out of bounds, length 3` | 134 |
 | `flag: division by zero` | 134 |
-| `flag: assertion failed`, or the message of `assert(condition, message)` | 134 |
+| `flag: total == 4 is false, total is 3`, or the message of `assert condition, message` (see [assert](#assert)) | 134 |
 | `flag: <text>` (from `panic`) | 134 |
 | `flag: call of an empty function value` | 134 |
 | `flag: an argument is an empty function value` | 134 |
@@ -734,7 +748,7 @@ The threads share the file variables and nothing protects them, so what more tha
 A context is a value of each thread, with its fields at zero, that every function sees. Each thread has its own: a new thread starts with every context at zero and doesn't see what the thread that started it wrote there. That's why the scratch memory (see [Memory](#memory)) and the random numbers of `math` belong to the thread that uses them. A union without `null` inside it gets its tag when the thread starts, the first one before `main` (see [Unions](#unions)), so a context takes no room in the program file however big it is, except on Windows, which keeps the zeros of thread data in the file. C code that runs before `main`, like a constructor in a C file you link, would see those unions without their tag. A context has only fields, no values, and a nested block makes a type like `app.inner`. It's also a type and a value, so you can print it or take `ptr(app.depth)`, an address that is good while that thread runs. Who can see it follows the module rules, like a type.
 
 ## Threads
-`parallel f(x)` runs the call `f(x)` in a new thread and gives a `Thread[T]`, where `T` is what `f` returns, `Thread[null]` when it returns nothing. `wait t` waits for that thread to end and gives its `T`, and `done(t)` says if it ended, without waiting
+`parallel f(x)` runs the call `f(x)` in a new thread and gives a `Thread[T]`, where `T` is what `f` returns, `Thread[null]` when it returns nothing. `wait(t)` waits for that thread to end and gives its `T`, and `done(t)` says if it ended, without waiting
 ```flag
 func sum(from: i64, to: i64) -> i64:
     total: i64 = 0
@@ -745,16 +759,16 @@ func sum(from: i64, to: i64) -> i64:
 func main():
     a := parallel sum(0, 500000)
     b := parallel sum(500000, 1000000)
-    print(wait a + wait b)
+    print(wait(a) + wait(b))
 ```
 - `parallel` goes before a call and nothing else: `parallel goes before a call, it runs that call in a new thread: parallel f(x)`. The call is chosen like any other, with its overloads, generics, defaults, `@here()` and the address that a `*T` parameter takes, and its arguments are computed in the thread that starts it and copied to the new one. A function value runs too, `parallel steps[i](x)`. A builtin like `print` or a conversion, and a C function, don't run in a thread: wrap them in a func
-- `parallel` and `wait` are unary operators like `try`, with its precedence. `wait t` alone on its line drops the value like a call does, so an error in it must be handled (see [Errors](#errors)), and `x := wait t` with a `Thread[null]` is `a function that returns nothing is a statement, not a value`. `wait` of anything else calls `join` (see [Protocol functions](#protocol-functions)), and a value without one is `wait expects a thread on its right, or a value with a join of its own, and i32 is neither`
+- `parallel` is a unary operator like `try`, with its precedence. `wait(t: Thread[$T]) -> $T` is a function of core, written in Flag: `wait(t)` alone on its line drops the value like any call, so an error in it must be handled (see [Errors](#errors)), and `x := wait(t)` of a `Thread[null]` is `null`, so a generic function can `return wait(t)` for any thread. A type of yours is waited by declaring a `wait` for it, like the `wait(p: *Process)` of `os` (see [Other programs](Library.md#other-programs)), but the one of a thread belongs to the language: `wait of Thread belongs to the language, it cannot be declared again`
 - A local variable that keeps a thread and that nothing reads doesn't compile: `t keeps a thread and nothing reads it: wait for it, or start it with parallel f(x) alone on its line to let it run on its own`
 - `parallel f(x)` alone on its line starts a thread that nobody waits for. Its function can't fail, nothing would see the error: `this thread runs alone and nothing would see an error of i32|Bad, which its function gives: keep the thread and wait for it, t := parallel f(x)`
 - `Thread[T]` is 8 bytes, the address of a block on the heap where the thread finds its arguments and leaves its result. `wait` frees the block, so a thread is waited once, and one that nobody waits is a block that is never freed, `-memory` tells you. The block of a thread that runs alone is freed when it ends. A `Thread` that never got a thread, like a field at zero, stops the program when it's waited or given to `done`: `flag: wait of a thread that was never started`, `flag: done of a thread that was never started`
 - Every thread ends before the program does: when `main` ends, before its deferred statements run, it waits for the threads that still run, so a thread that runs alone can use the variables of `main` and what they own. Then the program writes what waits in the files. `main` waits only in a program that has a `parallel`. A library has no `main`, so nothing waits for a thread it leaves alone (see [Libraries](#libraries)). `exit()` in any thread ends all of them, and a runtime error or a crash in any thread ends the program with its message, its place and the chain of calls of that thread (see [Runtime errors](#runtime-errors)). When two threads fail at once, the first one writes its report and the others wait for the end, so two reports never mix
 - Each thread that `parallel` starts has 8 MiB of stack, on every system. The first thread, the one of `main`, has the stack of the system: 8 MiB on Linux and macOS, and 1 MiB on Windows
-- Each thread has its own contexts, at zero when it starts, and its own scratch memory. `wait` takes the blocks of the scratch of the thread that ended into the scratch of the thread that waits, as if a call had made those temporaries, so the result can be a temporary, like the path of an error of `read`, until the `with scratch():` around the `wait` ends. A thread that nobody waits frees its scratch when it ends, and so does one whose result holds no pointer. An argument is copied as it is, so a temporary given to a thread still lives in the scratch of the thread that started it: give the other thread text you own, a `&str`
+- Each thread has its own contexts, at zero when it starts, and its own scratch memory. `wait` takes the blocks of the scratch of the thread that ended into the scratch of the thread that waits, as if a call had made those temporaries, so the result can be a temporary, like the path of an error of `read`, until the `with scratch():` around the `wait` ends, also when the `wait` is inside a function of yours that the `with` calls. A thread that nobody waits frees its scratch when it ends, and so does one whose result holds no pointer. An argument is copied as it is, so a temporary given to a thread still lives in the scratch of the thread that started it: give the other thread text you own, a `&str`
 - File variables are shared and nothing protects them, guard what two threads change with a `Lock`, an `Arena` too. `-memory` doesn't look for two threads that use the same memory at once
 
 `Lock`, `Channel[T, N]`, `done` and `cores` are in the library (see [Threads](Library.md#threads)).
@@ -836,9 +850,9 @@ The pointer of `arena(a, v)` doesn't know its arena, and `free` of it is a mista
 - temporaries used after their `with scratch():` ended: `kept points to memory that may be freed already`
 - a pointer to a local variable that leaves its function: `a pointer to buf cannot leave name, buf lives on its stack`
 - a function that frees one argument and reads another that may be the same memory, like `t += t`: `this call may free memory that it also reads through another argument`
-- threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait t` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it, that goes with a thread that runs alone, or that goes to a `Channel` that is not a local variable of the function. `main` waits for the threads that run alone before its variables end, so there they are clean. A library has no `main`, so there a thread that runs alone is a warning of its own: `this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close`
+- threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait(t)` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` leaves the function is `a pointer to x cannot leave start, x lives on its stack`, and so is any pointer to the stack kept in a block of the heap that leaves it, that goes with a thread that runs alone, or that goes to a `Channel` that is not a local variable of the function. `main` waits for the threads that run alone before its variables end, so there they are clean. A library has no `main`, so there a thread that runs alone is a warning of its own: `this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close`
 - `send` of a `Channel` gives what the value owns to the thread that receives it: the memory of a `&str`, `&list` or `&map`, the heap block that a pointer points to the start of, and a `Thread`. It's not yours to free any more, and using it after is using memory that may be freed already. A view, the arena of a text and a pointer inside a block stay yours
-- a temporary that a thread may still use when its `with scratch():` releases it, given to `parallel f(x)` or sent with `send`: `a thread may still use this temporary when its with scratch() releases it: wait for the thread inside it, or give it a &str`, with a note at the `with`. A thread waited inside the same `with scratch():` is clean. A thread that runs alone, in a function that is not `main`, can outlive any scratch: `a thread may still use this temporary when the with scratch() of a caller releases it: give the thread a &str`. What a thread gives back lives in the scratch of the thread that waits, until the `with scratch():` around the `wait`
+- a temporary that a thread may still use when its `with scratch():` releases it, given to `parallel f(x)` or sent with `send`: `a thread may still use this temporary when its with scratch() releases it: wait for the thread inside it, or give it a &str`, with a note at the `with`. A thread waited inside the same `with scratch():` is clean. A thread that runs alone, in a function that is not `main`, can outlive any scratch: `a thread may still use this temporary when the with scratch() of a caller releases it: give the thread a &str`. What a thread gives back lives in the scratch of the thread that waits, until the `with scratch():` around the `wait`, and that follows a `wait` inside a function into its callers
 - a copy of an `Arena`, a `Lock` or a `Channel` in use, also inside a struct or an element of a list: an `Arena` that gave memory, a `Lock` that was taken, a `Channel` that was used. `this copies level, an Arena that may have given memory: the copy gives out the same blocks, use a pointer to it` and `this copies the Channel jobs in pool, that may be in use: the copy is another channel, use a pointer to it`. A copy at zero, like `w := World{}` or `append(worlds, World{})`, is clean. A function of yours that takes one by value warns at every call: `make takes level by value, a copy of an Arena: make it take *Arena`
 - memory of an arena used after `free` or `clear` of the arena, like a temporary after its `with scratch():`: `boss points to memory that may be freed already`, with a note at the `free` or `clear`. Through a function too, `reset(level)` that calls `clear`
 - freeing what lives in an arena: `free cannot release boss, it lives in level, free(level) releases it`, and with the arena in a struct, `free cannot release level.boss, it lives in level.arena, free(level.arena) releases it`
@@ -1017,7 +1031,7 @@ A function takes the name of C you give it after `=`, so a C function can have a
 extern "objc":
     func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
     func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
-    func wait_child(status: *i32) -> i32 = "wait" # wait is a word of Flag
+    func wait_child(status: *i32) -> i32 = "wait"
 ```
 The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't start with a digit or `$`, and goes after what the function returns, before its `where`. Only a function of an `extern` block takes one: `only a func of an extern block takes = "symbol", the C function it calls`.
 

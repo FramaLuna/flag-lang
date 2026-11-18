@@ -34,7 +34,7 @@ type Use:
 type enum NodeKind:
     Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Constant, Assign
     TName, TUnary, TUnion, TFunc
-    Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
+    Block, Return, If, While, For, Switch, Case, Jump, Assert, Defer, With, Where
     Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Choice, Items, Pairs
 
 type Node:
@@ -685,7 +685,7 @@ func main() -> i32:
             send(ptr(queue), j)
         close(ptr(queue))
         for w in workers:
-            wait w
+            wait(w)
         failures: usize = 0
         for j, k in chosen:
             ended := codes[j]
@@ -727,7 +727,7 @@ func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], co
         while got > 0:
             got = read(p.output, ptr(said[j]), 65536) iferror 0
         close(p.output)
-        codes[j] = wait p
+        codes[j] = wait(p)
 
 func ran(command: &slice[&strview], why: &strview) -> bool:
     code := run(command)

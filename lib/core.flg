@@ -108,10 +108,6 @@ func panic(message: &strview, place: &strview = @here()) -> never:
     trace(Crash{frame, 0, frame, 0, 0})
     exit(134)
 
-func assert(condition: bool, message: &strview = "assertion failed", place: &strview = @here()):
-    if not condition:
-        panic(message, place)
-
 type cstr = *u8
 
 func cstr(text: &strview) -> cstr:
@@ -1187,6 +1183,8 @@ priv type Started: # the start of the block of a thread, the result goes after i
     alone: bool
     left: Arena # the temporaries the result may point to, for the thread that waits
 
+priv HEAD = 64 # where the compiler puts the result of a thread
+
 priv type Threads:
     lock: Lock
     changed: Condition
@@ -1238,7 +1236,7 @@ priv func finished(block: *bytes, pointing: bool):
         free(block)
 
 # the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
-priv func join(block: *bytes, place: &strview):
+priv func reap(block: *bytes, place: &strview):
     if block as usize == 0:
         panic("wait of a thread that was never started", place)
     t := block as *Started
@@ -1284,6 +1282,11 @@ priv func settle():
     with lock(threads.lock):
         while threads.running > 0:
             pause(threads.changed, threads.lock)
+
+func wait(t: Thread[$T], place: &strview = @here()) -> $T:
+    reap(t as *bytes, place)
+    defer free(t as *bytes)
+    return ((t as usize + HEAD) as *$T).*
 
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
     if t as usize == 0:

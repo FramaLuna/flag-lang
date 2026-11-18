@@ -15,6 +15,8 @@ Changed
 - A test of bits without parentheses says why it fails and writes them, `and is looser than !=, so it mixes the bits of u32 with a bool: write (flags and MASK) != 0`, and any other integer next to a `bool` is `or expects two integers or two bool but got u32 and bool`. Before both were `no function named and is visible here`
 - `try get().x` says that `try` takes the whole chain, `try applies to the whole of get().x, and Bad|P has no field x: write (try get()).x`, and so does `trust`, where before the error spoke of narrowing
 - `try` on a union with `null` and no error proposes how to pass the `null` up: `null|i64 never fails, there is no error to try for: pass the null up with ifnull return null`
+- `wait` is a function of core written in Flag, `wait(t: Thread[$T]) -> $T`, and no longer a keyword or an operator: `wait t` is `wait(t)`, and `wait a + wait b` is `wait(a) + wait(b)`. `x := wait(t)` of a `Thread[null]` is `null`, where it was `a function that returns nothing is a statement, not a value`, so a generic function can `return wait(t)` for any thread. `join` is no longer a protocol: a type of yours is waited by declaring a `wait` for it, and the `Process` of `os` has `wait(p: *Process) -> i32`, that was `join`. A `wait` for a `Thread` cannot be declared, `wait of Thread belongs to the language, it cannot be declared again`, and `wait` of a value that is not a thread is `no overload of wait matches (i32)`
+- `assert` is a statement and a keyword, no longer a function of core: `assert c` and `assert c, message`, where it was `assert(c, message)`. It narrows what follows like `if not c: panic(...)`, so `assert f is File` leaves `f` a `File` and `assert x != null` leaves `x` without `null`. Its message says what was false and what was there, where it was `assertion failed`: a comparison gives the sides computed when the program runs, `total == 4 is false, total is 3`, `x is T` what `x` holds, `f is FsError, not File: cannot open config.txt: No such file or directory`, and any other condition itself, `ready is false`. The message after the comma can be any value that `print` writes, and runs only when the condition is false. Unlike `panic`, `assert false` doesn't end the path
 
 New
 - `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
@@ -26,6 +28,10 @@ New
 - `return`, `break` and `continue` go as the last link of `iferror` and `ifnull`, and leave like a call that never returns, so the value has no error or `null` after them: `cut := find(line, "=") ifnull return BadLine{i + 1}`, `n := parse_int(text) ifnull return null`, `total += parse_int(text) ifnull continue`. A default value cannot hold them, it runs in the caller: `a default value runs in the caller, so return would return from the caller: write a value after ifnull`
 - When `a ifnull b` or `a iferror b` is a whole statement, `b` can be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Where a value is needed it's an error, `an assignment on the right of ifnull is a statement of its own, n would be left without a value`
 - `x == null` and `x != null`, and `==` and `!=` with any void type of the union, narrow like `is`, in both orders: `if x != null:` narrows the block, `if x == null: return` leaves `x` without `null`, and `c == Red` narrows an enum
+
+Fixed
+- `-memory` follows the temporaries of a thread through a function that waits for it: `s = finish(t)` inside a `with scratch():`, with a `finish` of yours that returns `wait(t)`, and `print(s)` after the `with` warns `s points to memory that may be freed already`, like a `wait` in place did
+- `-memory` took the text `join` of core for the wait of a thread, so it lost the temporary that `join(words, "-")` gives, and a `with scratch():` that released it before a read said nothing
 
 ## 0.5.0
 

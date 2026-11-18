@@ -144,7 +144,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                     try passing(try resolve(c + 1), true, comp.tokens[comp.nodes[c].tok].at)
                 c = node_end(c)
         name := text(f)
-        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter"):
+        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter" or name == "wait"):
             saved := open_frame()
             for i in kid(f, 0)..kid(f, params(f)):
                 t := comp.tokens[comp.nodes[i].tok]
@@ -158,6 +158,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             if comp.types[first].kind == Ptr:
                 target = comp.types[first].elem
             owned := sequence(first) or textual(first) or comp.types[target].kind == Array
+            if name == "wait":
+                owned = comp.types[target].kind == Thread and file_of(comp.tokens[comp.nodes[f].tok].at) != 0
             if name == "at":
                 owned = false
                 if params(f) > 1 and (sequence(target) or textual(target) or comp.types[target].kind == Array):
@@ -167,6 +169,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             close_frame(saved)
             shown := comp.types[target].name
             shown = shown[:find(shown, "[") ifnull shown.len]
+            if owned and name == "wait":
+                return fail("wait of " + shown + " belongs to the language, it cannot be declared again", comp.tokens[comp.nodes[f].tok].at)
             if owned and name == "at":
                 return fail("x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
             if owned:
@@ -827,6 +831,71 @@ func gen(n: usize, want: usize) -> Value|Fail:
             jump(l.exit)
         else:
             jump(l.again)
+        return none
+    case Assert:
+        cond := n + 1
+        o := text(cond)
+        sign := comp.nodes[cond].tok
+        first := node.tok + 1
+        last := first
+        while unclosed(first, last) > 0 or comp.tokens[last + 1].text != "," and comp.tokens[last + 1].kind != Line:
+            last += 1
+        sides: &list[Value]
+        c: Value
+        switch o:
+        case "==", "!=", "<", ">", "<=", ">=":
+            append(sides, try value(cond + 1, VOID))
+            append(sides, try value(node_end(cond + 1), VOID))
+            c = try condition_of(try binary(o, sides[0], sides[1], comp.tokens[sign].at), cond)
+        case "is":
+            append(sides, try value(cond + 1, VOID))
+            c = try is_test(sides[0], cond)
+        case:
+            c = try condition(cond)
+        l_fail := label()
+        l_ok := label()
+        branch(c.at, l_ok, l_fail)
+        open_block(l_fail)
+        line := Value{type = try fat_type("str", VOID, tok.at), mem = true, place = true}
+        line.at = alloc(line.type)
+        zero(line.type, line.at)
+        if kids(n) == 2:
+            try put_text(line, try value(node_end(cond), VOID), at_of(node_end(cond)))
+        elif o == "is":
+            wanted := members(try resolve(node_end(cond + 1)))
+            l_done := label()
+            for m in members(sides[0].type):
+                if not contains(wanted, m):
+                    l_arm := label()
+                    l_next := label()
+                    branch(op(W, "ceqw", tag(sides[0]), tag_of(m)), l_arm, l_next)
+                    open_block(l_arm)
+                    try put_words(line, spelled(first, sign - 1) + " is " + comp.types[m].name + ", not " + spelled(sign + 1, last), tok.at)
+                    if comp.types[m].kind != Void:
+                        try put_words(line, ": ", tok.at)
+                        try put_text(line, Value{type = m, at = payload(sides[0].at, m), mem = true}, tok.at)
+                    jump(l_done)
+                    open_block(l_next)
+            terminate("hlt", Arg{})
+            open_block(l_done)
+        elif spelled(first, last) == "false":
+            try put_words(line, "assertion failed", tok.at)
+        else:
+            try put_words(line, spelled(first, last) + " is false", tok.at)
+            joiner: &strview = ", "
+            for k, side in sides:
+                if not side.lit and comp.types[side.type].kind != Void:
+                    shown := spelled(first, sign - 1)
+                    if k == 1:
+                        shown = spelled(sign + 1, last)
+                    try put_words(line, joiner + shown + " is ", tok.at)
+                    try put_text(line, side, tok.at)
+                    joiner = " and "
+        args: &list[Value]
+        append(args, line)
+        try invoke("panic", args, tok.at)
+        open_block(l_ok)
+        try narrow(cond, true)
         return none
     case Defer:
         last := node.tok
@@ -1854,27 +1923,6 @@ func operation(n: usize, want: usize) -> Value|Fail:
             return called(n + 1, VOID, true)
         v := try value(n + 1, VOID)
         t := comp.types[v.type]
-        if o == "wait" and t.kind != Thread:
-            waited: &list[Value]
-            append(waited, v)
-            if not try offers("join", waited, tok.at):
-                return fail("wait expects a thread on its right, or a value with a join of its own, and " + t.name + " is neither: t := parallel f(x)", tok.at)
-            return invoke("join", waited, tok.at)
-        if o == "wait":
-            args: &list[Value]
-            append(args, Value{type = pointer(BYTES), at = load(v).at})
-            append(args, try place_of(tok.at))
-            try runtime("join", args, tok.at)
-            args.len = 1
-            result := none
-            here := comp.at
-            comp.at = tok.at # -memory reports the copy where join is
-            if t.elem != NULL:
-                result = Value{type = t.elem, at = alloc(t.elem), mem = true}
-                store(t.elem, Value{type = t.elem, at = offset(args[0].at, HEAD), mem = true}, result.at)
-            comp.at = here
-            try invoke("free", args, tok.at)
-            return result
         if o == ".*":
             if t.kind == Fat:
                 return Value{type = BYTES, at = op1(L, "loadl", v.at), mem = true, place = true}
@@ -1955,25 +2003,7 @@ func operation(n: usize, want: usize) -> Value|Fail:
     left := n + 1
     right := node_end(left)
     if o == "is":
-        v := try value(left, VOID)
-        wanted := try resolve(right)
-        if comp.types[v.type].kind == Untagged:
-            return fail(comp.types[v.type].name + " has no tag for is to test, read it with as", tok.at)
-        if comp.types[v.type].kind != Union:
-            if local_of(left) != 0:
-                if comp.types[comp.vars[declaration(text(left))].type].kind == Union:
-                    return fail(text(left) + " is already " + comp.types[v.type].name + " here, it was narrowed above and there is nothing left to test", tok.at)
-            return fail("is expects a union on its left, " + comp.types[v.type].name + " is a plain type", tok.at)
-        tags: &list[usize]
-        asked := members(wanted)
-        for m in members(v.type):
-            if contains(asked, m):
-                append(tags, m)
-        if tags.len == 0:
-            return fail(comp.types[v.type].name + " can never be " + comp.types[wanted].name + ", so this is always false", tok.at)
-        if tags.len == members(v.type).len:
-            return fail(comp.types[v.type].name + " is always " + comp.types[wanted].name + ", so this is always true", tok.at)
-        return Value{type = BOOL, at = tag_test(v, tags)}
+        return is_test(try value(left, VOID), n)
     if o == "as":
         v := try value(left, VOID)
         to := try resolve(right)
@@ -2127,6 +2157,36 @@ func operation(n: usize, want: usize) -> Value|Fail:
                     return fail(o + " is looser than " + text(right) + ", so it mixes the bits of " + comp.types[l.type].name + " with a bool: write (" + excerpt(first, sign - 1) + ") " + excerpt(sign, last), comp.tokens[word].at)
             l = try binary(o, l, r, comp.tokens[word].at)
     return l
+
+# the code from token first to token last, without the brackets around it that it leaves open
+func spelled(first: usize, last: usize) -> &strview:
+    while unclosed(first, last) > 0:
+        first += 1
+    while unclosed(first, last) < 0:
+        last -= 1
+    return excerpt(first, last)
+
+func is_test(v: Value, n: usize) -> Value|Fail:
+    left := n + 1
+    at := comp.tokens[comp.nodes[n].tok].at
+    wanted := try resolve(node_end(left))
+    if comp.types[v.type].kind == Untagged:
+        return fail(comp.types[v.type].name + " has no tag for is to test, read it with as", at)
+    if comp.types[v.type].kind != Union:
+        if local_of(left) != 0:
+            if comp.types[comp.vars[declaration(text(left))].type].kind == Union:
+                return fail(text(left) + " is already " + comp.types[v.type].name + " here, it was narrowed above and there is nothing left to test", at)
+        return fail("is expects a union on its left, " + comp.types[v.type].name + " is a plain type", at)
+    tags: &list[usize]
+    asked := members(wanted)
+    for m in members(v.type):
+        if contains(asked, m):
+            append(tags, m)
+    if tags.len == 0:
+        return fail(comp.types[v.type].name + " can never be " + comp.types[wanted].name + ", so this is always false", at)
+    if tags.len == members(v.type).len:
+        return fail(comp.types[v.type].name + " is always " + comp.types[wanted].name + ", so this is always true", at)
+    return Value{type = BOOL, at = tag_test(v, tags)}
 
 func choice(n: usize, want: usize) -> Value|Fail:
     at := comp.tokens[comp.nodes[n].tok].at
@@ -3385,7 +3445,7 @@ func statement(n: usize, dropped: &strview) -> Fail?:
         append(args, Value{type = pointer(BYTES), at = v.at})
         try runtime("detach", args, at_of(n))
         return null
-    if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust" and o != "wait":
+    if v.type != VOID and comp.nodes[n].kind != Call and comp.nodes[n].kind != Assign and o != "try" and o != "trust":
         hint: &strview
         if o == "==":
             hint = ", an assignment is written with one ="

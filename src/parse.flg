@@ -522,6 +522,14 @@ func stmt() -> Fail?:
             finish(begin(Literal, comp.pos))
             comp.pos += 1
         finish(n)
+    elif t.text == "assert":
+        n := begin(Assert, comp.pos)
+        comp.pos += 1
+        try expr(1)
+        if peek(","):
+            comp.pos += 1
+            try expr(1)
+        finish(n)
     elif t.text == "func" and comp.tokens[comp.pos + 1].kind == Name and comp.tokens[comp.pos + 2].text == "(":
         return fail("a function is declared at the first column, not inside another one: it could not use the variables around it, pass them as arguments", t.at)
     elif t.text == "defer":
@@ -679,7 +687,7 @@ func unary() -> Fail?:
         operand := comp.pos
         try unary()
         return fail("not is looser than " + tighter + ", write (not " + excerpt(operand, comp.pos - 1) + ")", t.at)
-    if t.text == "-" or t.text == "try" or t.text == "trust" or t.text == "parallel" or t.text == "wait":
+    if t.text == "-" or t.text == "try" or t.text == "trust" or t.text == "parallel":
         n := begin(Unary, comp.pos)
         comp.pos += 1
         try unary()
@@ -947,7 +955,7 @@ func new_name(of_value: bool) -> Fail?:
 
 func reserved(word: &strview) -> bool:
     switch word:
-    case "if", "elif", "else", "while", "for", "in", "switch", "case", "break", "continue", "return", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "wait", "iferror", "ifnull", "true", "false", "null":
+    case "if", "elif", "else", "while", "for", "in", "switch", "case", "break", "continue", "return", "assert", "defer", "with", "pass", "and", "or", "xor", "not", "is", "as", "try", "trust", "parallel", "iferror", "ifnull", "true", "false", "null":
         return true
     return false
 
