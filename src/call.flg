@@ -145,6 +145,8 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
     rt := comp.types[r.type]
     if numeric(l.type) and numeric(r.type) and l.type != r.type:
         return fail(o + " expects two numbers of one type but got " + lt.name + " and " + rt.name + ", convert one side with " + lt.name + "(...) or " + rt.name + "(...)", at)
+    if (o == "and" or o == "or" or o == "xor") and (integer(l.type) and r.type == BOOL or l.type == BOOL and integer(r.type)):
+        return fail(o + " expects two integers or two bool but got " + lt.name + " and " + rt.name, at)
     if o == "==" or o == "!=":
         c: &strview = "ceqw"
         if o == "!=":
@@ -155,6 +157,15 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
             return Value{type = BOOL, at = op(W, c, tag(r), tag_of(l.type))}
         if lt.kind == Union and lt.size == 4 and rt.kind == Union and rt.size == 4 and (within(l.type, r.type) or within(r.type, l.type)):
             return Value{type = BOOL, at = op(W, c, tag(l), tag(r))}
+        empty := r.type
+        whole := l.type
+        if rt.kind != Void:
+            empty = l.type
+            whole = r.type
+        if comp.types[empty].kind == Void and not contains(members(whole), empty) and o == "==":
+            return fail(comp.types[whole].name + " can never be " + comp.types[empty].name + ", so this is always false", at)
+        if comp.types[empty].kind == Void and not contains(members(whole), empty):
+            return fail(comp.types[whole].name + " can never be " + comp.types[empty].name + ", so this is always true", at)
     k := lt.kind
     if l.type != r.type or not (k == Bool or k == Int or k == Uint or k == Float or k == Ptr or k == Func):
         return operate(o, l, r, at)

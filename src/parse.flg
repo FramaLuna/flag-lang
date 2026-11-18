@@ -344,8 +344,14 @@ func func_decl(external: bool) -> Fail?:
         try variable()
         count += 1
         for i in param..comp.nodes.len:
+            at := comp.tokens[comp.nodes[i].tok].at
+            after := comp.tokens[comp.nodes[i].tok - 1].text
             if comp.nodes[i].kind == Unary and text(i) == "try":
-                return fail("a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust", comp.tokens[comp.nodes[i].tok].at)
+                return fail("a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust", at)
+            if comp.nodes[i].kind == Return:
+                return fail("a default value runs in the caller, so return would return from the caller: write a value after " + after, at)
+            if comp.nodes[i].kind == Jump:
+                return fail("a default value runs in the caller, so " + text(i) + " would jump in a loop of the caller: write a value after " + after, at)
         if keyword == "operator" and name.text == "not" and count > 1 and kids(param) == 1:
             return fail("operator not expects the value on its right, a parameter after it needs a default value", comp.tokens[comp.nodes[param].tok].at)
         if keyword == "operator" and name.text != "not" and count > 2 and kids(param) == 1:
@@ -550,18 +556,29 @@ func variable() -> Fail?:
             comp.pos += 1
             try expr(1)
     finish(n)
+    last := kid(n, kids(n) - 1)
+    if comp.nodes[last].kind == Binary and (text(last) == "iferror" or text(last) == "ifnull") and assigning():
+        return fail("an assignment on the right of " + text(last) + " is a statement of its own, " + text(n) + " would be left without a value", here().at)
     return null
 
 func assignment() -> Fail?:
+    first := comp.pos
     start := comp.nodes.len
     try expr(1)
-    t := here()
-    if t.kind == Symbol and (t.text == "=" or t.text == "+=" or t.text == "-=" or t.text == "*=" or t.text == "/=" or t.text == "%="):
-        wrap(start, Assign, comp.pos)
+    if assigning():
+        target := start
+        if comp.nodes[start].kind == Binary and (text(start) == "iferror" or text(start) == "ifnull") and unclosed(first, comp.nodes[start].tok) == 0:
+            target = node_end(start + 1)
+        wrap(target, Assign, comp.pos)
         comp.pos += 1
         try expr(1)
+        finish(target)
         finish(start)
     return null
+
+func assigning() -> bool:
+    t := here()
+    return t.kind == Symbol and (t.text == "=" or t.text == "+=" or t.text == "-=" or t.text == "*=" or t.text == "/=" or t.text == "%=")
 
 func expr(min: usize) -> Fail?:
     start := comp.nodes.len
@@ -609,6 +626,8 @@ func expr(min: usize) -> Fail?:
         comp.pos += 1
         if t.text == "is" or t.text == "as":
             try type_expr()
+        elif prec == 7 and (peek("return") or peek("break") or peek("continue")):
+            try stmt()
         else:
             try expr(prec + 1)
         if prec == 6 and last == 6:

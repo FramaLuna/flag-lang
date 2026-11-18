@@ -788,13 +788,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
         l_exit := label()
         jump(l_head)
         open_block(l_head)
+        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
         c := try condition(cond)
         forever := c.lit and c.n == 1
         if not forever:
             branch(c.at, l_body, l_exit)
         open_block(l_body)
         before := comp.vars.len
-        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
         try narrow(cond, true)
         try statements(node_end(cond))
         jump(l_head)
@@ -1086,6 +1086,13 @@ func gen(n: usize, want: usize) -> Value|Fail:
                     how = ", narrow it with is or case first"
                     if local_of(n + 1) == 0:
                         how = ", and is and case narrow only variables: copy it to one first"
+        chain := n
+        while comp.nodes[chain - 1].kind == Field or comp.nodes[chain - 1].kind == Index or text(chain - 1) == ".*" or text(chain - 1) == "(":
+            chain -= 1
+        o := text(chain - 1)
+        if how.len > 0 and comp.nodes[chain - 1].kind == Unary and (o == "try" or o == "trust"):
+            operand := comp.nodes[chain - 1].tok + 1
+            return fail(o + " applies to the whole of " + excerpt(operand, node.tok) + ", and " + comp.types[t].name + " has no field " + tok.text + ": write (" + o + " " + excerpt(operand, node.tok - 2) + ")." + tok.text, tok.at)
         return fail(comp.types[t].name + " has no field " + tok.text + how, tok.at)
     case Index:
         return indexed(n, 0)
@@ -1921,6 +1928,8 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 append(removed, m)
             elif not contains(removed, m):
                 append(rest, m)
+        if removed.len == 0 and o == "try" and contains(members(v.type), NULL):
+            return fail(t.name + " never fails, there is no error to try for: pass the null up with ifnull return null", tok.at)
         if removed.len == 0 and o == "try":
             return fail(t.name + " never fails, there is no error to try for", tok.at)
         if removed.len == 0:
@@ -2021,19 +2030,22 @@ func operation(n: usize, want: usize) -> Value|Fail:
             branch(tag_test(v, removed), l_bad, l_good)
             open_block(l_bad)
             absent(v.at, v.type, removed)
+            here := comp.at
+            comp.at = at_of(right)
             other := try gen(right, kept)
+            comp.at = here
             reads(right)
+            if not comp.live:
+                open_block(l_good)
+                absent(v.at, v.type, rest)
+                v = Value{type = kept, at = payload(v.at, kept), mem = true}
+                continue
             if other.type == VOID and k != n:
                 return fail("a function that returns nothing is a statement, not a value", at_of(right))
             if other.type == VOID:
                 jump(l_good)
                 open_block(l_good)
                 return none
-            if other.type == NEVER:
-                open_block(l_good)
-                absent(v.at, v.type, rest)
-                v = Value{type = kept, at = payload(v.at, kept), mem = true}
-                continue
             result := kept
             if not try assignable(kept, other.type, at) and not (other.lit and accepts(kept, other) >= 0):
                 both_sides: &list[usize]
@@ -2095,7 +2107,25 @@ func operation(n: usize, want: usize) -> Value|Fail:
             open_block(l_done)
             l = Value{type = BOOL, at = op1(W, "loadw", slot)}
         else:
-            l = try binary(o, l, try value(node_end(k + 1), VOID), comp.tokens[comp.nodes[k].tok].at)
+            right = node_end(k + 1)
+            r := try value(right, VOID)
+            word := comp.nodes[k].tok
+            sign := comp.nodes[right].tok
+            if (o == "and" or o == "or" or o == "xor") and integer(l.type) and r.type == BOOL and comp.nodes[right].kind == Binary and unclosed(word + 1, sign - 1) == 0:
+                switch text(right):
+                case "==", "!=", "<", ">", "<=", ">=":
+                    first := word
+                    last := word
+                    for j in k..node_end(k):
+                        if comp.nodes[j].tok < first:
+                            first = comp.nodes[j].tok
+                        if comp.nodes[j].tok > last:
+                            last = comp.nodes[j].tok
+                    first -= usize(0 - unclosed(first, word - 1)) # the brackets around its left side
+                    while unclosed(sign + 1, last) > 0 or unclosed(last + 1, last + 1) > 0: # f() has no node for its brackets
+                        last += 1
+                    return fail(o + " is looser than " + text(right) + ", so it mixes the bits of " + comp.types[l.type].name + " with a bool: write (" + excerpt(first, sign - 1) + ") " + excerpt(sign, last), comp.tokens[word].at)
+            l = try binary(o, l, r, comp.tokens[word].at)
     return l
 
 func choice(n: usize, want: usize) -> Value|Fail:
@@ -2854,19 +2884,30 @@ func narrow(cond: usize, matching: bool) -> Fail?:
     append(parts, cond)
     while parts.len > 0:
         c := trust pop(parts)
+        o := text(c)
         subject := c + 1
-        if comp.nodes[c].kind == Binary and (text(c) == "and" and matching or text(c) == "or" and not matching):
-            append(parts, node_end(subject))
+        other := node_end(subject)
+        if comp.nodes[c].kind == Binary and (o == "and" and matching or o == "or" and not matching):
+            append(parts, other)
             append(parts, subject)
-        elif comp.nodes[c].kind == Unary and text(c) == "not":
+        elif comp.nodes[c].kind == Unary and o == "not":
             try narrow(subject, not matching)
-        elif comp.nodes[c].kind == Binary and text(c) == "is" and local_of(subject) != 0:
-            wanted := members(try resolve(node_end(subject)))
-            kept: &list[usize]
-            for m in members(comp.vars[local_of(subject) - 1].type):
-                if contains(wanted, m) == matching:
-                    append(kept, m)
-            try confine(subject, kept, comp.tokens[comp.nodes[c].tok].at)
+        elif comp.nodes[c].kind == Binary and (o == "is" or o == "==" or o == "!="):
+            at := comp.tokens[comp.nodes[c].tok].at
+            if local_of(subject) == 0: # null == x
+                other = subject
+                subject = node_end(subject)
+            local := local_of(subject)
+            typed := o == "is" or comp.nodes[other].kind == Name and local_of(other) == 0 and (comp.type_ids[text(other)] is usize or try find_type(text(other), comp.nodes[other].module, at) != 0)
+            if local != 0 and typed:
+                current := comp.vars[local - 1].type
+                wanted := members(try resolve(other))
+                if o == "is" or comp.types[current].kind == Union and comp.types[wanted[0]].kind == Void:
+                    kept: &list[usize]
+                    for m in members(current):
+                        if contains(wanted, m) == (matching == (o != "!=")):
+                            append(kept, m)
+                    try confine(subject, kept, at)
     return null
 
 func confine(subject: usize, kept: &list[usize], at: usize) -> Fail?:

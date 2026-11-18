@@ -110,7 +110,7 @@ It lives as long as the program, and all the threads share it (see [Threads](#th
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers
 - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`. They don't chain, `a < b < c` is an error that tells you to write `a < b and b < c`
 - Logic: `and`, `or` and `not` on `bool`. `and` and `or` don't run the right side when the left side already decides
-- Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them
+- Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them. They are looser than the comparisons, so a test of bits goes in parentheses: `(flags and MASK) != 0`
 - Choosing: `a if c else b` is `a` when `c` is true and `b` when it's not, and only the side it chose runs
 - Assignments: `=`, and `+=`, `-=`, `*=`, `/=`, `%=`
 ```flag
@@ -356,7 +356,7 @@ To check several types at once use `is` with a union
 if color is Red|Blue:
     pass # the type of color is Red|Blue here
 ```
-`not` turns a check around, so `if not color is Red:` narrows to `Green|Blue`. A branch that leaves, with `return`, `break`, `continue` or a call that never returns like `panic`, takes its types away after the `if`
+`==` and `!=` with `null` or another void type narrow like `is`, so `if x != null:` works too. `not` turns a check around, so `if not color is Red:` narrows to `Green|Blue`. A branch that leaves, with `return`, `break`, `continue` or a call that never returns like `panic`, takes its types away after the `if`
 ```flag
 data := read_file("config.txt")
 if data is FsError:
@@ -935,6 +935,7 @@ func second(names: &list[&strview]) -> &strview|NotFound:
     i := try index_of(names, "bo")
     return names[i]
 ```
+`try` passes only errors, a `null` goes up with `ifnull return null` (see [iferror and ifnull](#iferror-and-ifnull)). It takes everything after it, so the field of what it gives goes after parentheses: `(try get()).x`
 ### trust operator
 `trust` removes the errors (or the null if there are no errors) without checking. Use it only when you know it cannot fail, if it fails you get garbage or a crash
 ```flag
@@ -945,6 +946,13 @@ n := trust parse_int("42")
 ```flag
 age := index_of(names, "zoe") iferror 0
 port := parse_int(text) ifnull 8080
+```
+On the right can also go `return`, `break` or `continue`, and then the value has no error or `null` after it. When the line is only `a ifnull b`, `b` can be an assignment
+```flag
+port := parse_int(text) ifnull return null
+for text in texts:
+    parse_int(text) ifnull bad += 1
+    total += parse_int(text) ifnull continue
 ```
 ### When the program fails
 Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened, where, and the functions of yours that led there

@@ -866,6 +866,16 @@ func excerpt(first: usize, last: usize) -> &strview:
     f := comp.files[file_of(comp.tokens[first].at)]
     return f.code[comp.tokens[first].at - f.start:comp.tokens[last].at + comp.tokens[last].text.len - f.start]
 
+# how many brackets the tokens from first to last open, less the ones they close
+func unclosed(first: usize, last: usize) -> i64:
+    open: i64 = 0
+    for t in comp.tokens[first:last + 1]:
+        if t.kind == Symbol and (t.text == "(" or t.text == "[" or t.text == "{"):
+            open += 1
+        elif t.kind == Symbol and (t.text == ")" or t.text == "]" or t.text == "}"):
+            open -= 1
+    return open
+
 func mark(tok: usize, hover: &strview = ""):
     for d in comp.defined:
         if d == tok:

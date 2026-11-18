@@ -11,6 +11,10 @@ Changed
 - `not` goes between `and` and `is`, like in Python, where it was tighter than every operator: `not a == b` is `not (a == b)`, and `if not line is &strview:` narrows without parentheses. On the right of a tighter operator it goes in parentheses, `not is looser than ==, write (not y)`, and a `not` followed by arithmetic, `as` or a shift is an error that gives both readings: `not x + 1 needs parentheses, write (not x) + 1 to flip the bits of x, or not (x + 1)`
 - The comparisons are one level and don't chain: `a < b < c`, `a == b == c` and `a < b == c` are errors, `comparisons do not chain, write a < b and b < c, or (a < b) < c`. Before, `<` was tighter than `==`, and with three `false` `a == b == c` compiled to `false`
 - `complement(b)` of `bits` is `not b`
+- A `==` or `!=` with a void type that the other side can never be is an error, like `is`: `Green|Blue can never be Red, so this is always false`, where before it was `no overload of == matches (Green|Blue, Red)`
+- A test of bits without parentheses says why it fails and writes them, `and is looser than !=, so it mixes the bits of u32 with a bool: write (flags and MASK) != 0`, and any other integer next to a `bool` is `or expects two integers or two bool but got u32 and bool`. Before both were `no function named and is visible here`
+- `try get().x` says that `try` takes the whole chain, `try applies to the whole of get().x, and Bad|P has no field x: write (try get()).x`, and so does `trust`, where before the error spoke of narrowing
+- `try` on a union with `null` and no error proposes how to pass the `null` up: `null|i64 never fails, there is no error to try for: pass the null up with ifnull return null`
 
 New
 - `./build.sh cross` compiles flagc, the tests and the examples for `linux-arm64`, `linux-riscv64` and `macos-x86_64`, the targets of the second class, and assembles them. CI runs it on every change
@@ -19,6 +23,9 @@ New
 - `not` of an integer flips its bits with the width of its type, `not u8(1)` is `254`, and `not` of a literal takes the type of its place like the literal does: `mask: u32 = not 0xff` is `0xffff_ff00`
 - `operator not`, with one parameter, the only unary operator a type can declare
 - `a if c else b`, the loosest operator. `c` runs first and then only the side it chose, `a` sees what `c` narrowed and `b` what `not c` narrowed, and it nests to the right. Its type follows the rule of `ifnull`, and a side can be a call that never returns: `n := given if given is i64 else panic("no number")`
+- `return`, `break` and `continue` go as the last link of `iferror` and `ifnull`, and leave like a call that never returns, so the value has no error or `null` after them: `cut := find(line, "=") ifnull return BadLine{i + 1}`, `n := parse_int(text) ifnull return null`, `total += parse_int(text) ifnull continue`. A default value cannot hold them, it runs in the caller: `a default value runs in the caller, so return would return from the caller: write a value after ifnull`
+- When `a ifnull b` or `a iferror b` is a whole statement, `b` can be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Where a value is needed it's an error, `an assignment on the right of ifnull is a statement of its own, n would be left without a value`
+- `x == null` and `x != null`, and `==` and `!=` with any void type of the union, narrow like `is`, in both orders: `if x != null:` narrows the block, `if x == null: return` leaves `x` without `null`, and `c == Red` narrows an enum
 
 ## 0.5.0
 

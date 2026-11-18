@@ -241,13 +241,13 @@ From the loosest to the tightest
 10. `*`, `/`, `%`
 11. `as`
 
-The other unary operators (`-`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them.
+The other unary operators (`-`, `try`, `trust`, `parallel`, `wait`) are tighter than all of them, and they take the whole chain of calls, fields and indexes after them: `try get().x` is `try (get().x)`. A field of what `try` or `trust` leaves goes after parentheses, and without them the error says so: `try applies to the whole of get().x, and Bad|P has no field x: write (try get()).x`.
 
 `not` takes everything up to the next `and`, `or` or `xor`, like in Python: `not x == 3` is `not (x == 3)`, and `if not line is &strview:` narrows like the `else` of `is`. On the right of an operator tighter than it, `not` goes in parentheses: `x == not y` is `not is looser than ==, write (not y)`. A `not` followed by arithmetic, `as` or a shift can be read two ways, so it's an error that gives both: `not x + 1 needs parentheses, write (not x) + 1 to flip the bits of x, or not (x + 1)`.
 
 Comparisons are one level and don't chain: a comparison on a side of another one, without parentheses, is an error, also between `bool`: `comparisons do not chain, write a < b and b < c, or (a < b) < c`.
 
-`x and 3 == 2` is `x and (3 == 2)`, put the parentheses when you mix bits and comparisons.
+`and`, `or` and `xor` are looser than the comparisons, so a test of bits goes in parentheses: `flags and MASK != 0` is `flags and (MASK != 0)`, which mixes the bits of an integer with a `bool`, and the error writes the parentheses for you: `and is looser than !=, so it mixes the bits of u32 with a bool: write (flags and MASK) != 0`. Any other integer next to a `bool` is `or expects two integers or two bool but got u32 and bool`.
 
 ## Conversions
 ### Implicit ones
@@ -309,6 +309,7 @@ if found is Card:
 ```
 The rules
 - `if x is T:` narrows the block, and the `elif` and `else` get what is left
+- `x == V` and `x != V`, with `V` a void type of the union like `null` or `Red`, narrow like `x is V` and `not x is V`, also written `V == x`. So `if x != null:` narrows the block, and `if x == null: return` leaves `x` without `null` after it
 - `a and b` checks `b` with what `a` narrowed, and `a or b` checks `b` with what `not a` narrowed, so `x is null or x > 3` works
 - `not` turns around what it narrows, so `if not x is T:` narrows like the `else` of `if x is T:`
 - `a if c else b` checks `a` with what `c` narrowed and `b` with what `not c` narrowed, so `x.n if x is P else 0` works
@@ -317,7 +318,7 @@ The rules
 - after an `if`, the variable has the types of the branches that don't leave. So `if x is null: return` leaves `x` without `null` after it. A branch leaves with `return`, `break`, `continue`, or a call to a function that returns `never`, like `panic` (see [Returns](#returns))
 - assigning a value that fits the narrowed type keeps it narrowed, any other value brings back the whole type. Inside a loop that is an error, because the loop reads the variable with the narrowed type every round: `v cannot take &strview inside this loop, it was narrowed to i32 outside the loop and the loop reads it that way every round`
 
-`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
+`==` between a union and one of its void types compares the tag: `x == null`, `color == Red`. Like `is`, a `==` with a void type that the other side can never be is an error, `Green|Blue can never be Red, so this is always false`, and with `!=` it is always true. Two values of one union compare by member and value (see [Operators](#operators)), and two unions made only of void types compare too when every member of one is in the other, like an enum and a narrowed part of it. To compare the value of a member with a value of its type, narrow first: `x is i32 and x == 3`.
 
 ## Functions and calls
 ### Which functions a call sees
@@ -326,7 +327,7 @@ A call sees the functions of its own module, the global ones (from files without
 ### Arguments
 The arguments fill the parameters in order, and named arguments fill their parameter. After a named argument the rest must be named too, and a parameter can't be filled twice.
 
-A default value is computed at the call, every time it's used, after the arguments that are written (see [Order](#order)). It can use constants, file variables, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
+A default value is computed at the call, every time it's used, after the arguments that are written (see [Order](#order)). It can use constants, file variables, contexts and functions, not the other parameters. It runs in the caller, so it cannot have `try`, `return`, `break` or `continue`: `a default value runs in the caller, so try would return from the caller: handle the error with iferror or trust`, and `a default value runs in the caller, so return would return from the caller: write a value after ifnull`. `@here()` in a default is the place of the call as text, `"main.flg:12:5"`. A parameter without default can come after one with default, and then you name it
 ```flag
 func pick(a: i32 = 1, b: i32) -> i32:
     return a * 10 + b
@@ -612,11 +613,22 @@ If you keep the result in a variable, you can't use its value until you check it
 
 `try` gives the value and returns the errors from the function, so each error must be in the return type of the function
 - `try passes Bad up but this function returns i32`
-- `null|i32 never fails, there is no error to try for`, for a union without errors
+- `i32|f64 never fails, there is no error to try for`, for a union without errors. `try` passes only errors, and a `null` goes up with `ifnull return null`, which the error proposes: `null|i64 never fails, there is no error to try for: pass the null up with ifnull return null`
 
 `trust` removes the errors without checking, or the `null` if there are no errors. If it was an error you get garbage, and printing it can crash the program.
 
 `a iferror b` is the value of `a` without its errors, or `b` when `a` has an error, and `a ifnull b` is the same with `null`. `b` only runs when it's needed. When `b` gives nothing, like a call to a function that returns nothing, `a iferror b` is a statement that runs `b` when `a` failed. If `b` fits the type left from `a` the result has that type, and if not it's the union of both. They bind tighter than comparisons and looser than arithmetic, so `m[k] ifnull 0 > 3` compares the result and `m[k] ifnull 0 + 1` adds to the default, put parentheses when you mean the other one.
+
+The last link of the chain can also be `return`, `break` or `continue`, that leave like a call that never returns, so the value has no error or `null` after them
+```flag
+cut := find(line, "=") ifnull return BadLine{i + 1, "it has no ="}
+n := parse_int(text) ifnull return null # passes the null up
+for text in texts:
+    total += parse_int(text) ifnull continue
+```
+`return` takes the rest of the expression as its value, like the statement. The condition of a `while` runs every round, so there `break` and `continue` work on that `while`, and the header of a `for` runs once before its loop, so there they work on the loop around it. In any other place of an expression they are statements and not values: `'return' is a keyword of the language, it is not a value`.
+
+When `a ifnull b` or `a iferror b` is a whole statement, its last link can also be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Anywhere else the right side gives the value, so an assignment there is an error: `an assignment on the right of ifnull is a statement of its own, n would be left without a value`.
 
 ### Runtime errors
 These stop the program, and write the message to the error output

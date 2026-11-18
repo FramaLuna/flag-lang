@@ -67,17 +67,13 @@ func is_dir(path: &strview) -> bool:
     return found is Status and found.folder
 
 func file_size(path: &strview) -> usize|FsError:
-    found := status(path)
-    if found is null:
-        return FsError{failure(), "read the size of", path}
+    found := status(path) ifnull return FsError{failure(), "read the size of", path}
     if found.folder:
         return FsError{21, "read the size of", path} # EISDIR on every system
     return usize(found.size)
 
 func modified(path: &strview) -> f64|FsError:
-    found := status(path)
-    if found is null:
-        return FsError{failure(), "read the time of", path}
+    found := status(path) ifnull return FsError{failure(), "read the time of", path}
     return found.modified
 
 func remove(path: &strview) -> FsError? where not @windows():
