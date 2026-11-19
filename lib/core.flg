@@ -128,10 +128,10 @@ func wstr(text: &strview) -> wstr:
             code = 0xfffd # a byte that is not UTF-8
         if code >= 0x10000:
             at.* = u16(0xd800 + (code - 0x10000 >> 10))
-            at = (at as usize + 2) as *u16
+            at = (at as *bytes + 2) as *u16
             code = 0xdc00 or code and 0x3ff
         at.* = u16(code)
-        at = (at as usize + 2) as *u16
+        at = (at as *bytes + 2) as *u16
     at.* = 0
     return out
 
@@ -141,10 +141,10 @@ func temp(w: wstr) -> &strview:
     at := w
     while at.* != 0:
         code := u32(at.*)
-        at = (at as usize + 2) as *u16
+        at = (at as *bytes + 2) as *u16
         if code >= 0xd800 and code < 0xdc00 and at.* >= 0xdc00 and at.* < 0xe000:
             code = 0x10000 + (code - 0xd800 << 10) + u32(at.*) - 0xdc00
-            at = (at as usize + 2) as *u16
+            at = (at as *bytes + 2) as *u16
         elif code >= 0xd800 and code < 0xe000:
             code = 0xfffd # half of a pair, alone
         add_char(out, code)
@@ -215,7 +215,7 @@ func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice
     if first > last or last > s.len:
         out_of_bounds(from, to, s.len, place)
     out: &slice[$T]
-    out = (ptr(s.*) as usize + first * @sizeof($T)) as *bytes
+    out = ptr(s.*) + first * @sizeof($T)
     out.len = last - first
     return out
 
@@ -227,7 +227,7 @@ priv type Walk[$T]:
 func next(w: *Walk[$T]) -> $T|IterationEnd:
     if w.i >= w.len:
         return IterationEnd
-    p := (w.base as usize + w.i * @sizeof($T)) as *$T
+    p := (w.base + w.i * @sizeof($T)) as *$T
     w.i += 1
     return p.*
 
@@ -283,24 +283,24 @@ priv func doubled(cap: usize, want: usize, least: usize) -> usize:
 func append(l: *&list[$T], v: $T):
     if l.len == l.cap:
         reserve(l, l.len + 1)
-    p := (ptr(l.*.*) as usize + l.len * @sizeof($T)) as *$T
+    p := (ptr(l.*.*) + l.len * @sizeof($T)) as *$T
     p.* = v
     l.len += 1
 
 func append(l: *&list[$T], items: &slice[$T]):
-    if ptr(items.*) as usize - ptr(l.*.*) as usize < l.cap * @sizeof($T):
+    if usize(ptr(items.*) - ptr(l.*.*)) < l.cap * @sizeof($T):
         with scratch():
             append(l, temp(items))
         return
     reserve(l, l.len + items.len)
-    memcpy((ptr(l.*.*) as usize + l.len * @sizeof($T)) as *bytes, ptr(items.*), items.len * @sizeof($T))
+    memcpy(ptr(l.*.*) + l.len * @sizeof($T), ptr(items.*), items.len * @sizeof($T))
     l.len += items.len
 
 func pop(l: *&list[$T]) -> $T|null:
     if l.len == 0:
         return null
     l.len -= 1
-    p := (ptr(l.*.*) as usize + l.len * @sizeof($T)) as *$T
+    p := (ptr(l.*.*) + l.len * @sizeof($T)) as *$T
     return p.*
 
 func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
@@ -308,8 +308,8 @@ func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is
     if n > l.len:
         out_of_bounds(at, l.len, place)
     append(l, v)
-    first := (ptr(l.*.*) as usize + n * @sizeof($T)) as *bytes
-    memmove((first as usize + @sizeof($T)) as *bytes, first, (l.len - 1 - n) * @sizeof($T))
+    first := ptr(l.*.*) + n * @sizeof($T)
+    memmove(first + @sizeof($T), first, (l.len - 1 - n) * @sizeof($T))
     l[n] = v
 
 func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
@@ -317,8 +317,8 @@ func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is 
     if n >= l.len:
         out_of_bounds(at, l.len, place)
     kept := l[n]
-    first := (ptr(l.*.*) as usize + n * @sizeof($T)) as *bytes
-    memmove(first, (first as usize + @sizeof($T)) as *bytes, (l.len - 1 - n) * @sizeof($T))
+    first := ptr(l.*.*) + n * @sizeof($T)
+    memmove(first, first + @sizeof($T), (l.len - 1 - n) * @sizeof($T))
     l.len -= 1
     return kept
 
@@ -467,7 +467,7 @@ func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview
     if first > last or last > v.len:
         out_of_bounds(from, to, v.len, place)
     out: &strview
-    out = (ptr(v.*) as usize + first) as *bytes
+    out = ptr(v.*) + first
     out.len = last - first
     return out
 
@@ -556,7 +556,7 @@ priv func take(a: *Arena, size: usize) -> *bytes:
             insert(a.blocks, a.count, block)
         a.count += 1
         a.used = 0
-    out := (ptr(a.blocks[a.count - 1].*) as usize + a.used) as *bytes
+    out := ptr(a.blocks[a.count - 1].*) + a.used
     a.used += need
     return out
 
@@ -564,7 +564,7 @@ priv func resize(a: *Arena, at: *bytes, size: usize, wanted: usize) -> *bytes:
     if a as usize == 0:
         return realloc(at, wanted)
     held := (size + 15) / 16 * 16
-    last := a.count > 0 and at as usize + held == ptr(a.blocks[a.count - 1].*) as usize + a.used
+    last := a.count > 0 and at + held == ptr(a.blocks[a.count - 1].*) + a.used
     if last:
         a.used -= held # the last piece of the block, take gives the same place back when it fits
     grown := take(a, wanted)
@@ -609,7 +609,7 @@ func temp(size: usize) -> *bytes:
 func temp(text: &strview) -> &strview:
     at := temp(text.len + 1)
     memcpy(at, ptr(text.*), text.len)
-    ((at as usize + text.len) as *u8).* = 0
+    ((at + text.len) as *u8).* = 0
     out: &strview
     out = at
     out.len = text.len
@@ -623,19 +623,19 @@ func temp(items: &slice[$T]) -> &slice[$T]:
     return out
 
 operator +=(s: *&str, v: &strview):
-    inside := ptr(v.*) as usize - ptr(s.*.*) as usize < s.cap
+    inside := usize(ptr(v.*) - ptr(s.*.*)) < s.cap
     if inside:
         with scratch():
             s.* += temp(v)
         return
     reserve(s, s.len + v.len)
-    memcpy((ptr(s.*.*) as usize + s.len) as *bytes, ptr(v.*), v.len)
+    memcpy(ptr(s.*.*) + s.len, ptr(v.*), v.len)
     s.len += v.len
 
 func c_text(s: &str) -> cstr:
     if s.cap <= s.len:
         return cstr(view(s))
-    last := (ptr(s.*) as usize + s.len) as *u8
+    last := (ptr(s.*) + s.len) as *u8
     last.* = 0
     return ptr(s.*) as *u8
 
@@ -668,7 +668,7 @@ operator <(a: &strview, b: &strview) -> bool:
 
 func add_byte(s: *&str, b: u8):
     reserve(s, s.len + 1)
-    ((ptr(s.*.*) as usize + s.len) as *u8).* = b
+    ((ptr(s.*.*) + s.len) as *u8).* = b
     s.len += 1
 
 func add_char(s: *&str, code: u32):
@@ -704,30 +704,30 @@ func parse_hex(s: &strview) -> u64|null:
         n = n * 16 + digit
     return n
 
-func find(s: &strview, part: &strview) -> usize|null: @trust
+func find(s: &strview, part: &strview) -> usize|null:
     if part.len == 0:
         return 0
     first := i32(part[0])
     at: usize = 0
     while at + part.len <= s.len:
-        hit := memchr((ptr(s.*) as usize + at) as *bytes, first, s.len - part.len + 1 - at)
+        hit := memchr(ptr(s.*) + at, first, s.len - part.len + 1 - at)
         if hit as usize == 0:
             return null
-        at = hit as usize - ptr(s.*) as usize
+        at = usize(hit - ptr(s.*))
         if memcmp(hit, ptr(part.*), part.len) == 0:
             return at
         at += 1
     return null
 
-func find_last(s: &strview, part: &strview) -> usize|null: @trust
+func find_last(s: &strview, part: &strview) -> usize|null:
     if part.len > s.len:
         return null
     if part.len == 0:
         return s.len
     first := part[0]
     for at in reverse 0..=s.len - part.len:
-        hit := (ptr(s.*) as usize + at) as *u8
-        if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
+        hit := ptr(s.*) + at
+        if (hit as *u8).* == first and memcmp(hit, ptr(part.*), part.len) == 0:
             return at
     return null
 
@@ -869,7 +869,7 @@ func parse_float(s: &strview) -> f64|null:
         text := cstr(s)
         end := text
         x := strtod(text, ptr(end) as *bytes)
-        if end as usize == text as usize + s.len:
+        if end as *bytes == text as *bytes + s.len:
             return x
     return null
 
@@ -883,7 +883,7 @@ operator +=(s: *&str, n: usize):
         if n == 0:
             break
     out: &strview
-    out = (ptr(digits) as usize + i) as *bytes
+    out = ptr(digits) as *bytes + i
     out.len = 20 - i
     s.* += out
 
@@ -1063,7 +1063,7 @@ operator +=(s: *&str, h: Hex):
         if v == 0:
             break
     out: &strview
-    out = (ptr(buf) as usize + i) as *bytes
+    out = ptr(buf) as *bytes + i
     out.len = 16 - i
     s.* += "0x" + out
 
@@ -1286,7 +1286,7 @@ priv func settle():
 func wait(t: Thread[$T], place: &strview = @here()) -> $T:
     reap(t as *bytes, place)
     defer free(t as *bytes)
-    return ((t as usize + HEAD) as *$T).*
+    return ((t as *bytes + HEAD) as *$T).*
 
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
     if t as usize == 0:
@@ -1515,7 +1515,7 @@ func flush(f: File, place: &strview = @here()) -> FsError?:
 priv func drain(s: *Stream):
     sent: usize = 0
     while sent < s.unsent.len:
-        n := transfer(s, (ptr(s.unsent.*) as usize + sent) as *bytes, s.unsent.len - sent, true)
+        n := transfer(s, ptr(s.unsent.*) + sent, s.unsent.len - sent, true)
         if n is FsError:
             if s.failed == 0:
                 s.failed = n.code
@@ -1545,11 +1545,11 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
         checked: usize = 0
         while true:
             line: &strview
-            line = (ptr(s.received.*) as usize + s.given) as *bytes
+            line = ptr(s.received.*) + s.given
             line.len = s.received.len - s.given
-            end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
+            end := memchr(ptr(line.*) + checked, '\n', line.len - checked)
             if end as usize != 0:
-                line.len = end as usize - ptr(line.*) as usize @trust
+                line.len = usize(end - ptr(line.*))
                 s.given += line.len + 1
                 if line.len > 0 and line[-1] == '\r':
                     line.len -= 1
@@ -1568,7 +1568,7 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
 priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
     flush() # what you wrote goes out before the program waits for an answer
     reserve(into, into.len + size)
-    got := try transfer(s, (ptr(into.*.*) as usize + into.len) as *bytes, size, false)
+    got := try transfer(s, ptr(into.*.*) + into.len, size, false)
     into.len += got
     return got
 
@@ -2124,7 +2124,7 @@ priv tested: usize # the thread that runs the test, on Windows
 priv func run_test() -> i32:
     head := flag_tests()
     tests: &slice[Test]
-    tests = (head as usize + 8) as *bytes
+    tests = head as *bytes + 8
     tests.len = head.*
     given: &slice[cstr]
     given = @argv()

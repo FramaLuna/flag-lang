@@ -521,6 +521,8 @@ func gen_from(from: usize) -> usize|Fail:
                 return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " can never run, the language handles every pair of numbers", comp.at)
             if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
                 return fail("operator " + name + " between two " + comp.types[first].name + " belongs to the language, it cannot be declared again", comp.at)
+            if (name == "+" or name == "-") and first != target and target == BYTES and (integer(second) or name == "-" and second == first):
+                return fail("operator " + name + " between " + comp.types[first].name + " and " + comp.types[second].name + " belongs to the language, it cannot be declared again", comp.at)
             right := second
             if comp.types[second].kind == Ptr:
                 right = comp.types[second].elem
@@ -2092,16 +2094,20 @@ func operation(n: usize, want: usize) -> Value|Fail:
             return convert(v, to, Arg{}, tok.at)
         if from.kind == Union and within(to, v.type):
             return Value{type = to, at = payload(v.at, to), mem = true, place = v.place, lit = v.lit and aggregate(to)}
-        if from.size == dest.size and not aggregate(v.type) and not aggregate(to) and from.kind != Void and dest.kind != Void:
-            x := load(v).at
-            if (from.kind == Float) != (dest.kind == Float):
-                return Value{type = to, at = op1(cls(to), "cast", x)}
-            return Value{type = to, at = extend(to, x)}
         if from.kind == Union or dest.kind == Union:
             return fail("cannot reinterpret " + from.name + " as " + dest.name + ", a union is read only as one of its members or as a narrower union", tok.at)
-        if from.size == dest.size and aggregate(v.type) and aggregate(to):
-            return Value{type = to, at = v.at, mem = v.mem, place = v.place, lit = v.lit}
-        return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
+        if from.size != dest.size:
+            return fail("cannot reinterpret " + from.name + " as " + dest.name + ", they do not have the same byte size", tok.at)
+        if aggregate(v.type):
+            return Value{type = to, at = v.at, mem = true, place = v.place, lit = v.lit and aggregate(to)}
+        if aggregate(to):
+            slot := alloc(to)
+            store(v.type, v, slot)
+            return Value{type = to, at = slot, mem = true}
+        x := load(v).at
+        if (from.kind == Float) != (dest.kind == Float):
+            return Value{type = to, at = op1(cls(to), "cast", x)}
+        return Value{type = to, at = extend(to, x)}
     if o == ".." or o == "..=":
         return fail("a range goes in a for header or a case label, nothing else reads it", tok.at)
     if o == "+":

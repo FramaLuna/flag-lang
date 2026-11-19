@@ -115,7 +115,7 @@ func add():
 It lives as long as the program, and all the threads share it (see [Threads](#threads)).
 
 ## Operators
-- Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers
+- Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers, and `+` and `-` move a `*bytes` (see [Pointers](#pointers))
 - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`. They don't chain, `a < b < c` is an error that tells you to write `a < b and b < c`
 - Logic: `and`, `or` and `not` on `bool`. `and` and `or` don't run the right side when the left side already decides
 - Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them. They are looser than the comparisons, so a test of bits goes in parentheses: `(flags and MASK) != 0`
@@ -254,9 +254,15 @@ func main():
     r: Ring[u8, 16]
 ```
 ### Reinterpreting with as
-`as` reads the bytes of a value as another type of the same size, it does not convert
+`as` reads the bytes of a value as another type of the same size, it does not convert. Numbers, pointers, structs and arrays read as each other
 ```flag
+type Size:
+    w: u32
+    h: u32
+
 raw := f32(1.5) as u32 # the bits of the float
+key := Size{640, 480} as u64 # the 8 bytes of a Size as one number
+back := key as Size # and the Size again
 ```
 It can also take a type out of a union, but it does not check the tag, so check it with `is` first.
 
@@ -286,6 +292,13 @@ func main():
 When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &slice[i32] = ptr([1, 2, 3])` is a slice you can keep using.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
+
+A `*bytes` points to raw memory, the `void *` of C, and it's the pointer that moves: `p + 8` is the address 8 bytes after `p`, and `q - p` is the distance in bytes. Any other pointer goes through `as *bytes` first
+```flag
+words: array[i64, 3] = [10, 20, 30]
+second := ptr(words) as *bytes + 8
+print((second as *i64).*) # 20
+```
 
 ## Fat pointers
 A fat pointer is a pointer with extra data, in flag we indicate it with '&' before the type.

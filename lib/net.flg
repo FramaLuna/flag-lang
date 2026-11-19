@@ -62,8 +62,8 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     while entry as usize != 0:
         fields := entry as *array[i32, 4]
         fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
-        address := ((entry as usize + address_in_info()) as **bytes).*
-        size := ((entry as usize + 16) as *u32).*
+        address := ((entry + address_in_info()) as **bytes).*
+        size := ((entry + 16) as *u32).*
         if fd >= 0:
             prepare(fd)
         if fd >= 0 and connect(fd, address, size) == 0:
@@ -72,7 +72,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
         failed = NetError{failure(), "connect to", host + ":" + port}
         if fd >= 0:
             dispose(fd)
-        entry = ((entry as usize + 40) as **bytes).*
+        entry = ((entry + 40) as **bytes).*
     freeaddrinfo(found)
     return failed
 
@@ -130,7 +130,7 @@ func address(host: &strview, port: u16) -> Address|NetError:
         if code > 0:
             code = 0 - code
         return NetError{code, "find", host}
-    raw := ((found as usize + address_in_info()) as **array[u8, 28]).*
+    raw := ((found + address_in_info()) as **array[u8, 28]).*
     out := Address{port = port}
     if (found as *array[i32, 4]).*[1] == 2: # AF_INET
         out.ip[10] = 255
@@ -154,7 +154,7 @@ func receive(u: Udp, into: *&str) -> Address|NetError:
     reserve(into, into.len + 65536)
     address: array[u8, 28]
     size: u32 = 28
-    got := recvfrom(i64(u.fd), (ptr(into.*.*) as usize + into.len) as *bytes, 65536, 0, ptr(address) as *bytes, ptr(size))
+    got := recvfrom(i64(u.fd), ptr(into.*.*) + into.len, 65536, 0, ptr(address) as *bytes, ptr(size))
     if got < 0:
         return NetError{failure(), "receive", ""}
     into.len += usize(got)

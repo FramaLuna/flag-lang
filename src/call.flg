@@ -142,6 +142,11 @@ func binary(o: &strview, l: Value, r: Value, at: usize) -> Value|Fail:
         r = try convert(r, l.type, Arg{}, at)
     lt := comp.types[l.type]
     rt := comp.types[r.type]
+    bytes := lt.kind == Ptr and lt.elem == BYTES
+    if bytes and (o == "+" or o == "-") and integer(r.type):
+        return Value{type = l.type, at = op(L, native(o, Int), load(l).at, load(try convert_number(r, I64, at)).at)}
+    if bytes and o == "-" and r.type == l.type:
+        return Value{type = I64, at = add(Ins{op = "sub", cls = L, to = u32(temp().n), a = load(l).at, b = load(r).at, number = true})}
     if integer(l.type) and integer(r.type) and l.type != r.type and not amount:
         if widens(l.type, r.type):
             return binary(o, try convert(l, r.type, Arg{}, at), r, at)
@@ -457,6 +462,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 hint = ", a union is narrowed with is before its value is used"
         if args.len == 2 and comp.types[args[0].type].kind == Array and comp.types[args[1].type].kind == Array and native(name, Int).len > 0:
             hint = ", an array only holds its elements: a simd computes on its lanes"
+        if (name == "+" or name == "-") and args.len == 2 and comp.types[args[0].type].kind == Ptr and integer(args[1].type):
+            hint = ", only *bytes moves by a number of bytes: p as *bytes + n"
+        if name == "-" and args.len == 2 and comp.types[args[0].type].kind == Ptr and comp.types[args[1].type].kind == Ptr:
+            hint = ", only two *bytes give the distance between them: p as *bytes - q as *bytes"
         if name == "at" and args.len == 2 and integer(args[1].type):
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
         if name == "slice" and args.len == 3 and integer(args[1].type) and integer(args[2].type) and args[1].type != args[2].type:

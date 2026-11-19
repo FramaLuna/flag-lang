@@ -10,14 +10,14 @@ priv extern "c":
     func rename(from: cstr, to: cstr) -> i32
     func mkdir(path: cstr, mode: u32) -> i32
     func opendir(path: cstr) -> *bytes
-    func readdir(dir: *bytes) -> *u8
+    func readdir(dir: *bytes) -> *bytes
     func closedir(dir: *bytes) -> i32
     func _wfopen(path: wstr, mode: wstr) -> *bytes
     func _wremove(path: wstr) -> i32
     func _wrmdir(path: wstr) -> i32
     func _wmkdir(path: wstr) -> i32
     func _wopendir(path: wstr) -> *bytes
-    func _wreaddir(dir: *bytes) -> *u8
+    func _wreaddir(dir: *bytes) -> *bytes
     func _wclosedir(dir: *bytes) -> i32
     func MoveFileExW(from: wstr, to: wstr, flags: u32) -> i32
     func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: usize) -> usize
@@ -131,7 +131,7 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
     name_at: usize = 19 if @linux() else 21 if @arm64() else 8 # d_name, on macOS x86_64 in the dirent of 32-bit inodes that the plain readdir gives
     entry := readdir(dir)
     while entry as usize != 0:
-        part := view((entry as usize + name_at) as *u8)
+        part := view((entry + name_at) as *u8)
         if part != "." and part != "..":
             append(names, temp(part))
         entry = readdir(dir)
@@ -147,7 +147,7 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where @windows():
     defer free(names)
     entry := _wreaddir(dir)
     while entry as usize != 0:
-        part := temp((entry as usize + 8) as wstr) # d_name of a struct _wdirent
+        part := temp((entry + 8) as wstr) # d_name of a struct _wdirent
         if part != "." and part != "..":
             append(names, part)
         entry = _wreaddir(dir)
@@ -222,9 +222,10 @@ priv func status(path: &strview, follow_links: bool = true) -> Status? where not
         if found != 0:
             return null
     place := layout()
-    mode := ((ptr(room) as usize + place[0]) as *u16).* and 0xf000
-    time := (ptr(room) as usize + place[2]) as *array[i64, 2] # a struct timespec
-    return Status{mode == 0x4000, ((ptr(room) as usize + place[1]) as *u64).*, f64(time.*[0]) + f64(time.*[1]) / 1000000000.0} # S_IFDIR
+    at := ptr(room) as *bytes
+    mode := ((at + place[0]) as *u16).* and 0xf000
+    time := (at + place[2]) as *array[i64, 2] # a struct timespec
+    return Status{mode == 0x4000, ((at + place[1]) as *u64).*, f64(time.*[0]) + f64(time.*[1]) / 1000000000.0} # S_IFDIR
 
 # what _wstat64 does inside, without dropping the 100 ns of the time
 priv func status(path: &strview, follow_links: bool = true) -> Status? where @windows():

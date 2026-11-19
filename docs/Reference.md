@@ -164,7 +164,7 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 | `simd[T, n]` | 16 |
 | void types, `null`, `IterationEnd` | 0 |
 
-`bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
+`bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C, and the pointer that moves by bytes, see [Arithmetic](#arithmetic)). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
 `@sizeof(T)` gives the size as an integer literal, so it takes the type of its place and alone it's an `i64`: `n := @sizeof(Point)` is an `i64` and `n: usize = @sizeof(Point)` a `usize`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
 
@@ -248,6 +248,7 @@ A float literal is `f64` alone and fits any float. An integer literal also goes 
 - `<<` and `>>` shift, `>>` keeps the sign on signed integers. The result has the type of the left side and the amount can be of any integer type: `u8(1) << n` with `n: i32` is an `u8`. The amount must be less than the size in bits, the compiler checks it only when both sides are literals
 - `and`, `or` and `xor` on integers work on the bits: `0xf0 and 0x3c` is `0x30`, and `not` flips the bits with the width of the type: `not u8(1)` is `254`. On `bool` they are logic, and `and` and `or` skip the right side when the left side already decides
 - `not` of a literal takes the type of its place, like a literal: `mask: u32 = not 0xff` is `0xffff_ff00`, and `flags and not 1` clears the lowest bit of `flags` whatever its type. Alone it follows the literal, so `not 5` is the `i64` `-6`
+- A `*bytes` moves with `+` and `-`: `p + n` and `p - n` are the `*bytes` `n` bytes after or before `p`, with `n` of any integer type, and `p += n` moves `p`. `q - p` is the distance in bytes, an `i64`. Two pointers of one type compare as addresses with `==`, `<` and the others, without sign. Only `*bytes` moves, so a `*T` goes through `as` and back, `((ptr(x) as *bytes + 8) as *i64).*`, and `p + 1` on a `*i64` is `no overload of + matches (*i64, i64), only *bytes moves by a number of bytes: p as *bytes + n`. Nothing checks that `p + n` stays inside the memory `p` points into
 - There is no `**`, `~`, `^`, `&` or `|`
 
 ### Precedence
@@ -304,8 +305,7 @@ Calling a struct or an alias with one value does the same conversion as an assig
 
 ### as
 `as` reads the bytes of a value as another type, it never converts
-- two scalars of the same size: `f32(1.5) as u32` gives the bits, `p as usize` gives the address
-- two structs or arrays of the same size
+- two types without a tag and of the same size, numbers, `bool`, pointers, function values, structs, arrays, `simd` and fat pointers: `f32(1.5) as u32` gives the bits, `p as usize` gives the address, and with `type V2` of two `f32`, `V2{1.0, 2.0} as u64` is `0x400000003f800000` and `0x400000003f800000 as V2` the `V2` again. The padding of a struct is read too, whatever it holds
 - a union to one of its members or to a smaller union, without checking the tag
 - a member in or out of an untagged union
 
@@ -544,7 +544,7 @@ error: operator >= follows from <, declare operator < instead
 ```
 Any other operator is an error too: `operator foo cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = +=`.
 
-An operator has two parameters, its left side and its right side, and `not` has one, the value on its right: `operator not(b: *Bits[$$w]) -> Bits[$$w]` gives the numbers that are not in `b`. It's the only unary operator you can declare. An operator can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and so does `not` on `bool`, an integer or a `simd`. One between two numbers of different types could never run either, the language mixes them or rejects them: `operator + between i32 and i64 can never run, the language handles every pair of numbers`. `==` and `<` return `bool`.
+An operator has two parameters, its left side and its right side, and `not` has one, the value on its right: `operator not(b: *Bits[$$w]) -> Bits[$$w]` gives the numbers that are not in `b`. It's the only unary operator you can declare. An operator can have more parameters when they have a default value, like `place: &strview = @here()`. An operator between two numbers of one type belongs to the language and cannot be declared again, and so do `not` on `bool`, an integer or a `simd`, and `+` and `-` that move a `*bytes` or measure between two. One between two numbers of different types could never run either, the language mixes them or rejects them: `operator + between i32 and i64 can never run, the language handles every pair of numbers`. `==` and `<` return `bool`.
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
@@ -564,7 +564,6 @@ When `x[i]` gives a copy, like on a map, `x[i] = v` is `put(x, i, v)`, and `v` t
 
 A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `put(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map. The map is not touched while the call runs, so a call that grows it is safe. Without a `put(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy. `ptr(x[i])` gets a pointer to a copy too, like `ptr` of any value that is not a variable, and nothing puts that one back.
 
-There is no pointer arithmetic, `p as usize + 8` and back with `as` is the way.
 
 ## SIMD
 `simd[T, n]` is `n` lanes of `T` that fill one register of 16 bytes: `simd[f32, 4]`, `simd[i32, 4]`, `simd[u32, 4]`, `simd[f64, 2]`, `simd[i64, 2]`, `simd[u64, 2]`, `simd[i16, 8]`, `simd[u16, 8]`, `simd[i8, 16]` and `simd[u8, 16]`. A mask `simd[bool, n]`, with `n` of 2, 4, 8 or 16, keeps each lane as an integer of `16 / n` bytes with all its bits 1 for `true` and 0 for `false`, so a comparison gives a mask as wide as the lanes it compared. Another size is an error: `simd[f32, 8] is 32 bytes, and a simd is one register of 16: use simd[f32, 4], or an array of them`.
@@ -1017,7 +1016,9 @@ What it cannot follow it leaves alone, without warnings
 - what is past the first 4096 bytes of a struct or an array, when the index is a literal
 - what you store in memory that a C function gave you
 
-A pointer that you store as an integer is lost. The checker tells you, `-memory cannot follow x once it is stored as an integer, store it with a pointer type`, and then reports that memory as never freed.
+A pointer that you store as an integer is lost. The checker tells you, `-memory cannot follow x once it is stored as an integer, store it with a pointer type`, and then reports that memory as never freed. A struct that holds a pointer, read as a number with `as`, loses it the same way, without the warning.
+
+What `as` reads, where `+` and `-` move a `*bytes` and what C does are the border of the checker. A moved `*bytes` is still a pointer, so the checker follows it into the memory it came from and using it after a `free` warns, but it doesn't check that it stays inside that memory.
 
 And it gives up on a function that is too much for it. It still shows what it found there, but it doesn't see everything
 - `-memory gives up on f, it has more than 512 blocks of memory to follow, so its checks are incomplete`. A block is every place that allocates, every temporary and everything a parameter points to, and the checker keeps a few for itself, so about 500 are yours. Split the function

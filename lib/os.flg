@@ -151,7 +151,7 @@ func args() -> &slice[&strview] where not @windows():
     with lock(startup.lock):
         if startup.args.len == 0:
             for i in 0..usize(@argc()):
-                append(startup.args, view(((@argv() as usize + i * 8) as **u8).*))
+                append(startup.args, view(((@argv() as *bytes + i * 8) as **u8).*))
         return startup.args
 
 func args() -> &slice[&strview] where @windows():
@@ -162,7 +162,7 @@ func args() -> &slice[&strview] where @windows():
             for i in 0..usize(count):
                 kept: &str # lives all the program
                 with scratch():
-                    kept = temp(((given as usize + i * 8) as *wstr).*)
+                    kept = temp(((given as *bytes + i * 8) as *wstr).*)
                 append(startup.args, view(kept))
             LocalFree(given as *bytes)
         return startup.args
@@ -195,7 +195,7 @@ priv func captured(launched: &slice[&strview]|&strview, into: *&str) -> i32|FsEr
     got: i32 = 1
     while got > 0:
         reserve(into, into.len + 65536)
-        got = read(fds[0], (ptr(into.*.*) as usize + into.len) as *bytes, 65536)
+        got = read(fds[0], ptr(into.*.*) + into.len, 65536)
         if got > 0:
             into.len += usize(got)
     close(fds[0])
@@ -252,7 +252,7 @@ priv func named(launched: &slice[&strview]|&strview) -> &strview:
 func random_bytes(into: &slice[u8]) where @linux():
     at: usize = 0
     while at < into.len:
-        got := getrandom((ptr(into.*) as usize + at) as *bytes, into.len - at, 0)
+        got := getrandom(ptr(into.*) + at, into.len - at, 0)
         if got < 0 and errno() != 4: # EINTR
             no_random(errno())
         if got > 0:
@@ -377,18 +377,18 @@ priv func arguments(launched: &slice[&strview]|&strview) -> **u8 where not @wind
     size := table
     for part in program:
         size += part.len + 1
-    args := malloc(size) as **u8
+    args := malloc(size)
     at := table
     for i in 0..=program.len:
-        slot := (args as usize + i * 8) as **u8
+        slot := (args + i * 8) as **u8
         slot.* = usize(0) as *u8
         if i < program.len:
-            text := (args as usize + at) as *u8
-            memcpy(text as *bytes, ptr(program[i].*), program[i].len)
-            ((text as usize + program[i].len) as *u8).* = 0
-            slot.* = text
+            text := args + at
+            memcpy(text, ptr(program[i].*), program[i].len)
+            ((text + program[i].len) as *u8).* = 0
+            slot.* = text as *u8
             at += program[i].len + 1
-    return args
+    return args as **u8
 
 # the program inherits only its three handles, and gets no window of its own when this one has no console
 priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
