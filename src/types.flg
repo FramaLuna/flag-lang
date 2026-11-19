@@ -343,6 +343,12 @@ func resolve(n: i64) -> i64|Fail:
         if tok.text == "||":
             return union_of(parts, Untagged, tok.at)
         return union_of(parts, Union, tok.at)
+    if node.kind == TTuple:
+        c := n + 1
+        while c < node_end(n):
+            append(parts, try resolve(c))
+            c = node_end(c)
+        return tuple_of(parts, tok.at)
     if node.kind == TFunc:
         ret := VOID
         c := n + 1
@@ -615,7 +621,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
 
 # a field that starts without a value when its type is born: one that holds a fat pointer and has no default, unless a type parameter gives its type, which starts as that type does, like the value of a new key of a map
 func bare(t: i64, f: Item) -> bool:
-    return comp.types[f.type].hollow and f.default == 0 and not f.shared and comp.tokens[comp.nodes[field_node(t, f.name) + 1].tok].kind != Generic
+    return comp.types[f.type].hollow and f.default == 0 and not f.shared and (tuple(t) or comp.tokens[comp.nodes[field_node(t, f.name) + 1].tok].kind != Generic)
 
 func arg_name(a: Item) -> &strview:
     if a.type == VOID:
@@ -696,6 +702,46 @@ func func_of(taken: &list[i64], ret: i64, foreign: bool) -> i64:
     for t in taken:
         append(comp.items, Item{type = t})
     return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
+
+# a struct without names, of the types in parts in their order, the same wherever it is written: (i32, bool)
+func tuple_of(parts: &listview[i64], at: i64) -> i64|Fail:
+    key: &str = heap("(")
+    for i, p in parts:
+        if i > 0:
+            key += ", "
+        key += comp.types[p].name
+    key += ")"
+    id := comp.type_ids[view(key)]
+    if id is i64:
+        return id
+    first := comp.items.len
+    size := 0
+    align := 1
+    stamped := false
+    hollow := false
+    for i, p in parts:
+        t := comp.types[try concrete(p, at)]
+        if fails(p):
+            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> (i32, bool)|FsError", at)
+        if t.kind == Bytes:
+            return fail("a tuple needs elements with a size, bytes is a run of unknown length", at)
+        if t.align == 0:
+            return fail("type " + t.name + " contains itself, hold it through a pointer", at)
+        size = align_up(size, t.align)
+        name: &str = heap("")
+        name += i
+        append(comp.items, Item{name = view(name), type = p, n = size})
+        size += t.size
+        if size > HUGE:
+            return too_large(view(key), at)
+        align = max(align, t.align)
+        stamped = stamped or t.stamped
+        hollow = hollow or t.hollow
+    return add_type(Type{kind = Struct, name = view(key), size = align_up(size, align), align = align, first = first, count = parts.len, stamped = stamped, hollow = hollow})
+
+# a struct of tuple_of, which no declaration names
+func tuple(t: i64) -> bool:
+    return comp.types[t].kind == Struct and comp.types[t].decl == 0
 
 # the frame where the declaration of t reads its type parameters, as the default value of a field does
 func frame_of(t: i64) -> i64:

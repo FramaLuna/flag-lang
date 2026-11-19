@@ -1,0 +1,81 @@
+type Point:
+    x: i32
+    y: i32
+
+func sum(..items: i64) -> i64:
+    total: i64 = 0
+    for x in items:
+        total += x
+    return total
+
+func line(label: &strview, ..parts: &strview) -> &str:
+    out: &str = heap(label)
+    for p in parts:
+        out += " " + p
+    out += " (" + parts.len + ")"
+    return out
+
+func biggest(..items: $T) -> $T:
+    best := items[0]
+    for x in items:
+        if x > best:
+            best = x
+    return best
+
+func pick(a: i64) -> &strview:
+    return "fixed"
+
+func pick(..a: i64) -> &strview:
+    return "gathers"
+
+func bump(..counters: *i64):
+    for c in counters:
+        c.* += 1
+
+func far(..points: Point) -> i32:
+    best: i32 = 0
+    for p in points:
+        best = max(best, p.x + p.y)
+    return best
+
+func halves(..xs: f64) -> f64:
+    return xs[0] / 2.0
+
+func start() -> Thread[i64]:
+    return parallel sum(100, 200, 300)
+
+func noise(n: i64) -> i64:
+    pad: array[i64, 64]
+    for i in 0..64:
+        pad[i] = n
+    return pad[63]
+
+func main():
+    print(sum(1, 2, 3), " ", sum(), " ", sum(40))
+    small: i32 = 7
+    print(sum(small, u8(5)))
+    alone := line("a")
+    defer free(alone)
+    more := line("b", "x", "y")
+    defer free(more)
+    print(alone)
+    print(more)
+    print(biggest(3, 9, 4), " ", biggest(1.5, 0.5), " ", biggest(small, 2))
+    values: &list[i64] = heap([])
+    defer free(values)
+    append(values, 10)
+    append(values, 20)
+    view: &listview[i64] = values
+    print(sum(..values), " ", sum(..view), " ", sum(..values[1:]), " ", biggest(..values))
+    arr := [5, 6, 7]
+    print(sum(..arr[:]))
+    print(pick(1), " ", pick(1, 2), " ", pick())
+    a: i64 = 1
+    b: i64 = 10
+    bump(a, b)
+    print(a, " ", b)
+    print(far(Point{1, 2}, Point{5, 5}, Point{3, 3}))
+    print(halves(3))
+    t := start()
+    print(noise(7))
+    print(wait(t))

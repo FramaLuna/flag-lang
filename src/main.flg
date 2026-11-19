@@ -33,7 +33,7 @@ type Use:
 
 type enum NodeKind:
     Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Constant, Assign
-    TName, TUnary, TUnion, TFunc
+    TName, TUnary, TUnion, TFunc, TTuple
     Block, Return, If, While, For, Switch, Case, Jump, Assert, Defer, With, Where
     Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Choice, Items, Pairs
 
@@ -171,7 +171,6 @@ type Value:
     neg: bool
     flipped: bool # a literal made by not, its bits wrap at the width of an unsigned place
     n: u64
-    f: f64
     element: i64
 
 type Loop:
@@ -235,6 +234,8 @@ context comp:
     target: i64
     passed: i64
     elements: &list[Value] = heap([])
+    turns: &list[i64] = heap([]) # of the values of each call or literal being made, those whose code calls something: the index and where the code starts
+    calls: i64 # how many calls the code made, but for those that never return, to know when it may have changed what was read
     vars: &list[Local] = heap([])
     given: &list[i64] = heap([]) # the locals that got their first value, in order, so a branch takes back what the one before it gave
     defers: &list[Deferred] = heap([])

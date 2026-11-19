@@ -347,7 +347,7 @@ func same_nodes(a: i64, b: i64, count: i64) -> bool:
     for i in 0..count:
         x := comp.nodes[a + i]
         y := comp.nodes[b + i]
-        if x.kind != y.kind or x.size != y.size or x.module != y.module or x.kind != Var and text(a + i) != text(b + i):
+        if x.kind != y.kind or x.size != y.size or x.module != y.module or x.kind != Var and text(a + i) != text(b + i) or x.kind == Var and gathers(a + i) != gathers(b + i):
             return false
     return true
 
@@ -415,15 +415,24 @@ func func_decl(external: bool) -> Fail?:
     count := 0
     while not peek(")"):
         if peek("..") and comp.tokens[comp.pos + 1].text == ".":
-            if not external or comp.tokens[comp.pos + 2].text != ")":
-                return fail("... stands for the extra arguments of a C function, it goes last in an extern func", here().at)
+            if not external:
+                return fail("... is for the extra arguments of a C function, a func of Flag gathers them as ..items: T", here().at)
+            if comp.tokens[comp.pos + 2].text != ")":
+                return fail("... stands for the extra arguments of a C function, it goes last", here().at)
             finish(begin(Var, comp.pos))
             comp.pos += 2
             break
+        gathering := peek("..")
+        if gathering and external:
+            return fail("an extern func ends with ... for the extra arguments of C, ..items: T is for a func of Flag", here().at)
+        if gathering and keyword == "operator":
+            return fail("operator " + name.text + " expects " + sides + ", ..items: T is for a func", here().at)
+        if gathering:
+            comp.pos += 1
         if here().kind != Name or comp.tokens[comp.pos + 1].text != ":":
             return unexpected("a parameter is written name: type")
         param := comp.nodes.len
-        if comp.tokens[comp.pos + 2].text == "type" and keyword == "func" and not external:
+        if comp.tokens[comp.pos + 2].text == "type" and keyword == "func" and not external and not gathering:
             try new_name(true)
             begin(Var, comp.pos)
             begin(TUnary, comp.pos + 2)
@@ -442,6 +451,10 @@ func func_decl(external: bool) -> Fail?:
             finish(param)
         else:
             try variable()
+        if gathering and kids(param) == 2:
+            return fail(".." + text(param) + " cannot have a default value, with no extra arguments it is an empty view", comp.tokens[comp.nodes[param].tok].at)
+        if gathering and not peek(")"):
+            return fail(".." + text(param) + " goes last, it gathers the arguments after the others", comp.tokens[comp.nodes[param].tok].at)
         count += 1
         for i in param..comp.nodes.len:
             at := comp.tokens[comp.nodes[i].tok].at
@@ -649,9 +662,14 @@ func stmt() -> Fail?:
         return fail("case expects a switch above it at the same column", t.at)
     elif t.text == "return":
         n := begin(Return, comp.pos)
+        first := comp.pos
+        while comp.tokens[first - 1].kind != Line:
+            first -= 1
         comp.pos += 1
-        if here().kind != Line:
+        if here().kind != Line and unclosed(first, comp.pos) > 0: # inside brackets, after ifnull, a comma goes on
             try expr(1)
+        elif here().kind != Line:
+            try several()
         finish(n)
     elif t.text == "break" or t.text == "continue":
         n := begin(Jump, comp.pos)
@@ -682,7 +700,7 @@ func stmt() -> Fail?:
         if here().kind == Line:
             return unexpected("defer expects a statement after it")
         try stmt()
-        if comp.nodes[n + 1].kind == Var or comp.nodes[n + 1].kind == Defer:
+        if comp.nodes[n + 1].kind == Var or comp.nodes[n + 1].kind == Defer or comp.nodes[n + 1].kind == Assign and text(n + 1) == ":=":
             return fail("defer runs a statement when its block ends, a declaration or another defer leaves it nothing to run", comp.tokens[comp.nodes[n].tok + 1].at)
         finish(n)
     elif t.text == "pass":
@@ -717,6 +735,27 @@ func assignment() -> Fail?:
     first := comp.pos
     start := comp.nodes.len
     try expr(1)
+    if peek(","): # a, b = b, a or lo, hi := f()
+        while peek(","):
+            comp.pos += 1
+            try expr(1)
+        sign := comp.pos
+        if peek(":="):
+            c := start
+            while c < comp.nodes.len:
+                if comp.nodes[c].kind != Name or comp.nodes[c].size != 1 or comp.nodes[c].module.len > 0:
+                    return fail(":= declares names, and this is not one: several places are assigned with =", at_of(c))
+                comp.pos = comp.nodes[c].tok
+                try new_name(true)
+                c += 1
+            comp.pos = sign
+        elif not peek("="):
+            return unexpected("several places take their values with = and several names with :=")
+        comp.pos += 1
+        try several()
+        wrap(start, Assign, sign)
+        finish(start)
+        return null
     if assigning():
         target := start
         if comp.nodes[start].kind == Binary and (text(start) == "iferror" or text(start) == "ifnull") and unclosed(first, comp.nodes[start].tok) == 0:
@@ -725,6 +764,18 @@ func assignment() -> Fail?:
         comp.pos += 1
         try expr(1)
         finish(target)
+        finish(start)
+    return null
+
+# a value, or several separated by commas, which make a tuple
+func several() -> Fail?:
+    start := comp.nodes.len
+    try expr(1)
+    if peek(","):
+        wrap(start, Fill, comp.pos)
+        while peek(","):
+            comp.pos += 1
+            try expr(1)
         finish(start)
     return null
 
@@ -939,7 +990,7 @@ func unary() -> Fail?:
     links := 0
     while true:
         comp.depth -= links # each link nests, its arguments do not
-        if peek(".") and comp.tokens[comp.pos + 1].kind == Name:
+        if peek(".") and (comp.tokens[comp.pos + 1].kind == Name or comp.tokens[comp.pos + 1].kind == Int):
             wrap(start, Field, comp.pos + 1)
             comp.pos += 2
             finish(start)
@@ -974,7 +1025,7 @@ func unary() -> Fail?:
         try deeper(here().at)
         links += 1
     k := comp.nodes[start].kind
-    if (peek("?") or peek("|") or peek("||")) and (k == Name or k == Field or k == Index or k == TName or k == TUnary or k == TUnion or k == TFunc):
+    if (peek("?") or peek("|") or peek("||")) and (k == Name or k == Field or k == Index or k == TName or k == TUnary or k == TUnion or k == TFunc or k == TTuple):
         comp.nodes.len = start
         comp.pos = first
         return type_expr() # Point?, i32|null and u8||u64 are types
@@ -1015,13 +1066,16 @@ func arguments(last: &strview) -> Fail?:
     return expect(last)
 
 func argument() -> Fail?:
+    kind: NodeKind = Unary # ..view, which gives the extra arguments
     if here().kind == Name and comp.tokens[comp.pos + 1].text == "=":
-        n := begin(Named, comp.pos)
-        comp.pos += 2
-        try expr(1)
-        finish(n)
-        return null
-    return expr(1)
+        kind = Named
+    elif not peek(".."):
+        return expr(1)
+    n := begin(kind, comp.pos)
+    comp.pos += 1 + i64(kind == Named)
+    try expr(1)
+    finish(n)
+    return null
 
 func type_expr() -> Fail?:
     try deeper(here().at)
@@ -1082,8 +1136,16 @@ func type_expr() -> Fail?:
             finish(n)
         elif t.text == "(":
             try paren(comp.pos)
+            open := comp.pos
+            inner := comp.nodes.len
             comp.pos += 1
             try type_expr()
+            if peek(","): # a tuple, (i32, bool), where (T) is T
+                wrap(inner, TTuple, open)
+                while peek(","):
+                    comp.pos += 1
+                    try type_expr()
+                finish(inner)
             try expect(")")
         else:
             return unexpected("a type goes here")

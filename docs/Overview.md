@@ -79,7 +79,7 @@ d := u8(a)
 - Maps: `{"ana": 30, "bo": 25}` is a `fixmap[&strview, i64, 2]` that holds just those, and `{}` is the empty one, an `emptyfixmap` (see [Maps](#maps))
 
 No literal asks for memory: a list, a text or a map that grows is made from one with `heap` or `arena`, `heap([1, 2])`, `heap("hello")` or `heap({"ana": 30})`
-- Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types))
+- Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types)). Where nothing expects one, `{1, "a"}` is a tuple of its values, a `(i64, &strview)` (see [Several values](#several-values))
 
 When you give the type, the literal takes it
 ```flag
@@ -128,6 +128,8 @@ if x > 0 and not done:
     count += 1
 mode := "-check" if check else "run"
 ```
+An expression runs left to right, and a variable is read in its turn: with `x = 1`, `x + bump(ptr(x))` is `1 + 11` even when `bump` changes `x`. An assignment runs its right side first, so `x += bump(ptr(x))` adds to the `x` that `bump` left, 22.
+
 Two integers of different types mix when one holds every value of the other, and the operation is done in the wider one: `u8 + i32` is an `i32`. Otherwise, like `u64` with `i64` or an integer with a float, you convert one side (see [Variables and Assignments](#variables-and-assignments)), and a literal takes the type of the other side. Comparisons take any two integers and compare their values, so `i64(-1) < u64(0)` is `true`. A shift has the type of its left side. Integers wrap around when they overflow, and dividing by zero stops the program with an error.
 
 `not` takes everything up to the next `and`, `or` or `xor`, so `not x == 3` is `not (x == 3)`. Before arithmetic it needs parentheses, `(not x) + 1`, because `not x + 1` could mean either one.
@@ -572,8 +574,36 @@ A default can read the parameters before it, so one function takes the whole tex
 func slice_of(text: &strview, from: i64 = 0, to: i64 = text.len) -> &strview:
     return text[from:to]
 ```
-#### Variadics
-Only C functions can be variadic, with `...` at the end of the parameters (see [Calling C](#calling-c))
+#### Extra arguments
+The last parameter can gather the arguments after the others, of one type, and inside the function they are a `&listview`. A view that you already have goes there with `..`
+```flag
+func sum(..items: i64) -> i64:
+    total: i64 = 0
+    for x in items:
+        total += x
+    return total
+
+func main():
+    values: &list[i64] = heap([10, 20])
+    defer free(values)
+    print(sum(1, 2, 3), " ", sum(), " ", sum(..values)) # 6 0 30
+```
+The extra arguments of a C function are `...` at the end of its parameters (see [Calling C](#calling-c))
+### Several values
+A function returns several values in a tuple, a struct without names whose type is the types of its values: `(i32, i32)`. `return a, b` builds it, and the values come apart when you declare them or assign them
+```flag
+func split(text: &strview) -> (i64, i64):
+    return 0, text.len
+
+func main():
+    lo, hi := split("hola") # 0 4
+    whole := split("abc")
+    print(whole, " ", whole.1) # (0, 3) 3
+    a, b := 1, 2
+    a, b = b, a # swaps them
+    _, last := split("xy")
+```
+An error doesn't go inside a tuple, it goes beside it: `-> (i64, i64)|ParseError`, and `lo, hi := try parse(text)` takes the tuple apart after `try`
 ### Functions that never return
 A function that never comes back, like `panic` or `exit`, says so with `-> never`. The code after a call to it can never run, so it narrows like a `return`, and on the right of `ifnull` or `iferror` it leaves the value without the `null` or the error
 ```flag

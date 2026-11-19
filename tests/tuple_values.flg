@@ -1,0 +1,99 @@
+type error Bad
+
+type Point:
+    x: i32
+    y: i32
+
+LIMITS: (i32, i32) = {1, 9}
+
+func split(text: &strview) -> (i32, i32):
+    return 0, i32(text.len)
+
+func both(n: i64) -> (i64, bool):
+    return {n * 2, n > 3}
+
+func turned(p: (i32, &strview)) -> (&strview, i32):
+    return p.1, p.0
+
+func first(t: ($A, $B)) -> $A:
+    return t.0
+
+func parse(s: &strview) -> (i64, i64)|Bad:
+    if s.len == 0:
+        return Bad
+    return 1, s.len
+
+func maybe(n: i64) -> (i64, i64)?:
+    if n < 0:
+        return null
+    return n, n + 1
+
+func corner() -> Point:
+    return 3, 4
+
+func parsed() -> Bad?:
+    lo, hi := try parse("abc")
+    print("try ", lo, " ", hi)
+    return null
+
+func tag(what: &strview, n: i64) -> i64:
+    print(what)
+    return n
+
+func main():
+    lo, hi := split("hola")
+    print(lo, " ", hi)
+    r := split("abc")
+    print(r, " ", r.0, " ", r.1)
+    a, b := 1, 2
+    a, b = b, a
+    print(a, " ", b)
+    x: u8 = 0
+    y: f32 = 0.0
+    x, y = 7, 1.5
+    print(x, " ", y)
+    _, ok := both(5)
+    print(ok)
+    t := {1, "two"}
+    print(t, " ", turned({i32(3), "x"}))
+    print(first(t), " ", first({true, 2}))
+    nested := {{1, 2}, 3}
+    print(nested.0.1, " ", nested)
+    l := [1, 2, 3]
+    l[0], l[2] = l[2], l[0]
+    print(l)
+    p := Point{1, 2}
+    p.x, p.y = p.y, p.x
+    print(p, " ", corner())
+    print({1, 2} == {1, 2}, " ", {1, 2} == {2, 1})
+    _ = parsed()
+    c, d := parse("") iferror {0, 0}
+    print(c, " ", d)
+    e, f := maybe(5) ifnull {0, 0}
+    print(e, " ", f)
+    g, h := trust maybe(1)
+    print(g, " ", h)
+    print(LIMITS, " ", LIMITS.1)
+    m: &map[(i32, i32), &strview] = heap({})
+    defer free(m)
+    m[{i32(1), i32(2)}] = "one two"
+    print(m[{i32(1), i32(2)}] ifnull "none")
+    u: (i32, i32)|&strview = {i32(5), i32(6)}
+    if u is (i32, i32):
+        print("pair ", u.0)
+    print({i32(1), i32(2)} as u64 == (u64(2) << 32) + 1)
+    for i, pair in [{1, "a"}, {2, "b"}]:
+        print(i, " ", pair.1)
+    next: func(i64) -> (i64, i64)? = maybe
+    print(next(2))
+    q, s := tag("right one", 1), tag("right two", 2)
+    v: array[i64, 2]
+    v[tag("place one", 0)], v[tag("place two", 1)] = tag("value one", q), tag("value two", s)
+    print(v)
+    worker := parallel split("thread")
+    w1, w2 := wait(worker)
+    print(w1, " ", w2)
+    k := 0
+    cells := [0, 0, 0]
+    k, cells[k] = 1, 5
+    print(k, " ", cells)

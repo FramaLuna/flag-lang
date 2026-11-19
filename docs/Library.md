@@ -29,7 +29,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 
 ## core
 ### The program
-- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix
+- `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix. Its values mix types, so it belongs to the language: a function of yours gathers extra arguments of one type, `..items: T` (see [Extra arguments](Reference.md#extra-arguments))
 - `eprint(values...)` the same to the error output
 - `panic(message: &strview) -> never` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
 - `on_panic(f: func(&strview, &strview))` gives `panic` a function that runs after the message and the chain, before the program ends: it gets the message and the place, for every error that ends with 134, also those of the checks the compiler writes. A new one replaces the last, and it can end the program with `exit`
@@ -301,7 +301,7 @@ And three helpers
 - `hex(value: $I) -> Hex` prints the bits of the integer in hexadecimal, as many as its type has: `hex(255)` is `0xff`, `hex(i8(-1))` is `0xff` too, and `hex(-1)` is `0xffffffffffffffff`, the literal alone is an `i64`
 - `pad(value: $T, width: i32) -> Padded[$T]` prints the value with spaces before it to fill `width` characters, or after it when `width` is negative: `pad(42, 5)` is `   42` and `pad("ab", -4)` is `ab  `. A longer value is not cut. It takes any value, so `pad(fixed(x, 2), 8)` works
 
-The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
+The compiler prints the rest: structs as `Point{x = 1, y = 2}`, tuples as `(1, 2)`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
 
 ### Maps
 A `&map[$K, $V]` is a hash map that you own. It gets its memory from `heap` or `arena`: `heap({})` is an empty one in the heap, and `heap({"a": 1})` makes one with the pairs of a literal.

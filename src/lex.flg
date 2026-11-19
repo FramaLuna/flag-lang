@@ -115,10 +115,13 @@ func lex(file: i64) -> Fail?:
                     return fail("'" + code[start:at] + "' expects digits after it", base + start)
             else:
                 exponent := false
+                element := start > 1 and bytes[start - 1] == '.' and bytes[start - 2] != '.' # t.0.1 reads element 1 of element 0
                 while at < code.len:
                     c := bytes[at]
                     if is_digit(c) or c == '_' and is_digit(bytes[at - 1]) and at + 1 < code.len and is_digit(bytes[at + 1]):
                         at += 1
+                    elif c == '.' and element:
+                        break
                     elif c == '.' and kind == Int and at + 1 < code.len and is_digit(bytes[at + 1]):
                         kind = Float
                         at += 1
