@@ -206,6 +206,8 @@ func declaration(module: &strview, kept: bool) -> Fail?:
     c := n
     while kept and c < comp.nodes.len:
         sym.name = text(c)
+        if t.text == "operator" and sym.name == "next":
+            sym.name = "operator next" # the one name of an operator that a function can take too
         try declare(c, sym)
         try nested(c, sym)
         c = node_end(c)
@@ -266,6 +268,8 @@ func declare(n: i64, sym: Sym) -> Fail?:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     if sym.name == "ptr" or sym.name == "print" or sym.name == "eprint":
         return fail(sym.name + " belongs to the language, it cannot be declared again", at)
+    if sym.name == "hash" and kind == Func and comp.tokens[comp.nodes[n].tok - 1].text != "operator":
+        return fail("a func cannot be named hash, hash(x) calls operator hash: declare operator hash in place of func hash", at)
     s := first_sym(sym.name)
     while s != 0:
         old := comp.syms[s]
@@ -330,19 +334,50 @@ func func_decl(external: bool) -> Fail?:
     name := here()
     if keyword == "func" and name.kind != Name or keyword == "operator" and name.kind != Symbol and name.kind != Name:
         return unexpected("a declaration expects a name here")
+    sides: &strview # the parameters an operator expects
+    least := 1
+    most := 1
     if keyword == "func":
         try new_name(false)
     else:
-        problem: &strview = " cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = +="
+        problem: &strview
         switch name.text:
-        case "+", "-", "*", "/", "%", "==", "<", "<<", ">>", "and", "or", "xor", "not", "=", "+=":
-            problem = ""
+        case "+", "-", "*", "/", "%", "==", "<", "<<", ">>", "and", "or", "xor", "=", "+=":
+            sides = "two parameters, its left side and its right side"
+            least = 2
+            most = 2
+        case "not":
+            sides = "one parameter, the value on its right"
+        case "[]":
+            sides = "two parameters, the x and i of x[i]"
+            least = 2
+            most = 2
+        case "[]=":
+            sides = "three parameters, the x, i and v of x[i] = v, or two when it gives a pointer to the element"
+            least = 2
+            most = 3
+        case "[:]":
+            sides = "three parameters, the x, a and b of x[a:b]"
+            least = 3
+            most = 3
+        case "for":
+            sides = "one parameter, the x of for e in x"
+        case "reverse":
+            sides = "one parameter, the x of for e in reverse x"
+        case "next":
+            sides = "one parameter, a pointer to what operator for gives"
+        case "with":
+            sides = "one parameter, the x of with x"
+        case "hash":
+            sides = "one parameter, the x of hash(x)"
         case "!=":
             problem = " follows from ==, declare operator == instead"
         case ">", "<=", ">=":
             problem = " follows from <, declare operator < instead"
         case "-=", "*=", "/=", "%=":
             problem = " follows from " + name.text[:1] + ", declare operator " + name.text[:1] + " instead"
+        case:
+            problem = " cannot be declared, the operators to declare are + - * / % == < << >> and or xor not = += [] []= [:] for reverse next with hash"
         if problem.len > 0:
             return fail("operator " + name.text + problem, name.at)
     n := begin(Func, comp.pos)
@@ -388,18 +423,14 @@ func func_decl(external: bool) -> Fail?:
                 return fail("a default value runs in the caller, so return would return from the caller: write a value after " + after, at)
             if comp.nodes[i].kind == Jump:
                 return fail("a default value runs in the caller, so " + text(i) + " would jump in a loop of the caller: write a value after " + after, at)
-        if keyword == "operator" and name.text == "not" and count > 1 and kids(param) == 1:
-            return fail("operator not expects the value on its right, a parameter after it needs a default value", comp.tokens[comp.nodes[param].tok].at)
-        if keyword == "operator" and name.text != "not" and count > 2 and kids(param) == 1:
-            return fail("operator " + name.text + " expects its left side and its right side, a parameter after them needs a default value", comp.tokens[comp.nodes[param].tok].at)
+        if keyword == "operator" and count > most and kids(param) == 1:
+            return fail("operator " + name.text + " expects " + sides + ", and one more needs a default value", comp.tokens[comp.nodes[param].tok].at)
         if not peek(","):
             break
         comp.pos += 1
     try expect(")")
-    if keyword == "operator" and name.text == "not" and count == 0:
-        return fail("operator not expects one parameter, the value on its right", name.at)
-    if keyword == "operator" and name.text != "not" and count < 2:
-        return fail("operator " + name.text + " expects two parameters, its left side and its right side", name.at)
+    if keyword == "operator" and count < least:
+        return fail("operator " + name.text + " expects " + sides, name.at)
     if peek("->"):
         comp.pos += 1
         result := comp.nodes.len

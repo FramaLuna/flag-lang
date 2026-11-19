@@ -483,7 +483,8 @@ func check_memory():
                 found := mem.ids[name]
                 if found is i64:
                     node := mem.fns[found].node
-                    mem.ops[k].named = node != 0 and comp.tokens[token_at(mem.ops[k].pos)].text == text(node)
+                    called := token_at(mem.ops[k].pos)
+                    mem.ops[k].named = node != 0 and comp.tokens[called].text == text(node) and comp.tokens[called + 1].text == "(" # a for or a with calls the operator of its word without naming it
                     core := node != 0 and file_of(comp.tokens[comp.nodes[node].tok].at) == 0
                     if core and text(node) == "tmp" and comp.types[comp.insts[mem.fns[found].inst].ret].kind == Ptr:
                         mem.ops[k].code = Arena
@@ -504,7 +505,7 @@ func check_memory():
                                 if aggregate(b.type):
                                     mem.ops[k].size = u32(comp.types[b.type].size)
                         mem.ops[k].code = Give # what the value points to goes to the thread that receives it
-                    elif core and text(node) == "close" and comp.passes[comp.procs[found].params].cls >= AGG and comp.types[comp.passes[comp.procs[found].params].cls - AGG].name == "Scratch":
+                    elif core and text(node) == "with" and comp.passes[comp.procs[found].params].cls >= AGG and comp.types[comp.passes[comp.procs[found].params].cls - AGG].name == "Scratch":
                         mem.ops[k].code = Rewind
                         d := k
                         while d > spans[0].first and mem.ops[d].to != mem.args[mem.ops[k].first].temp:
@@ -1614,7 +1615,7 @@ func intern(v: Target) -> u32:
     append(mem.pool, v)
     return u32(mem.pool.len - 1)
 
-func hash(v: Target) -> u64:
+operator hash(v: Target) -> u64:
     h := fold(fold(fold(FNVBASIS, v.live), v.dead), v.must)
     h = (h xor u64(i64(v.off) + 2)) * FNVPRIME
     h = (h xor u64(v.stride)) * FNVPRIME

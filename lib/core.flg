@@ -230,7 +230,7 @@ func out_of_bounds(from: $I, to: $I, len: i64, place: &strview = @here()) -> nev
 type fatptr listview[$T]:
     len: i64
 
-func slice(s: &listview[$T], from: $I, to: $I, place: &strview = @here()) -> &listview[$T] where $I is Integer:
+operator [:](s: &listview[$T], from: $I, to: $I, place: &strview = @here()) -> &listview[$T] where $I is Integer:
     first := u64(from) # a negative is past every length
     last := u64(to)
     if first > last or last > u64(s.len):
@@ -245,7 +245,7 @@ priv type Walk[$T]:
     len: i64
     i: i64
 
-func next(w: *Walk[$T]) -> $T|IterationEnd:
+operator next(w: *Walk[$T]) -> $T|IterationEnd:
     if w.i >= w.len:
         return IterationEnd
     p := (w.base + w.i * @sizeof($T)) as *$T
@@ -484,7 +484,7 @@ func items(s: &strview) -> &listview[u8]:
     out.len = s.len
     return out
 
-func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
+operator [:](v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
     first := u64(from) # a negative is past every length
     last := u64(to)
     if first > last or last > u64(v.len):
@@ -619,7 +619,7 @@ priv context scratch_space:
 func scratch() -> Scratch:
     return Scratch{scratch_space.arena.count, scratch_space.arena.used}
 
-func close(s: Scratch):
+operator with(s: Scratch):
     scratch_space.arena.count = s.count
     scratch_space.arena.used = s.used
 
@@ -1121,7 +1121,7 @@ func lock(l: *Lock) -> Locked:
     l.depth += 1
     return Locked{l}
 
-func close(held: Locked):
+operator with(held: Locked):
     l := held.lock
     l.depth -= 1
     if l.depth == 0:
@@ -1337,11 +1337,9 @@ func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$siz
         wake(c.filled)
 
 func receive(c: *Channel[$T, $$size]) -> $T|null:
-    r := Receiving[$T, $$size]{c}
-    v := next(ptr(r))
-    if v is IterationEnd:
-        return null
-    return v
+    for v in c:
+        return v
+    return null
 
 func close(c: *Channel[$T, $$size]):
     with lock(c.lock):
@@ -1349,16 +1347,19 @@ func close(c: *Channel[$T, $$size]):
         wake(c.filled)
         wake(c.emptied)
 
+operator with(c: *Channel[$T, $$size]):
+    close(c)
+
 priv type Receiving[$T, $$size]:
     channel: *Channel[$T, $$size]
 
-func iter(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
+operator for(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
     return Receiving[$T, $$size]{c}
 
-func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
+operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
     @compile_error("a channel holds at least one value, its size cannot be 0")
 
-func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
+operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
     c := r.channel
     with lock(c.lock):
         while c.len == 0 and not c.closed:
@@ -1454,8 +1455,8 @@ func flush():
             all = tmp(io.streams)
         for s in all:
             if s as u64 != 0 and try_lock(s.writing):
-                drain(s)
-                close(Locked{ptr(s.writing)})
+                with Locked{ptr(s.writing)}:
+                    drain(s)
 
 priv export func flag_exit():
     flush()
@@ -1675,9 +1676,8 @@ priv func buffered(f: File) -> bool:
             s = io.streams[f.fd]
     if s as u64 == 0 or not s.open or not try_lock(s.reading):
         return false
-    waiting := s.given < s.received.len
-    close(Locked{ptr(s.reading)})
-    return waiting
+    with Locked{ptr(s.reading)}:
+        return s.given < s.received.len
 
 priv func valid(f: File, place: &strview):
     if f.fd < 0:
@@ -1697,6 +1697,9 @@ func close(f: File, place: &strview = @here()):
             with lock(io.lock):
                 s.open = false
             release(s) # last, a file that another thread opens can get the same number
+
+operator with(f: File, place: &strview = @here()):
+    close(f, place)
 
 func errno() -> i32 where @linux():
     return __errno_location().*
@@ -1794,23 +1797,23 @@ type fatptr map[$K, $V]:
     cap: i64
     arena: *Arena
 
-func hash(s: &strview) -> u64:
+operator hash(s: &strview) -> u64:
     # FNV-1a
     h: u64 = 0xcbf2_9ce4_8422_2325
     for b in items(s):
         h = (h xor u64(b)) * 0x100_0000_01b3
     return h
 
-func hash(n: $T) -> u64 where $T is Integer:
+operator hash(n: $T) -> u64 where $T is Integer:
     h := u64(n) * 0x9e37_79b9_7f4a_7c15 # 2^64 over the golden ratio
     return h xor (h >> 32)
 
-func hash(f: f64) -> u64:
+operator hash(f: f64) -> u64:
     if f == 0.0:
         return 0
     return hash(f as u64)
 
-func hash(f: f32) -> u64:
+operator hash(f: f32) -> u64:
     return hash(f64(f))
 
 priv type Slot[$K, $V]:
@@ -1837,6 +1840,12 @@ priv func locate(m: &map[$K, $V], key: $Q) -> i64:
 func put(m: *&map[$K, $V], key: $K, value: $V):
     put(m, key).* = value
 
+operator []=(m: *&map[$K, $V], key: $K, value: $V):
+    put(m, key, value)
+
+operator []=(m: *&map[$K, $V], key: $K) -> *$V:
+    return put(m, key)
+
 priv func put(m: *&map[$K, $V], key: $K) -> *$V:
     reserve(m, m.len + 1)
     i := locate(m.*, key)
@@ -1846,10 +1855,10 @@ priv func put(m: *&map[$K, $V], key: $K) -> *$V:
         m.len += 1
     return ptr(table[i].value)
 
-func at(m: &map[$K, $V], key: $K) -> $V|null:
+operator [](m: &map[$K, $V], key: $K) -> $V|null:
     return found(m, key)
 
-func at(m: &map[&str, $V], key: &strview) -> $V|null:
+operator [](m: &map[&str, $V], key: &strview) -> $V|null:
     return found(m, key)
 
 priv func found(m: &map[$K, $V], key: $Q) -> $V|null:
@@ -1939,10 +1948,10 @@ priv type Pairs[$K, $V]:
     table: &listview[Slot[$K, $V]]
     i: i64
 
-func iter(m: &map[$K, $V]) -> Pairs[$K, $V]:
+operator for(m: &map[$K, $V]) -> Pairs[$K, $V]:
     return Pairs[$K, $V]{slots(m), 0}
 
-func next(p: *Pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
+operator next(p: *Pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
     while p.i < p.table.len:
         p.i += 1
         s := p.table[p.i - 1]
@@ -1981,7 +1990,10 @@ func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
     m.entries[i] = entry[$K, $V]{key, value}
     return null
 
-func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+operator []=(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
+    return put(m, key, value)
+
+operator [](m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
     i := place(m, key)
     if i == m.len:
         return null
@@ -2003,7 +2015,7 @@ func remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
 func clear(m: *fixmap[$K, $V, $$max]):
     m.len = 0
 
-func iter(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
+operator for(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
     return Walk[entry[$K, $V]]{ptr(m.entries) as *bytes, m.len, 0}
 
 operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
@@ -2015,7 +2027,7 @@ operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
             return false
     return true
 
-func hash(m: *fixmap[$K, $V, $$max]) -> u64:
+operator hash(m: *fixmap[$K, $V, $$max]) -> u64:
     h: u64 = 0
     for i in 0..m.len:
         h += hash(m.entries[i].key) * 31 + hash(m.entries[i].value) # a sum, so the order of the entries doesn't count

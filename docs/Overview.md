@@ -435,7 +435,7 @@ for i in reverse 0..10: # from 9 to 0
 ```
 With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and listviews know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
 
-You can make your own types iterable. `for` calls `iter` with your value and then `next` with a pointer to what `iter` gave, until `next` gives `IterationEnd`. `reverse` calls `reverse_iter` instead of `iter`
+You can make your own types iterable. `for` calls `operator for` with your value and then `operator next` with a pointer to what it gave, until `operator next` gives `IterationEnd`. `reverse` calls `operator reverse` instead of `operator for`
 ```flag
 type Countdown:
     from: i32
@@ -443,10 +443,10 @@ type Countdown:
 type Down:
     at: i32
 
-func reverse_iter(c: Countdown) -> Down:
+operator reverse(c: Countdown) -> Down:
     return Down{c.from}
 
-func next(d: *Down) -> i32|IterationEnd:
+operator next(d: *Down) -> i32|IterationEnd:
     if d.at == 0:
         return IterationEnd
     d.at -= 1
@@ -513,19 +513,19 @@ func main():
 ```
 A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove_file(path)` drops it on purpose.
 ### With
-`with` calls `close` on the value when the block ends, also when you leave it early
+`with` calls `operator with` on the value when the block ends, also when you leave it early
 ```flag
 type Door:
     room: i32
 
-func close(d: Door):
+operator with(d: Door):
     print("closed ", d.room)
 
 func main():
     with Door{7}:
         print("inside the room")
 ```
-A `close` that can return an error doesn't go in a `with`, the error would be lost, so call it yourself.
+An `operator with` that can return an error doesn't go in a `with`, the error would be lost, so close it with a function of yours and call it yourself.
 
 ## Functions
 ```flag
@@ -609,19 +609,19 @@ func main():
     boiling: Celsius = 212.0 # 100 degrees
 ```
 ### Indexing
-`x[i]` calls `at(x, i)` with the index as written, a negative one too, so your types can be indexed too. When `at` gives a pointer you can also assign to `x[i]`
+`x[i]` calls `operator [](x, i)` with the index as written, a negative one too, so your types can be indexed too. When it gives a pointer you can also assign to `x[i]`
 ```flag
 type Grid:
     cells: array[i32, 9]
 
-func at(g: *Grid, i: i32) -> *i32:
+operator [](g: *Grid, i: i32) -> *i32:
     return ptr(g.cells[i])
 
 func main():
     g: Grid
     g[4] = 7
 ```
-The compiler calls other functions by their name too, like `iter` for `for` or `close` for `with`, they are all in [Protocol functions](Reference.md#protocol-functions).
+The language calls other operators for its syntax too, like `operator for` for `for` and `operator with` for `with`, they are all in [Protocol operators](Reference.md#protocol-operators). An operator is not called by its name, so a type that you also close by hand keeps a function beside it, like `close(f)` of a `File`.
 ### Generics
 A parameter with a `$` type takes any type, and `$$` takes a number
 ```flag
@@ -851,7 +851,7 @@ ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]`, with keys that it owns, is read and removed with a `&strview` too: `ports[line[:4]]`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]`, with keys that it owns, is read and removed with a `&strview` too: `ports[line[:4]]`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `operator hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag

@@ -3,13 +3,13 @@ module bits
 type Bits[$$words]:
     words: array[u64, $$words]
 
-func at(b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
+operator [](b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
     n := u64(i) # a negative is past every bit
     if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
     return ((b.words[n / 64] >> n % 64) and 1) != 0
 
-func put(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
+operator []=(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
     n := u64(i)
     if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
@@ -69,10 +69,10 @@ priv type Ones[$$w]:
     at: i64
     left: u64
 
-func iter(b: *Bits[$$w]) -> Ones[$$w]:
+operator for(b: *Bits[$$w]) -> Ones[$$w]:
     return Ones[$$w]{b.words, 0, 0}
 
-func next(o: *Ones[$$w]) -> i64|IterationEnd:
+operator next(o: *Ones[$$w]) -> i64|IterationEnd:
     while o.left == 0:
         if o.at == $$w:
             return IterationEnd

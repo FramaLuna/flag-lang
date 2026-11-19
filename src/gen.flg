@@ -142,7 +142,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                     try passing(try resolve(c + 1), true, comp.tokens[comp.nodes[c].tok].at)
                 c = node_end(c)
         name := text(f)
-        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "at" or name == "iter" or name == "reverse_iter" or name == "wait"):
+        if comp.nodes[f].kind == Func and params(f) > 0 and (name == "[]" or name == "for" or name == "reverse" or name == "wait"):
             saved := open_frame()
             for i in kid(f, 0)..kid(f, params(f)):
                 t := comp.tokens[comp.nodes[i].tok]
@@ -158,7 +158,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             owned := sequence(first) or textual(first) or comp.types[target].kind == Array
             if name == "wait":
                 owned = comp.types[target].kind == Thread and file_of(comp.tokens[comp.nodes[f].tok].at) != 0
-            if name == "at":
+            if name == "[]":
                 owned = false
                 if params(f) > 1 and (sequence(target) or textual(target) or comp.types[target].kind == Array):
                     second := try resolve(kid(f, 1) + 1)
@@ -169,10 +169,10 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             shown = shown[:find(shown, "[") ifnull shown.len]
             if owned and name == "wait":
                 return fail("wait of " + shown + " belongs to the language, it cannot be declared again", comp.tokens[comp.nodes[f].tok].at)
-            if owned and name == "at":
-                return fail("x[i] with an integer on " + shown + " belongs to the language, at cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
+            if owned and name == "[]":
+                return fail("x[i] with an integer on " + shown + " belongs to the language, operator [] cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
             if owned:
-                return fail("for over " + shown + " belongs to the language, " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
+                return fail("for over " + shown + " belongs to the language, operator " + name + " cannot be declared for it", comp.tokens[comp.nodes[f].tok].at)
     try gen_from(done)
     ids: &map[&strview, i64]
     for k in 0..comp.procs.len:
@@ -510,7 +510,9 @@ func gen_from(from: i64) -> i64|Fail:
         target := first
         if comp.types[first].kind == Ptr:
             target = comp.types[first].elem
-        if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol or name == "and" or name == "or" or name == "xor"):
+        if name == "hash" and inst.ret != U64:
+            return fail("operator hash gives the hash that a map uses, so it returns u64, this one returns " + comp.types[inst.ret].name, comp.at)
+        if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol and name[:1] != "[" or name == "and" or name == "or" or name == "xor"):
             if name == "=" and inst.ret != target:
                 return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
             if name == "+=" and comp.types[first].name != "*&str":
@@ -1309,7 +1311,7 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
         append(pair, made)
         append(pair, keys[i])
         append(pair, values[i])
-        try invoke("put", pair, tok.at)
+        try invoke("[]=", pair, tok.at)
     return made
 
 func placed(t: i64, arena: Value, at: i64) -> Value|Fail:
@@ -1443,12 +1445,10 @@ func iterate(n: i64) -> Fail?:
                 return fail("for does not walk the lanes of a simd, convert it to an array: for x in array[" + comp.types[lanes_of.elem].name + ", " + lanes_of.count + "](v)", at)
             args: &list[Value]
             append(args, walked)
-            walk: &strview = "iter"
+            walk: &strview = "for"
             if backward:
-                walk = "reverse_iter"
-            if backward and not try offers(walk, args, tok.at):
-                return fail(comp.types[walked.type].name + " has no reverse_iter, so reverse cannot walk it", at)
-            walker = try invoke(walk, args, tok.at)
+                walk = "reverse"
+            walker = try invoke(walk, args, at)
             slot = alloc(walker.type)
             store(walker.type, walker, slot)
         count := Arg{}
@@ -1518,13 +1518,13 @@ func iterate(n: i64) -> Fail?:
         else:
             args: &list[Value]
             append(args, Value{type = pointer(walker.type), at = slot})
-            got := try invoke("next", args, tok.at)
+            got := try invoke("operator next", args, tok.at)
             rest: &list[i64]
             for m in members(got.type):
                 if m != ITERATIONEND:
                     append(rest, m)
             if comp.types[got.type].kind != Union or rest.len == members(got.type).len:
-                return fail("next over " + comp.types[walker.type].name + " expects to return an element or IterationEnd, it returns " + comp.types[got.type].name, tok.at)
+                return fail("operator next over " + comp.types[walker.type].name + " expects to return an element or IterationEnd, it returns " + comp.types[got.type].name, tok.at)
             item = try union_of(rest, Union, tok.at)
             branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
@@ -2718,9 +2718,9 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                     if signed and integer(e.type) and not e.lit:
                         ends[k] = try convert_number(e, I64, tok.at)
             append(args, ends[:])
-            return invoke("slice", args, tok.at)
+            return invoke("[:]", args, tok.at)
         append(args, index)
-        read := try returned("at", args, tok.at)
+        read := try returned("[]", args, tok.at)
         under := comp.target
         while under < n and (comp.nodes[under].kind == Field or comp.nodes[under].kind == Index):
             under += 1
@@ -2730,20 +2730,20 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                 middle := comp.body.len
                 append(args, settled(try value(node_end(n), read), first, middle))
                 postpone(first, middle)
-                return invoke("put", args, tok.at)
+                return invoke("[]=", args, tok.at)
             kept := try present(read, tok.at)
-            place := try returned("put", args, 0) # as core sees it, the put of a map that gives a place is priv
+            place := try returned("[]=", args, tok.at)
             if comp.types[place].kind == Ptr and comp.types[place].elem == kept:
-                spot = Value{type = kept, at = load(try invoke("put", args, 0)).at, mem = true, place = true}
+                spot = Value{type = kept, at = load(try invoke("[]=", args, tok.at)).at, mem = true, place = true}
             elif placing:
-                return fail(comp.types[t].name + " gives a copy of its element and has no put(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
+                return fail(comp.types[t].name + " gives a copy of its element and has no operator []=(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
             else:
-                spot = filled(try invoke("at", args, tok.at), kept)
+                spot = filled(try invoke("[]", args, tok.at), kept)
                 try update(spot, assignment, first)
                 append(args, spot)
-                return invoke("put", args, tok.at)
+                return invoke("[]=", args, tok.at)
         else:
-            p := try invoke("at", args, tok.at)
+            p := try invoke("[]", args, tok.at)
             if comp.types[p.type].kind != Ptr and passing:
                 key := load(args[1])
                 if key.mem:
@@ -3508,9 +3508,9 @@ func run_defers(from: i64) -> Fail?:
             at := comp.tokens[comp.nodes[d.node].tok].at
             closing: &list[Value]
             append(closing, d.subject)
-            closed := try invoke("close", closing, at)
+            closed := try invoke("with", closing, at)
             if fails(closed.type):
-                return fail("close of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: call close without with and handle what it gives", at)
+                return fail("operator with of " + comp.types[d.subject.type].name + " can fail, and with would drop the error: close it with a call of yours and handle what it gives", at)
         else:
             try statement(d.node, "this deferred statement drops an error and a defer cannot pass it up: drop it on purpose with defer _ = ..., or run it without defer and handle the error")
         if comp.nodes[d.node].kind == Assign and local_of(d.node + 1) != 0:
@@ -3595,7 +3595,7 @@ func statement(n: i64, dropped: &strview) -> Fail?:
             hint = ", an assignment is written with one ="
         return fail("this statement makes a value and never uses it" + hint, at_of(n))
     if fails(v.type) and comp.nodes[n].kind == Assign:
-        return fail("this assignment calls put, which gives " + comp.types[v.type].name + ", and an assignment cannot pass on an error: call put and handle what it gives, try put(x, i, v)", at_of(n))
+        return fail("this assignment calls operator []=, which gives " + comp.types[v.type].name + ", and an assignment cannot pass on an error: call put and handle what it gives, try put(x, i, v)", at_of(n))
     if fails(v.type):
         return fail(dropped, at_of(n))
     return null

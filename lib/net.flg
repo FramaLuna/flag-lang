@@ -107,6 +107,9 @@ func port(s: $T) -> u16 where $T is Server|Udp:
 func close(s: $T) where $T is Server|Udp:
     dispose(i64(s.fd))
 
+operator with(s: $T) where $T is Server|Udp:
+    close(s)
+
 func udp(port: u16) -> Udp|NetError:
     start()
     fd := open_udp()
@@ -216,6 +219,9 @@ func flush(s: Socket, place: &strview = @here()) -> NetError?:
 
 func close(s: Socket, place: &strview = @here()):
     close(file(s), place)
+
+operator with(s: Socket, place: &strview = @here()):
+    close(s, place)
 
 priv func file(s: Socket) -> File where not @windows():
     return File{s.fd}

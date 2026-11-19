@@ -51,7 +51,7 @@ The functions
 - `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
-- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
+- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you, its `operator with` calls `close`. It doesn't tell about a failed write, `flush` does
 - `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
 - `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
@@ -117,11 +117,11 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 - `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait(t)` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
-  - `close(held: Locked)` lets it go, `with` calls it
+  - its `operator with` lets it go when the `with` ends
 - `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
   - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
   - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
-  - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`
+  - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`. `with c:` closes it when the block ends
   - `for v in c` receives until the channel is closed and empty
 
 The files of core, `print` included, work from any thread.
@@ -183,7 +183,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 `try_reserve` takes a new block and copies into it, so what you had stays as it was when there is no memory. A negative size, or one whose bytes don't fit in an `i64`, is `NoMemory` too, without asking the system, and `reserve` stops the program with `flag: out of memory` for it.
 
 ### Temporary memory
-- `scratch() -> Scratch` marks the scratch memory, and `close` of the mark releases every temporary made after it. `with scratch():` does both
+- `scratch() -> Scratch` marks the scratch memory, and `with scratch():` releases every temporary made after the mark when the block ends
 - `tmp(size: i64) -> *bytes` that many bytes of temporary memory
 - `tmp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
 - `tmp(items: &listview[$T]) -> &listview[$T]` a temporary copy of the elements, to return what you built in a list that you free
@@ -304,19 +304,19 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2
 
 ### Maps
 A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
-- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `at(m: &map[$K, $V], key: $K) -> $V|null`
+- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `operator [](m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
-- `at`, `contains` and `remove` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`, `remove(m, "port")`
+- `m[k]`, `contains` and `remove` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`, `remove(m, "port")`
 - `reserve(m: *&map[$K, $V], want: i64)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
 - `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
-- `hash(key) -> u64` the hash of a key. There is one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
+- `hash(key) -> u64` the hash of a key, what its `operator hash` gives. Core has one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
 
-A key needs `==` and `hash`. Numbers, text, `bool`, enums, pointers, arrays, and structs and unions of them have both. A struct with your own `==` needs your `hash` too, so that two keys that are `==` give the same hash, and using it as a key without one is an error: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`.
+A key needs `==` and `operator hash`. Numbers, text, `bool`, enums, pointers, arrays, and structs and unions of them have both. A struct with your own `==` needs your `operator hash` too, so that two keys that are `==` give the same hash, and using it as a key without one is an error: `Key declares == but not hash, and equal values need equal hashes: declare operator hash for Key too`.
 
 A float `nan` is not `==` to itself, so as a key it's never found again, and every `put` of it adds one more entry.
 
@@ -328,13 +328,13 @@ A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order 
 - `for e in m` gives the entries in the order they were put
 
 ### Indexes of your own types
-`x[i]` on your type calls your `at` (see [Indexing](Overview.md#indexing)) with the index as written, `g[-1]` too. The library stops the program with this one, so yours can do the same
+`x[i]` on your type calls your `operator []` (see [Indexing](Overview.md#indexing)) with the index as written, `g[-1]` too. The library stops the program with this one, so yours can do the same
 - `out_of_bounds(i: $I, len: i64)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: i64)` with `flag: slice 2:9 is out of bounds, length 3`
 ```flag
 type Grid:
     cells: array[i32, 9]
 
-func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Integer:
+operator [](g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Integer:
     if i < 0 or i >= 9:
         out_of_bounds(i, 9, place)
     return ptr(g.cells[i])
@@ -456,7 +456,7 @@ type error LoadError:
 ```
 - `load_library(path: &strview) -> Library|LoadError` loads the library, with `dlopen` on Linux and macOS, every symbol now and none for the libraries loaded after it, and with `LoadLibraryW` on Windows. A path without `/` is searched where the system searches libraries, so write `./game.so` for one in the current folder
 - `symbol(library: Library, name: &strview) -> *bytes?` the address of an exported function or variable, `null` when the library has none with that name. A function is read with `as`: `step := trust symbol(game, "game_step") as extern func(*State, f64)`
-- `close(library: Library)` unloads the library, what it printed goes out first. Its functions and everything it pointed to are gone, so close it when no thread runs its code and nothing holds its addresses
+- `close(library: Library)` unloads the library, what it printed goes out first, and `with library:` unloads it when the block ends. Its functions and everything it pointed to are gone, so close it when no thread runs its code and nothing holds its addresses
 
 ```flag
 use os
@@ -537,7 +537,7 @@ TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them
 - `listen(port: u16) -> Server|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
 - `accept(server: Server) -> Socket|NetError` waits for the next connection
 - `port(server: Server) -> u16` the port the server listens on
-- `close(server: Server)` stops listening
+- `close(server: Server)` stops listening, and so does the end of `with server:`
 - `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
 - `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: i64) -> i64|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
 
