@@ -1,0 +1,42 @@
+type P:
+    x: i32
+
+func bump(p: *P):
+    p.x += 1
+
+func main():
+    l: &list[P] = heap([])
+    defer free(l)
+    append(l, P{1})
+    append(l, P{2})
+    for e in l:
+        e.x *= 10
+    print(l)
+    for e in l:
+        bump(e)
+    print(l)
+    for e in l:
+        e = P{7}
+    print(l)
+    a := [1, 2, 3]
+    for x in a:
+        x += 100
+    print(a)
+    p := ptr(a)
+    for x in p:
+        x -= 1
+    print(a)
+    names: &list[&str] = heap([])
+    defer free(names)
+    for i in 0..2:
+        s: &str = heap("n")
+        s += i
+        append(names, s)
+    for s in names:
+        free(s)
+    print(names.len, " ", names[0].len, " ", names[1].len)
+    kept: *P = ptr(l[0])
+    for e in l:
+        kept = ptr(e)
+    kept.x = 5
+    print(l)

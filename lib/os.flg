@@ -370,9 +370,11 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
 
 # the arguments as C takes them, in one block: a command goes to sh
 priv func arguments(launched: &listview[&strview]|&strview) -> **u8 where not @windows():
+    command := ["/bin/sh", "-c", ""]
     program: &listview[&strview]
     if launched is &strview:
-        program = ptr(["/bin/sh", "-c", launched])
+        command[2] = launched
+        program = ptr(command)
     else:
         program = launched
     table := (program.len + 1) * 8

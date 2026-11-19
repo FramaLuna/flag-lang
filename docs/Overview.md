@@ -302,7 +302,7 @@ func main():
     h.n += 1
     free(h)
 ```
-When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &listview[i32] = ptr([1, 2, 3])` is a listview you can keep using.
+When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lives like a variable declared in that line, until its block ends, so `l: &listview[i32] = ptr([1, 2, 3])` is a listview you can keep using in that block. In a loop the next round writes it again, so keep what each round makes in memory of its own, and `-memory` warns of a pointer to it used after its block.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
 
@@ -447,6 +447,15 @@ for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
 With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and listviews know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
+
+Over an array, a list or a listview the element is the one in the list, not a copy, so assigning it or a field of it changes the list
+```flag
+for p in players:
+    p.score += 10 # every player of the list gets 10 more
+for s in names:
+    free(s) # frees each text, and the list keeps them empty
+```
+Where there is nothing to change it's an error that says what to write: a character of a text is a piece of it, and an entry of a map is a copy, `e is a copy that next gives, assigning it does not change ages: write ages[e.key] = v`. Growing the list in its own `for` moves the elements, so don't.
 
 You can make your own types iterable. `for` calls `operator for` with your value and then `operator next` with a pointer to what it gave, until `operator next` gives `IterationEnd`. `reverse` calls `operator reverse` instead of `operator for`
 ```flag

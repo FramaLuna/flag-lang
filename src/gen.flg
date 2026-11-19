@@ -153,7 +153,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                             if comp.nodes[i].kind == Name and text(i) == text(kid(f, j)) and first_sym(text(i)) == 0:
                                 return fail("the default of " + text(c) + " cannot read " + text(i) + ", a default value reads only the parameters before it", at_of(i))
                     try hand(try gen(given, t), t, false, at_of(given))
-                append(comp.vars, Local{text(c), t, alloc(t), 0, comp.nodes[c].tok, 0, false, false, true})
+                append(comp.vars, Local{text(c), t, alloc(t), 0, comp.nodes[c].tok, 0, "", false, true, false})
             put_back(0, aside)
             drop(body, slots, 0)
         name := text(f)
@@ -453,7 +453,7 @@ func gen_from(from: i64) -> i64|Fail:
             if comp.types[t].kind == Bytes:
                 return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
             if comp.types[t].kind == Given: # it takes nothing at run time
-                append(comp.vars, Local{text(c), t, Arg{}, 0, comp.nodes[c].tok, 0, false, false, true})
+                append(comp.vars, Local{text(c), t, Arg{}, 0, comp.nodes[c].tok, 0, "", false, true, false})
                 continue
             p := temp()
             comp.numbers[p.n - 1] = integer(t) and comp.types[t].size == 8
@@ -463,19 +463,20 @@ func gen_from(from: i64) -> i64|Fail:
             elif comp.types[t].kind == Fat or big(t):
                 how = L
             append(comp.passes, Pass{how, p, comp.numbers[p.n - 1]})
-            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, false, false, true})
+            append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, "", false, true, false})
         comp.dest = Arg{}
         if big(inst.ret) and not inst.export:
             comp.dest = temp()
             append(comp.passes, Pass{L, comp.dest, false})
         taken := comp.passes.len - made.params
         passed := made.params
-        for k, given in comp.vars:
+        for given in comp.vars:
             if comp.types[given.type].kind != Given:
                 if comp.passes[passed].cls < AGG:
-                    comp.vars[k].addr = alloc(given.type)
-                    store(given.type, Value{type = given.type, at = given.addr}, comp.vars[k].addr)
-                mention(given.name, comp.vars[k].addr, given.type, given.tok)
+                    at := given.addr
+                    given.addr = alloc(given.type)
+                    store(given.type, Value{type = given.type, at = at}, given.addr)
+                mention(given.name, given.addr, given.type, given.tok)
                 passed += 1
         if i == comp.entry: # it is the main of C, and starts the program
             taken = 2
@@ -763,7 +764,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             try zero(t, slot)
         if c < node_end(n):
             try assign(slot, t, v, at_of(c))
-        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, must_read(t), c < node_end(n) or not comp.types[t].hollow})
+        append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, "", must_read(t), c < node_end(n) or not comp.types[t].hollow, false})
         if noted(tok.at):
             mark(node.tok, described(tok.text, t))
         return none
@@ -825,7 +826,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
                             slot := alloc(v.type)
                             store(v.type, v, slot)
                             v = Value{type = v.type, at = slot, mem = true}
-                        append(comp.vars, Local{tok.text, v.type, v.at, comp.loops.len, node.tok, 0, false, false, true})
+                        append(comp.vars, Local{tok.text, v.type, v.at, comp.loops.len, node.tok, 0, "", false, true, false})
                         append(comp.nodes, Node{Name, node.tok, 1, ""})
                     comp.nodes[made].size = comp.nodes.len - made
                     try gen(made, VOID)
@@ -845,11 +846,11 @@ func gen(n: i64, want: i64) -> Value|Fail:
         spot := none
         if lk == Name or lk == Field or lk == Unary and text(left) == ".*":
             spot = try gen(left, VOID)
-        if not spot.place and local_of(left) != 0:
-            return fail(text(left) + " counts this loop, so it cannot be assigned: copy it to a variable to change it", at_of(left))
         head := left
         while comp.nodes[head].kind == Field:
             head += 1
+        if not spot.place and local_of(head) != 0 and comp.vars[local_of(head) - 1].fixed.len > 0:
+            return fail(comp.vars[local_of(head) - 1].fixed, at_of(head))
         if not spot.place and comp.nodes[head].kind == Name and local_of(head) == 0:
             s := try named(text(head), comp.nodes[head].module, at_of(head))
             if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
@@ -917,7 +918,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         l_exit := label()
         jump(l_head)
         open_block(l_head)
-        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
+        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, comp.slots.len, 0, 0, false})
         c := try condition(cond)
         forever := c.lit and c.n == 1
         if not forever:
@@ -952,6 +953,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
         k := comp.loops.len - i64(depth)
         l := comp.loops[k]
         try unwind(l.defers, k + 1)
+        if l.slots < comp.slots.len:
+            add(ended(l.slots))
         if tok.text == "break":
             comp.loops[k].broke = true
             jump(l.exit)
@@ -1472,7 +1475,7 @@ func iterate(n: i64) -> Fail?:
     if range and counter != 0:
         return fail("a for over a range cannot count, the number it gives is already the index", comp.tokens[comp.nodes[counter].tok].at)
     before := comp.vars.len
-    outer := open_scope()
+    open_scope()
     l_head := label()
     l_body := label()
     l_step := label()
@@ -1487,6 +1490,9 @@ func iterate(n: i64) -> Fail?:
     elem := VOID
     addr := Arg{}
     limit: u64 = 0
+    every := false # a walk that visits every element, for -memory: of an array, a list or what next gives
+    rounds := false
+    opened := 0
     if range:
         start = try value(subject + 1, VOID)
         end = try value(node_end(subject + 1), VOID)
@@ -1508,6 +1514,7 @@ func iterate(n: i64) -> Fail?:
         seq := walked.type
         addr = walked.at
         t = field_of(try fat_type("strview", VOID, tok.at), "len").type # a for counts in the type of a length
+        every = comp.types[seq].kind == Array or owner(seq)
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
             end = literal(false, u64(comp.types[seq].count))
@@ -1516,6 +1523,7 @@ func iterate(n: i64) -> Fail?:
             field := field_of(seq, "len")
             end = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
             addr = op1(L, "loadl", addr)
+    round := comp.slots.len # the slots of a round, after those of the subject, which lives as long as the loop
     if range or elem != VOID:
         low := load(try convert(start, t, Arg{}, at)).at
         high := load(try convert(end, t, Arg{}, at)).at
@@ -1533,21 +1541,31 @@ func iterate(n: i64) -> Fail?:
         store(t, Value{type = t, at = from}, slot)
         branch(op(W, runs, low, high), l_body, l_exit)
         open_block(l_body)
+        opened = comp.body.len
         current := load(Value{type = t, at = slot, mem = true}).at
         if range:
             mention(tok.text, slot, t, node.tok)
-            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, true, false, true})
+            append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, limit, counting(tok.text), false, true, false})
         else:
-            place := alloc(elem, true)
-            store(elem, Value{type = elem, at = op(L, "add", addr, times(current, comp.types[elem].size)), mem = true}, place)
+            count: u32 = 0
+            if comp.types[walked.type].kind == Array and comp.types[walked.type].count <= 0xffff_ffff:
+                count = u32(comp.types[walked.type].count) # -memory keeps the elements of an array apart from what follows it
+            place := add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = times(current, comp.types[elem].size), count = count})
+            rounds = round(place, elem, l_body, true)
             mention(tok.text, place, elem, node.tok)
-            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false, true})
+            fixed: &strview
+            if not walked.place:
+                fixed = view(heap(tok.text + " belongs to a value that is not a variable, assigning it would only change a copy"))
+            append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, fixed, false, true, true})
         if counter != 0:
             count := alloc(t)
             store(t, Value{type = t, at = current}, count)
             mention(text(counter), count, t, comp.nodes[counter].tok)
-            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false, true})
-        append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
+            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, counting(text(counter)), false, true, false})
+        counted := 0
+        if range or counter != 0:
+            counted = comp.vars.len
+        append(comp.loops, Loop{l_exit, l_step, comp.defers.len, round, counted, l_body, false})
     else:
         if backward and counter != 0:
             return fail("reverse over " + comp.types[walked.type].name + " has no index to give " + text(counter) + ", only an array, a list or a listview knows the index of each element: count in a variable", comp.tokens[comp.nodes[counter].tok].at)
@@ -1583,7 +1601,7 @@ func iterate(n: i64) -> Fail?:
         if counter != 0:
             store(t, Value{type = t, at = op(L, "add", load(Value{type = t, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count, t, comp.nodes[counter].tok)
-            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false, true})
+            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, counting(text(counter)), false, true, false})
         item := VOID
         place := Arg{}
         if chars:
@@ -1652,10 +1670,36 @@ func iterate(n: i64) -> Fail?:
             branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
             place = payload(got.at, item)
+            if starts_with(comp.types[walked.type].name, "&map["): # its elements stay in it, where those of a Channel leave
+                every = true
+                rounds = round(place, item, l_body, false)
+        first := comp.nodes[subject].tok
+        last := first
+        for k in subject..node_end(subject):
+            first = min(first, comp.nodes[k].tok)
+            last = max(last, comp.nodes[k].tok)
+        while unclosed(first, last) > 0:
+            last += 1
+        named := excerpt(first, last)
+        fixed := tok.text + " is a copy that next gives, assigning it does not change " + named + ": copy it to a variable to change it"
+        if chars:
+            fixed = tok.text + " is a piece of the text, not a place in it: build the new text in a &str"
+        elif field_of(item, "key").type != VOID and starts_with(comp.types[walked.type].name, "&map["):
+            fixed = tok.text + " is a copy that next gives, assigning it does not change " + named + ": write " + named + "[" + tok.text + ".key] = v"
         mention(tok.text, place, item, node.tok)
-        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, false, false, true})
-        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, false})
+        append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, view(heap(fixed)), false, true, false})
+        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, round, 0, 0, false})
     try statements(node_end(subject))
+    if range: # a walk by index when the body reads x[i], for -memory
+        ends := node_end(subject + 1)
+        whole := not inclusive and comp.nodes[ends].kind == Field and text(ends) == "len" # 0..x.len, or 0..n over an array of n
+        for i in comp.body[opened:]:
+            if i.op == "add" and i.first == l_body:
+                rounds = true
+                whole = whole or i.count != 0 and end.lit and u64(i.count) == end.n + u64(inclusive)
+        every = start.lit and start.n == 0 and whole
+        if rounds:
+            insert(comp.body, opened, Ins{op = "round", b = int_arg(i64(l_body)), pos = comp.at, ghost = true})
     comp.at = tok.at
     if range or elem != VOID:
         jump(l_step)
@@ -1668,11 +1712,27 @@ func iterate(n: i64) -> Fail?:
         branch(op(W, cmp_name("cne", t), current, stop), l_body, l_exit)
     else:
         jump(l_head)
-    close_scope(outer)
+    close_scope(round)
+    every = every and not comp.loops[-1].broke
     comp.loops.len -= 1
     try forget(before)
     open_block(l_exit)
+    if rounds:
+        add(Ins{op = "walked", b = int_arg(i64(l_body)), c = int_arg(i64(every)), ghost = true})
     return null
+
+# for -memory, the element of t at place is one of its own in this round of the walk l_body, when it holds a pointer, and inside it is in place
+func round(place: Arg, t: i64, l_body: u32, inside: bool) -> bool:
+    if pointers(t) == 0:
+        return false
+    to: u32 = 0
+    if inside:
+        to = u32(place.n)
+    add(Ins{op = "round", to = to, a = place, b = int_arg(i64(l_body)), c = int_arg(comp.types[t].size), mask = pointers(t), copy = true, ghost = true})
+    return true
+
+func counting(name: &strview) -> &strview:
+    return view(heap(name + " counts this loop, so it cannot be assigned: copy it to a variable to change it"))
 
 func cases(n: i64) -> Fail?:
     tok := comp.tokens[comp.nodes[n].tok]
@@ -2849,7 +2909,12 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         count: u32 = 0
         if array and comp.types[t].count <= 0xffff_ffff:
             count = u32(comp.types[t].count) # -memory keeps the elements of an array apart from what follows it
-        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
+        walk: u32 = 0 # x[i] of a list or an array, with the i that counts a walk, is its element of the round, for -memory
+        if local_of(kid(n, 1)) != 0 and (array or owner(t)):
+            for l in comp.loops:
+                if l.counter == local_of(kid(n, 1)):
+                    walk = l.walk
+        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, mask = pointers(elem), copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
         if ty.name == "&strview" and assignment != 0:
             return fail(VIEW, at_of(n + 1))
         if ty.name == "&strview" and passing:
@@ -3010,7 +3075,7 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
         if accepts(outside.type, v) < 0 and accepts(decl.type, v) >= 0:
             return fail(decl.name + " cannot take " + comp.types[v.type].name + " inside this loop, it was narrowed to " + comp.types[outside.type].name + " outside the loop and the loop reads it that way every round", sign)
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
-            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false, false, true})
+            append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, outside.fixed, false, true, outside.inside})
             place = Value{type = outside.type, at = outside.addr}
     try assign(place.at, place.type, v, at, given)
     if not given:
@@ -3369,7 +3434,9 @@ func confine(subject: i64, kept: &list[i64], at: i64) -> Fail?:
     t := try union_of(kept, Union, at)
     whole := comp.vars[declaration(current.name)]
     absent(whole.addr, whole.type, kept)
-    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, false, false, true})
+    if whole.inside and comp.types[t].kind != Union: # for -memory, what the walk changes in the element from now on it changes under t
+        add(Ins{op = "narrowed", a = whole.addr, member = u32(t), ghost = true})
+    append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, current.fixed, false, true, current.inside})
     return null
 
 func keep(before: i64, back: i64, ends: *&list[Local]) -> bool|Fail:
@@ -3435,7 +3502,7 @@ func join(ends: &list[Local], lives: i64, at: i64) -> Fail?:
                 append(parts, current.type)
             merged := try union_of(parts, Union, at)
             if merged != current.type:
-                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, false, false, true})
+                append(comp.vars, Local{e.name, merged, payload(comp.vars[declaration(e.name)].addr, merged), comp.loops.len, e.tok, 0, e.fixed, false, true, e.inside})
     return null
 
 # the locals declared before an if or a switch that its branches gave a value: without it for the next branch, and with it after the last
@@ -3840,7 +3907,9 @@ func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
 
 func statements(n: i64) -> Fail?:
     defers := comp.defers.len
-    outer := open_scope()
+    outer := comp.scope
+    first := comp.slots.len
+    open_scope()
     c := n + 1
     while c < node_end(n):
         if not comp.live and (comp.nodes[c].kind != Where or try holds(c + 1)):
@@ -3853,25 +3922,34 @@ func statements(n: i64) -> Fail?:
     if comp.live:
         try run_defers(defers)
     comp.defers.len = defers
-    close_scope(outer)
+    close_scope(first)
     return null
 
-func open_scope() -> i64:
-    outer := comp.scope
-    append(comp.scopes, outer)
+func open_scope():
+    append(comp.scopes, comp.scope)
     comp.scope = comp.scopes.len
     if comp.debug:
         append(comp.body, Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope))})
-    return outer
 
-func close_scope(outer: i64):
+# the slots from first on are the variables and temporaries of the block, and its end is theirs, but in the block of a function, which its return ends
+func close_scope(first: i64):
+    outer := comp.scopes[comp.scope - 1]
     if comp.debug:
-        mark := Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope + 1))}
-        if comp.live:
-            append(comp.body, mark)
-        else:
-            insert(comp.body, comp.body.len - 1, mark) # before the jump that left the block, so it stays inside
+        inside(Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope + 1))})
+    if outer != 0 and first < comp.slots.len:
+        inside(ended(first))
     comp.scope = outer
+
+# i at the end of the block, before the jump that left it when one did
+func inside(i: Ins):
+    if comp.live:
+        append(comp.body, i)
+    else:
+        insert(comp.body, comp.body.len - 1, i)
+
+# for -memory, the slots from first on end here, and a pointer kept to what they hold goes bad
+func ended(first: i64) -> Ins:
+    return Ins{op = "ended", a = int_arg(first), b = int_arg(comp.slots.len), pos = comp.at, ghost = true}
 
 func statement(n: i64, dropped: &strview) -> Fail?:
     start := comp.held.len
@@ -3930,7 +4008,7 @@ func held(found: i64, at: i64) -> Value:
     local := comp.vars[found - 1]
     if noted(at):
         mark(local.tok, described(local.name, local.type))
-    return Value{type = local.type, at = local.addr, mem = true, place = not local.counts}
+    return Value{type = local.type, at = local.addr, mem = true, place = local.fixed.len == 0}
 
 # what n, ptr(x) or ptr(x) as T, points to when that lives in the stack of this function, or 0: a variable, a parameter, a field or an element held in one, or a temporary
 func stacked(n: i64) -> i64:
@@ -3949,7 +4027,7 @@ func stacked(n: i64) -> i64:
     while comp.nodes[x].kind == Field or comp.nodes[x].kind == Index and kids(x) == 2:
         append(chain, x)
         x += 1
-    if local_of(x) == 0:
+    if local_of(x) == 0 or comp.vars[local_of(x) - 1].inside:
         return 0
     t := comp.vars[local_of(x) - 1].type
     for c in reverse chain:

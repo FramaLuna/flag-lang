@@ -200,7 +200,7 @@ func listing() -> &str:
                 cut[i.to - p.temps] = i.a.n <= CUT
             elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
                 cut[i.to - p.temps] = true
-            elif not (i.op == "absent" or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+            elif not (i.ghost or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
                 stays += 1
             frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_frame" # it reads the frame of its caller, panic for the chain
         free(cut)
