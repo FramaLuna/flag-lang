@@ -1,0 +1,42 @@
+use net
+use os
+
+# what the program printed goes out before each wait, so its line comes while it waits forever
+func stuck(guard: *Lock[null]):
+    with lock(guard):
+        pass
+
+func main() -> i32:
+    if args().len > 1:
+        what := args()[1]
+        guard: Lock[null]
+        with lock(guard): # held, so a thread that takes it waits forever in a lock, which writes nothing
+            print("before ", what)
+            if what == "sleep":
+                sleep(600.0)
+            elif what == "accept":
+                server := trust listen(0, "127.0.0.1")
+                _ = accept(server)
+            elif what == "wait":
+                t := parallel stuck(ptr(guard))
+                wait(t)
+            elif what == "channel":
+                values: Channel[i64, 1]
+                _ = receive(values)
+            else: # the end of main, that waits for the threads that run alone
+                parallel stuck(ptr(guard))
+            return 0
+    me := executable()
+    if ends_with(me, ".exe"):
+        me = me[:-4]
+    for what in ["sleep", "accept", "wait", "channel", "the end of main"]:
+        p := start(ptr([me, what])) iferror Process{}
+        if ready(p.output, 10.0):
+            print(read_line(p.output))
+        else:
+            print(what, " kept its line")
+        kill(p)
+        print(wait(p))
+        close(p.input)
+        close(p.output)
+    return 0

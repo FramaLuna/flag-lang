@@ -41,10 +41,11 @@ The arguments of the program are `args()` of [os](#os).
 A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open. They are constants of core, so no variable takes those names. `open_file` and `create_file` of [fs](#fs) open the others by their path.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
-- when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
+- when 64 KiB are waiting, when you call `flush` or `close`, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
+- before the program waits: to read from any file and in `ready`, in `accept` and `receive` of [net](#net), for a value of an empty `Channel`, in the `wait` of a thread or a program, in `sleep`, and when `main` ends while threads still run. So a line you printed shows while the program waits, also into a file
 - at the end of each line, when the file is a terminal or the error output, so you see every line when it's printed
 
-`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it. A file that another thread is writing at that moment is left to that thread: a read, `flush()`, the end of the program, a runtime error and a crash write what waits in the other files and don't wait for it, so a thread stuck sending to a client that doesn't read stops nobody else.
+`stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it. A file that another thread is writing at that moment is left to that thread: a wait, `flush()`, the end of the program, a runtime error and a crash write what waits in the other files and don't wait for it, so a thread stuck sending to a client that doesn't read stops nobody else.
 
 The functions
 - `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
@@ -121,7 +122,7 @@ A negative `code` is an error that has no errno, like an error of Windows that e
   - the `operator with` of `Locked` lets it go when the `with` ends
 - `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
   - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
-  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
+  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty, after what you wrote goes out. It gives `null` when the channel is closed and empty
   - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`. `with c:` closes it when the block ends
   - `for v in c` receives until the channel is closed and empty
 - `atomic[T]` holds an `i32`, `u32`, `i64`, `u64` or a pointer that threads change at once without a lock. It's a type of the language and its operations belong to it, like those of a `simd` (see [Atomics](Reference.md#atomics)): `get(a)` reads it, `set(a, v)` writes it, `add(a, n)` adds and gives what it held, `swap(a, v)` writes and gives what it held, and `compare_swap(a, old, new)` writes `new` only when it holds `old` and says if it did
@@ -302,7 +303,7 @@ None of them skip spaces, the whole text must be the number.
 
 And three helpers
 - `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. A value that rounds to zero has no sign, `fixed(-0.4, 0)` is `0`. Negative `places` are 0
-- `hex(value: $I) -> Hex` prints the bits of the integer in hexadecimal, as many as its type has: `hex(255)` is `0xff`, `hex(i8(-1))` is `0xff` too, and `hex(-1)` is `0xffffffffffffffff`, the literal alone is an `i64`
+- `hex(value: $I, digits: i32 = 0) -> Hex` prints the integer in hexadecimal without zeros on the left, and a negative one with the bits of its type: `hex(255)` is `0xff`, `hex(i8(-1))` is `0xff` too, and `hex(-1)` is `0xffffffffffffffff`, the literal alone is an `i64`. `digits` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`, and a longer value is not cut
 - `pad(value: $T, width: i32) -> Padded[$T]` prints the value with spaces before it to fill `width` characters, or after it when `width` is negative: `pad(42, 5)` is `   42` and `pad("ab", -4)` is `ab  `. A longer value is not cut. It takes any value, so `pad(fixed(x, 2), 8)` works
 
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, tuples as `(1, 2)`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
@@ -401,11 +402,11 @@ The standard input is `read_line(stdin)` of [core](#files).
 On every system the paths that `os` gives use `/`, and on Windows the paths, the arguments and the environment come from the system in UTF-16, so the program always sees UTF-8.
 
 ### Other programs
-A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
-- `run(command: &strview) -> i32|FsError` runs the command with the shell, `/bin/sh -c`, or `cmd.exe /d /s /c` on Windows, and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
-- `run(program: &listview[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty listview cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
-- `output(command: &strview, into: *&str) -> i32|FsError` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
-- `output(program: &listview[&strview], into: *&str) -> i32|FsError` the same without a shell
+A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`. Each function takes a `folder` last, where the program starts as its current folder, and the empty one is yours: `run(ptr(["git", "status"]), "../site")`. The error then names it too, `cannot run git in ../site: No such file or directory`, which a missing folder also gives.
+- `run(command: &strview, folder: &strview = "") -> i32|FsError` runs the command with the shell, `/bin/sh -c`, or `cmd.exe /d /s /c` on Windows, and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
+- `run(program: &listview[&strview], folder: &strview = "") -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty listview cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
+- `output(command: &strview, into: *&str, folder: &strview = "") -> i32|FsError` runs the command with the shell, appends to `into` what it wrote to its standard output and to its error output, with its line ends, and gives its exit code. Both outputs go through one pipe, like `2>&1`, so they mix in the order the program writes them, and a program of C writes its standard output into a pipe only when its buffer fills or it ends
+- `output(program: &listview[&strview], into: *&str, folder: &strview = "") -> i32|FsError` the same without a shell
 
 ```flag
 use os
@@ -422,7 +423,7 @@ func main():
 Everything that waits in your files goes out before another program runs. On Linux and macOS a program killed by a signal gives 128 plus the signal.
 
 A program can also run while yours goes on, talking to it through its standard input and output
-- `start(program: &listview[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
+- `start(program: &listview[&strview], folder: &strview = "") -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. What it writes to its error output goes to yours, like with `run`
 - `p.input` is a `File` that the program reads as its standard input, and `p.output` one with what it writes to its standard output. They are files like any other, so `write`, `read_line`, `read`, `ready` and `close` work on them. `close(p.input)` gives the program the end of its input, and close `p.output` when you no longer read it
 - `done(p: Process) -> bool` if it ended, without waiting
 - `wait(p: *Process) -> i32` waits for it to end and gives its exit code, like `run`, and it leaves `p.id` at 0: like a thread, a process is waited once, and a copy of it that you wait again is gone. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
@@ -484,7 +485,7 @@ func main():
 - `now() -> f64` the seconds since 1970, with decimals
 - `clock() -> f64` the seconds from some start, it never goes back, so it's the one to measure how long something takes
 - `date() -> Date` the local date and time
-- `sleep(seconds: f64)` stops the program that long, a signal that arrives doesn't cut it short
+- `sleep(seconds: f64)` stops the program that long, a signal that arrives doesn't cut it short. What you wrote goes out first
 
 `Date` has `year`, `month` (1 to 12), `day` (1 to 31), `hour`, `minute`, `second` and `weekday` (0 is Sunday), all of them `i32`.
 
@@ -542,8 +543,9 @@ A `Document` has `text`, the text you gave, and `nodes`, a `&list[Node]`. A `Nod
 ## net
 TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them and an `Udp` sends and receives datagrams, each a type of its own, so a file never goes where a connection goes.
 - `connect(host: &strview, port: u16) -> Socket|NetError` connects to a name or an address, it tries each address of the name until one answers: `cannot connect to example.com:80: Connection refused`
-- `listen(port: u16) -> Server|NetError` a server on that port, on every IPv4 address of the machine. With the port 0 the system chooses a free one, and `port` tells you which
-- `accept(server: Server) -> Socket|NetError` waits for the next connection
+- `listen(port: u16, host: &strview = "0.0.0.0") -> Server|NetError` a server on that port of an address of the machine: `0.0.0.0` is every IPv4 address, `127.0.0.1` the machine alone, which nothing outside it reaches, and `::` every IPv6 address. A name listens on its first address. With the port 0 the system chooses a free one, and `port` tells you which
+- `accept(server: Server) -> Socket|NetError` waits for the next connection, after what you wrote goes out
+- `s.peer` the [Address](#udp) of the other side of a connection: the one `connect` reached, or the one `accept` took a connection from, `print(client.peer)` writes `127.0.0.1:52144`
 - `port(server: Server) -> u16` the port the server listens on
 - `close(server: Server)` stops listening, and so does the end of `with server:`
 - `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
@@ -552,12 +554,12 @@ TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them
 ```flag
 type error NetError:
     code: i32 # the error number of the system, errno
-    action: &strview # what failed: connect to, listen on port, accept a connection, read, write, open the UDP port, find, send to, receive
-    address: &strview # the host and port of connect and of send, the host of address, the port of listen and of udp, empty for the rest
+    action: &strview # what failed: connect to, listen on, accept a connection, read, write, open the UDP port, find, send to, receive
+    address: &strview # the host and port of connect, of listen and of send, the host of address, the port of udp, empty for the rest
 ```
 It prints like an `FsError`. A name that `connect` or `address` cannot find gives the negative code of `getaddrinfo`, and on Windows the codes are the negative ones of Winsock. `TIMED_OUT`, of core, is the code of a connection that waited longer than its `timeout`, the same on every system, and it prints as `cannot read: the timeout ran out`.
 
-What you write waits in the connection like in a file, and it goes out with `flush`, or by itself before the program waits to read, so a request always goes before you wait for its answer
+What you write waits in the connection like in a file, and it goes out with `flush`, or by itself before the program waits, so a request always goes before you wait for its answer
 ```flag
 use net
 

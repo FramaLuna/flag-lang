@@ -98,7 +98,7 @@ func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
     return min(max(x, low), high)
 
 # the lanes of a simd from as many elements, v: simd[f32, 4] = values[i:i + 4]
-operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n] where $T != bool:
+operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n]:
     if src.len != $$n:
         panic("a simd of " + $$n + " lanes expects a slice of " + $$n + ", this one has " + src.len, place)
     return (ptr(src[0]) as *simd[$T, $$n]).*
@@ -1139,12 +1139,13 @@ operator +=(s: *&str, f: Fixed):
 
 type Hex:
     value: u64
+    digits: i32
 
-func hex(value: $I) -> Hex where $I is Integer:
+func hex(value: $I, digits: i32 = 0) -> Hex where $I is Integer:
     bits := u64(value)
     if @sizeof($I) < 8:
         bits = bits and (u64(1) << u64(@sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
-    return Hex{bits}
+    return Hex{bits, digits}
 
 operator +=(s: *&str, h: Hex):
     digits: &strview = "0123456789abcdef"
@@ -1160,7 +1161,10 @@ operator +=(s: *&str, h: Hex):
     out: &strview
     out = ptr(buf) as *bytes + i
     out.len = 16 - i
-    s.* += "0x" + out
+    s.* += "0x"
+    for k in out.len..h.digits:
+        add_byte(s, '0')
+    s.* += out
 
 type Padded[$T]:
     value: $T
@@ -1344,6 +1348,7 @@ priv func reap(block: *bytes, place: &strview):
     if block as u64 == 0:
         panic("wait of a thread that was never started", place)
     t := block as *Started
+    flush() # what you wrote goes out before the thread waits for another
     wait_for(t.handle)
     a := ptr(scratch_space.arena)
     had := a.blocks.len
@@ -1383,6 +1388,7 @@ priv func let_go(handle: u64) where @windows():
     CloseHandle(handle)
 
 priv func settle():
+    flush() # what you wrote goes out before the thread waits for another
     with lock(threads.running):
         while threads.running.value > 0:
             pause(threads.changed, threads.running)
@@ -1446,19 +1452,25 @@ operator for(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
 operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
     @compile_error("a channel holds at least one value, its size cannot be 0")
 
+# an empty channel lets its lock go while what you wrote goes out, and then waits
 operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
     c := r.channel
-    with lock(c.queue):
-        q := ptr(c.queue.value)
-        while q.len == 0 and not q.closed:
-            pause(c.filled, c.queue)
-        if q.len == 0:
-            return IterationEnd
-        v := q.items[q.first]
-        q.first = (q.first + 1) % $$size
-        q.len -= 1
-        wake(c.emptied)
-        return v
+    flushed := false
+    while true:
+        with lock(c.queue):
+            q := ptr(c.queue.value)
+            while flushed and q.len == 0 and not q.closed:
+                pause(c.filled, c.queue)
+            if q.len > 0:
+                v := q.items[q.first]
+                q.first = (q.first + 1) % $$size
+                q.len -= 1
+                wake(c.emptied)
+                return v
+            if q.closed:
+                return IterationEnd
+        flush()
+        flushed = true
 
 type File:
     fd: i32

@@ -94,6 +94,7 @@ priv extern "c" where @macos():
     func posix_spawn_file_actions_init(actions: **bytes) -> i32
     func posix_spawn_file_actions_adddup2(actions: **bytes, from: i32, to: i32) -> i32
     func posix_spawn_file_actions_addinherit_np(actions: **bytes, fd: i32) -> i32
+    func posix_spawn_file_actions_addchdir_np(actions: **bytes, path: cstr) -> i32
     func posix_spawn_file_actions_destroy(actions: **bytes) -> i32
     func posix_spawnattr_init(attributes: **bytes) -> i32
     func posix_spawnattr_setflags(attributes: **bytes, flags: i16) -> i32
@@ -170,27 +171,28 @@ func args() -> &listview[&strview] where @windows():
             LocalFree(given as *bytes)
         return startup.given.value.args
 
-func run(command: &strview) -> i32|FsError:
-    return finish(try spawn(command, -1, -1))
+func run(command: &strview, folder: &strview = "") -> i32|FsError:
+    return finish(try spawn(command, array[i32, 3]{-1, -1, -1}, folder))
 
-func run(program: &listview[&strview]) -> i32|FsError:
+func run(program: &listview[&strview], folder: &strview = "") -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
-    return finish(try spawn(program, -1, -1))
+    return finish(try spawn(program, array[i32, 3]{-1, -1, -1}, folder))
 
-func output(command: &strview, into: *&str) -> i32|FsError:
-    return captured(command, into)
+func output(command: &strview, into: *&str, folder: &strview = "") -> i32|FsError:
+    return captured(command, into, folder)
 
-func output(program: &listview[&strview], into: *&str) -> i32|FsError:
+func output(program: &listview[&strview], into: *&str, folder: &strview = "") -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
-    return captured(program, into)
+    return captured(program, into, folder)
 
-priv func captured(launched: &listview[&strview]|&strview, into: *&str) -> i32|FsError:
+# the standard output and the error output go to one pipe, in the order the program writes them
+priv func captured(launched: &listview[&strview]|&strview, into: *&str, folder: &strview) -> i32|FsError:
     fds: array[i32, 2]
     if not make_pipe(ptr(fds)):
-        return FsError{errno(), "run", named(launched)}
-    id := spawn(launched, -1, fds[1])
+        return FsError{errno(), "run", named(launched, folder)}
+    id := spawn(launched, [-1, fds[1], fds[1]], folder)
     close(fds[1])
     if id is FsError:
         close(fds[0])
@@ -204,19 +206,19 @@ priv func captured(launched: &listview[&strview]|&strview, into: *&str) -> i32|F
     close(fds[0])
     return finish(id)
 
-func start(program: &listview[&strview]) -> Process|FsError:
+func start(program: &listview[&strview], folder: &strview = "") -> Process|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
     input: array[i32, 2] # the end the program reads, and yours
     output: array[i32, 2] # yours, and the end the program writes
     if not make_input(ptr(input)):
-        return FsError{errno(), "run", program[0]}
+        return FsError{errno(), "run", named(program, folder)}
     if not make_pipe(ptr(output)):
-        failed := FsError{errno(), "run", program[0]}
+        failed := FsError{errno(), "run", named(program, folder)}
         close(input[0])
         close(input[1])
         return failed
-    id := spawn(program, input[0], output[1])
+    id := spawn(program, [input[0], output[1], -1], folder)
     close(input[0])
     close(output[1])
     if id is FsError:
@@ -247,10 +249,12 @@ func kill(p: Process, place: &strview = @here()):
 priv func gone(what: &strview, place: &strview) -> never:
     panic(what + " of a process that is not running: it was never started, or it was waited already", place)
 
-priv func named(launched: &listview[&strview]|&strview) -> &strview:
-    if launched is &strview:
-        return launched
-    return launched[0]
+# what the errors of run name: the program, and the folder it runs in
+priv func named(launched: &listview[&strview]|&strview, folder: &strview) -> &strview:
+    program := launched if launched is &strview else launched[0]
+    if folder.len == 0:
+        return program
+    return program + " in " + folder
 
 func random_bytes(into: &listview[u8]) where @linux():
     at := 0
@@ -313,21 +317,27 @@ priv func make_input(fds: *array[i32, 2]) -> bool where @macos():
 priv func make_input(fds: *array[i32, 2]) -> bool where @windows():
     return make_pipe(fds)
 
-priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @linux():
+# given holds the standard input, output and error of the program, and -1 leaves it the one of yours
+priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], folder: &strview) -> i64|FsError where @linux():
     failure: array[i32, 2]
     if not make_pipe(ptr(failure)):
-        return FsError{errno(), "run", named(launched)}
+        return FsError{errno(), "run", named(launched, folder)}
     flush()
     args := arguments(launched)
-    pid := fork()
-    if pid == 0:
-        standard(input, 0)
-        standard(output, 1)
-        execvp(args.*, args)
-        failed := errno()
-        write(failure[1], ptr(failed) as *bytes, 4)
-        _exit(127)
-    code := errno()
+    pid: i32 = 0
+    code: i32 = 0
+    with scratch():
+        path := cstr(folder)
+        pid = fork()
+        if pid == 0:
+            for k in 0..3:
+                standard(given[k], i32(k))
+            if folder.len == 0 or chdir(path) == 0:
+                execvp(args.*, args)
+            failed := errno()
+            write(failure[1], ptr(failed) as *bytes, 4)
+            _exit(127)
+        code = errno()
     free(args)
     close(failure[1])
     told := read(failure[0], ptr(code) as *bytes, 4)
@@ -335,7 +345,7 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
     if told == 4:
         finish(i64(pid))
     if pid < 0 or told == 4:
-        return FsError{code, "run", named(launched)}
+        return FsError{code, "run", named(launched, folder)}
     return i64(pid)
 
 # in the child, fd becomes the standard file, also when it already has that number and only has to stay open
@@ -346,18 +356,20 @@ priv func standard(fd: i32, number: i32) where @linux():
         dup2(fd, number)
 
 # POSIX_SPAWN_CLOEXEC_DEFAULT closes in the program every file of this one but its three
-priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @macos():
+priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], folder: &strview) -> i64|FsError where @macos():
     actions := 0 as *bytes
     attributes := 0 as *bytes
     posix_spawn_file_actions_init(ptr(actions))
     posix_spawnattr_init(ptr(attributes))
     posix_spawnattr_setflags(ptr(attributes), 0x4000)
-    given := [input, output, -1]
     for k in 0..3:
         if given[k] >= 0 and given[k] != i32(k):
             posix_spawn_file_actions_adddup2(ptr(actions), given[k], i32(k))
         else:
             posix_spawn_file_actions_addinherit_np(ptr(actions), i32(k))
+    if folder.len > 0:
+        with scratch():
+            posix_spawn_file_actions_addchdir_np(ptr(actions), cstr(folder))
     flush()
     args := arguments(launched)
     pid: i32 = 0
@@ -366,7 +378,7 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
     posix_spawn_file_actions_destroy(ptr(actions))
     posix_spawnattr_destroy(ptr(attributes))
     if code != 0:
-        return FsError{code, "run", named(launched)}
+        return FsError{code, "run", named(launched, folder)}
     return i64(pid)
 
 # the arguments as C takes them, in one block: a command goes to sh
@@ -396,7 +408,7 @@ priv func arguments(launched: &listview[&strview]|&strview) -> *cstr where not @
     return args as *cstr
 
 # the program inherits only its three handles, and gets no window of its own when this one has no console
-priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
+priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], folder: &strview) -> i64|FsError where @windows():
     line: &str = heap("")
     defer free(line)
     made: i32 = 0
@@ -443,7 +455,6 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
                         add_byte(line, '\\')
                     line += "\""
         flush()
-        given := [input, output, -1]
         launch := StartupInfo{size = 112, flags = 0x100} # STARTF_USESTDHANDLES
         nowhere: u64 = 0 # the NUL device, for a standard handle that this program doesn't have
         for k in 0..3:
@@ -464,7 +475,7 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
         consoles: u32 = 0
         if GetConsoleProcessList(ptr(consoles), 1) == 0:
             flags = flags or 0x800_0000 # CREATE_NO_WINDOW
-        made = CreateProcessW(0 as wstr, wstr(line), 0 as *bytes, 0 as *bytes, 1, flags, 0 as *bytes, 0 as wstr, ptr(launch), ptr(info))
+        made = CreateProcessW(0 as wstr, wstr(line), 0 as *bytes, 0 as *bytes, 1, flags, 0 as *bytes, wstr(folder) if folder.len > 0 else 0 as wstr, ptr(launch), ptr(info))
         code = GetLastError()
         DeleteProcThreadAttributeList(launch.attributes)
         for h in launch.handles:
@@ -472,7 +483,7 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
         if nowhere != 0:
             CloseHandle(nowhere)
     if made == 0:
-        return FsError{windows_errno(code), "run", named(launched)}
+        return FsError{windows_errno(code), "run", named(launched, folder)}
     CloseHandle(info.thread)
     return i64(info.process)
 
@@ -614,6 +625,7 @@ func cores() -> i64:
     return GetActiveProcessorCount(0xffff) if @windows() else sysconf(84 if @linux() else 58) # ALL_PROCESSOR_GROUPS, and _SC_NPROCESSORS_ONLN
 
 func sleep(seconds: f64) where not @windows():
+    flush() # what you wrote goes out before the program waits
     whole := seconds
     if whole > 1000000000.0:
         whole = 1000000000.0 # 31 years, the most the nanoseconds can count
@@ -623,6 +635,7 @@ func sleep(seconds: f64) where not @windows():
         pass
 
 func sleep(seconds: f64) where @windows():
+    flush()
     left := seconds
     while left > 0.0:
         part := left

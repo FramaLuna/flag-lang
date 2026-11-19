@@ -1,0 +1,28 @@
+use os
+
+# the test runs itself in another folder, so it does the same on every system
+func main() -> i32:
+    if args().len > 1:
+        here := current_dir()
+        print("in ", here[(find_last(here, "/") ifnull -1) + 1:])
+        if args()[1] == "both":
+            eprint("and to the error output")
+        return 3
+    me := executable()
+    if ends_with(me, ".exe"):
+        me = me[:-4]
+    text: &str = heap("")
+    defer free(text)
+    print(output(ptr([me, "both"]), text, "tests"), " [", text, "]") # the error output goes into it too, in order
+    print(run(ptr([me, "one"]), "lib"))
+    text.len = 0
+    print(output("\"" + me + "\" one", text, "src"), " [", trim(text), "]")
+    p := start(ptr([me, "one"]), "docs") iferror Process{}
+    close(p.input)
+    print(read_line(p.output))
+    close(p.output)
+    print(wait(p))
+    missing := run(ptr([me, "one"]), "tests/flag-surely-not-a-folder")
+    if missing is FsError:
+        print(missing.action, " ", missing.path == me + " in tests/flag-surely-not-a-folder")
+    return 0

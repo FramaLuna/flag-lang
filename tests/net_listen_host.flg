@@ -1,0 +1,30 @@
+use net
+
+# a server on one address of the machine, and each side of a connection knows the address of the other
+func main() -> i32:
+    server := listen(0, "127.0.0.1")
+    if server is NetError:
+        print(server)
+        return 1
+    client := connect("127.0.0.1", port(server))
+    if client is NetError:
+        print(client)
+        return 1
+    peer := accept(server)
+    if peer is NetError:
+        print(peer)
+        return 1
+    print(client.peer == Address{[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1], port(server)}, " ", "" + client.peer == "127.0.0.1:" + port(server))
+    print(starts_with("" + peer.peer, "127.0.0.1:"), " ", peer.peer.port != 0 and peer.peer.port != port(server))
+    write(client, "hello\n")
+    print(read_line(peer))
+    close(peer)
+    close(client)
+    taken := listen(port(server), "127.0.0.1")
+    if taken is NetError:
+        print(taken.action, " ", taken.address == "127.0.0.1:" + port(server))
+    close(server)
+    unknown := listen(0, "nosuch.invalid")
+    if unknown is NetError:
+        print(unknown.code < 0, " ", starts_with("" + unknown, "cannot listen on nosuch.invalid:0: "))
+    return 0

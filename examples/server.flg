@@ -1,11 +1,11 @@
 use net
 
 func main() -> i32:
-    server := listen(8080)
+    server := listen(8080, "127.0.0.1") # this machine alone
     if server is NetError:
         eprint(server)
         return 1
-    print("serving on http://localhost:8080, ctrl+c stops it")
+    print("serving on http://127.0.0.1:8080, ctrl+c stops it")
     visits := 0
     while true:
         client := accept(server) iferror continue
@@ -18,6 +18,6 @@ func main() -> i32:
                     header = read_line(client) # the headers end with an empty line
                 if request is &strview:
                     visits += 1
-                    print(visits, " ", request)
+                    print(visits, " ", client.peer, " ", request)
                     body := "hello from flag, you are visit number " + visits + "\n"
                     write(client, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + body.len + "\r\nConnection: close\r\n\r\n" + body)

@@ -832,11 +832,11 @@ The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_i
 FONT = @embed("fonts/mono.ttf")
 ```
 ### Printing
-`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals, `hex` an integer in hexadecimal and `pad` fills a width with spaces
+`print` and `eprint` (to the error output) take any number of values and print them one after the other. Structs, unions, arrays, lists and maps know how to print themselves. `fixed` prints a float with some decimals, `hex` an integer in hexadecimal, with zeros up to some digits if you want, and `pad` fills a width with spaces
 ```flag
-print(fixed(3.14159, 2), " ", hex(255), " [", pad(7, 3), "]") # 3.14 0xff [  7]
+print(fixed(3.14159, 2), " ", hex(255), " ", hex(10, 4), " [", pad(7, 3), "]") # 3.14 0xff 0x000a [  7]
 ```
-`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit`, stops with an error like an index out of bounds or crashes. A signal like Ctrl-C loses what waits (see [Files](Library.md#files)).
+`write(stdout, x)` writes one value without the new line. Each `print` writes its line at once, so two threads never mix their lines. The standard output keeps what you write and sends it in big pieces, so printing a lot is fast, and it sends what it keeps before the program waits, for input, a connection, another thread or `sleep`, so a line shows while the program waits. `print` and `eprint` keep the order of your calls, and nothing is lost when the program ends, calls `exit`, stops with an error like an index out of bounds or crashes. A signal like Ctrl-C loses what waits (see [Files](Library.md#files)).
 To print your own type another way, overload `+=` for text
 ```flag
 operator +=(s: *&str, p: Point):

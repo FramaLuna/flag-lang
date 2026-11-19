@@ -26,6 +26,7 @@ priv extern "ws2_32" where @windows():
 
 type Socket:
     fd: i32
+    peer: Address # who is on the other side
 
 type Server:
     fd: i32
@@ -46,9 +47,18 @@ operator +=(s: *&str, e: NetError):
     s.* += FsError{e.code, e.action, e.address} # a connection fails in the words of a file
 
 func connect(host: &strview, port: u16) -> Socket|NetError:
+    return opened(host, port, false)
+
+func listen(port: u16, host: &strview = "0.0.0.0") -> Server|NetError:
+    s := try opened(host, port, true)
+    return Server{s.fd}
+
+# a socket on the first address of the host that takes it, connected to it or listening on it
+priv func opened(host: &strview, port: u16, listening: bool) -> Socket|NetError:
     start()
+    action: &strview = "listen on" if listening else "connect to"
     hints: array[i32, 12]
-    hints[2] = 1
+    hints[2] = 1 # SOCK_STREAM
     found: *bytes
     code: i32 = 0
     with scratch():
@@ -56,47 +66,35 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     if code != 0:
         if code > 0:
             code = 0 - code # getaddrinfo's codes go negative, apart from errno
-        return NetError{code, "connect to", host + ":" + port}
+        return NetError{code, action, host + ":" + port}
     failed: NetError
     entry := found
     while entry as u64 != 0:
         fields := entry as *array[i32, 4]
         fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
-        address := ((entry + ADDRESS_IN_INFO) as **bytes).*
+        raw := ((entry + ADDRESS_IN_INFO) as **bytes).*
         size := ((entry + 16) as *u32).*
         if fd >= 0:
             prepare(fd)
-        if fd >= 0 and connect(fd, address, size) == 0:
+        if fd >= 0 and (bind(fd, raw, size) == 0 and listen(fd, 64) == 0 if listening else connect(fd, raw, size) == 0):
             freeaddrinfo(found)
-            return Socket{i32(fd)}
-        failed = NetError{failure(), "connect to", host + ":" + port}
+            return Socket{i32(fd), address(raw)}
+        failed = NetError{failure(), action, host + ":" + port}
         if fd >= 0:
             dispose(fd)
         entry = ((entry + 40) as **bytes).*
     freeaddrinfo(found)
     return failed
 
-func listen(port: u16) -> Server|NetError:
-    start()
-    fd := i64(socket(2, sealed(1), 0))
-    address := inet_address()
-    address[2] = u8(port >> 8)
-    address[3] = u8(port and 255)
-    if fd >= 0:
-        prepare(fd)
-    if fd < 0 or bind(fd, ptr(address) as *bytes, 16) != 0 or listen(fd, 64) != 0:
-        failed := NetError{failure(), "listen on port", "" + port}
-        if fd >= 0:
-            dispose(fd)
-        return failed
-    return Server{i32(fd)}
-
 func accept(server: Server) -> Socket|NetError:
-    fd := accepted(i64(server.fd))
+    flush() # what you wrote goes out before the program waits for a connection
+    raw: array[u8, 28]
+    size: u32 = 28
+    fd := i64(accept4(i64(server.fd), ptr(raw) as *bytes, ptr(size), 0x80000) if @linux() else accept(i64(server.fd), ptr(raw) as *bytes, ptr(size))) # SOCK_CLOEXEC, see sealed
     if fd < 0:
         return NetError{failure(), "accept a connection", ""}
     prepare(fd)
-    return Socket{i32(fd)}
+    return Socket{i32(fd), address(ptr(raw) as *bytes)}
 
 func port(s: $T) -> u16 where $T is Server|Udp:
     address: array[u8, 128]
@@ -113,8 +111,8 @@ operator with(s: $T) where $T is Server|Udp:
 func udp(port: u16) -> Udp|NetError:
     start()
     fd := open_udp()
-    address := socket_address(Address{port = port})
-    if fd < 0 or bind(fd, ptr(address) as *bytes, 28) != 0:
+    raw := socket_address(Address{port = port})
+    if fd < 0 or bind(fd, ptr(raw) as *bytes, 28) != 0:
         failed := NetError{failure(), "open the UDP port", "" + port}
         if fd >= 0:
             dispose(fd)
@@ -133,38 +131,41 @@ func address(host: &strview, port: u16) -> Address|NetError:
         if code > 0:
             code = 0 - code
         return NetError{code, "find", host}
-    raw := ((found + ADDRESS_IN_INFO) as **array[u8, 28]).*
-    out := Address{port = port}
-    if (found as *array[i32, 4]).*[1] == 2: # AF_INET
-        out.ip[10] = 255
-        out.ip[11] = 255
-        for i in 0..4:
-            out.ip[12 + i] = raw.*[4 + i]
-    else:
-        for i in 0..16:
-            out.ip[i] = raw.*[8 + i]
+    out := address(((found + ADDRESS_IN_INFO) as **bytes).*)
+    out.port = port
     freeaddrinfo(found)
     return out
 
+# a struct sockaddr_in or sockaddr_in6, where macOS puts its length before the family
+priv func address(raw: *bytes) -> Address:
+    bytes := (raw as *array[u8, 24]).*
+    out := Address{port = u16(bytes[2]) << 8 or u16(bytes[3])}
+    if bytes[1 if @macos() else 0] == 2: # AF_INET
+        out.ip[10] = 255
+        out.ip[11] = 255
+        for i in 0..4:
+            out.ip[12 + i] = bytes[4 + i]
+    else:
+        for i in 0..16:
+            out.ip[i] = bytes[8 + i]
+    return out
+
 func send(u: Udp, to: Address, data: &strview) -> NetError?:
-    address := socket_address(to)
-    if sendto(i64(u.fd), ptr(data.*), data.len, 0, ptr(address) as *bytes, 28) < 0:
+    raw := socket_address(to)
+    if sendto(i64(u.fd), ptr(data.*), data.len, 0, ptr(raw) as *bytes, 28) < 0:
         return NetError{failure(), "send to", "" + to}
     return null
 
 func receive(u: Udp, into: *&str) -> Address|NetError:
     flush() # what you wrote goes out before the program waits for an answer
     reserve(into, into.len + 65536)
-    address: array[u8, 28]
+    raw: array[u8, 28]
     size: u32 = 28
-    got := recvfrom(i64(u.fd), ptr(into.*.*) + into.len, 65536, 0, ptr(address) as *bytes, ptr(size))
+    got := recvfrom(i64(u.fd), ptr(into.*.*) + into.len, 65536, 0, ptr(raw) as *bytes, ptr(size))
     if got < 0:
         return NetError{failure(), "receive", ""}
     into.len += got
-    out := Address{port = u16(address[2]) << 8 or u16(address[3])}
-    for i in 0..16:
-        out.ip[i] = address[8 + i]
-    return out
+    return address(ptr(raw) as *bytes)
 
 operator +=(s: *&str, a: Address):
     mapped := a.ip[10] == 255 and a.ip[11] == 255
@@ -187,9 +188,9 @@ func ready(waiting: &listview[$T], seconds: f64 = 0.0) -> &listview[i64] where @
         case Socket:
             append(files, file(one))
         case Server:
-            append(files, file(Socket{one.fd}))
+            append(files, file(one))
         case Udp:
-            append(files, file(Socket{one.fd}))
+            append(files, file(one))
     return ready(files, seconds)
 
 func ready(x: $T, seconds: f64 = 0.0) -> bool where @can_assign(Socket|Server|Udp, $T):
@@ -223,11 +224,8 @@ func close(s: Socket, place: &strview = @here()):
 operator with(s: Socket, place: &strview = @here()):
     close(s, place)
 
-priv func file(s: Socket) -> File where not @windows():
-    return File{s.fd}
-
-priv func file(s: Socket) -> File where @windows():
-    return File{8192 + s.fd} # core reads a File past the 8192 descriptors of the C runtime as a socket
+priv func file(s: $T) -> File where $T is Socket|Server|Udp:
+    return File{8192 + s.fd if @windows() else s.fd} # core reads a File past the 8192 descriptors of the C runtime of Windows as a socket
 
 func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @linux():
     limit := timeval(seconds)
@@ -262,12 +260,6 @@ priv func start() where @windows():
 # close on exec from the start, so a program that another thread starts on Linux doesn't take it
 priv func sealed(kind: i32) -> i32:
     return kind or 0x80000 if @linux() else kind # SOCK_CLOEXEC
-
-priv func accepted(fd: i64) -> i64 where @linux():
-    return i64(accept4(fd, 0 as *bytes, 0 as *u32, 0x80000))
-
-priv func accepted(fd: i64) -> i64 where not @linux():
-    return i64(accept(fd, 0 as *bytes, 0 as *u32))
 
 priv func prepare(fd: i64) where @linux():
     yes: i32 = 1
@@ -345,9 +337,3 @@ priv func socket_address(a: Address) -> array[u8, 28] where @macos():
     return out
 
 priv ADDRESS_IN_INFO = 24 if @linux() else 32
-
-priv func inet_address() -> array[u8, 16] where @linux() or @windows():
-    return array[u8, 16]{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-
-priv func inet_address() -> array[u8, 16] where @macos():
-    return array[u8, 16]{16, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
