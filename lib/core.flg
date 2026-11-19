@@ -17,7 +17,6 @@ priv extern "c":
     func stamp(variables: bool) = "flag.stamp"
     func read(fd: i32, at: *bytes, size: i64) -> i32
     func write(fd: i32, at: *bytes, size: i64) -> i32
-    func open(path: cstr, flags: i32, ...) -> i32
     func close(fd: i32) -> i32
     func isatty(fd: i32) -> i32
     func poll(fds: *bytes, count: i64, timeout: i32) -> i32
@@ -31,7 +30,6 @@ priv extern "c":
     func __errno_location() -> *i32
     func __error() -> *i32
     func _errno() -> *i32
-    func _wopen(path: wstr, flags: i32, ...) -> i32
     func FormatMessageW(flags: u32, source: *bytes, code: u32, language: u32, into: wstr, size: u32, arguments: *bytes) -> u32
     func pthread_create(thread: *u64, attributes: *bytes, run: *bytes, argument: *bytes) -> i32
     func pthread_join(thread: u64, result: *bytes) -> i32
@@ -46,7 +44,6 @@ priv extern "c":
     func pthread_cond_broadcast(condition: *bytes) -> i32
     func os_unfair_lock_lock(lock: *u32)
     func os_unfair_lock_unlock(lock: *u32)
-    func sysconf(name: i32) -> i64
     func CreateThread(attributes: *bytes, stack: i64, run: *bytes, argument: *bytes, flags: u32, id: *u32) -> u64
     func WaitForSingleObject(handle: u64, milliseconds: u32) -> u32
     func CloseHandle(handle: u64) -> i32
@@ -55,7 +52,6 @@ priv extern "c":
     func ReleaseSRWLockExclusive(lock: *bytes)
     func SleepConditionVariableSRW(condition: *bytes, lock: *bytes, milliseconds: u32, flags: u32) -> i32
     func WakeAllConditionVariable(condition: *bytes)
-    func GetActiveProcessorCount(group: u16) -> u32
     func sigaction(signal: i32, action: *bytes, old: *bytes) -> i32
     func sigaltstack(stack: *bytes, old: *bytes) -> i32
     func AddVectoredExceptionHandler(first: u32, handler: *bytes) -> *bytes
@@ -86,6 +82,36 @@ priv extern "ws2_32" where @windows():
 
 type Integer = i8|i16|i32|i64|u8|u16|u32|u64
 
+func min(a: $T, b: $T) -> $T:
+    if b < a:
+        return b
+    return a
+
+func max(a: $T, b: $T) -> $T:
+    if a < b:
+        return b
+    return a
+
+func clamp(x: $T, low: $T, high: $T) -> $T:
+    return min(max(x, low), high)
+
+func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
+    return min(max(x, low), high)
+
+func abs(x: $T) -> $T where $T is i8|i16|i32|i64:
+    if x < 0:
+        return 0 - x
+    return x
+
+func abs(x: $T) -> $T where $T is f32:
+    return (x as u32 and 0x7fff_ffff) as f32
+
+func abs(x: $T) -> $T where $T is f64:
+    return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
+
+func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
+    return a + (b - a) * t
+
 func heap(v: $T) -> *$T:
     p := malloc(@sizeof($T)) as *$T
     if p as u64 == 0:
@@ -111,12 +137,12 @@ func panic(message: &strview, place: &strview = @here()) -> never:
 type cstr = *u8
 
 func cstr(text: &strview) -> cstr:
-    return ptr(temp(text).*) as *u8
+    return ptr(tmp(text).*) as *u8
 
 type wstr = *u16
 
 func wstr(text: &strview) -> wstr:
-    out := temp(text.len * 2 + 2) as *u16
+    out := tmp(text.len * 2 + 2) as *u16
     at := out
     for c in text:
         code := u32(c[0])
@@ -135,7 +161,7 @@ func wstr(text: &strview) -> wstr:
     at.* = 0
     return out
 
-func temp(w: wstr) -> &strview:
+func tmp(w: wstr) -> &strview:
     out: &str
     defer free(out)
     at := w
@@ -148,7 +174,7 @@ func temp(w: wstr) -> &strview:
         elif code >= 0xd800 and code < 0xe000:
             code = 0xfffd # half of a pair, alone
         add_char(out, code)
-    return temp(out)
+    return tmp(out)
 
 func windows_errno(code: u32) -> i32:
     switch code:
@@ -201,15 +227,15 @@ func out_of_bounds(i: $I, len: i64, place: &strview = @here()) -> never where $I
 func out_of_bounds(from: $I, to: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
     panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
 
-type fatptr slice[$T]:
+type fatptr listview[$T]:
     len: i64
 
-func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is Integer:
+func slice(s: &listview[$T], from: $I, to: $I, place: &strview = @here()) -> &listview[$T] where $I is Integer:
     first := u64(from) # a negative is past every length
     last := u64(to)
     if first > last or last > u64(s.len):
         out_of_bounds(from, to, s.len, place)
-    out: &slice[$T]
+    out: &listview[$T]
     out = ptr(s.*) + first * @sizeof($T)
     out.len = i64(last - first)
     return out
@@ -286,10 +312,10 @@ func append(l: *&list[$T], v: $T):
     p.* = v
     l.len += 1
 
-func append(l: *&list[$T], items: &slice[$T]):
+func append(l: *&list[$T], items: &listview[$T]):
     if u64(ptr(items.*) - ptr(l.*.*)) < u64(l.cap * @sizeof($T)): # a negative is past every length
         with scratch():
-            append(l, temp(items))
+            append(l, tmp(items))
         return
     reserve(l, l.len + items.len)
     memcpy(ptr(l.*.*) + l.len * @sizeof($T), ptr(items.*), items.len * @sizeof($T))
@@ -321,22 +347,22 @@ func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is 
     l.len -= 1
     return kept
 
-func find(items: &slice[$T], v: $T) -> i64|null:
+func find(items: &listview[$T], v: $T) -> i64|null:
     for i in 0..items.len:
         if items[i] == v:
             return i
     return null
 
-func find(items: &slice[$T], fits: func($T) -> bool) -> i64|null:
+func find(items: &listview[$T], fits: func($T) -> bool) -> i64|null:
     for i in 0..items.len:
         if fits(items[i]):
             return i
     return null
 
-func contains(items: &slice[$T], v: $T) -> bool:
+func contains(items: &listview[$T], v: $T) -> bool:
     return find(items, v) is i64
 
-func binary_search(items: &slice[$T], v: $T) -> i64|null:
+func binary_search(items: &listview[$T], v: $T) -> i64|null:
     low := 0
     high := items.len
     while low < high:
@@ -349,7 +375,7 @@ func binary_search(items: &slice[$T], v: $T) -> i64|null:
             return middle
     return null
 
-operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
+operator ==(a: &listview[$T], b: &listview[$T]) -> bool:
     if a.len != b.len:
         return false
     for i in 0..a.len:
@@ -357,7 +383,7 @@ operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
             return false
     return true
 
-func flip(items: &slice[$T]):
+func flip(items: &listview[$T]):
     for i in 0..items.len / 2:
         swap(items, i, items.len - 1 - i)
 
@@ -370,17 +396,17 @@ func free(l: *&list[$T]):
     l.len = 0
     l.cap = 0
 
-func sort(s: &slice[$T]):
+func sort(s: &listview[$T]):
     before: func($T, $T) -> bool = less
     sort(s, before)
 
 priv func less(a: $T, b: $T) -> bool:
     return a < b
 
-func sort(s: &slice[$T], before: func($T, $T) -> bool):
+func sort(s: &listview[$T], before: func($T, $T) -> bool):
     if s.len < 2:
         return
-    spare: &slice[$T]
+    spare: &listview[$T]
     spare = malloc(s.len / 2 * @sizeof($T))
     if ptr(spare.*) as u64 == 0:
         out_of_memory()
@@ -388,7 +414,7 @@ func sort(s: &slice[$T], before: func($T, $T) -> bool):
     merge_sort(s, spare, before)
     free(ptr(spare.*))
 
-priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> bool):
+priv func merge_sort(s: &listview[$T], spare: &listview[$T], before: func($T, $T) -> bool):
     if s.len <= 16:
         for i in 1..s.len:
             v := s[i]
@@ -416,7 +442,7 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
             i += 1
         k += 1
 
-func swap(s: &slice[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
+func swap(s: &listview[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
     if u64(i) >= u64(s.len): # a negative is past every length
         out_of_bounds(i, s.len, place)
     if u64(j) >= u64(s.len):
@@ -446,14 +472,14 @@ func view(c: cstr) -> &strview:
         out.len = strlen(c)
     return out
 
-func view(bytes: &slice[u8]) -> &strview:
+func view(bytes: &listview[u8]) -> &strview:
     out: &strview
     out = ptr(bytes.*)
     out.len = bytes.len
     return out
 
-func items(s: &strview) -> &slice[u8]:
-    out: &slice[u8]
+func items(s: &strview) -> &listview[u8]:
+    out: &listview[u8]
     out = ptr(s.*)
     out.len = s.len
     return out
@@ -597,14 +623,14 @@ func close(s: Scratch):
     scratch_space.arena.count = s.count
     scratch_space.arena.used = s.used
 
-func temp(size: i64) -> *bytes:
+func tmp(size: i64) -> *bytes:
     at := take(scratch_space.arena, size)
     if at as u64 == 0:
         out_of_memory()
     return at
 
-func temp(text: &strview) -> &strview:
-    at := temp(text.len + 1)
+func tmp(text: &strview) -> &strview:
+    at := tmp(text.len + 1)
     memcpy(at, ptr(text.*), text.len)
     ((at + text.len) as *u8).* = 0
     out: &strview
@@ -612,9 +638,9 @@ func temp(text: &strview) -> &strview:
     out.len = text.len
     return out
 
-func temp(items: &slice[$T]) -> &slice[$T]:
-    out: &slice[$T]
-    out = temp(items.len * @sizeof($T))
+func tmp(items: &listview[$T]) -> &listview[$T]:
+    out: &listview[$T]
+    out = tmp(items.len * @sizeof($T))
     out.len = items.len
     memcpy(ptr(out.*), ptr(items.*), items.len * @sizeof($T))
     return out
@@ -623,7 +649,7 @@ operator +=(s: *&str, v: &strview):
     inside := u64(ptr(v.*) - ptr(s.*.*)) < u64(s.cap) # a negative is past every length
     if inside:
         with scratch():
-            s.* += temp(v)
+            s.* += tmp(v)
         return
     reserve(s, s.len + v.len)
     memcpy(ptr(s.*.*) + s.len, ptr(v.*), v.len)
@@ -742,19 +768,19 @@ func replace(s: &strview, old: &strview, new: &strview) -> &strview:
         rest = rest[cut + old.len:]
         cut = find(rest, old)
     out += rest
-    return temp(out)
+    return tmp(out)
 
-func join(parts: &slice[$T], separator: &strview) -> &strview:
+func join(parts: &listview[$T], separator: &strview) -> &strview:
     out: &str
     defer free(out)
     for i, part in parts:
         if i > 0:
             out += separator
         out += part
-    return temp(out)
+    return tmp(out)
 
 func lower(s: &strview) -> &strview:
-    out := temp(s)
+    out := tmp(s)
     bytes := items(out)
     for i in 0..bytes.len:
         if bytes[i] >= 'A' and bytes[i] <= 'Z':
@@ -762,7 +788,7 @@ func lower(s: &strview) -> &strview:
     return out
 
 func upper(s: &strview) -> &strview:
-    out := temp(s)
+    out := tmp(s)
     bytes := items(out)
     for i in 0..bytes.len:
         if bytes[i] >= 'a' and bytes[i] <= 'z':
@@ -795,7 +821,7 @@ func trim_end(s: &strview) -> &strview:
 priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
 
-func words(s: &strview) -> &slice[&strview]:
+func words(s: &strview) -> &listview[&strview]:
     found: &list[&strview]
     defer free(found)
     bytes := items(s)
@@ -807,9 +833,9 @@ func words(s: &strview) -> &slice[&strview]:
         if at > start:
             append(found, s[start:at])
         at += 1
-    return temp(found)
+    return tmp(found)
 
-func split(s: &strview, separator: &strview) -> &slice[&strview]:
+func split(s: &strview, separator: &strview) -> &listview[&strview]:
     count := 1
     rest := s
     cut := find(rest, separator)
@@ -817,8 +843,8 @@ func split(s: &strview, separator: &strview) -> &slice[&strview]:
         count += 1
         rest = rest[cut + separator.len:]
         cut = find(rest, separator)
-    parts: &slice[&strview]
-    parts = temp(count * @sizeof(&strview))
+    parts: &listview[&strview]
+    parts = tmp(count * @sizeof(&strview))
     parts.len = count
     rest = s
     for k in 0..count - 1:
@@ -989,7 +1015,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
             add_byte(s, '0')
         s.* += ".0"
 
-operator +=(s: *&str, items: &slice[$T]):
+operator +=(s: *&str, items: &listview[$T]):
     s.* += "["
     for i, item in items:
         if i > 0:
@@ -1027,7 +1053,7 @@ operator +=(s: *&str, f: Fixed):
     with scratch():
         room := places + 312 # the sign, 309 digits, the point and the zero
         out: &strview
-        out = temp(room)
+        out = tmp(room)
         out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
         if tie and out[-1] % 2 == 1:
             bits.* += 2
@@ -1288,15 +1314,6 @@ func done(t: Thread[$T], place: &strview = @here()) -> bool:
     with lock(threads.lock):
         return (t as *Started).done
 
-func cores() -> i64 where @linux():
-    return sysconf(84) # _SC_NPROCESSORS_ONLN
-
-func cores() -> i64 where @macos():
-    return sysconf(58) # _SC_NPROCESSORS_ONLN
-
-func cores() -> i64 where @windows():
-    return GetActiveProcessorCount(0xffff) # ALL_PROCESSOR_GROUPS
-
 type Channel[$T, $$size]:
     lock: Lock
     filled: Condition
@@ -1432,9 +1449,9 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
 # a file that another thread writes at this moment is left to it, so one thread never waits for another
 func flush():
     with scratch():
-        all: &slice[*Stream]
+        all: &listview[*Stream]
         with lock(io.lock):
-            all = temp(io.streams)
+            all = tmp(io.streams)
         for s in all:
             if s as u64 != 0 and try_lock(s.writing):
                 drain(s)
@@ -1447,20 +1464,9 @@ priv export func flag_exit():
         eprint("flag: ", FsError{out.failed, "write", out.path})
         _exit(1)
 
-func open(path: &strview) -> File|FsError:
-    return opened(path, 0, "open")
-
-func create(path: &strview, append: bool = false) -> File|FsError:
-    return opened(path, 1 + i64(append), "create")
-
-priv func opened(path: &strview, mode: i64, action: &strview) -> File|FsError:
-    flags := open_flags()
-    f := File{-1}
-    with scratch():
-        f.fd = open_file(path, flags[mode], flags[3])
-    if f.fd < 0:
-        return FsError{errno(), action, path}
-    stream(f).path = path
+func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
+    f := File{fd}
+    stream(f, place).path = path
     return f
 
 # print formats its line here, and a print inside the += of a value adds its own after it
@@ -1502,7 +1508,7 @@ func flush(f: File, place: &strview = @here()) -> FsError?:
         drain(s)
         if s.failed == 0:
             return null
-        failed := FsError{s.failed, "write", temp(s.path)}
+        failed := FsError{s.failed, "write", tmp(s.path)}
         s.failed = 0
         return failed
 
@@ -1547,7 +1553,7 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
                 s.given += line.len + 1
                 if line.len > 0 and line[-1] == '\r':
                     line.len -= 1
-                return temp(line)
+                return tmp(line)
             checked = line.len
             if s.given > 0:
                 memmove(ptr(s.received.*), ptr(line.*), line.len)
@@ -1557,7 +1563,7 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
                 s.given = s.received.len
                 if s.received.len == 0:
                     return null
-                return temp(view(s.received))
+                return tmp(view(s.received))
 
 priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError:
     flush() # what you wrote goes out before the program waits for an answer
@@ -1578,13 +1584,13 @@ priv func transfer(s: *Stream, at: *bytes, size: i64, writing: bool) -> i64|FsEr
         if code != 0 and writing:
             return FsError{code, "write", ""} # drain keeps only its code, so a crash can write without memory
         if code != 0:
-            return FsError{code, "read", temp(s.path)}
+            return FsError{code, "read", tmp(s.path)}
 
 func ready(f: File, seconds: f64 = 0.0, place: &strview = @here()) -> bool:
     with scratch():
         return ready(ptr([f]), seconds, place).len > 0
 
-func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -> &slice[i64] where not @windows():
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where not @windows():
     flush() # what you wrote goes out before the program waits for an answer
     polled: &list[array[i32, 2]] # each a struct pollfd: the descriptor, POLLIN, and what poll finds
     defer free(polled)
@@ -1601,10 +1607,10 @@ func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -
     for i, p in polled:
         if p[1] >> 16 != 0 or buffered(files[i]):
             append(found, i)
-    return temp(found)
+    return tmp(found)
 
 # WSAPoll waits only for sockets, so with a pipe or a console it looks again every millisecond
-func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -> &slice[i64] where @windows():
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where @windows():
     flush()
     limit := milliseconds(seconds)
     began := GetTickCount64()
@@ -1632,7 +1638,7 @@ func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -
                 append(found, i)
         left := limit - i32(GetTickCount64() - began)
         if found.len > 0 or limit >= 0 and left <= 0:
-            return temp(found)
+            return tmp(found)
         if sockets.len == files.len:
             WSAPoll(ptr(sockets.*), u32(sockets.len), left) # then the next round tells which
         elif sockets.len > 0:
@@ -1762,21 +1768,6 @@ priv func release(s: *Stream) where @windows():
     else:
         close(s.fd)
 
-priv func open_file(path: &strview, flags: i32, mode: i32) -> i32 where not @windows():
-    return open(cstr(path), flags, mode)
-
-priv func open_file(path: &strview, flags: i32, mode: i32) -> i32 where @windows():
-    return _wopen(wstr(path), flags, mode)
-
-priv func open_flags() -> array[i32, 4] where @linux():
-    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
-
-priv func open_flags() -> array[i32, 4] where @macos():
-    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
-
-priv func open_flags() -> array[i32, 4] where @windows():
-    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
-
 priv func reason(code: i32) -> &strview where @linux():
     if code < 0:
         return view(gai_strerror(code))
@@ -1792,7 +1783,7 @@ priv func reason(code: i32) -> &strview where @windows():
         return view(strerror(code))
     text: array[u16, 512]
     FormatMessageW(0x1200, 0 as *bytes, u32(0 - code), 0, ptr(text) as wstr, 512, 0 as *bytes)
-    return trim_end(temp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
+    return trim_end(tmp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
 
 type entry[$K, $V]:
     key: $K
@@ -1827,8 +1818,8 @@ priv type Slot[$K, $V]:
     key: $K
     value: $V
 
-priv func slots(m: &map[$K, $V]) -> &slice[Slot[$K, $V]]:
-    out: &slice[Slot[$K, $V]]
+priv func slots(m: &map[$K, $V]) -> &listview[Slot[$K, $V]]:
+    out: &listview[Slot[$K, $V]]
     out = ptr(m.*)
     out.len = m.cap
     return out
@@ -1945,7 +1936,7 @@ func free(m: *&map[$K, $V]):
     m.cap = 0
 
 priv type Pairs[$K, $V]:
-    table: &slice[Slot[$K, $V]]
+    table: &listview[Slot[$K, $V]]
     i: i64
 
 func iter(m: &map[$K, $V]) -> Pairs[$K, $V]:
@@ -2055,7 +2046,7 @@ priv type Crash:
 
 priv type Chain:
     head: u64
-    table: &slice[Function]
+    table: &listview[Function]
     line: i64
     times: i64
     shown: i64
@@ -2117,10 +2108,10 @@ priv tested: u64 # the thread that runs the test, on Windows
 # the main of the program that flagc test builds: it runs the test it names, in the seconds it gives
 priv func run_test() -> i32:
     head := flag_tests()
-    tests: &slice[Test]
+    tests: &listview[Test]
     tests = head as *bytes + 8
     tests.len = head.*
-    given: &slice[cstr]
+    given: &listview[cstr]
     given = @argv()
     given.len = @argc()
     if given.len < 2:
@@ -2264,7 +2255,7 @@ priv func drain():
 # the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
 priv func trace(c: Crash):
     head := flag_functions() as u64 # how many functions, where the last one ends, and then each function in the order of their code
-    table: &slice[Function]
+    table: &listview[Function]
     table = (head + 16) as *bytes
     table.len = i64(peek(head))
     chain := Chain{head, table, table.len, 0, 0, 0}

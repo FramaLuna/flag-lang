@@ -75,6 +75,8 @@ priv extern "c":
     func LoadLibraryW(path: wstr) -> *bytes
     func FormatMessageW(flags: u32, source: *bytes, code: u32, language: u32, into: wstr, size: u32, arguments: *bytes) -> u32
     func GetSystemTimePreciseAsFileTime(into: *u64)
+    func sysconf(name: i32) -> i64
+    func GetActiveProcessorCount(group: u16) -> u32
     func QueryPerformanceCounter(into: *i64) -> i32
     func QueryPerformanceFrequency(into: *i64) -> i32
     func Sleep(milliseconds: u32)
@@ -139,7 +141,7 @@ func env(name: &strview) -> &strview|null where @windows():
             found := _wgetenv(wstr(name))
             if found as u64 == 0:
                 return null
-            value := temp(found)
+            value := tmp(found)
             for kept in startup.values:
                 if kept == value:
                     return kept
@@ -147,14 +149,14 @@ func env(name: &strview) -> &strview|null where @windows():
             append(startup.values, view(copy))
             return copy
 
-func args() -> &slice[&strview] where not @windows():
+func args() -> &listview[&strview] where not @windows():
     with lock(startup.lock):
         if startup.args.len == 0:
             for i in 0..@argc():
                 append(startup.args, view(((@argv() as *bytes + i * 8) as **u8).*))
         return startup.args
 
-func args() -> &slice[&strview] where @windows():
+func args() -> &listview[&strview] where @windows():
     with lock(startup.lock):
         if startup.args.len == 0:
             count: i32 = 0
@@ -162,7 +164,7 @@ func args() -> &slice[&strview] where @windows():
             for i in 0..count:
                 kept: &str # lives all the program
                 with scratch():
-                    kept = temp(((given as *bytes + i * 8) as *wstr).*)
+                    kept = tmp(((given as *bytes + i * 8) as *wstr).*)
                 append(startup.args, view(kept))
             LocalFree(given as *bytes)
         return startup.args
@@ -170,7 +172,7 @@ func args() -> &slice[&strview] where @windows():
 func run(command: &strview) -> i32|FsError:
     return finish(try spawn(command, -1, -1))
 
-func run(program: &slice[&strview]) -> i32|FsError:
+func run(program: &listview[&strview]) -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
     return finish(try spawn(program, -1, -1))
@@ -178,12 +180,12 @@ func run(program: &slice[&strview]) -> i32|FsError:
 func output(command: &strview, into: *&str) -> i32|FsError:
     return captured(command, into)
 
-func output(program: &slice[&strview], into: *&str) -> i32|FsError:
+func output(program: &listview[&strview], into: *&str) -> i32|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
     return captured(program, into)
 
-priv func captured(launched: &slice[&strview]|&strview, into: *&str) -> i32|FsError:
+priv func captured(launched: &listview[&strview]|&strview, into: *&str) -> i32|FsError:
     fds: array[i32, 2]
     if not make_pipe(ptr(fds)):
         return FsError{errno(), "run", named(launched)}
@@ -201,7 +203,7 @@ priv func captured(launched: &slice[&strview]|&strview, into: *&str) -> i32|FsEr
     close(fds[0])
     return finish(id)
 
-func start(program: &slice[&strview]) -> Process|FsError:
+func start(program: &listview[&strview]) -> Process|FsError:
     if program.len == 0:
         return FsError{22, "run", "[]"} # EINVAL on every system
     input: array[i32, 2] # the end the program reads, and yours
@@ -244,12 +246,12 @@ func kill(p: Process, place: &strview = @here()):
 priv func gone(what: &strview, place: &strview) -> never:
     panic(what + " of a process that is not running: it was never started, or it was waited already", place)
 
-priv func named(launched: &slice[&strview]|&strview) -> &strview:
+priv func named(launched: &listview[&strview]|&strview) -> &strview:
     if launched is &strview:
         return launched
     return launched[0]
 
-func random_bytes(into: &slice[u8]) where @linux():
+func random_bytes(into: &listview[u8]) where @linux():
     at := 0
     while at < into.len:
         got := getrandom(ptr(into.*) + at, into.len - at, 0)
@@ -258,7 +260,7 @@ func random_bytes(into: &slice[u8]) where @linux():
         if got > 0:
             at += got
 
-func random_bytes(into: &slice[u8]) where @macos():
+func random_bytes(into: &listview[u8]) where @macos():
     for at in 0..(into.len + 255) / 256:
         part := into[at * 256:]
         if part.len > 256:
@@ -266,7 +268,7 @@ func random_bytes(into: &slice[u8]) where @macos():
         if getentropy(ptr(part.*), part.len) != 0:
             no_random(errno())
 
-func random_bytes(into: &slice[u8]) where @windows():
+func random_bytes(into: &listview[u8]) where @windows():
     most := 0x8000_0000 # BCryptGenRandom counts in 32 bits
     for at in 0..(into.len + most - 1) / most:
         part := into[at * most:]
@@ -310,7 +312,7 @@ priv func make_input(fds: *array[i32, 2]) -> bool where @macos():
 priv func make_input(fds: *array[i32, 2]) -> bool where @windows():
     return make_pipe(fds)
 
-priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @linux():
+priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @linux():
     failure: array[i32, 2]
     if not make_pipe(ptr(failure)):
         return FsError{errno(), "run", named(launched)}
@@ -343,7 +345,7 @@ priv func standard(fd: i32, number: i32) where @linux():
         dup2(fd, number)
 
 # POSIX_SPAWN_CLOEXEC_DEFAULT closes in the program every file of this one but its three
-priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @macos():
+priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @macos():
     actions := 0 as *bytes
     attributes := 0 as *bytes
     posix_spawn_file_actions_init(ptr(actions))
@@ -367,8 +369,8 @@ priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) ->
     return i64(pid)
 
 # the arguments as C takes them, in one block: a command goes to sh
-priv func arguments(launched: &slice[&strview]|&strview) -> **u8 where not @windows():
-    program: &slice[&strview]
+priv func arguments(launched: &listview[&strview]|&strview) -> **u8 where not @windows():
+    program: &listview[&strview]
     if launched is &strview:
         program = ptr(["/bin/sh", "-c", launched])
     else:
@@ -391,13 +393,13 @@ priv func arguments(launched: &slice[&strview]|&strview) -> **u8 where not @wind
     return args as **u8
 
 # the program inherits only its three handles, and gets no window of its own when this one has no console
-priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
+priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
     line: &str
     defer free(line)
     made: i32 = 0
     code: u32 = 0
     info: ProcessInfo
-    program: &slice[&strview]
+    program: &listview[&strview]
     if launched is &strview:
         line += "cmd.exe /d /s /c \"" + launched + "\"" # what _wsystem runs, with every handle of this program but its three kept to itself
     else:
@@ -452,7 +454,7 @@ priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) ->
             DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), ptr(launch.handles[k]), 0, 1, 2) # inheritable, DUPLICATE_SAME_ACCESS
         size := 0
         InitializeProcThreadAttributeList(0 as *bytes, 1, 0, ptr(size))
-        launch.attributes = temp(size)
+        launch.attributes = tmp(size)
         InitializeProcThreadAttributeList(launch.attributes, 1, 0, ptr(size))
         UpdateProcThreadAttribute(launch.attributes, 0, 0x20002, ptr(launch.handles) as *bytes, 24, 0 as *bytes, 0 as *i64) # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
         flags: u32 = 0x80000 # EXTENDED_STARTUPINFO_PRESENT
@@ -517,7 +519,7 @@ func executable() -> &strview where @linux():
     found: &strview
     found = ptr(buf) as *bytes
     found.len = size
-    return temp(found)
+    return tmp(found)
 
 func executable() -> &strview where @macos():
     buf: array[u8, 4096]
@@ -525,14 +527,14 @@ func executable() -> &strview where @macos():
     full: array[u8, 4096]
     if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as *u8, ptr(full) as *u8) as u64 == 0:
         return ""
-    return temp(view(ptr(full) as *u8))
+    return tmp(view(ptr(full) as *u8))
 
 func executable() -> &strview where @windows():
     buf: array[u16, 4096]
     size := GetModuleFileNameW(0 as *bytes, ptr(buf) as wstr, 4096)
     if size == 0 or size == 4096:
         return ""
-    return replace(temp(ptr(buf) as wstr), "\\", "/")
+    return replace(tmp(ptr(buf) as wstr), "\\", "/")
 
 func system_name() -> &strview:
     return "Windows" if @windows() else "Darwin" if @macos() else "Linux"
@@ -541,13 +543,13 @@ func current_dir() -> &strview where not @windows():
     buf: array[u8, 4096]
     if getcwd(ptr(buf) as *u8, 4096) as u64 == 0:
         return ""
-    return temp(view(ptr(buf) as *u8))
+    return tmp(view(ptr(buf) as *u8))
 
 func current_dir() -> &strview where @windows():
     buf: array[u16, 4096]
     if _wgetcwd(ptr(buf) as wstr, 4096) as u64 == 0:
         return ""
-    return replace(temp(ptr(buf) as wstr), "\\", "/")
+    return replace(tmp(ptr(buf) as wstr), "\\", "/")
 
 func change_dir(path: &strview) -> FsError?:
     failed := false
@@ -605,6 +607,9 @@ func date() -> Date where @windows():
     _localtime64_s(ptr(fields) as *bytes, ptr(moment))
     return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
 
+func cores() -> i64:
+    return GetActiveProcessorCount(0xffff) if @windows() else sysconf(84 if @linux() else 58) # ALL_PROCESSOR_GROUPS, and _SC_NPROCESSORS_ONLN
+
 func sleep(seconds: f64) where not @windows():
     whole := seconds
     if whole > 1000000000.0:
@@ -635,7 +640,7 @@ type error LoadError:
 operator +=(s: *&str, e: LoadError):
     s.* += "cannot load " + e.path + ": " + e.reason
 
-func load(path: &strview) -> Library|LoadError where not @windows():
+func load_library(path: &strview) -> Library|LoadError where not @windows():
     handle := 0 as *bytes
     with scratch():
         handle = dlopen(cstr(path), 2 if @linux() else 6) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
@@ -644,9 +649,9 @@ func load(path: &strview) -> Library|LoadError where not @windows():
     reason := view(dlerror())
     if starts_with(reason, path) and starts_with(reason[path.len:], ": "):
         reason = reason[path.len + 2:] # glibc says the path first
-    return LoadError{path, temp(reason)}
+    return LoadError{path, tmp(reason)}
 
-func load(path: &strview) -> Library|LoadError where @windows():
+func load_library(path: &strview) -> Library|LoadError where @windows():
     handle := 0 as *bytes
     code: u32 = 0
     with scratch():
@@ -656,7 +661,7 @@ func load(path: &strview) -> Library|LoadError where @windows():
         return Library{handle}
     text: array[u16, 512]
     FormatMessageW(0x1200, 0 as *bytes, code, 0, ptr(text) as wstr, 512, 0 as *bytes)
-    return LoadError{path, trim_end(temp(ptr(text) as wstr))}
+    return LoadError{path, trim_end(tmp(ptr(text) as wstr))}
 
 func symbol(library: Library, name: &strview) -> *bytes?:
     found := 0 as *bytes

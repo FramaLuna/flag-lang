@@ -226,7 +226,7 @@ func binary(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
     return Value{type = l.type, at = extend(l.type, op(cls(l.type), name, x, y))}
 
 # the simd among args, where a literal beside it takes the type of its lanes
-func simd_args(o: &strview, args: &slice[Value], at: i64) -> i64|Fail:
+func simd_args(o: &strview, args: &listview[Value], at: i64) -> i64|Fail:
     t := VOID
     for a in args:
         if t == VOID and comp.types[a.type].kind == Simd:
@@ -362,7 +362,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         wanted = 2
     case "select":
         wanted = 3
-    if simd and args.len == wanted and (module.len == 0 or module == "math"):
+    if simd and args.len == wanted and (module.len == 0 or module == "math" and name == "sqrt"):
         if threaded:
             return fail("parallel runs a function in a new thread, and " + name + " of a simd belongs to the language: wrap it in a func", at)
         for label in names:
@@ -441,6 +441,12 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         while seen != 0 and not callable(seen, module, args, at):
             seen = comp.syms[seen].next
         if seen == 0 and is_letter(items(name)[0]):
+            if module.len == 0 and name == "temp":
+                return fail("temp is called tmp now", at)
+            if module.len == 0 and name == "open":
+                return fail("open is called open_file now, in the module fs", at)
+            if module.len == 0 and name == "create":
+                return fail("create is called create_file now, in the module fs", at)
             try hidden(name, true, at)
             try hidden(name, false, at)
             if module.len == 0 and lookup(name) != 0:

@@ -4,7 +4,7 @@ Every function of the standard library, module by module.
 
 - [How to read this](#how-to-read-this)
 - [core](#core)
-- [fs](#fs), whole files, folders and paths
+- [fs](#fs), files, folders and paths
 - [os](#os), the program, other programs, libraries and the time
 - [json](#json), reading and writing JSON
 - [net](#net), TCP connections and UDP
@@ -37,7 +37,7 @@ The functions that take an index or a `File` also have a last parameter `place: 
 The arguments of the program are `args()` of [os](#os).
 
 ### Files
-A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open. They are constants of core, so no variable takes those names.
+A `File` is an open file. `stdin`, `stdout` and `stderr`, the standard input, output and error, are always open. They are constants of core, so no variable takes those names. `open_file` and `create_file` of [fs](#fs) open the others by their path.
 
 What you write waits in the file and goes to the system in big pieces, so many small writes are fast. It goes out
 - when 64 KiB are waiting, when you call `flush` or `close`, before the program waits to read from any file, before another program runs, and when the program ends: returning from `main`, `exit`, `panic` and `assert` all write it
@@ -46,8 +46,6 @@ What you write waits in the file and goes to the system in big pieces, so many s
 `stdout` and `stderr` keep the order of your calls, and both go out before the standard input is read. A crash writes what waits before it says what happened, but a signal like Ctrl-C loses it. A file that another thread is writing at that moment is left to that thread: a read, `flush()`, the end of the program, a runtime error and a crash write what waits in the other files and don't wait for it, so a thread stuck sending to a client that doesn't read stops nobody else.
 
 The functions
-- `open(path: &strview) -> File|FsError` opens the file to read
-- `create(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
 - `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
 - `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
@@ -55,16 +53,19 @@ The functions
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
 - `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
-- `ready(files: &slice[File], seconds: f64 = 0.0) -> &slice[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
+- `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
+- `file(fd: i32, path: &strview) -> File` the same, and the errors of the file name `path`: `cannot write notes.txt: No space left on device`. It's how `open_file` gives its `File`
 
 `ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
 
 The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
 
 ```flag
+use fs
+
 func main():
-    out := create("squares.txt")
+    out := create_file("squares.txt")
     if out is FsError:
         eprint(out)
         return
@@ -75,7 +76,7 @@ func main():
     if failed is FsError:
         eprint(failed) # cannot write squares.txt: No space left on device
     close(out)
-    input := open("squares.txt")
+    input := open_file("squares.txt")
     if input is FsError:
         eprint(input)
         return
@@ -104,7 +105,7 @@ type error FsError:
     action: &strview # what failed: open, create, read, write, list, make, remove, run...
     path: &strview # the path, the program or the address you gave
 ```
-Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with, and for the standard files it's `the standard input`, `the standard output` or `the error output`.
+Printing it says all of it, with the words of the system for the code: `cannot open notes.txt: No such file or directory`. The `path` of a failed `read`, `read_line` or `flush` is a temporary copy of the path the file was opened with, or that `file` gave, and for the standard files it's `the standard input`, `the standard output` or `the error output`.
 
 A negative `code` is an error that has no errno, like an error of Windows that errno has no number for.
 - `errno() -> i32` the error number of the last C call that failed. After your own `extern` call, `eprint(FsError{errno(), "lock", path})` says what happened like the library does
@@ -114,7 +115,6 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 `parallel f(x)` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
 - `wait(t: Thread[$T]) -> $T` waits for the thread to end and gives what its function returned, `null` for a `Thread[null]`. It frees the block of the thread, so a thread is waited once, and the temporaries of the thread go to the scratch of the one that waits. A `wait` of yours for a `Thread` is an error, `wait of Thread belongs to the language, it cannot be declared again`, and for any other type it's an overload like any other. Of a `Thread` that never got a thread it stops the program: `flag: wait of a thread that was never started`
 - `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait(t)` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
-- `cores() -> i64` how many processors the system has online, to split a job in as many threads
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
   - `close(held: Locked)` lets it go, `with` calls it
@@ -127,6 +127,8 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 The files of core, `print` included, work from any thread.
 
 ```flag
+use os
+
 type Counter:
     lock: Lock
     count: i64
@@ -182,9 +184,9 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 
 ### Temporary memory
 - `scratch() -> Scratch` marks the scratch memory, and `close` of the mark releases every temporary made after it. `with scratch():` does both
-- `temp(size: i64) -> *bytes` that many bytes of temporary memory
-- `temp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
-- `temp(items: &slice[$T]) -> &slice[$T]` a temporary copy of the elements, to return what you built in a list that you free
+- `tmp(size: i64) -> *bytes` that many bytes of temporary memory
+- `tmp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
+- `tmp(items: &listview[$T]) -> &listview[$T]` a temporary copy of the elements, to return what you built in a list that you free
 
 ### Arenas
 An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, like a list, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
@@ -198,8 +200,8 @@ An `Arena` gives out pieces of big blocks and releases them all at once. It star
 
 An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
 
-### Lists and slices
-A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
+### Lists and listviews
+A `&listview[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows, like `&strview` and `&str` for text. Both start empty, and a list goes wherever a listview is asked.
 - `s[i]` the element `i`, you can also assign to it. A negative `i` that the compiler knows, a literal or a constant, counts from the end: `s[-1]` is the last one. Out of bounds stops the program, also a negative `i` computed when the program runs (see [Runtime errors](Reference.md#runtime-errors))
 - `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for x in s`, `for i, x in s` and `for x in reverse s`
@@ -207,7 +209,7 @@ A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own a
 
 On lists
 - `append(l: *&list[$T], v: $T)` adds `v` at the end. The first time it makes room for 8 elements, and then it doubles
-- `append(l: *&list[$T], items: &slice[$T])` adds all the elements at the end, also from the list itself
+- `append(l: *&list[$T], items: &listview[$T])` adds all the elements at the end, also from the list itself
 - `reserve(l: *&list[$T], want: i64)` makes room for `want` elements, so the appends until then don't allocate
 - `try_reserve(l: *&list[$T], want: i64) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
 - `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`. Like every function that takes a position, it counts from the start, and a negative one stops the program
@@ -216,15 +218,15 @@ On lists
 - `clear(l: *&list[$T])` removes every element and keeps the memory
 - `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
 
-On slices, so also on lists
-- `find(items: &slice[$T], v: $T) -> i64|null` the index of the first element `== v`
-- `find(items: &slice[$T], fits: func($T) -> bool) -> i64|null` the index of the first element that `fits` says yes to
-- `contains(items: &slice[$T], v: $T) -> bool`
-- `binary_search(items: &slice[$T], v: $T) -> i64|null` the index of `v` in a sorted slice, using `<`
-- `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
-- `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
-- `flip(items: &slice[$T])` turns the elements around in place
-- `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements
+On listviews, so also on lists
+- `find(items: &listview[$T], v: $T) -> i64|null` the index of the first element `== v`
+- `find(items: &listview[$T], fits: func($T) -> bool) -> i64|null` the index of the first element that `fits` says yes to
+- `contains(items: &listview[$T], v: $T) -> bool`
+- `binary_search(items: &listview[$T], v: $T) -> i64|null` the index of `v` in sorted elements, using `<`
+- `sort(s: &listview[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the elements while it sorts
+- `sort(s: &listview[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
+- `flip(items: &listview[$T])` turns the elements around in place
+- `swap(s: &listview[$T], i: $I, j: $I)` swaps two elements
 
 An array goes to these functions by its address: `sort(ptr(values))`.
 
@@ -233,18 +235,25 @@ An array goes to these functions by its address: `sort(ptr(values))`.
 
 An array has no arithmetic, a `simd` computes on lanes.
 
+### Numbers
+- `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`. `clamp` also takes a `simd` with two numbers, `clamp(v, 0.0, 1.0)`
+- `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128. A float loses its sign bit, like `fabs` in C, so `abs(-0.0)` is `0.0` and a NaN loses its sign too
+- `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
+
+The functions of C for numbers, like `sqrt` and `sin`, are in [math](#math).
+
 ### simd
 These take a `simd` and belong to the language, like its operators (see [SIMD](Reference.md#simd))
 - `select(m, a, b)` takes the lane of `a` where the mask `m` is `true`, and the lane of `b` where it's `false`. `a` or `b` can be a number, the same in every lane
 - `any(m) -> bool` and `all(m) -> bool` say if some lane of the mask `m` is `true`, or all of them
 - `sum(v)` adds the lanes in a fixed order, the upper half onto the lower half until one is left: `(v[0] + v[2]) + (v[1] + v[3])` for 4 lanes
-- `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of `math` give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
+- `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of [Numbers](#numbers), and the `sqrt` of `math`, give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
 - `s[i] -> u8` the byte `i`, a negative `i` that the compiler knows counts from the end
 - `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view. `s[a:]` goes to the end and `s[:b]` starts at 0
-- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A byte that is not part of a valid character comes alone, so text that is not UTF-8 gives its wrong bytes one by one, also the bytes of an overlong form, a surrogate or a code above U+10FFFF. Both directions give the same pieces, and `count`, `valid` and `code` of `utf8` read the same ones
+- `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A byte that is not part of a valid character comes alone, so text that is not UTF-8 gives its wrong bytes one by one, also the bytes of an overlong form, a surrogate or a code above U+10FFFF. Both directions give the same pieces, and `count_chars`, `valid_utf8` and `first_code` of `utf8` read the same ones
 - `==` and `<` compare the bytes
 - `"a" + x` joins the text with anything that can be printed, temporary
 
@@ -264,13 +273,13 @@ Searching and cutting
 - `contains(s: &strview, part: &strview) -> bool`
 - `starts_with(s: &strview, head: &strview) -> bool` and `ends_with(s: &strview, tail: &strview) -> bool`
 - `trim(s: &strview) -> &strview` without the spaces, tabs, `\n` and `\r` at both ends, a view. `trim_start` and `trim_end` do one end
-- `split(s: &strview, separator: &strview) -> &slice[&strview]` the parts between the separators, as views of `s` in a temporary slice. There is always one part at least, and an empty separator gives `s` whole
-- `words(s: &strview) -> &slice[&strview]` the parts between spaces, tabs, `\n` and `\r`, as views of `s` in a temporary slice, never an empty one: `for w in words(text): counts[w] += 1`
+- `split(s: &strview, separator: &strview) -> &listview[&strview]` the parts between the separators, as views of `s` in a temporary listview. There is always one part at least, and an empty separator gives `s` whole
+- `words(s: &strview) -> &listview[&strview]` the parts between spaces, tabs, `\n` and `\r`, as views of `s` in a temporary listview, never an empty one: `for w in words(text): counts[w] += 1`
 - `replace(s: &strview, old: &strview, new: &strview) -> &strview` every `old` changed to `new`, temporary
-- `join(parts: &slice[$T], separator: &strview) -> &strview` the parts with the separator between them, temporary. The parts can be anything that can be printed
+- `join(parts: &listview[$T], separator: &strview) -> &strview` the parts with the separator between them, temporary. The parts can be anything that can be printed
 - `lower(s: &strview) -> &strview` and `upper(s: &strview) -> &strview` change the ASCII letters, temporary
-- `items(s: &strview) -> &slice[u8]` the bytes, a view
-- `view(bytes: &slice[u8]) -> &strview` the bytes as text, a view
+- `items(s: &strview) -> &listview[u8]` the bytes, a view
+- `view(bytes: &listview[u8]) -> &strview` the bytes as text, a view
 
 Numbers from text, `null` when the text is not a number
 - `parse_int(s: &strview) -> i64|null` decimal digits with an optional `+` or `-`, and `null` when it doesn't fit in `i64`
@@ -284,7 +293,7 @@ None of them skip spaces, the whole text must be the number.
 - integers, in decimal, and `bool`, as `true` or `false`
 - floats, with the fewest digits that read back as the same number (`0.1`, `2.0`), and with an exponent when they are very big or very small (`1e+16`, `1e-05`). The ones that are not numbers are `inf`, `-inf` and `nan`
 - pointers, in hexadecimal
-- slices and lists `[1, 2]`, maps and fixed maps `{a: 1, b: 2}`
+- lists and listviews `[1, 2]`, maps and fixed maps `{a: 1, b: 2}`
 
 And three helpers
 - `fixed(value: f64, places: i32) -> Fixed`, also for `f32`, prints the value with that many decimals, and the halves round to even: `fixed(2.5, 0)` is `2`. A value that rounds to zero has no sign, `fixed(-0.4, 0)` is `0`. Negative `places` are 0
@@ -338,14 +347,16 @@ func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Integer:
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
 - `wstr` is the type `*u16`, a text of Windows in UTF-16 that ends with a zero, what the functions of Windows with a `W` at the end take
 - `wstr(text: &strview) -> wstr` the text in UTF-16 with the zero, temporary: `LoadLibraryW(wstr(path))`. A byte that is not UTF-8 becomes U+FFFD
-- `temp(w: wstr) -> &strview` a text of Windows in UTF-8, temporary. Half of a pair of surrogates alone becomes U+FFFD
+- `tmp(w: wstr) -> &strview` a text of Windows in UTF-8, temporary. Half of a pair of surrogates alone becomes U+FFFD
 
 ## fs
-Whole files, folders and paths. The files read by parts, `File` and `open`, are in [core](#files), and the errors are the `FsError` of core.
+Files, folders and paths. A file that you read or write by parts is a `File` of [core](#files), and the errors are the `FsError` of core.
 
 The files are read and written in binary, the bytes are the same on every system. On Windows the paths can use `/` or `\`, and they go to the system in UTF-16, so a name with `ñ` or `字` works.
 
-### Whole files
+### Files
+- `open_file(path: &strview) -> File|FsError` opens the file to read
+- `create_file(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
 - `read_file(path: &strview) -> &str|FsError` all the file, yours
 - `write_file(path: &strview, text: &strview) -> FsError?` makes the file, or empties it, and writes the text. Bytes go as text, `write_file(path, view(bytes))`
 - `append_file(path: &strview, text: &strview) -> FsError?` the same, but it writes at the end of the file and makes it when it doesn't exist
@@ -354,27 +365,28 @@ The files are read and written in binary, the bytes are the same on every system
 - `exists(path: &strview) -> bool` if there is a file or a folder there
 - `is_dir(path: &strview) -> bool`, also for a folder that you cannot read
 - `file_size(path: &strview) -> i64|FsError` in bytes, without opening the file, so it works on one that you cannot read. A folder has no size, it's an error
-- `modified(path: &strview) -> f64|FsError` when the file or the folder last changed, in seconds since 1970 like `now()` of `os`, with the fraction the system keeps: nanoseconds on Linux and macOS, 100 ns on Windows. It's how a program loads an asset again when it changes, `if modified(path) iferror 0.0 != loaded_at:`
-- `list_dir(path: &strview) -> &slice[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
-- `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
+- `modified_time(path: &strview) -> f64|FsError` when the file or the folder last changed, in seconds since 1970 like `now()` of `os`, with the fraction the system keeps: nanoseconds on Linux and macOS, 100 ns on Windows. It's how a program loads an asset again when it changes, `if modified_time(path) iferror 0.0 != loaded_at:`
+- `list_dir(path: &strview) -> &listview[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
+- `walk_dir(folder: &strview) -> &listview[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk_dir` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
 - `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
-- `remove(path: &strview) -> FsError?` removes a file or an empty folder, and of a link the link
-- `rename(from: &strview, to: &strview) -> FsError?` renames or moves, and replaces `to` when it's a file, on every system
+- `remove_file(path: &strview) -> FsError?` removes a file or an empty folder, and of a link the link
+- `rename_file(from: &strview, to: &strview) -> FsError?` renames or moves, and replaces `to` when it's a file, on every system
 - `join_path(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join_path("a/", "/b")` is `a/b`. An empty `first` gives `second`
 - `base_name(path: &strview) -> &strview` the part after the last `/`, a view: `base_name("docs/a.txt")` is `a.txt`
 - `extension(path: &strview) -> &strview` the name from its last `.`, a view: `.txt`. It's empty when there is no `.`, and the `.` that a name starts with don't count, so `.bashrc` and `..` have no extension and `.config.json` has `.json`
 - `dir_of(path: &strview) -> &strview` the part up to the last `/`, with it, a view: `docs/`. It's `./` when there is no folder
 
 ## os
-The program, other programs and the time.
+The program, other programs, libraries and the time.
 
 ### The program
-- `args() -> &slice[&strview]` the arguments of the program, the first one is the program itself. They live all the program
+- `args() -> &listview[&strview]` the arguments of the program, the first one is the program itself. They live all the program
 - `env(name: &strview) -> &strview|null` the value of an environment variable, a view, `null` when it's not set
 - `executable() -> &strview` the full path of the running program, temporary, empty when the system cannot tell
 - `current_dir() -> &strview` the current folder, temporary, empty when the system cannot tell
 - `change_dir(path: &strview) -> FsError?` makes `path` the current folder
 - `system_name() -> &strview` `Linux`, `Darwin` or `Windows`
+- `cores() -> i64` how many processors the system has online, to split a job in as many threads
 
 The standard input is `read_line(stdin)` of [core](#files).
 
@@ -383,9 +395,9 @@ On every system the paths that `os` gives use `/`, and on Windows the paths, the
 ### Other programs
 A program that cannot start is an `FsError` with the action `run`: `cannot run gcc: No such file or directory`.
 - `run(command: &strview) -> i32|FsError` runs the command with the shell, `/bin/sh -c`, or `cmd.exe /d /s /c` on Windows, and gives its exit code. A program that the shell cannot find is the exit code of the shell, 127 with `sh`
-- `run(program: &slice[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty slice cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
+- `run(program: &listview[&strview]) -> i32|FsError` runs `program[0]` with the other elements as its arguments, without a shell, so each argument gets there exactly as it is. The program is found in `PATH`, and an empty listview cannot run. On Windows a name without an extension is a `.exe`, and a `.bat` or `.cmd` is an `FsError`, because `cmd.exe` would read its arguments again: a batch file goes with `run(command)`
 - `output(command: &strview, into: *&str) -> i32|FsError` runs the command with the shell, appends what it wrote to the standard output to `into`, with its line ends, and gives its exit code
-- `output(program: &slice[&strview], into: *&str) -> i32|FsError` the same without a shell
+- `output(program: &listview[&strview], into: *&str) -> i32|FsError` the same without a shell
 
 ```flag
 use os
@@ -402,7 +414,7 @@ func main():
 Everything that waits in your files goes out before another program runs. On Linux and macOS a program killed by a signal gives 128 plus the signal.
 
 A program can also run while yours goes on, talking to it through its standard input and output
-- `start(program: &slice[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
+- `start(program: &listview[&strview]) -> Process|FsError` runs it like `run(program)`, without waiting, and gives its `Process`. Its errors go to your error output, like with `run`
 - `p.input` is a `File` that the program reads as its standard input, and `p.output` one with what it writes to its standard output. They are files like any other, so `write`, `read_line`, `read`, `ready` and `close` work on them. `close(p.input)` gives the program the end of its input, and close `p.output` when you no longer read it
 - `done(p: Process) -> bool` if it ended, without waiting
 - `wait(p: *Process) -> i32` waits for it to end and gives its exit code, like `run`, and it leaves `p.id` at 0: like a thread, a process is waited once, and a copy of it that you wait again is gone. It doesn't close `p.input` or `p.output`, so you can still read what it wrote. A program that reads until the end of its input waits for `close(p.input)`, and one that writes more than a pipe holds, 64 KiB, waits for you to read it
@@ -430,7 +442,7 @@ func main():
 What you write to `p.input` waits in the file like any other, and it goes out with `flush`, before your program waits to read, and in `ready`, `done` and `wait`. Writing to a program that ended is a failed write, that `flush` tells you, and not a signal that ends yours.
 
 ### Random bytes
-- `random_bytes(into: &slice[u8])` fills the bytes with random ones from the system, good for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. They come from `getrandom` on Linux, `getentropy` on macOS and `BCryptGenRandom` on Windows. When the system gives none the program stops with `flag: cannot read random bytes: ...`, a key that comes out weak is worse. The random numbers of `math` are not for secrets
+- `random_bytes(into: &listview[u8])` fills the bytes with random ones from the system, good for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. They come from `getrandom` on Linux, `getentropy` on macOS and `BCryptGenRandom` on Windows. When the system gives none the program stops with `flag: cannot read random bytes: ...`, a key that comes out weak is worse. The random numbers of `math` are not for secrets
 
 ### Libraries
 A library that the program loads while it runs, like one that `flagc -shared` builds (see [Libraries](Reference.md#libraries)), is a `Library`. One that cannot load is a `LoadError`, with the words of the system: `cannot load ./game.so: cannot open shared object file: No such file or directory`
@@ -442,7 +454,7 @@ type error LoadError:
     path: &strview # the path you gave
     reason: &strview # what the system said, temporary
 ```
-- `load(path: &strview) -> Library|LoadError` loads the library, with `dlopen` on Linux and macOS, every symbol now and none for the libraries loaded after it, and with `LoadLibraryW` on Windows. A path without `/` is searched where the system searches libraries, so write `./game.so` for one in the current folder
+- `load_library(path: &strview) -> Library|LoadError` loads the library, with `dlopen` on Linux and macOS, every symbol now and none for the libraries loaded after it, and with `LoadLibraryW` on Windows. A path without `/` is searched where the system searches libraries, so write `./game.so` for one in the current folder
 - `symbol(library: Library, name: &strview) -> *bytes?` the address of an exported function or variable, `null` when the library has none with that name. A function is read with `as`: `step := trust symbol(game, "game_step") as extern func(*State, f64)`
 - `close(library: Library)` unloads the library, what it printed goes out first. Its functions and everything it pointed to are gone, so close it when no thread runs its code and nothing holds its addresses
 
@@ -450,7 +462,7 @@ type error LoadError:
 use os
 
 func main():
-    game := load("./game.so")
+    game := load_library("./game.so")
     if game is LoadError:
         print(game)
         return
@@ -474,7 +486,7 @@ Reads JSON, and writes its strings.
 use json
 
 func main():
-    d := parse("{\"user\": {\"name\": \"ana\", \"tags\": [\"a\", \"b\"]}}")
+    d := parse_json("{\"user\": {\"name\": \"ana\", \"tags\": [\"a\", \"b\"]}}")
     if d is NotJson:
         eprint(d)
         return
@@ -484,8 +496,8 @@ func main():
         print(text(d, tag))
     print(integer(d, get(d, 0, "user.age")) ifnull 0) # 0, there is no age
 ```
-`parse` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `i64|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
-- `parse(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid` of `utf8` does that
+`parse_json` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `i64|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
+- `parse_json(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid_utf8` of `utf8` does that
 - `free(d: *Document)` releases the nodes, not the text, and leaves the document empty
 - `get(d: Document, at: i64|null, path: &strview) -> i64|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
 - `children(d: Document, at: i64|null)` for a `for`: the values of an array or an object, in order, and nothing for anything else
@@ -579,7 +591,7 @@ func main():
 ```
 
 ### Waiting for many
-- `ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[i64]` waits until one of them can be read without waiting, or `seconds` pass, and gives the indexes of the ready ones, temporary: a `Socket` with bytes or its end, a `Server` with a connection to accept, an `Udp` with a datagram. 0 only asks, and a negative `seconds` waits as long as it takes. The elements are any of `Socket`, `Server` and `Udp`, or a union of them, so one list holds a server and its connections
+- `ready(waiting: &listview[$T], seconds: f64 = 0.0) -> &listview[i64]` waits until one of them can be read without waiting, or `seconds` pass, and gives the indexes of the ready ones, temporary: a `Socket` with bytes or its end, a `Server` with a connection to accept, an `Udp` with a datagram. 0 only asks, and a negative `seconds` waits as long as it takes. The elements are any of `Socket`, `Server` and `Udp`, or a union of them, so one list holds a server and its connections
 - `ready(x, seconds: f64 = 0.0) -> bool` the same for one of them
 
 ```flag
@@ -603,9 +615,8 @@ while true:
 It links the C math library.
 - `PI`, `TAU` and `E`, so in a file that uses `math` without an alias a variable cannot take those names. Infinity is `inf`, a word of the language
 - `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round` and `trunc` take one float, and `atan2(y, x)`, `pow(x, y)`, `hypot(x, y)` and `fmod(x, y)` take two. They are the C functions for `f64`, and each one has an `f32` version that gives an `f32`. The angles are in radians, `log` is the natural one and `round` takes the halves away from zero
-- `abs(x: $T) -> $T` for signed integers and floats. The smallest integer of a type has no positive, so `abs(i8(-128))` is still -128. A float loses its sign bit, like `fabs` in C, so `abs(-0.0)` is `0.0` and a NaN loses its sign too
-- `min(a: $T, b: $T) -> $T`, `max(a: $T, b: $T) -> $T` and `clamp(x: $T, low: $T, high: $T) -> $T`, for anything with `<`. `clamp` also takes a `simd` with two numbers, `clamp(v, 0.0, 1.0)`, and `min`, `max`, `abs` and `sqrt` of a `simd` are the language's (see [simd](#simd))
-- `lerp(a: $T, b: $T, t: $T) -> $T` for floats, `a` when `t` is 0 and `b` when it's 1
+
+`min`, `max`, `clamp`, `abs` and `lerp` are in [core](#numbers), and `sqrt` of a `simd` is the language's (see [simd](#simd)), also written `math.sqrt`.
 
 ### Random numbers
 They are the same sequence on every run until you call `seed`, and they are not for secrets. Each thread has its own sequence, and a new thread starts it from the beginning, like the program does, whatever `main` seeded: threads that draw numbers call `seed` each one, with a different number, or they all draw the same ones.
@@ -614,9 +625,9 @@ They are the same sequence on every run until you call `seed`, and they are not 
 - `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included, in either order
 
 ## utf8
-- `code(s: &strview) -> u32|null` the code of the first character, `null` when the text is empty or doesn't start with valid UTF-8: `code("é")` is 233
-- `count(s: &strview) -> i64` how many characters, the same that `for c in s` counts
-- `valid(s: &strview) -> bool` if all the text is valid UTF-8, that is, no byte of it comes alone in `for c in s`
+- `first_code(s: &strview) -> u32|null` the code of the first character, `null` when the text is empty or doesn't start with valid UTF-8: `first_code("é")` is 233
+- `count_chars(s: &strview) -> i64` how many characters, the same that `for c in s` counts
+- `valid_utf8(s: &strview) -> bool` if all the text is valid UTF-8, that is, no byte of it comes alone in `for c in s`
 
 To walk the characters use `for c in text`, and to add a character from its code, `add_char` of core.
 

@@ -207,13 +207,13 @@ An untagged union (`i32||f32`) is as big as its biggest member and has no tag. I
 A fat pointer is the address of the data and then its fields
 | Type | Layout | Size |
 |---|---|---|
-| `&strview`, `&slice[T]` | address, len | 16 |
+| `&strview`, `&listview[T]` | address, len | 16 |
 | `&str`, `&list[T]` | address, len, cap, arena | 32 |
 | `&map[K, V]` | address, len, cap, arena | 32 |
 
 `len` and `cap` are `i64`, like every length, count, position and size, so `l.len - 3` with two elements is `-1`. A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
 
-`arena` is a `*Arena`, the arena the memory lives in, and zero when it lives in the heap (see [Arenas](#arenas)). The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&slice` without copying anything.
+`arena` is a `*Arena`, the arena the memory lives in, and zero when it lives in the heap (see [Arenas](#arenas)). The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&listview` without copying anything.
 
 `x.*` is the data of a fat pointer, so `ptr(x.*)` is its address as a `*bytes`.
 
@@ -280,12 +280,12 @@ Comparisons are one level and don't chain: a comparison on a side of another one
 When you pass an argument, the value is converted only if it's
 - the same type
 - an integer that grows: to a bigger type of the same sign, or from unsigned to a bigger signed (`u32` to `i64`)
-- a `&str` going to a `&strview`, or a `&list[T]` going to a `&slice[T]`
-- a `*array[T, N]` going to a fat pointer of `T` (a list, a slice, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
+- a `&str` going to a `&strview`, or a `&list[T]` going to a `&listview[T]`
+- a `*array[T, N]` going to a fat pointer of `T` (a list, a listview, or text if T is `u8`), it keeps the address and sets `len` and `cap` to N
 - `[]` going to any fat pointer, it becomes the empty one, and `{}` going to a map. Alone they have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: `heap([])` is a pointer to an empty array that becomes a list where it lands, and a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from [], an empty literal has no type of its own`
 - a literal that fits the type
 - a text literal, or a `&str`, going to a `cstr`
-- a value going to a union that has its type, or a union going to a bigger union. A value that converts to members goes in through the one it fits best (see [Choosing an overload](#choosing-an-overload)): a `&str` into `&strview|i32`, an `i32` into `i64|&strview`, a `&list[i32]` into `&slice[i32]?`, and an `i16` into `i32|i64` goes in as an `i32`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`, and `[a, b]` with `a: i32` and `b: i64` an `array[i64, 2]`: the element type of a literal leaves out a type that converts to another one in it
+- a value going to a union that has its type, or a union going to a bigger union. A value that converts to members goes in through the one it fits best (see [Choosing an overload](#choosing-an-overload)): a `&str` into `&strview|i32`, an `i32` into `i64|&strview`, a `&list[i32]` into `&listview[i32]?`, and an `i16` into `i32|i64` goes in as an `i32`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`, and `[a, b]` with `a: i32` and `b: i64` an `array[i64, 2]`: the element type of a literal leaves out a type that converts to another one in it
 - a member going in or out of an untagged union
 
 Assignments, declarations and `return` do all of that and also
@@ -372,8 +372,8 @@ Every overload that can take the arguments gets a score for each argument
 - an integer that grows gives a little less than 1, and less the bigger the type it grows to, so the shortest growth fits best: with `f(i32)` and `f(i64)`, an `i16` goes to `f(i32)`. Growths to two types of one size fit the same, so an `u8` with `f(i16)` and `f(u16)` is ambiguous
 - a value into a union gives what it gives to the member it goes in through
 - a `$T` that is still free gives 0 and takes the type of the argument. A `type $T` is matched the same way, with a type for an argument (see [Type parameters](#type-parameters))
-- a type with a `$T` inside, like `&slice[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]`) it gives what its inside gives and a little more, so it still fits better than a bare `$T`
-- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &slice[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
+- a type with a `$T` inside, like `&listview[$T]`, `*$T` or `func($T) -> bool`, gives 1 plus what its inside gives. When the argument gets there through a conversion (a `&list[i32]` or a `*array[i32, 3]` going to `&listview[$T]`) it gives what its inside gives and a little more, so it still fits better than a bare `$T`
+- a `*T` parameter with a value of type `T` gives one less than `T` would, and passes the address of the value. When the value is not a variable the function works on a temporary, and what it changes there is lost. The temporary lasts until the function that makes the call returns, like the copy `ptr` makes of a value that is not a variable, so `s: &listview[i32] = ptr([1, 2, 3])` and a pointer that the call gives back stay good. It doesn't work with a bare `*$T`, that one takes any pointer.
 
 An overload wins when it fits each argument at least as well as every other overload, and one of them better. The scores are not added, so an overload that fits one argument better and another one worse ties with the other, and the call is ambiguous
 ```flag
@@ -469,7 +469,7 @@ The compiler calls some functions by their name, so you make your types work wit
 | `a != b`, `a > b`... | `==` and `<` |
 | `t: T = u` | `operator =(dest: T, u: U) -> T` |
 
-For arrays, lists, slices and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a slice or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a slice or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array, list, slice or text that `p` points to.
+For arrays, lists, listviews and text the compiler writes `x[i]` with an integer itself, and the `for` too. They don't go through `at`, `iter` or `next`. So declaring `at` for an array, a list, a listview or text with an index that can be an integer is an error, also when the index is a `$I` or a union with an integer in it: `x[i] with an integer on &list belongs to the language, at cannot be declared for it`. So is `iter` or `reverse_iter` for an array, a list, a listview or text. An `at` with another kind of index is yours, `l["name"]` on a list calls it. A pointer to an element is `ptr(x[i])`, and `for x in p` walks the array, list, listview or text that `p` points to.
 
 ## Generics and where
 ### Type parameters
@@ -497,7 +497,7 @@ func main():
 - it's matched like a `$T` inside a type (see [Choosing an overload](#choosing-an-overload)): a free one gives 0 and fixes `$T`, so `func check(x: $T, kind: type $T)` with `check(u8(3), i64)` passes the `u8` as an `i64`, and `check(i64(3), u8)` matches nothing. A void type is a type and its only value at once, so `make(Red)` goes to a `type $T` and to a `$T` alike, and with both overloads it's ambiguous. A context is a value in a call, it doesn't go to a `type $T`
 - `$$n` is not given by hand, it comes from a type like `array[$T, $$n]`
 
-`$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&slice[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array. It comes through a generic alias too (`func get(x: Opt[$T])` with `type Opt[$T] = $T|null`), and from inside a function type (`less: func($T, $T) -> bool`). In a union one member can carry it, `$T|null` or `(func($T) -> bool)?`, and a `null` given there is fine when another parameter already says what `$T` is.
+`$T` also comes through a conversion to a fat pointer: a `&list[i32]` or a `*array[i32, 3]` going to `&listview[$T]` makes `$T` an `i32`, so `sort(ptr(values))` sorts an array. It comes through a generic alias too (`func get(x: Opt[$T])` with `type Opt[$T] = $T|null`), and from inside a function type (`less: func($T, $T) -> bool`). In a union one member can carry it, `$T|null` or `(func($T) -> bool)?`, and a `null` given there is fine when another parameter already says what `$T` is.
 
 `$$n` is a number, it comes from an array size (`array[$T, $$n]`) or from a type with a number parameter, and inside the function it's an integer literal.
 
@@ -552,7 +552,7 @@ An operator has two parameters, its left side and its right side, and `not` has 
 
 `a += b` is `a = a + b` for everything except `&str`, where `+=` appends. That's why the way to print your type is `operator +=(s: *&str, x: T)`, and it's the only `operator +=` you can declare. In `s += a + b` the right side is put together first and appended once, so `s += "x" + s` appends the `s` of before.
 
-A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. It's one function per type, and a nested struct calls the one of its type, so a big struct compiles the same whether it's compared in one place or in a hundred. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and slices compare element by element, text by content, and `sort` uses `<`, that is never made for you. The made `==` compares every field, so a type that keeps a `len` and a fixed array, like a `fixmap`, declares its own `==` and `hash` for the part in use.
+A struct, a tagged union or a void type without its own `==` gets one from the compiler. Two structs are equal when every field is `==`, in order and stopping at the first that is not, so text fields compare by content and a nested struct by its own `==`. Shared fields (`@`) are skipped, their bytes are compared through the field they share. Two values of one tagged union are equal when they hold the same member and the two values are `==`, and two values of a void type are always equal. It's one function per type, and a nested struct calls the one of its type, so a big struct compiles the same whether it's compared in one place or in a hundred. An untagged union has no tag to know what to compare, so a struct that holds one needs your `==`: `Bits has no == of its own, so == compares its fields, and this is field raw`. Arrays, lists and listviews compare element by element, text by content, and `sort` uses `<`, that is never made for you. The made `==` compares every field, so a type that keeps a `len` and a fixed array, like a `fixmap`, declares its own `==` and `hash` for the part in use.
 
 `hash(x) -> u64` is made the same way when no `hash` takes the type, which is what maps need for their keys: `bool`, pointers and function values hash their bits, a struct mixes the hashes of its fields, a tagged union the tag and the member it holds, and an array its elements. A struct or a union with your own `==` doesn't get one, the made one would not agree with your `==`, so asking for it is an error that tells you to declare it: `Key declares == but not hash, and equal values need equal hashes: declare hash for Key too`. A type that has no way to hash, like a `&list`, says so: `&list[i32] has no hash, declare one for it: func hash(x: &list[i32]) -> u64`.
 
@@ -597,7 +597,7 @@ They belong to the language and cannot be declared: `operator + between simd[f32
 - `T(x)` converts. `simd[f32, 4](k)` puts the number `k` in every lane, `simd[f32, 4](a)` takes the elements of an `array[f32, 4]` and `array[f32, 4](v)` gives them back. Between two `simd` with the same number of lanes each lane converts like `T(x)` of one number, so `simd[i32, 4](v)` rounds toward zero and stays at the limits
 - `as` reads the 16 bytes as another `simd` or an array: `v as simd[u32, 4]` gives the bits
 
-`select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` of a `simd` belong to the language too (see [simd](Library.md#simd)). They give the same result on every system: `min` and `max` are the comparisons of Flag, and `sum` adds in one fixed order. A call with a `simd` and their number of arguments is the one of the language. With another number of arguments, or through a module other than `math`, it's an ordinary call, so a `func max(v: simd[f32, 4]) -> f32` of yours works.
+`select`, `any`, `all`, `sum`, `min`, `max`, `abs` and `sqrt` of a `simd` belong to the language too (see [simd](Library.md#simd)). They give the same result on every system: `min` and `max` are the comparisons of Flag, and `sum` adds in one fixed order. A call with a `simd` and their number of arguments is the one of the language, and so is `math.sqrt`. With another number of arguments, or through a module, it's an ordinary call, so a `func max(v: simd[f32, 4]) -> f32` of yours works.
 
 ### In the processor
 On x86_64 and arm64 most operations are one instruction or a few, and a `simd` that stays in its function lives in a register, also when an inlined call copies it. `v[i]` reads or writes its lane in the register, with one instruction, so a loop that sets a lane and then computes with the whole `simd` doesn't go through memory. Some operations have no instruction and go lane by lane, each lane taken out of the register and the result put back: `*` of 8-bit and 64-bit lanes, `abs` of `i8` and `i64`, `<<` and `>>` of 8-bit lanes, `>>` of `i64`, and every conversion but `i32` to `f32`. A shuffle, `sum`, `any` and `all` read the lanes the same way. rv64 has no vectors here and computes each lane on its own, with the same results. On x86_64 the instructions are those of x86-64-v2 (SSE4.2), which the processors of Intel have since 2008 and those of AMD since 2011 to 2013, so a program whose code names `simd` checks the processor when it starts: `flag: this program needs an x86-64-v2 processor (SSE4.2)`, with exit code 132. A `simd` whose address is taken, as with `ptr(v)`, stays in memory, and so does the variable a function returns when the call isn't inlined: in a function that computes `x` in a loop and returns it, return a copy, `y := x`, and the loop keeps `x` in a register. A `simd` doesn't cross to C by value, pass a pointer.
@@ -611,12 +611,12 @@ The variable counts the loop, so it cannot be assigned: `i counts this loop, so 
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`: `a range goes in a for header or a case label, nothing else reads it`.
 
 ### Everything else
-Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter, an `i64`, that counts the loop like the variable of a range, so it cannot be assigned either. Over an array, a list or a slice it's the index of `x`, also with `reverse`, where it goes down: over `[10, 20, 30]`, `for i, x in reverse l` gives `2 30`, `1 20`, `0 10`. Over text it counts the characters from 0, not the bytes, and over what `iter` gives it counts the rounds. Those know the index of an element only from the start, so there `reverse` with a counter is an error: `reverse over &strview has no index to give i, only an array, a list or a slice knows the index of each element: count in a variable`.
+Over an array, a list, a listview or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter, an `i64`, that counts the loop like the variable of a range, so it cannot be assigned either. Over an array, a list or a listview it's the index of `x`, also with `reverse`, where it goes down: over `[10, 20, 30]`, `for i, x in reverse l` gives `2 30`, `1 20`, `0 10`. Over text it counts the characters from 0, not the bytes, and over what `iter` gives it counts the rounds. Those know the index of an element only from the start, so there `reverse` with a counter is an error: `reverse over &strview has no index to give i, only an array, a list or a listview knows the index of each element: count in a variable`.
 
 - Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a valid character comes alone, also each byte of an overlong form, a surrogate or a code above U+10FFFF, and `reverse` gives the same pieces. `items(text)` gives the bytes. The messages of the compiler read the code the same way, a byte that comes alone is shown as `\xc0`
 - A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed: `&map[&strview, i32] has no reverse_iter, so reverse cannot walk it`. A fixed map gives them in the order they were put
 - An array gives its elements, the loop takes its address so it doesn't copy it, and it can be reversed
-- A pointer to an array, a list, a slice or text walks what it points to
+- A pointer to an array, a list, a listview or text walks what it points to
 - The elements are copies, changing `x` doesn't change the list
 - The length is read when the loop starts, what you append during the loop is not visited, and if the list grows the loop keeps reading the old memory, so don't grow a list you are walking
 
@@ -723,7 +723,7 @@ When `a ifnull b` or `a iferror b` is a whole statement, its last link can also 
 
 `assert c, message` writes the message instead, any value `print` writes, computed only when `c` is false: `assert total > 0, "the total cannot be empty"`. After it `c` holds, so it narrows like `if not c: panic(...)` (see [Unions and narrowing](#unions-and-narrowing))
 ```flag
-f := open("config.txt")
+f := open_file("config.txt")
 assert f is File
 print(trust read_line(f))
 ```
@@ -779,9 +779,9 @@ The chain
 
 The program reads it from the frame pointers, that every function keeps, and a table in the program says which function each return address belongs to, with the name and place of each function of yours: about 50 bytes for each function written to the program, and with the frame pointers 1 % of the size of the compiler. The handler of the crashes is set when the program starts, before `main`, and every thread, the first one too, keeps a stack of 64 KiB for it, so a stack overflow can be told in any of them. It asks for no memory and waits for no lock, a crash can come from inside `malloc`, and a crash inside the report ends the program at once with the same code. A function whose frame can go past a page touches each page as it lowers the stack, so even a frame bigger than the guard page at the end of a stack stops there, and never writes over the stack of another thread. A program that sets its own handler for `SIGSEGV`, `SIGBUS`, `SIGILL` or `SIGFPE` replaces it.
 
-A negative index that the compiler knows counts from the end: a literal or a constant, with a type or without one, so `l[-1]` is the last element and `l[-N]` with `N = 2` the one before it, and it's an error when it goes before the first one. `l[-k]` is `l[l.len - k]` written short, on arrays, lists, slices and text, the ones the language indexes itself. A negative index computed when the program runs is out of bounds like any other, `flag: index -1 is out of bounds, length 2`, so `l[i - 1]` with `i` at 0 stops the program, and so does `l[(i - 1) % n]`, because `%` keeps the sign of the left side: `l[(i + n - 1) % n]` goes around. The check is one comparison without sign, the same for an index of any integer type. Your `at` and your `slice` get a negative index as written, and so do functions that take a position: `insert`, `remove`, `swap` and the `at` of a `ring` stop the program with it.
+A negative index that the compiler knows counts from the end: a literal or a constant, with a type or without one, so `l[-1]` is the last element and `l[-N]` with `N = 2` the one before it, and it's an error when it goes before the first one. `l[-k]` is `l[l.len - k]` written short, on arrays, lists, listviews and text, the ones the language indexes itself. A negative index computed when the program runs is out of bounds like any other, `flag: index -1 is out of bounds, length 2`, so `l[i - 1]` with `i` at 0 stops the program, and so does `l[(i - 1) % n]`, because `%` keeps the sign of the left side: `l[(i + n - 1) % n]` goes around. The check is one comparison without sign, the same for an index of any integer type. Your `at` and your `slice` get a negative index as written, and so do functions that take a position: `insert`, `remove`, `swap` and the `at` of a `ring` stop the program with it.
 
-A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, slices and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. An end that the compiler writes, the length or a negative end counted from the end, adapts to the other end like a literal: when one of them is a signed integer, both go as an `i64`, so `s[i:]` works with any integer `i`, `s[u:-1]` with an `u8`, and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, listviews and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. An end that the compiler writes, the length or a negative end counted from the end, adapts to the other end like a literal: when one of them is a signed integer, both go as an `i64`, so `s[i:]` works with any integer `i`, `s[u:-1]` with an `u8`, and `s[-3:]` keeps the last three. The slice of an array is a `&listview` of its elements, also when they are `u8`.
 
 The compiler leaves out the check of `a[i]` on an array when it cannot fail: a known index inside the array, also one counted from the end, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
@@ -800,14 +800,14 @@ Any other expression is written again where you use the constant, like a macro, 
 
 A constant that gives an array or a struct whose value the compiler knows, like `TABLE = [3, 1, 4, 1, 5]` or `ORIGIN = Point{0, 0}`, is kept once in the read-only data of the program, and every use reads it there instead of building it. The values it knows are the ones a [file variable](#file-variables) can start with, and both are written by the same part of the compiler. There is one copy for each different value, so `PAIR = {3, 4}` read as a `Point` and as a `Size` has two, and so does a constant that uses `@sizeof($T)` in two instances. It's static data like a text literal: `ptr(TABLE)` and a `*T` parameter get a copy, also of a field or an element of it, and so does a slice like `TABLE[1:3]`, and `TABLE[0] = 9` is an error, it would only change a copy. On Linux the data is in `.data.rel.ro` and on Windows in `.rdata`. On macOS it is in the writable data of the program, QBE cannot name a section of Mach-O. A constant can be the size of an array if it's an integer literal, also one that `a if c else b` chose, like `NAME_AT = 19 if @linux() else 8`. A constant that uses itself is an error.
 
-An array literal takes its elements from the type of the place too: an `array[T, N]`, and through `ptr` a `*array[T, N]` or a `&slice[T]`, so `words: &slice[u32] = ptr(SHADER)` keeps `SHADER = [0x0723_0203, 3]` as `u32` words. A literal that doesn't fit is an error at the literal, with a note at the place that reads the constant. The arguments of a call don't give their type, they are computed before the overload is chosen: give the slice to a variable with its type first, like a struct literal (see [Rough edges](#rough-edges)).
+An array literal takes its elements from the type of the place too: an `array[T, N]`, and through `ptr` a `*array[T, N]` or a `&listview[T]`, so `words: &listview[u32] = ptr(SHADER)` keeps `SHADER = [0x0723_0203, 3]` as `u32` words. A literal that doesn't fit is an error at the literal, with a note at the place that reads the constant. The arguments of a call don't give their type, they are computed before the overload is chosen: give the slice to a variable with its type first, like a struct literal (see [Rough edges](#rough-edges)).
 
 ### Files in the program
 `@embed("path")` is the file at that path, read when the program compiles, as a `&strview` of static data like a text literal. The path is a text literal, escapes and all, from the folder of the file that has the `@embed`, written with `/`. The bytes go to the assembler with `.incbin`, so a big file costs about nothing to compile: 1.5 MB build in 0.06 s, where the same bytes as a text literal take 0.66 s and five times the memory. A file named twice is in the program once, and one the compiler cannot read is an error
 ```
 error: cannot read the size of assets/logo.png: No such file or directory, and @embed reads the file when it compiles, with its path from the folder of this file
 ```
-The bytes start at an address aligned to 8 and a `0` follows them, so a view of them as other numbers works: `words: &slice[u32]`, `words = ptr(SHADER.*) as *bytes`, `words.len = SHADER.len / 4`. A constant that is an `@embed`, `LOGO = @embed("logo.png")`, is the same data wherever you read it, and like a text literal, writing into it is wrong.
+The bytes start at an address aligned to 8 and a `0` follows them, so a view of them as other numbers works: `words: &listview[u32]`, `words = ptr(SHADER.*) as *bytes`, `words.len = SHADER.len / 4`. A constant that is an `@embed`, `LOGO = @embed("logo.png")`, is the same data wherever you read it, and like a text literal, writing into it is wrong.
 
 A constant or a file variable and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`, and `handler is declared as a variable and as a function, a name is one or the other`.
 
@@ -856,7 +856,7 @@ func main():
 - Each thread has its own contexts, at zero when it starts, and its own scratch memory. `wait` takes the blocks of the scratch of the thread that ended into the scratch of the thread that waits, as if a call had made those temporaries, so the result can be a temporary, like the path of an error of `read`, until the `with scratch():` around the `wait` ends, also when the `wait` is inside a function of yours that the `with` calls. A thread that nobody waits frees its scratch when it ends, and so does one whose result holds no pointer. An argument is copied as it is, so a temporary given to a thread still lives in the scratch of the thread that started it: give the other thread text you own, a `&str`
 - File variables are shared and nothing protects them, guard what two threads change with a `Lock`, an `Arena` too. `-memory` doesn't look for two threads that use the same memory at once
 
-`Lock`, `Channel[T, N]`, `done` and `cores` are in the library (see [Threads](Library.md#threads)).
+`Lock`, `Channel[T, N]` and `done` are in core, and `cores` in `os` (see [Threads](Library.md#threads)).
 
 On Linux and macOS a thread is a `pthread`, and a `Lock` and the waits of a `Channel` are a `pthread_mutex_t` and a `pthread_cond_t`. On Windows they are `CreateThread`, an `SRWLOCK` and a `CONDITION_VARIABLE`. They all work at zero, so a `Lock` or a `Channel` needs no setup: on macOS, where the zero of a mutex is not ready, the library writes the signature of its initializer the first time. A Linux program links with `-lpthread`, that is empty on a recent C library.
 
@@ -869,7 +869,7 @@ The compiler writes a start function for each type of function that runs in a th
 - `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`. Without the `use`, `a.name` is an error. A nested type of a module is `a.Car.motor`
 - `priv` hides a name from the files outside the module
 - a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
-- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to module a.flg, only the files of a.flg see it`
+- in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to the module a.flg, only the files of a.flg see it`
 - a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files
 - a module that has a `priv` function keeps its name: a call to that name from inside the module chooses among the functions declared in the module first (in the file, for a file without a `module` line), `priv` or not, and the best fit of them wins over any function from outside, even one with closer types. So a function of yours never replaces a helper of the library
 - a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
@@ -881,12 +881,14 @@ The compiler writes a start function for each type of function that runs in a th
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).
 
+A name of a module in a file that doesn't use it is an error that names the module, `T is in the module a: add use a`, and with an alias `one is in the module a: reach it as m.one`. For the modules of the library it's so also when no file loaded them, `sqrt is in the module math: add use math`, and a `priv` name of one is just not visible.
+
 ## Memory
 Flag doesn't have a garbage collector, you free what you allocate.
 
 ### Who owns what
 - `&str`, `&list` and `&map` own their memory, you free them with `free`
-- `&strview` and `&slice` are views, they don't own anything
+- `&strview` and `&listview` are views, they don't own anything
 - `heap(value)` copies a value to the heap and gives you a pointer, you free it with `free(p)`. A pointer to a `&str`, `&list`, `&map` or `Arena` takes their own `free`, which releases what they hold, so its block is freed with `free(p as *bytes)`
 - `arena(a, value)` copies a value to the arena `a`, and `free(a)` releases it with everything else in `a`
 - a list of `&str` owns each text, freeing the list doesn't free them, free them first
@@ -905,10 +907,10 @@ print(kept)
 ```
 A program that never uses `with scratch():` keeps every temporary until it ends. That's fine for small programs, and for loops that run a lot put the body inside `with scratch():`.
 
-The scratch memory is an `Arena` of core, in a context, so each thread has its own, and `scratch()` and `close` mark it and go back to the mark.
+The scratch memory is an `Arena` of core, in a context, so each thread has its own, and `scratch()` and `close` mark it and go back to the mark. Its verb is `tmp`, like `heap` and `arena` for theirs: `tmp(text)` is a temporary copy of the text.
 
 ### Arenas
-An `Arena` gives out pieces of big blocks that it asks the heap for, 64 KiB each, or the size of a request that doesn't fit in one. It's a struct of core that starts empty, like a list, and every place that allocates has its verb: `heap(v)` the heap, `temp(...)` the scratch memory and `arena(a, ...)` the arena `a`. Nothing chooses an arena for you, `heap` always uses the heap.
+An `Arena` gives out pieces of big blocks that it asks the heap for, 64 KiB each, or the size of a request that doesn't fit in one. It's a struct of core that starts empty, like a list, and every place that allocates has its verb: `heap(v)` the heap, `tmp(...)` the scratch memory and `arena(a, ...)` the arena `a`. Nothing chooses an arena for you, `heap` always uses the heap.
 ```flag
 level: Arena
 defer free(level)
@@ -1203,12 +1205,12 @@ export func game_step(state: *State, dt: f64):
 ```sh
 flagc game.flg -shared -o game.so
 ```
-The program loads it with `load`, `symbol` and `close` of `os` (see [Libraries](Library.md#libraries)), and reads what `symbol` finds as an `extern func`
+The program loads it with `load_library`, `symbol` and `close` of `os` (see [Libraries](Library.md#libraries)), and reads what `symbol` finds as an `extern func`
 ```flag
 use os
 
 func main():
-    game := load("./game.so")
+    game := load_library("./game.so")
     if game is LoadError:
         panic("" + game)
     step := trust symbol(game, "game_step") as extern func(*State, f64)
@@ -1352,7 +1354,7 @@ Things that work in a way that may surprise you, so be aware
 - A text literal is static data that every use shares, and so do the literals with the same text and the constants kept in data (see [Constants](#constants)). Don't write into a view of a literal, copy it to a `&str` first
 - `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
-- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i64, 2]` even where `f` takes a `&slice[i32]`: give it to a variable with its type first
+- An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i64, 2]` even where `f` takes a `&listview[i32]`: give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash
 - `receive` of a `Channel` gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in channel`, that ends only when it's closed
 - A new thread starts with its contexts at zero, it doesn't see what the thread that started it put there: pass it what it needs, or share it in a file variable

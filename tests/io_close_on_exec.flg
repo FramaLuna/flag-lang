@@ -1,3 +1,5 @@
+use fs
+
 extern "c":
     func fcntl(fd: i32, command: i32, ...) -> i32
     func _get_osfhandle(fd: i32) -> *bytes
@@ -12,9 +14,9 @@ func inherited(fd: i32) -> bool where @windows():
     return (flags and 1) != 0 # HANDLE_FLAG_INHERIT
 
 func main():
-    out := trust create("build/tests/io_close_on_exec.txt")
+    out := trust create_file("build/tests/io_close_on_exec.txt")
     print("created ", inherited(out.fd))
     close(out)
-    input := trust open("build/tests/io_close_on_exec.txt")
+    input := trust open_file("build/tests/io_close_on_exec.txt")
     print("opened ", inherited(input.fd))
     close(input)

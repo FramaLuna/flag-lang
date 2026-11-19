@@ -2,6 +2,7 @@ module fs
 
 priv extern "c":
     func fopen(path: cstr, mode: cstr) -> *bytes
+    func open(path: cstr, flags: i32, ...) -> i32
     func fwrite(from: *bytes, size: i64, count: i64, file: *bytes) -> i64
     func fclose(file: *bytes) -> i32
     func stat(path: cstr, into: *bytes) -> i32
@@ -13,6 +14,7 @@ priv extern "c":
     func readdir(dir: *bytes) -> *bytes
     func closedir(dir: *bytes) -> i32
     func _wfopen(path: wstr, mode: wstr) -> *bytes
+    func _wopen(path: wstr, flags: i32, ...) -> i32
     func _wremove(path: wstr) -> i32
     func _wrmdir(path: wstr) -> i32
     func _wmkdir(path: wstr) -> i32
@@ -25,8 +27,32 @@ priv extern "c":
     func CloseHandle(handle: u64) -> i32
     func GetLastError() -> u32
 
+func open_file(path: &strview) -> File|FsError:
+    return opened(path, 0, "open")
+
+func create_file(path: &strview, append: bool = false) -> File|FsError:
+    return opened(path, 1 + i64(append), "create")
+
+priv func opened(path: &strview, mode: i64, action: &strview) -> File|FsError:
+    flags := open_flags()
+    fd: i32 = -1
+    with scratch():
+        fd = _wopen(wstr(path), flags[mode], flags[3]) if @windows() else open(cstr(path), flags[mode], flags[3])
+    if fd < 0:
+        return FsError{errno(), action, path}
+    return file(fd, path)
+
+priv func open_flags() -> array[i32, 4] where @linux():
+    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
+
+priv func open_flags() -> array[i32, 4] where @macos():
+    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
+
+priv func open_flags() -> array[i32, 4] where @windows():
+    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
+
 func read_file(path: &strview) -> &str|FsError:
-    f := try open(path)
+    f := try open_file(path)
     out: &str
     known := status(path)
     if known is Status:
@@ -51,7 +77,7 @@ func append_file(path: &strview, text: &strview) -> FsError?:
 priv func put_file(path: &strview, text: &strview, mode: &strview) -> FsError?:
     file := 0 as *bytes
     with scratch():
-        file = open_file(path, mode)
+        file = _wfopen(wstr(path), wstr(mode)) if @windows() else fopen(cstr(path), cstr(mode))
     if file as u64 == 0:
         return FsError{errno(), "write", path}
     done := fwrite(ptr(text.*), 1, text.len, file)
@@ -72,11 +98,11 @@ func file_size(path: &strview) -> i64|FsError:
         return FsError{21, "read the size of", path} # EISDIR on every system
     return found.size
 
-func modified(path: &strview) -> f64|FsError:
+func modified_time(path: &strview) -> f64|FsError:
     found := status(path) ifnull return FsError{failure(), "read the time of", path}
     return found.modified
 
-func remove(path: &strview) -> FsError? where not @windows():
+func remove_file(path: &strview) -> FsError? where not @windows():
     failed := false
     with scratch():
         failed = remove(cstr(path)) != 0
@@ -84,7 +110,7 @@ func remove(path: &strview) -> FsError? where not @windows():
         return FsError{errno(), "remove", path}
     return null
 
-func remove(path: &strview) -> FsError? where @windows():
+func remove_file(path: &strview) -> FsError? where @windows():
     failed := false
     with scratch():
         failed = _wremove(wstr(path)) != 0 and (not is_dir(path) or _wrmdir(wstr(path)) != 0) # the remove of Windows takes no folder
@@ -92,7 +118,7 @@ func remove(path: &strview) -> FsError? where @windows():
         return FsError{errno(), "remove", path}
     return null
 
-func rename(from: &strview, to: &strview) -> FsError? where not @windows():
+func rename_file(from: &strview, to: &strview) -> FsError? where not @windows():
     failed := false
     with scratch():
         failed = rename(cstr(from), cstr(to)) != 0
@@ -100,7 +126,7 @@ func rename(from: &strview, to: &strview) -> FsError? where not @windows():
         return FsError{errno(), "rename", from}
     return null
 
-func rename(from: &strview, to: &strview) -> FsError? where @windows():
+func rename_file(from: &strview, to: &strview) -> FsError? where @windows():
     failed := false
     with scratch():
         failed = MoveFileExW(wstr(from), wstr(to), 3) == 0 # MOVEFILE_REPLACE_EXISTING and MOVEFILE_COPY_ALLOWED
@@ -122,7 +148,7 @@ func make_dir(path: &strview) -> FsError?:
         return FsError{errno(), "make", path}
     return null
 
-func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
+func list_dir(path: &strview) -> &listview[&strview]|FsError where not @windows():
     dir := opendir(cstr(path))
     if dir as u64 == 0:
         return FsError{errno(), "list", path}
@@ -133,13 +159,13 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
     while entry as u64 != 0:
         part := view((entry + name_at) as *u8)
         if part != "." and part != "..":
-            append(names, temp(part))
+            append(names, tmp(part))
         entry = readdir(dir)
     closedir(dir)
     sort(names)
-    return temp(names)
+    return tmp(names)
 
-func list_dir(path: &strview) -> &slice[&strview]|FsError where @windows():
+func list_dir(path: &strview) -> &listview[&strview]|FsError where @windows():
     dir := _wopendir(wstr(path))
     if dir as u64 == 0:
         return FsError{errno(), "list", path}
@@ -147,15 +173,15 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where @windows():
     defer free(names)
     entry := _wreaddir(dir)
     while entry as u64 != 0:
-        part := temp((entry + 8) as wstr) # d_name of a struct _wdirent
+        part := tmp((entry + 8) as wstr) # d_name of a struct _wdirent
         if part != "." and part != "..":
             append(names, part)
         entry = _wreaddir(dir)
     _wclosedir(dir)
     sort(names)
-    return temp(names)
+    return tmp(names)
 
-func walk(folder: &strview) -> &slice[&strview]|FsError:
+func walk_dir(folder: &strview) -> &listview[&strview]|FsError:
     files: &list[&strview]
     defer free(files)
     folders: &list[&strview]
@@ -166,7 +192,7 @@ func walk(folder: &strview) -> &slice[&strview]|FsError:
         names := list_dir(folders[i])
         if names is FsError and i == 0:
             return names
-        if names is &slice[&strview]:
+        if names is &listview[&strview]:
             for name in names:
                 path := join_path(folders[i], name)
                 found := status(path, follow_links = false)
@@ -176,7 +202,7 @@ func walk(folder: &strview) -> &slice[&strview]|FsError:
                     append(files, path)
         i += 1
     sort(files)
-    return temp(files)
+    return tmp(files)
 
 func join_path(first: &strview, second: &strview) -> &strview:
     if first.len == 0:
@@ -266,12 +292,6 @@ priv func failure() -> i32 where not @windows():
 
 priv func failure() -> i32 where @windows():
     return windows_errno(GetLastError())
-
-priv func open_file(path: &strview, mode: &strview) -> *bytes where not @windows():
-    return fopen(cstr(path), cstr(mode))
-
-priv func open_file(path: &strview, mode: &strview) -> *bytes where @windows():
-    return _wfopen(wstr(path), wstr(mode))
 
 priv func make_one(path: &strview) -> i32 where not @windows():
     return mkdir(cstr(path), 493)

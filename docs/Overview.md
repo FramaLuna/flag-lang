@@ -74,7 +74,7 @@ d := u8(a)
 - Characters: `'a'` is the number of that character (97), an integer literal, so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
-- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is empty, it becomes an empty list, slice or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
+- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is empty, it becomes an empty list, listview or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
 - Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i64]` and `{}` is an empty map (see [Maps](#maps))
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types))
 
@@ -83,10 +83,10 @@ When you give the type, the literal takes it
 a: array[u8, 3] = [1, 2, 3]
 ages: &map[&strview, u8] = {"ana": 30}
 ```
-`ptr` passes the type on to what it points to, so an array literal or a constant can be a slice of another integer type
+`ptr` passes the type on to what it points to, so an array literal or a constant can be a listview of another integer type
 ```flag
 SHADER = [0x0723_0203, 0x0001_0000, 0x0008_000b]
-words: &slice[u32] = ptr(SHADER)
+words: &listview[u32] = ptr(SHADER)
 ```
 A text that crosses lines keeps them as they are
 ```flag
@@ -290,7 +290,7 @@ func main():
     h.n += 1
     free(h)
 ```
-When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &slice[i32] = ptr([1, 2, 3])` is a slice you can keep using.
+When a function takes `*T` and you pass a value of type `T`, and there is no overload that takes `T`, the compiler passes its address for you. Pass a variable when the function changes it: with any other value it changes a temporary. A temporary lasts until the function you are in returns, so `l: &listview[i32] = ptr([1, 2, 3])` is a listview you can keep using.
 
 `null` is not a pointer, a pointer that can be missing is `*T?`.
 
@@ -310,7 +310,7 @@ a: &list[i32]
 The library has these fat pointers
 - `&strview`, a view of text
 - `&str`, text that you own and can grow
-- `&slice[T]`, a view of elements
+- `&listview[T]`, a view of elements
 - `&list[T]`, a list that you own and can grow
 - `&map[K, V]`, a hash map that you own
 
@@ -319,7 +319,7 @@ A fat pointer starts empty, you don't need to create it, just use it
 a: &list[i32]
 append(a, 1)
 ```
-The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&slice` is expected.
+The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected.
 
 You can declare your own fat pointers with `type fatptr`
 ```flag
@@ -425,7 +425,7 @@ Iterating a text gives you each character as a `&strview`, and iterating a map g
 for c in "hello":
     print(c)
 ```
-The iterables can be reversed with reverse (depends on the iterable, ranges, arrays, lists, slices and text can)
+The iterables can be reversed with reverse (depends on the iterable, ranges, arrays, lists, listviews and text can)
 ```flag
 for element in reverse iterable:
     print(element)
@@ -433,7 +433,7 @@ for element in reverse iterable:
 for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
-With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and slices know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
+With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and listviews know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
 
 You can make your own types iterable. `for` calls `iter` with your value and then `next` with a pointer to what `iter` gave, until `next` gives `IterationEnd`. `reverse` calls `reverse_iter` instead of `iter`
 ```flag
@@ -511,7 +511,7 @@ func main():
     defer free(names)
     append(names, "ana")
 ```
-A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove(path)` drops it on purpose.
+A defer cannot have return, break, continue or try inside, and it cannot be a declaration or another defer. A deferred call that can fail must say what happens to the error, `defer _ = remove_file(path)` drops it on purpose.
 ### With
 `with` calls `close` on the value when the block ends, also when you leave it early
 ```flag
@@ -715,7 +715,7 @@ func main():
 ```
 A generic function takes one with a shape, and `$T` comes from it
 ```flag
-func first_by(items: &slice[$T], before: func($T, $T) -> bool) -> $T:
+func first_by(items: &listview[$T], before: func($T, $T) -> bool) -> $T:
     best := items[0]
     for v in items:
         if before(v, best):
@@ -797,7 +797,7 @@ print(a[-1], " ", a.len) # a negative index you write counts from the end, so th
 for x in a:
     print(x)
 ```
-The functions of lists and slices, like `sort`, take an array by its address
+The functions of lists and listviews, like `sort`, take an array by its address
 ```flag
 sort(ptr(a))
 ```
@@ -836,7 +836,7 @@ first := remove(nums, 0) # takes out the element at 0
 ```
 Only a negative index the compiler knows, a literal or a constant, counts from the end. One computed when the program runs is out of bounds like any other, so `nums[i - 1]` with `i` at 0 stops the program, and functions like `insert` and `remove` take their position from the start.
 
-Also `find` (gives the index or null), `contains`, `flip` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and slices](Library.md#lists-and-slices). Two lists or slices compare with `==` element by element.
+Also `find` (gives the index or null), `contains`, `flip` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and listviews](Library.md#lists-and-listviews). Two lists or listviews compare with `==` element by element.
 
 ## Maps
 A `&map[K, V]` is a hash map, you can start it empty or with a literal
@@ -905,6 +905,8 @@ What all the threads share is a file variable (see [File variables](#file-variab
 ## Threads
 `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait(t)` waits for the thread to end and gives its result. A computation split in pieces
 ```flag
+use os
+
 func sum(from: i64, to: i64) -> i64:
     total: i64 = 0
     for i in from..to:
@@ -914,7 +916,7 @@ func sum(from: i64, to: i64) -> i64:
 func main():
     pieces: &list[Thread[i64]]
     defer free(pieces)
-    n := i64(cores()) # the processors of the system
+    n := cores() # the processors of the system
     for k in 0..n:
         append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
     total: i64 = 0
@@ -1072,12 +1074,12 @@ priv func foo():
 In a file without a module, priv hides the name from every other file.
 
 ## The standard library
-The functions of text, lists, maps, files (`open`, `read_line`, `write`...) and threads (`Lock`, `Channel`, `cores`) are always there. The rest comes in modules that you get with `use`, without adding files
-- `fs`, whole files, folders and paths
-- `os`, the arguments, the environment, other programs and the time
+The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
+- `fs`, opening files, whole files, folders and paths
+- `os`, the arguments, the environment, other programs, the processors and the time
 - `json`, reading and writing JSON
 - `net`, TCP connections and UDP
-- `math`, `sqrt`, `sin`, `min`, random numbers...
+- `math`, `sqrt`, `sin`, `PI`, random numbers...
 - `utf8`, characters of UTF-8 text
 - `bits`, sets of numbers as bits
 - `ring`, a queue that grows at both ends
@@ -1105,12 +1107,13 @@ func main() -> i32:
     print(lines, " lines")
     return 0
 ```
-A file can also be read line by line, with `open` and `read_line`. Each line is temporary, so the loop releases it with `with scratch():`, and a file of any size runs in the same memory
+A file can also be read line by line, with `open_file` and `read_line`. Each line is temporary, so the loop releases it with `with scratch():`, and a file of any size runs in the same memory
 ```flag
+use fs
 use os
 
 func main() -> i32:
-    input := open(args()[1])
+    input := open_file(args()[1])
     if input is FsError:
         eprint(input)
         return 1

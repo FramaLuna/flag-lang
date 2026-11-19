@@ -185,6 +185,7 @@ context comp:
     files: &list[Source]
     uses: &list[Use]
     libs: &list[&strview]
+    library: &str
     tokens: &list[Token]
     trusted: &list[Trust]
     nodes: &list[Node]
@@ -337,8 +338,8 @@ func main() -> i32:
             append(inputs, a)
         elif is_dir(a):
             before := inputs.len
-            found := walk(a)
-            if found is &slice[&strview]:
+            found := walk_dir(a)
+            if found is &listview[&strview]:
                 for path in found:
                     if ends_with(path, ".flg"):
                         append(inputs, path)
@@ -458,12 +459,12 @@ func main() -> i32:
             start = k + 1
     nothing: Sym
     append(comp.syms, nothing)
-    lib: &str = dir_of(executable())
-    lib += "../lib/"
+    comp.library = dir_of(executable())
+    comp.library += "../lib/"
     here := current_dir() + "/"
-    if starts_with(view(lib), here):
-        lib = lib[here.len:]
-    if not exists(join_path(lib, "core.flg")):
+    if starts_with(view(comp.library), here):
+        comp.library = comp.library[here.len:]
+    if not exists(join_path(comp.library, "core.flg")):
         root: &str = "/tmp"
         cache := env("XDG_CACHE_HOME")
         local := env("LOCALAPPDATA")
@@ -475,10 +476,10 @@ func main() -> i32:
         elif home is &strview and home.len > 0:
             root = home
             root += "/.cache"
-        lib = join_path(root, "flag/")
-        lib += view(flag_stamp()) + "/"
-        if not exists(join_path(lib, "core.flg")):
-            part: &str = lib[:-1]
+        comp.library = join_path(root, "flag/")
+        comp.library += view(flag_stamp()) + "/"
+        if not exists(join_path(comp.library, "core.flg")):
+            part: &str = comp.library[:-1]
             part += ".part" + getpid()
             _ = make_dir(view(part))
             name: *u8
@@ -492,12 +493,12 @@ func main() -> i32:
                 _ = write_file(join_path(part, view(name)), file)
                 k += 1
                 data = flag_embedded(k, ptr(name), ptr(size))
-            _ = rename(view(part), lib[:-1])
-            _ = remove(view(part))
-        if not exists(join_path(lib, "core.flg")):
-            eprint(comp.err, "cannot unpack the library into ", lib)
+            _ = rename_file(view(part), comp.library[:-1])
+            _ = remove_file(view(part))
+        if not exists(join_path(comp.library, "core.flg")):
+            eprint(comp.err, "cannot unpack the library into ", comp.library)
             return 1
-    core: &str = join_path(lib, "core.flg")
+    core: &str = join_path(comp.library, "core.flg")
     loaded: &list[&strview]
     append(loaded, real_path(view(core)))
     if add_file(core, read_source(view(core), texts), true) is Fail:
@@ -516,7 +517,7 @@ func main() -> i32:
         known := false
         for f in comp.files:
             known = known or f.module == u.module
-        path: &str = join_path(lib, u.module + ".flg")
+        path: &str = join_path(comp.library, u.module + ".flg")
         if not known and not contains(loaded, real_path(view(path))) and exists(view(path)):
             if add_file(path, read_source(view(path), texts), true) is Fail:
                 return 1
@@ -622,7 +623,7 @@ func main() -> i32:
     append(link, "-o")
     append(link, output)
     append(link, source)
-    append(link, "-L" + lib)
+    append(link, "-L" + comp.library)
     for input in inputs:
         append(link, "-L" + dir_of(input))
     for l in comp.libs:
@@ -638,10 +639,10 @@ func main() -> i32:
     if apart and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
-        _ = remove(view(ssa))
-        _ = remove(view(asm))
+        _ = remove_file(view(ssa))
+        _ = remove_file(view(asm))
         if apart:
-            _ = remove(view(object))
+            _ = remove_file(view(object))
     if not running:
         return 0
     me := view(output)
@@ -706,14 +707,14 @@ func main() -> i32:
         insert(program, 0, me)
         code = run(program)
     if fleeting:
-        _ = remove(view(output))
+        _ = remove_file(view(output))
     if code is FsError:
         eprint(comp.err, code)
         return 1
     return code
 
 # each test reads the end of its input and writes to a pipe, the output and the errors in the order it wrote them
-func run_tests(queue: *Channel[i64, 64], commands: &slice[&list[&strview]], codes: &slice[i32|FsError], said: &slice[&str]):
+func run_tests(queue: *Channel[i64, 64], commands: &listview[&list[&strview]], codes: &listview[i32|FsError], said: &listview[&str]):
     for j in queue:
         p := start(commands[j])
         if p is FsError:
@@ -726,7 +727,7 @@ func run_tests(queue: *Channel[i64, 64], commands: &slice[&list[&strview]], code
         close(p.output)
         codes[j] = wait(p)
 
-func ran(command: &slice[&strview], why: &strview) -> bool:
+func ran(command: &listview[&strview], why: &strview) -> bool:
     code := run(command)
     if code is FsError:
         eprint(comp.err, code, why)
@@ -743,7 +744,7 @@ func real_path(path: &strview) -> &strview where @windows():
     found := _wfullpath(0 as wstr, wstr(path), 0)
     if found as u64 == 0:
         return path
-    kept: &str = temp(found)
+    kept: &str = tmp(found)
     return kept
 
 func read_source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
@@ -769,6 +770,8 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
             if f.module == view(own):
                 own += "." + comp.files.len
         append(comp.files, Source{path, code, start, view(own), library})
+        comp.pos = comp.tokens.len # a file loaded for an error comes in the middle of the checks
+        comp.depth = 0
         try lex(comp.files.len - 1)
         return parse()
     eprint(comp.err, code)

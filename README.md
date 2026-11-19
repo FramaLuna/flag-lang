@@ -32,7 +32,7 @@ This is the compiler for the Flag programming language, my own language, a mix o
 type error NotFound:
     name: &strview
 
-func index_of(names: &slice[&strview], name: &strview) -> i64|NotFound:
+func index_of(names: &listview[&strview], name: &strview) -> i64|NotFound:
     for i, n in names:
         if n == name:
             return i

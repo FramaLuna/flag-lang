@@ -563,7 +563,7 @@ func made(inst: i64) -> &str:
     i := comp.insts[inst]
     return bindings(comp.inst_binds[i.binds:i.binds + i.count])
 
-func bindings(binds: &slice[Item]) -> &str:
+func bindings(binds: &listview[Item]) -> &str:
     given: &str
     for b in binds:
         if given.len > 0:
@@ -1290,7 +1290,7 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
         list := try placed(t, given, at)
         args: &list[Value]
         append(args, list)
-        append(args, try convert(address(whole), try fat_type("slice", want_value, tok.at), Arg{}, tok.at))
+        append(args, try convert(address(whole), try fat_type("listview", want_value, tok.at), Arg{}, tok.at))
         try invoke("append", args, tok.at)
         return list
     if fixed and keys.len > comp.items[hint.args + 2].n:
@@ -1425,7 +1425,7 @@ func iterate(n: i64) -> Fail?:
         append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
     else:
         if backward and counter != 0:
-            return fail("reverse over " + comp.types[walked.type].name + " has no index to give " + text(counter) + ", only an array, a list or a slice knows the index of each element: count in a variable", comp.tokens[comp.nodes[counter].tok].at)
+            return fail("reverse over " + comp.types[walked.type].name + " has no index to give " + text(counter) + ", only an array, a list or a listview knows the index of each element: count in a variable", comp.tokens[comp.nodes[counter].tok].at)
         chars := textual(walked.type)
         walker := walked
         if chars:
@@ -2684,7 +2684,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         if array:
             whole := address(Value{type = t, at = addr, mem = true, place = base.place, lit = base.lit})
             if kids(n) == 3:
-                whole = try convert(whole, try fat_type("slice", comp.types[t].elem, tok.at), Arg{}, tok.at)
+                whole = try convert(whole, try fat_type("listview", comp.types[t].elem, tok.at), Arg{}, tok.at)
             append(args, whole)
         else:
             append(args, base)
@@ -2810,7 +2810,7 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
         try concat(right, line, first)
         args: &list[Value]
         append(args, line)
-        joined := try invoke("temp", args, sign)
+        joined := try invoke("tmp", args, sign)
         try invoke("free", args, sign)
         return assign(spot.at, spot.type, joined, sign)
     at := at_of(right)
@@ -3020,7 +3020,7 @@ func concat(n: i64, into: Value, first: i64) -> Value|Fail:
     append(args, line)
     out: Value
     if into.type == VOID:
-        out = try invoke("temp", args, at)
+        out = try invoke("tmp", args, at)
     else:
         postpone(first, middle)
         try put_text(into, line, at)
@@ -3053,7 +3053,7 @@ func textual(t: i64) -> bool:
     return comp.types[t].name == "&str" or comp.types[t].name == "&strview"
 
 func sequence(t: i64) -> bool:
-    return comp.types[t].kind == Fat and (starts_with(comp.types[t].name, "&list[") or starts_with(comp.types[t].name, "&slice["))
+    return comp.types[t].kind == Fat and (starts_with(comp.types[t].name, "&list[") or starts_with(comp.types[t].name, "&listview["))
 
 # the field len of a struct or a fat pointer, an Item of type VOID when it has none
 func len_field(t: i64) -> Item:
@@ -3946,4 +3946,4 @@ func unquoted(literal: &strview) -> &strview:
             i += 1
         add_byte(out, b)
         i += 1
-    return temp(out)
+    return tmp(out)

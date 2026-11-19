@@ -22,7 +22,7 @@ type error NotJson:
 operator +=(s: *&str, e: NotJson):
     s.* += "not JSON at line " + e.line + ", column " + e.column + ": " + e.reason
 
-func parse(text: &strview) -> Document|NotJson:
+func parse_json(text: &strview) -> Document|NotJson:
     nodes: &list[Node]
     end := value(text, skip(items(text), 0), nodes, 0)
     if end is i64 and skip(items(text), end) < text.len:
@@ -132,7 +132,7 @@ func text(d: Document, at: i64|null) -> &strview|null:
     from := d.nodes[at].from + 1
     to := d.nodes[at].to - 1
     if not d.nodes[at].escaped:
-        return temp(d.text[from:to])
+        return tmp(d.text[from:to])
     b := items(d.text)
     out: &str
     defer free(out)
@@ -147,7 +147,7 @@ func text(d: Document, at: i64|null) -> &strview|null:
         else:
             i += 1
     out += d.text[from:to]
-    return temp(out)
+    return tmp(out)
 
 type Quoted:
     text: &strview
@@ -309,14 +309,14 @@ priv func wrong(s: &strview, at: i64, reason: &strview) -> NotJson:
             start = i + 1
     return NotJson{reason, line, at - start + 1}
 
-priv func skip(b: &slice[u8], start: i64) -> i64:
+priv func skip(b: &listview[u8], start: i64) -> i64:
     for at in start..b.len:
         c := b[at]
         if c > ' ' or c != ' ' and c != '\n' and c != '\r' and c != '\t':
             return at
     return b.len
 
-priv func skip_digits(b: &slice[u8], at: i64) -> i64:
+priv func skip_digits(b: &listview[u8], at: i64) -> i64:
     while at < b.len and b[at] >= '0' and b[at] <= '9':
         at += 1
     return at

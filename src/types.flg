@@ -1,4 +1,6 @@
 @trust
+use fs
+
 VOID = 0
 NULL = 1
 BOOL = 2
@@ -91,12 +93,26 @@ func hidden(name: &strview, function: bool, at: i64) -> Fail?:
             for u in comp.uses:
                 if u.file == file and u.module == sym.module:
                     alias = u.alias
-            if sym.priv:
-                return fail(name + " is priv to module " + sym.module + ", only the files of " + sym.module + " see it", at)
+            if sym.priv and not sym.library:
+                return fail(name + " is priv to the module " + sym.module + ", only the files of " + sym.module + " see it", at)
             if alias.len > 0:
-                return fail(name + " is declared in module " + sym.module + ", reach it as " + alias + "." + name, at)
-            return fail(name + " is declared in module " + sym.module + ", add 'use " + sym.module + "'", at)
+                return fail(name + " is in the module " + sym.module + ": reach it as " + alias + "." + name, at)
+            if not sym.priv:
+                return fail(name + " is in the module " + sym.module + ": add use " + sym.module, at)
         s = sym.next
+    # the rest of the library is loaded, so a module that no file uses is named too
+    more := false
+    names := list_dir(comp.library) iferror return null
+    for given in names:
+        path: &str = join_path(comp.library, given)
+        known := not ends_with(given, ".flg")
+        for f in comp.files:
+            known = known or f.path == path or f.module == given[:-4]
+        if not known:
+            try add_file(path, read_file(view(path)), true)
+            more = true
+    if more:
+        return hidden(name, function, at)
     return null
 
 func find_type(name: &strview, path: &strview, at: i64) -> i64|Fail:
@@ -391,6 +407,8 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail(BARE_THREAD, tok.at)
         if node.module.len == 0 and tok.text == "usize":
             return fail(NO_USIZE, tok.at)
+        if node.module.len == 0 and tok.text == "slice":
+            return fail("&slice is called &listview now", tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
