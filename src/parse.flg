@@ -76,14 +76,19 @@ func declaration(module: &strview, kept: bool) -> Fail?:
     sym.packed = peek("packed")
     sym.export = peek("export")
     inline := peek("inline")
+    noinline := peek("noinline")
     after = comp.tokens[comp.pos + 1]
     if sym.export and after.text == "inline" or inline and after.text == "export":
         return fail("an export function cannot be inline, other languages call it and cannot take its body", here().at)
+    if inline and after.text == "noinline" or noinline and after.text == "inline":
+        return fail("a function is inline or noinline, not both", here().at)
     if sym.export and after.text != "func":
         return fail("export goes before a func declaration: export func name():", here().at)
     if inline and after.text != "func" and after.text != "operator":
         return fail("inline goes before a func or an operator declaration: inline func name():", here().at)
-    if sym.packed or sym.export or inline:
+    if noinline and after.text != "func" and after.text != "operator":
+        return fail("noinline goes before a func or an operator declaration: noinline func name():", here().at)
+    if sym.packed or sym.export or inline or noinline:
         comp.pos += 1
     t = here()
     after = comp.tokens[comp.pos + 1]
@@ -185,6 +190,8 @@ func declaration(module: &strview, kept: bool) -> Fail?:
         while try next_line(comp.width, width):
             if peek("inline"):
                 return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
+            if peek("noinline"):
+                return fail("an extern func cannot be noinline, it has no body: its library holds it", here().at)
             if not peek("func"):
                 return fail("an extern block declares functions only", here().at)
             try func_decl(true)

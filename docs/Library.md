@@ -251,7 +251,7 @@ These take a `simd` and belong to the language, like its operators (see [SIMD](R
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
-- `s[i] -> u8` the byte `i`, a negative `i` that the compiler knows counts from the end
+- `s[i] -> u8` the byte `i`, a negative `i` that the compiler knows counts from the end. `s[i] = b` changes a `&str`, and a `&strview` only reads: `&strview is a view that only reads: change the text through the &str that owns it`
 - `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A byte that is not part of a valid character comes alone, so text that is not UTF-8 gives its wrong bytes one by one, also the bytes of an overlong form, a surrogate or a code above U+10FFFF. Both directions give the same pieces, and `count_chars`, `valid_utf8` and `first_code` of `utf8` read the same ones
 - `==` and `<` compare the bytes
@@ -278,7 +278,7 @@ Searching and cutting
 - `replace(s: &strview, old: &strview, new: &strview) -> &strview` every `old` changed to `new`, temporary
 - `join(parts: &listview[$T], separator: &strview) -> &strview` the parts with the separator between them, temporary. The parts can be anything that can be printed
 - `lower(s: &strview) -> &strview` and `upper(s: &strview) -> &strview` change the ASCII letters, temporary
-- `items(s: &strview) -> &listview[u8]` the bytes, a view
+- `items(s: &strview) -> &listview[u8]` the bytes, a view that writes them: into a text literal that stops the program, a literal is in read-only memory
 - `view(bytes: &listview[u8]) -> &strview` the bytes as text, a view
 
 Numbers from text, `null` when the text is not a number

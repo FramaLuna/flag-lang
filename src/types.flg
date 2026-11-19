@@ -22,6 +22,7 @@ BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thr
 NO_USIZE = "there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64"
 DEEP = 500
 LONG = 64000000
+HUGE = 1 << 61 # the most bytes of a type: a multiple of every alignment, and a sum of two never wraps
 STEP = 256
 PRIVATE = STEP << 32
 
@@ -248,7 +249,7 @@ func union_of(parts: &list[i64], kind: TypeKind, at: i64) -> i64|Fail:
     for m in flat:
         append(comp.items, Item{name = "", type = m})
     made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0]})
-    lay_out(made)
+    try lay_out(made, at)
     return made
 
 func concrete(t: i64, at: i64) -> i64|Fail:
@@ -259,13 +260,13 @@ func concrete(t: i64, at: i64) -> i64|Fail:
         return fail("no type can be made from " + comp.types[t].name + ", an empty literal has no type of its own: give it one first, like " + example, at)
     return t
 
-func lay_out(t: i64):
+func lay_out(t: i64, at: i64) -> Fail?:
     size := 0
     align := 1
     for i in 0..comp.types[t].count:
         m := comp.types[comp.items[comp.types[t].first + i].type]
         if m.align == 0:
-            return
+            return null
         if m.size > size:
             size = m.size
         if m.align > align:
@@ -276,8 +277,14 @@ func lay_out(t: i64):
     elif comp.types[t].kind == Union:
         align = align_up(8, align)
         size = align + align_up(size, 8)
+    if size > HUGE:
+        return too_large(comp.types[t].name, at)
     comp.types[t].size = align_up(size, align)
     comp.types[t].align = align
+    return null
+
+func too_large(name: &strview, at: i64) -> Fail:
+    return fail(name + " is too large, a type holds at most " + HUGE + " bytes", at)
 
 func align_up(n: i64, a: i64) -> i64:
     return (n + a - 1) / a * a
@@ -390,7 +397,7 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail("type " + comp.types[args[0].type].name + " contains itself, hold it through a pointer", tok.at)
         if comp.types[args[0].type].kind == Bytes:
             return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
-        return array_of(try concrete(args[0].type, tok.at), args[1].n)
+        return array_of(try concrete(args[0].type, tok.at), args[1].n, tok.at)
     if node.module.len == 0 and tok.text == "simd":
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
             return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
@@ -547,6 +554,8 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
                 offset = align_up(offset, f.align)
             append(fields, Item{name, ft, offset, false})
             offset += f.size
+            if offset > HUGE:
+                return too_large(key, field_at)
         if f.align > align and not sym.packed:
             align = f.align
         c = node_end(c)
@@ -560,7 +569,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     comp.types[made].align = align
     for t in made..comp.types.len:
         if (comp.types[t].kind == Union or comp.types[t].kind == Untagged) and comp.types[t].align == 0:
-            lay_out(t)
+            try lay_out(t, at)
     return made
 
 func arg_name(a: Item) -> &strview:
@@ -568,13 +577,15 @@ func arg_name(a: Item) -> &strview:
         return "" + a.n
     return comp.types[a.type].name
 
-func array_of(elem: i64, count: i64) -> i64:
+func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
     key: &str = "array["
     key += e.name + ", " + count + "]"
     id := comp.type_ids[view(key)]
     if id is i64:
         return id
+    if e.size > 0 and count > HUGE / e.size:
+        return too_large(view(key), at)
     return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
 
 func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:

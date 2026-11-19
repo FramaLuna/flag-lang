@@ -3,6 +3,7 @@ use fs
 
 UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
 ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
+VIEW = "&strview is a view that only reads: change the text through the &str that owns it"
 
 func gen_program(check: bool, testing: bool) -> Fail?:
     none: &list[Item]
@@ -141,6 +142,30 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 elif text(c) != "..":
                     try passing(try resolve(c + 1), true, comp.tokens[comp.nodes[c].tok].at)
                 c = node_end(c)
+        last := 0
+        if checked:
+            for p in 0..params(f):
+                if kids(kid(f, p)) == 2:
+                    last = p + 1
+        if last > 0: # each default value is checked here, with the parameters before it as variables, and the code is dropped
+            body := comp.body.len
+            slots := comp.slots.len
+            aside := set_aside(0)
+            for p in 0..last:
+                c := kid(f, p)
+                t := try resolve(c + 1)
+                if kids(c) == 2:
+                    given := node_end(c + 1)
+                    for i in given..node_end(given):
+                        for j in p..params(f):
+                            if comp.nodes[i].kind == Name and text(i) == text(kid(f, j)) and first_sym(text(i)) == 0:
+                                return fail("the default of " + text(c) + " cannot read " + text(i) + ", a default value reads only the parameters before it", at_of(i))
+                    try hand(try gen(given, t), t, false, at_of(given))
+                append(comp.vars, Local{text(c), t, alloc(t), 0, comp.nodes[c].tok, 0, false, false})
+            put_back(0, aside)
+            comp.body.len = body
+            comp.slots.len = slots
+            comp.held.len = 0
         name := text(f)
         if comp.nodes[f].kind == Func and params(f) > 0 and (name == "[]" or name == "for" or name == "reverse" or name == "wait"):
             saved := open_frame()
@@ -230,7 +255,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 for m in order[first:]:
                     comp.procs[m].recursive = cycle
                     f := comp.procs[m].node
-                    if cycle and declared_inline(f):
+                    if cycle and declared(f) == "inline":
                         shown := text(f)
                         if comp.tokens[comp.nodes[f].tok - 1].text == "operator":
                             shown = "operator " + shown
@@ -639,8 +664,11 @@ func params(f: i64) -> i64:
         c = node_end(c)
     return count
 
-func declared_inline(f: i64) -> bool:
-    return f != 0 and comp.tokens[comp.nodes[f].tok - 2].text == "inline"
+# the word before func or operator, like inline or noinline
+func declared(f: i64) -> &strview:
+    if f == 0:
+        return ""
+    return comp.tokens[comp.nodes[f].tok - 2].text
 
 func result(f: i64) -> i64|Fail:
     c := kid(f, params(f))
@@ -1282,7 +1310,7 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
     if want_value == VOID:
         want_value = try common(values, tok.at)
     if node.kind == Items:
-        whole := try placed(array_of(want_value, values.len), Value{}, tok.at)
+        whole := try placed(try array_of(want_value, values.len, tok.at), Value{}, tok.at)
         for i in 0..values.len:
             try assign(offset(whole.at, i * comp.types[want_value].size), want_value, values[i], tok.at)
         if arena == 0:
@@ -1822,24 +1850,27 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             return fail("@can_assign expects two types: @can_assign(&strview, $T)", tok.at)
         if name == "@can_assign":
             return truth(try assignable(try spelled_type(n + 1), try spelled_type(node_end(n + 1)), tok.at))
-        if conversion and target >= I8 and target <= F64:
-            return convert_number(try value(first, VOID), target, tok.at)
         if conversion:
             to := comp.types[target]
             wanted := target
-            if to.kind == Simd and comp.nodes[first].kind != Items:
-                wanted = VOID # each lane converts on its own
+            if numeric(target) or to.kind == Simd and comp.nodes[first].kind != Items:
+                wanted = VOID # a number converts after, and each lane on its own
             given := try value(first, wanted)
             from := comp.types[given.type]
             many := from.kind == Simd or from.kind == Array
-            if to.kind == Simd or from.kind == Simd and to.kind == Array:
+            native := numeric(given.type) or given.type == BOOL or many and to.kind == Simd # what converts as numbers, and not with an operator =
+            if numeric(target) and native:
+                return convert_number(given, target, tok.at)
+            if numeric(target) and not try assignable(target, given.type, tok.at):
+                return fail(to.name + "() converts numbers, " + from.name + " is not one, and no operator = makes " + to.name + " from it", tok.at)
+            if to.kind == Simd and not native and not try assignable(target, given.type, tok.at):
+                return fail(to.name + "() converts numbers, arrays and simd, " + from.name + " is none of them, and no operator = makes " + to.name + " from it", tok.at)
+            if to.kind == Simd and native or from.kind == Simd and to.kind == Array:
                 if many and from.count != to.count:
                     amount := counted(to.count, "lane", "lanes")
                     if to.kind == Array:
                         amount = counted(to.count, "element", "elements")
                     return fail(to.name + " has " + amount + " and " + from.name + " has " + from.count, tok.at)
-                if not many and not numeric(given.type) and given.type != BOOL:
-                    return fail(to.name + "() converts numbers, arrays and simd, " + from.name + " is none of them", tok.at)
                 if to.elem == BOOL and given.type != BOOL and from.elem != BOOL:
                     return fail(to.name + "() does not convert, a mask comes from a comparison: v != 0", tok.at)
                 return lanes("convert", ptr([given]), target, tok.at)
@@ -1901,7 +1932,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
                 put(comp.stored, view(key), id)
                 label: &str = "flag.file."
                 label += id
-                comp.data += "data " + pair + " = { l $" + label + ", l " + size + " }\n"
+                comp.data += read_only(true) + "data " + pair + " = { l $" + label + ", l " + size + " }\n"
                 if comp.system == "linux":
                     comp.assembly += ".section .rodata\n"
                 elif comp.system == "windows":
@@ -2679,6 +2710,12 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         if array and comp.types[t].count <= 0xffff_ffff:
             count = u32(comp.types[t].count) # -memory keeps the elements of an array apart from what follows it
         spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
+        if ty.name == "&strview" and assignment != 0:
+            return fail(VIEW, at_of(n + 1))
+        if ty.name == "&strview" and passing:
+            append(comp.elements, base)
+            append(comp.elements, index)
+            spot.element = comp.elements.len # a call that takes it by pointer would write the text
     else:
         args: &list[Value]
         if array:
@@ -3233,11 +3270,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
         name += id
         global(view(name))
         put(comp.stored, view(data), id)
-        if comp.system == "linux":
-            comp.data += "section \".data.rel.ro\" "
-        elif comp.system == "windows":
-            comp.data += "section \".rdata\" \"dr\" "
-        comp.data += "data " + name + " = " + data + "\n" # macOS takes no quoted section, there it stays in data
+        comp.data += read_only(true) + "data " + name + " = " + data + "\n"
     return Value{type = v.type, at = Arg{Global, id}, mem = true, lit = true}
 
 func shared(d: i64) -> Value|Fail:
@@ -3901,15 +3934,25 @@ func text_data(text: &strview) -> Arg:
     if found is i64:
         return Arg{Global, found}
     id := comp.texts.len
-    comp.data += "data $flag.str." + id + " = { "
+    comp.data += read_only(false) + "data $flag.str." + id + " = { "
     length := text_bytes(comp.data, text)
-    comp.data += "b 0 }\ndata $flag.sv." + id + " = { l $flag.str." + id + ", l " + length + " }\n" # the data of the compiler is in flag., a function is name.number
+    comp.data += "b 0 }\n" + read_only(true) + "data $flag.sv." + id + " = { l $flag.str." + id + ", l " + length + " }\n" # the data of the compiler is in flag., a function is name.number
     append(comp.texts, length)
     name: &str = "$flag.sv."
     name += id
     made := global(view(name))
     put(comp.stored, view(key), made.n)
     return made
+
+# the section of the data that the program only reads, where a write stops it: on macOS __TEXT takes no address that the loader fixes, so what holds one stays in data
+func read_only(addresses: bool) -> &strview:
+    if comp.system == "linux":
+        return "section \".data.rel.ro\" "
+    if comp.system == "windows":
+        return "section \".rdata\" \"dr\" "
+    if addresses:
+        return ""
+    return "section \"__TEXT,__const\" "
 
 func text_bytes(into: *&str, text: &strview) -> i64:
     quoted := false

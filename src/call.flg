@@ -529,6 +529,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         if order[k] < args.len:
             given := args[order[k]]
             if given.element != 0 and comp.types[taken[k]].kind == Ptr:
+                if comp.types[comp.elements[given.element - 2].type].name == "&strview":
+                    return fail(VIEW, at)
                 append(back, comp.elements[given.element - 2])
                 append(back, comp.elements[given.element - 1])
                 given = filled(given, comp.types[taken[k]].elem)
@@ -537,9 +539,30 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         else:
             given := node_end(kid(f, k) + 1)
             aside := set_aside(0)
+            for i in given..node_end(given):
+                j := 0
+                while comp.nodes[i].kind == Name and j < k and text(i) != text(kid(f, j)):
+                    j += 1
+                if comp.nodes[i].kind == Name and j < k and lookup(text(i)) == 0: # a parameter before it, that it reads
+                    p := Value{type = taken[j]}
+                    if comp.types[p.type].kind != Given:
+                        used := j # its pass, a type has none
+                        for t in taken[:j]:
+                            used -= i64(comp.types[t].kind == Given)
+                        p = Value{type = p.type, at = passes[used].arg, mem = aggregate(p.type)}
+                    if not p.mem:
+                        slot := alloc(p.type)
+                        store(p.type, p, slot)
+                        p.at = slot
+                    append(comp.vars, Local{text(i), p.type, p.at, comp.loops.len, comp.nodes[kid(f, j)].tok, 0, false, false})
             site := comp.site
             comp.site = at
+            saved := open_frame() # it sees the $T of its function, not those of the caller
+            inst := comp.insts[id]
+            for b in inst.binds..inst.binds + inst.count:
+                append(comp.binds, comp.inst_binds[b])
             append(passes, try hand(try gen(given, taken[k]), taken[k], foreign, at_of(given)))
+            close_frame(saved)
             put_back(0, aside)
             comp.site = site
     if order.len < params(f):
@@ -1383,11 +1406,26 @@ func callable(s: i64, module: &strview, args: &list[Value], at: i64) -> bool:
     if module.len > 0 or sym.priv:
         return false
     for a in args:
-        t := a.type
-        while comp.types[t].kind == Ptr:
-            t = comp.types[t].elem
-        for m in members(t):
-            if sym.module == comp.files[file_of(comp.tokens[comp.nodes[comp.types[m].decl].tok].at)].module:
+        if brings(a.type, sym.module):
+            return true
+    return false
+
+# a type brings the functions of the module of every type named in it: a.Table[b.Door] brings those of a and of b
+func brings(t: i64, module: &strview) -> bool:
+    ty := comp.types[t]
+    if ty.decl != 0 and module == comp.files[file_of(comp.tokens[comp.nodes[ty.decl].tok].at)].module:
+        return true
+    if ty.kind == Ptr or ty.kind == Array or ty.kind == Simd or ty.kind == Thread or ty.kind == Given:
+        return brings(ty.elem, module)
+    if ty.kind == Func and brings(ty.ret, module):
+        return true
+    if ty.kind == Union or ty.kind == Untagged or ty.kind == Func:
+        for i in 0..ty.count:
+            if brings(comp.items[ty.first + i].type, module):
+                return true
+    if ty.kind == Struct or ty.kind == Fat:
+        for i in 0..type_params(ty.decl):
+            if brings(comp.items[ty.args + i].type, module):
                 return true
     return false
 

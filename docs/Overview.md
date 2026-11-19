@@ -556,6 +556,11 @@ The default is computed where you call the function, so `@here()` as a default g
 func log(message: &strview, place: &strview = @here()):
     print(place, ": ", message)
 ```
+A default can read the parameters before it, so one function takes the whole text or a part of it
+```flag
+func slice_of(text: &strview, from: i64 = 0, to: i64 = text.len) -> &strview:
+    return text[from:to]
+```
 #### Variadics
 Only C functions can be variadic, with `...` at the end of the parameters (see [Calling C](#calling-c))
 ### Functions that never return
@@ -608,6 +613,7 @@ operator =(c: Celsius, fahrenheit: f64) -> Celsius:
 func main():
     boiling: Celsius = 212.0 # 100 degrees
 ```
+`T(x)` converts like an assignment, also to a number: with `operator =(x: f64, c: Celsius) -> f64`, `f64(boiling)` is `100.0`
 ### Indexing
 `x[i]` calls `operator [](x, i)` with the index as written, a negative one too, so your types can be indexed too. When it gives a pointer you can also assign to `x[i]`
 ```flag
@@ -746,7 +752,7 @@ inline operator +(a: V, b: V) -> V:
 inline func scale(v: V, k: f64) -> V:
     return V{v.x * k, v.y * k}
 ```
-A recursive function, the `main` that starts the program and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
+A recursive function, the `main` that starts the program and an `export` function cannot be `inline`, and a call through a function value always calls the function out of line. `noinline func` is never replaced by its body, so it keeps its own line in the chain of a runtime error and in a profiler. Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the same loop in C. The rules and the sizes are in [Inlining](Reference.md#inlining).
 
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.
@@ -766,7 +772,7 @@ for i in 0..1000000:
     with scratch():
         print("line " + i)
 ```
-Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
+Indexing a text `s[i]` gives you the byte as `u8`, and `s[a:b]` gives you a `&strview` of that part. `s[i] = b` changes a `&str`, and a `&strview` only reads: a text literal is in the read-only memory of the program, so to change one copy it to a `&str`. Negative indexes count from the end, so `s[-1]` is the last byte and `s[-3:-1]` are the two before it. Without its start a slice starts at 0, and without its end it goes to the end, so `s[2:]` drops the first two bytes and `s[-3:]` keeps the last three.
 
 The library has `find`, `contains`, `split`, `join`, `replace`, `trim`, `parse_int` and more, they are in [Text](Library.md#text).
 
@@ -1038,7 +1044,7 @@ flag: index 5 is out of bounds, length 3
 ```
 `assert` checks a condition and says what was there when it's false: `assert total == 4` stops with `flag: total == 4 is false, total is 3`, and `assert f is File` with `flag: f is FsError, not File: cannot open config.txt: No such file or directory`. A message after a comma replaces that, `assert total > 0, "the total cannot be empty"`.
 
-A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own.
+A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own, unless it's `noinline`.
 
 To look inside the program while it runs, build it with `-debug` and run it in gdb or lldb, they show your variables with their types and stop at the lines you choose (see [Debugging](Reference.md#debugging)). With `-debug` nothing is inlined, so every function has its line.
 
@@ -1072,6 +1078,8 @@ priv func foo():
     return
 ```
 In a file without a module, priv hides the name from every other file.
+
+A type brings its functions: a call sees the functions of the modules that declare the types of its arguments, and the types inside them, like `b.Door` in `a.Table[b.Door]`, without `use`. So a generic function of one module can call a function declared next to the type it was made for.
 
 ## The standard library
 The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
