@@ -261,7 +261,7 @@ sel(Ins i, Num *tn, Fn *fn)
 	int x, j, k, kc, sh, swap;
 	Ins *i0, *i1;
 
-	if (rtype(i.to) == RTmp)
+	if (rtype(i.to) == RTmp && !isatomic(i.op))
 	if (!isreg(i.to) && !isreg(i.arg[0]) && !isreg(i.arg[1]))
 	if (fn->tmp[i.to.val].nuse == 0) {
 		chuse(i.arg[0], -1, fn);
@@ -330,6 +330,42 @@ sel(Ins i, Num *tn, Fn *fn)
 		emit(Ocopy, Kw, TMP(RCX), CON_Z, R);
 		emit(Ocopy, Kw, TMP(RAX), i.arg[0], R);
 		fixarg(&curi->arg[0], Kw, curi, fn);
+		break;
+	case Oaload:
+		/* a store that orders is xchg, so a load is a mov */
+		i.op = Oload;
+		goto case_Oload;
+	case Oacas0:
+		/* rax holds the value given and then the one
+		 * memory had, and the copy after the atomic
+		 * keeps rax out of other hands, as for a
+		 * division */
+		emit(Ocopy, k, TMP(RAX), i.arg[0], R);
+		fixarg(&curi->arg[0], k, curi, fn);
+		break;
+	case Oastorew:
+	case Oastorel:
+		i = (Ins){Oaswap, i.op == Oastorel ? Kl : Kw, R, {i.arg[1], i.arg[0]}};
+		k = i.cls;
+		/* fall through */
+	case Oaadd:
+	case Oaswap:
+	case Oacas1:
+		r0 = req(i.to, R) || fn->tmp[i.to.val].nuse == 0 ? R : i.to;
+		emit(Ocopy, k, r0, TMP(RAX), R);
+		r1 = i.op == Oacas1 ? i.arg[1] : R;
+		if (rtype(r1) == RCon) /* cmpxchg takes a register */
+			r1 = newtmp("isel", k, fn);
+		emit(i.op, k, R, i.arg[0], r1);
+		i1 = curi;
+		if (i.op != Oacas1) {
+			emit(Ocopy, k, TMP(RAX), i.arg[1], R);
+			fixarg(&curi->arg[0], k, curi, fn);
+		} else if (!req(r1, i.arg[1]))
+			emit(Ocopy, k, r1, i.arg[1], R);
+		seladdr(&i1->arg[0], tn, fn);
+		fixarg(&i1->arg[0], Kl, i1, fn);
+		fixarg(&i1->arg[1], k, i1, fn);
 		break;
 	case Ouwtof:
 		r0 = newtmp("utof", Kl, fn);

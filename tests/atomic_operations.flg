@@ -1,0 +1,50 @@
+type Counter:
+    hits: atomic[i64]
+    small: atomic[i32]
+    word: atomic[u32]
+    big: atomic[u64]
+    head: atomic[*i64]
+
+context stats:
+    calls: atomic[i64]
+
+shared context totals:
+    seen: atomic[u64]
+
+func bump(c: *atomic[i64], by: i64) -> i64:
+    return add(c.*, by)
+
+func reset(a: *atomic[$T]) -> $T:
+    return swap(a.*, 0)
+
+func main():
+    c: Counter
+    print(get(c.hits), " ", add(c.hits, 5), " ", get(c.hits), " ", add(c.hits, -7), " ", get(c.hits))
+    set(c.small, -3)
+    print(get(c.small), " ", add(c.small, 1), " ", swap(c.small, 7), " ", get(c.small))
+    set(c.small, 2147483647)
+    print(add(c.small, 1), " ", get(c.small))
+    set(c.word, 4000000000)
+    print(get(c.word), " ", compare_swap(c.word, 4000000000, 1), " ", get(c.word), " ", compare_swap(c.word, 5, 9), " ", get(c.word))
+    set(c.word, 4294967295)
+    print(add(c.word, 2), " ", get(c.word))
+    print(add(c.big, 0xffff_ffff_ffff_ffff), " ", get(c.big), " ", compare_swap(c.big, 0xffff_ffff_ffff_ffff, 3), " ", get(c.big))
+    x := 42
+    y := 43
+    set(c.head, ptr(x))
+    print(get(c.head).*, " ", compare_swap(c.head, ptr(y), ptr(y)), " ", compare_swap(c.head, ptr(x), ptr(y)), " ", swap(c.head, ptr(x)).*, " ", get(c.head).*)
+    add(stats.calls, 2)
+    add(totals.seen, 3)
+    print(get(stats.calls), " ", get(totals.seen))
+    print(bump(c.hits, 10), " ", get(c.hits), " ", reset(c.hits), " ", get(c.hits), " ", reset(c.word), " ", get(c.word))
+    local: atomic[i32]
+    set(local, 9)
+    print(add(local, 1), " ", get(local))
+    many: array[atomic[i64], 3]
+    for a in many:
+        add(a, 2)
+    add(many[1], 5)
+    print(get(many[0]), " ", get(many[1]), " ", get(many[2]))
+    print(@sizeof(atomic[i32]), " ", @sizeof(Counter))
+    set(c.head, 0 as *i64)
+    print(c)

@@ -124,6 +124,7 @@ A negative `code` is an error that has no errno, like an error of Windows that e
   - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
   - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`. `with c:` closes it when the block ends
   - `for v in c` receives until the channel is closed and empty
+- `atomic[T]` holds an `i32`, `u32`, `i64`, `u64` or a pointer that threads change at once without a lock. It's a type of the language and its operations belong to it, like those of a `simd` (see [Atomics](Reference.md#atomics)): `get(a)` reads it, `set(a, v)` writes it, `add(a, n)` adds and gives what it held, `swap(a, v)` writes and gives what it held, and `compare_swap(a, old, new)` writes `new` only when it holds `old` and says if it did
 
 The files of core, `print` included, work from any thread.
 
@@ -621,8 +622,8 @@ It links the C math library.
 `min`, `max`, `clamp`, `abs` and `lerp` are in [core](#numbers), and `sqrt` of a `simd` is the language's (see [simd](#simd)), also written `math.sqrt`.
 
 ### Random numbers
-They are the same sequence on every run until you call `seed`, and they are not for secrets. Each thread has its own sequence, and a new thread starts it from the beginning, like the program does, whatever `main` seeded: threads that draw numbers call `seed` each one, with a different number, or they all draw the same ones.
-- `seed(n: u64)` starts the sequence of this thread from `n`. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
+They are one sequence for the whole program, the same on every run until you call `seed`, and they are not for secrets. Every thread draws from it, so no thread draws a number that another one drew, and the `seed` of `main` counts for all of them. With a fixed `seed` the program draws the same numbers on every run, but which thread gets each one depends on how the threads take turns. The generator is splitmix64, a counter and a mix of it, kept in an `atomic[u64]`, so each number is one atomic `add` and drawing never waits for a lock.
+- `seed(n: u64)` starts the sequence again from `n`, for every thread. For a different one each run use the time: `seed(u64(now() * 1000000.0))`, with `now` from `os`
 - `random() -> f64` from 0 to 1, without the 1
 - `random(low: i64, high: i64) -> i64` from `low` to `high`, both of them included, in either order
 

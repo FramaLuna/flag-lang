@@ -1173,7 +1173,7 @@ operator +=(s: *&str, p: Padded[$T]):
 
 type Lock[$T]:
     room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
-    owner: *bytes
+    owner: atomic[*bytes] # the thread that holds it, which the others read too
     depth: i64
     value: $T # what it guards, null when it guards code
 
@@ -1185,9 +1185,9 @@ func lock(l: *Lock[$T]) -> Locked where $T != null:
     return lock(l as *Lock[null])
 
 func lock(l: *Lock[null]) -> Locked:
-    if l.owner != me():
+    if get(l.owner) != me():
         acquire(l)
-        l.owner = me()
+        set(l.owner, me())
     l.depth += 1
     return Locked{l}
 
@@ -1195,7 +1195,7 @@ operator with(held: Locked):
     l := held.lock
     l.depth -= 1
     if l.depth == 0:
-        l.owner = 0 as *bytes
+        set(l.owner, 0 as *bytes)
         release(l)
 
 # takes the lock only when no thread holds it, this one neither, so a thread that must not wait never does
@@ -1205,7 +1205,7 @@ priv func try_lock(l: *Lock[$T]) -> bool where $T != null:
 priv func try_lock(l: *Lock[null]) -> bool:
     if not seized(l):
         return false
-    l.owner = me()
+    set(l.owner, me())
     l.depth = 1
     return true
 
@@ -1254,10 +1254,10 @@ priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
 
 priv func pause(c: *Condition, l: *Lock[null]):
     depth := l.depth
-    l.owner = 0 as *bytes
+    set(l.owner, 0 as *bytes)
     l.depth = 0
     rest(c, l)
-    l.owner = me()
+    set(l.owner, me())
     l.depth = depth
 
 priv func rest(c: *Condition, l: *Lock[null]) where not @windows():
@@ -2182,7 +2182,7 @@ priv shared context failure:
 
 # one thread tells how the program fails, and if it fails again while it tells, it ends at once
 priv func tell(code: i32):
-    if failure.telling.owner == me():
+    if get(failure.telling.owner) == me():
         _exit(code)
     lock(failure.telling)
 

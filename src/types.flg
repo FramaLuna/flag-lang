@@ -153,7 +153,7 @@ func add_type(t: Type) -> i64:
     if comp.types.len > NEVER:
         shape: &str = heap("")
         defer free(shape)
-        if t.kind == Ptr or t.kind == Array or t.kind == Thread:
+        if t.kind == Ptr or t.kind == Array or t.kind == Thread or t.kind == Atomic:
             shape += "" + t.kind + "[" + comp.types[t.elem].tag + ", " + t.count + "]"
         elif t.kind == Func:
             shape += t.name[:trust find(t.name, "(")] + "(" + comp.types[t.ret].tag
@@ -414,6 +414,18 @@ func instance(n: i64, fat: bool) -> i64|Fail:
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
             return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
         return simd_of(args[0].type, args[1].n, tok.at)
+    if node.module.len == 0 and tok.text == "atomic":
+        if args.len != 1 or args[0].type == VOID:
+            return fail("atomic expects the type it holds: atomic[i64]", tok.at)
+        held := comp.types[args[0].type]
+        if not (integer(args[0].type) and held.size >= 4 or held.kind == Ptr):
+            return fail("atomic holds i32, u32, i64, u64 or a pointer, and " + held.name + " is none of them", tok.at)
+        key: &str = heap("atomic[")
+        key += held.name + "]"
+        id := comp.type_ids[view(key)]
+        if id is i64:
+            return id
+        return add_type(Type{kind = Atomic, name = view(key), size = held.size, align = held.size, elem = args[0].type})
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)

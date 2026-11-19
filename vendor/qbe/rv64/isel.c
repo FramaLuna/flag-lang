@@ -191,8 +191,9 @@ selcmp(Ins i, int k, int op, Fn *fn)
 static void
 sel(Ins i, Fn *fn)
 {
+	Ref r, *iarg;
 	Ins *i0;
-	int ck, cc;
+	int ck, cc, k;
 
 	if (INRANGE(i.op, Oalloc, Oalloc1)) {
 		i0 = curi - 1;
@@ -202,6 +203,30 @@ sel(Ins i, Fn *fn)
 	}
 	if (iscmp(i.op, &ck, &cc)) {
 		selcmp(i, ck, cc, fn);
+		return;
+	}
+	if (i.op == Oacas0) {
+		/* a0 holds the value given and then the one memory
+		 * had, and the copy after the atomic keeps a0 out of
+		 * other hands */
+		k = i.cls;
+		emit(Ocopy, k, TMP(A0), i.arg[0], R);
+		fixarg(&curi->arg[0], k, curi, fn);
+		return;
+	}
+	if (i.op == Oaadd || i.op == Oaswap || i.op == Oacas1) {
+		k = i.cls;
+		r = req(i.to, R) || fn->tmp[i.to.val].nuse == 0 ? R : i.to;
+		emit(Ocopy, k, r, TMP(A0), R);
+		emit(i.op, k, R, i.arg[0], i.op == Oacas1 ? i.arg[1] : R);
+		i0 = curi;
+		iarg = i0->arg;
+		if (i.op != Oacas1) {
+			emit(Ocopy, k, TMP(A0), i.arg[1], R);
+			fixarg(&curi->arg[0], k, curi, fn);
+		}
+		fixarg(&iarg[0], Kl, i0, fn);
+		fixarg(&iarg[1], k, i0, fn);
 		return;
 	}
 	if (i.op == Odbgslot) {

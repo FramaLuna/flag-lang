@@ -93,6 +93,18 @@ static struct {
 	{ Oreqz,   Ki, "seqz %=, %0" },
 	{ Ornez,   Ki, "snez %=, %0" },
 	{ Ocall,   Kw, "jalr %0" },
+	{ Oaload,  Kw, "fence rw,rw\n\tlw %=, %M0\n\tfence r,rw" },
+	{ Oaload,  Kl, "fence rw,rw\n\tld %=, %M0\n\tfence r,rw" },
+	{ Oastorew, Kw, "fence rw,w\n\tsw %0, %M1" },
+	{ Oastorel, Kw, "fence rw,w\n\tsd %0, %M1" },
+	/* a0 holds the value given and then the one memory had, t6 what memory has */
+	{ Oaadd,   Kw, "amoadd.w.aqrl t6, %=, (%0)\n\tmv %=, t6" },
+	{ Oaadd,   Kl, "amoadd.d.aqrl t6, %=, (%0)\n\tmv %=, t6" },
+	{ Oaswap,  Kw, "amoswap.w.aqrl t6, %=, (%0)\n\tmv %=, t6" },
+	{ Oaswap,  Kl, "amoswap.d.aqrl t6, %=, (%0)\n\tmv %=, t6" },
+	/* lr.w extends the sign, so the value it compares with does too */
+	{ Oacas1,  Kw, "sext.w %=, %=\n1:\n\tlr.w.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.w.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6" },
+	{ Oacas1,  Kl, "1:\n\tlr.d.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.d.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6" },
 	{ NOp, 0, 0 }
 };
 
@@ -407,6 +419,11 @@ emitins(Ins *i, Fn *fn, FILE *f)
 		break;
 	case Onop:
 		break;
+	case Oaadd:
+	case Oaswap:
+	case Oacas1:
+		i->to = TMP(A0);
+		goto Table;
 	case Oaddr:
 		assert(rtype(i->arg[0]) == RSlot);
 		rn = rname[i->to.val];

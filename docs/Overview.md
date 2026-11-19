@@ -1008,6 +1008,14 @@ func visit():
     with lock(stats.visits):
         stats.visits.value += 1
 ```
+A number or a pointer that threads change at once can be an `atomic[T]`, without a lock. It's not a value: `get` reads it, and `set`, `add`, `swap` and `compare_swap` change it, each in one instruction of the processor
+```flag
+shared context stats:
+    served: atomic[i64]
+
+func serve():
+    add(stats.served, 1)
+```
 A `Channel[T, N]` passes values between threads, and waits when it's full or empty. It keeps the values inside itself, so it lives where you declare it
 ```flag
 func worker(jobs: *Channel[&str, 16]):
@@ -1140,7 +1148,7 @@ In a file without a module, priv hides the name from every other file.
 A type brings its functions: a call sees the functions of the modules that declare the types of its arguments, and the types inside them, like `b.Door` in `a.Table[b.Door]`, without `use`. So a generic function of one module can call a function declared next to the type it was made for.
 
 ## The standard library
-The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
+The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`, and `get`, `add`... of an `atomic`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
 - `fs`, opening files, whole files, folders and paths
 - `os`, the arguments, the environment, other programs, the processors and the time
 - `json`, reading and writing JSON

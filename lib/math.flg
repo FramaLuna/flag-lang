@@ -82,11 +82,11 @@ func hypot(x: f32, y: f32) -> f32:
 func fmod(x: f32, y: f32) -> f32:
     return f32(fmod(f64(x), f64(y)))
 
-priv context generator:
-    state: u64
+priv shared context generator:
+    state: atomic[u64] # one for all the threads, so none draws the numbers of another
 
 func seed(n: u64):
-    generator.state = n
+    set(generator.state, n)
 
 func random() -> f64:
     return f64(next_random() >> 11) / 9007199254740992.0 # 2^53
@@ -99,10 +99,11 @@ func random(low: i64, high: i64) -> i64:
         return i64(next_random())
     return low + i64(next_random() % span)
 
-# splitmix64
+priv GAMMA = 0x9e37_79b9_7f4a_7c15
+
+# splitmix64 is a counter and a mix, so each number is one atomic add
 priv func next_random() -> u64:
-    generator.state += 0x9e37_79b9_7f4a_7c15
-    z := generator.state
+    z := add(generator.state, GAMMA) + GAMMA
     z = (z xor (z >> 30)) * 0xbf58_476d_1ce4_e5b9
     z = (z xor (z >> 27)) * 0x94d0_49bb_1331_11eb
     return z xor (z >> 31)

@@ -207,6 +207,7 @@ enum {
 #define isargbh(o) INRANGE(o, Oargsb, Oarguh)
 #define isretbh(j) INRANGE(j, Jretsb, Jretuh)
 #define isxsel(o) INRANGE(o, Oxsel, Oxsel1)
+#define isatomic(o) (INRANGE(o, Oaload, Oaswap) || INRANGE(o, Oacas0, Oacas1))
 
 enum {
 	Kx = -1, /* "top" class (see usecheck() and clsmerge()) */

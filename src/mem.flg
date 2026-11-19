@@ -434,6 +434,19 @@ func check_memory():
                     o.size = u32(i.c.n)
                 case "narrowed":
                     o.code = Narrowed
+                case "aload", "aadd", "aswap", "acas": # each reads the word at a, then swap writes b there and acas c, as if it always did
+                    o.code = Word
+                    if i.cls == L and not i.number:
+                        o.code = Load
+                    if o.code == Load and name != "aload":
+                        append(mem.ops, o)
+                        o = Op{pos = i.pos, mask = FULL, code = Store, a = operand(func.temps, i.b), b = o.a}
+                        if name == "acas":
+                            o.a = operand(func.temps, i.c)
+                case "astorel", "astorew":
+                    o.code = Clear
+                    if name == "astorel" and not i.number:
+                        o.code = Store
                 case:
                     o.code = Plain
             append(mem.ops, o)
@@ -2639,6 +2652,8 @@ func owned(t: i64) -> u64:
     ty := comp.types[t]
     if ty.kind == Ptr or ty.kind == Thread or ty.kind == Fat and ty.count > 1: # a view has only its len
         return 1
+    if ty.kind == Atomic:
+        return owned(ty.elem)
     mask: u64 = 0
     if ty.kind == Array:
         inner := owned(ty.elem)

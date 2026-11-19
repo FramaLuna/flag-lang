@@ -102,6 +102,9 @@ static struct {
 	{ Osltof,  Ka, "scvtf %=, %L0" },
 	{ Oultof,  Ka, "ucvtf %=, %L0" },
 	{ Ocall,   Kw, "blr %L0" },
+	{ Oaload,  Ki, "ldar %=, %M0" },
+	{ Oastorew, Kw, "stlr %W0, %M1" },
+	{ Oastorel, Kw, "stlr %L0, %M1" },
 
 	{ Oacmp,   Ki, "cmp %0, %1" },
 	{ Oacmn,   Ki, "cmn %0, %1" },
@@ -615,6 +618,29 @@ emitins(Ins *i, E *e)
 		break;
 	case Ovlane:
 		e->lane = rsval(i->arg[0]);
+		break;
+	case Oaadd:
+	case Oaswap:
+	case Oacas1:
+		/* x0 holds the value given and then the one memory
+		 * had, x17 what memory has; Apple has the atomics
+		 * of ARMv8.1, and elsewhere it is a loop of
+		 * exclusive loads and stores, through x18, which
+		 * is free outside of Apple */
+		i->to = TMP(R0);
+		if (T.apple)
+			switch (i->op) {
+			case Oaadd: p = "ldaddal %=, %?, %M0\n\tmov\t%=, %?"; break;
+			case Oaswap: p = "swpal %=, %?, %M0\n\tmov\t%=, %?"; break;
+			default: p = "casal %=, %1, %M0"; break;
+			}
+		else
+			switch (i->op) {
+			case Oaadd: p = "1:\n\tldaxr %?, %M0\n\tadd\t%?, %?, %=\n\tstlxr\tw18, %?, %M0\n\tcbnz\tw18, 1b\n\tsub\t%=, %?, %="; break;
+			case Oaswap: p = "1:\n\tldaxr %?, %M0\n\tstlxr\tw18, %=, %M0\n\tcbnz\tw18, 1b\n\tmov\t%=, %?"; break;
+			default: p = "1:\n\tldaxr %?, %M0\n\tcmp\t%?, %=\n\tb.ne\t2f\n\tstlxr\tw18, %1, %M0\n\tcbnz\tw18, 1b\n2:\n\tmov\t%=, %?"; break;
+			}
+		emitf(p, i, e);
 		break;
 	case Ovsetb:
 	case Ovseth:

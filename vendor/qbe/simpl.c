@@ -266,8 +266,8 @@ thronce(Fn *fn)
 			in = *--i;
 			for (x=0; x<2; x++) {
 				t[x] = R;
-				if (isarg(in.op) || in.op == Osel1) {
-					/* the arguments of a call and the sels stay together */
+				if (isarg(in.op) || in.op == Osel1 || in.op == Oacas1) {
+					/* the arguments of a call, the sels and an acas stay together */
 					r = thrstart(in.arg[x], fn);
 					if (!req(r, R))
 						in.arg[x] = r;

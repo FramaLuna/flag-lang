@@ -6,6 +6,7 @@ KNOWN = "a default value is one the compiler knows, made of literals and constan
 ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
 VIEW = "&strview is a view that only reads: change the text through the &str that owns it"
 STACK = "cannot return a pointer to the stack as it will be cleared at return"
+ATOMIC = " is not a value, it starts at 0 and changes with set, add, swap or compare_swap"
 
 func gen_program(check: bool, testing: bool) -> Fail?:
     comp.entry = NONE # a type checks its defaults when it is made, and they can call functions before main is found
@@ -452,6 +453,8 @@ func gen_from(from: i64) -> i64|Fail:
                 t = try fat_type("listview", t, comp.at)
             if comp.types[t].kind == Bytes:
                 return fail("parameter " + text(c) + " needs a size, bytes is a run of unknown length: take a *bytes", comp.tokens[comp.nodes[c].tok].at)
+            if comp.types[t].kind == Atomic:
+                return fail("parameter " + text(c) + " cannot be " + comp.types[t].name + ", which is not a value: take *" + comp.types[t].name, comp.tokens[comp.nodes[c].tok].at)
             if comp.types[t].kind == Given: # it takes nothing at run time
                 append(comp.vars, Local{text(c), t, Arg{}, 0, comp.nodes[c].tok, 0, "", false, true, false})
                 continue
@@ -1673,14 +1676,7 @@ func iterate(n: i64) -> Fail?:
             if starts_with(comp.types[walked.type].name, "&map["): # its elements stay in it, where those of a Channel leave
                 every = true
                 rounds = round(place, item, l_body, false)
-        first := comp.nodes[subject].tok
-        last := first
-        for k in subject..node_end(subject):
-            first = min(first, comp.nodes[k].tok)
-            last = max(last, comp.nodes[k].tok)
-        while unclosed(first, last) > 0:
-            last += 1
-        named := excerpt(first, last)
+        named := code_of(subject)
         fixed := tok.text + " is a copy that next gives, assigning it does not change " + named + ": copy it to a variable to change it"
         if chars:
             fixed = tok.text + " is a piece of the text, not a place in it: build the new text in a &str"
@@ -2070,6 +2066,12 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             return none
         built := platform(name)
         if tok.kind == Builtin and name != "@argc" and name != "@argv" and name != "@here" and name != "@embed" and name != "@compile_error" and name != "@sizeof" and name != "@offset_of" and built is null:
+            switch name:
+            case "@get", "@set", "@add", "@swap", "@compare_swap", "@any", "@all", "@sum", "@min", "@max", "@abs", "@sqrt", "@select":
+                close := node.tok + 1
+                while unclosed(node.tok + 1, close) > 0:
+                    close += 1
+                return fail(name + " is not a builtin, it runs with the program and goes without @: " + excerpt(node.tok, close)[1:], tok.at)
             return fail("there is no builtin named " + name, tok.at)
         if name == "@compile_error":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
@@ -2192,22 +2194,16 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         if names_type and types_given:
             append(values, Value{type = given_of(try spelled_type(arg))})
         else:
+            passed := comp.passed
             comp.passed = arg
             try read_in_turn(values, arg, VOID)
-            comp.passed = 0
+            comp.passed = passed
         c = node_end(c)
     if name == "free" and node.module.len == 0 and values.len == 1:
         x := stacked(n + 1)
         chosen := comp.syms[try choose(name, "", values, names, tok.at)].node
         if x != 0 and chosen != 0 and (body(chosen) == 0 or comp.tokens[comp.nodes[kid(chosen, 0) + 2].tok].kind == Generic): # the free of C, or the one of core that gives it the pointer
-            low := comp.nodes[x].tok
-            high := low
-            for i in x..node_end(x):
-                low = min(low, comp.nodes[i].tok)
-                high = max(high, comp.nodes[i].tok)
-            while unclosed(low, high) > 0:
-                high += 1
-            return fail("free cannot release " + excerpt(low, high) + ", it is not on the heap", at_of(x))
+            return fail("free cannot release " + code_of(x) + ", it is not on the heap", at_of(x))
     made := call(name, node.module, values, names, turns, tok.at, threaded)
     comp.turns.len = turns
     return made
@@ -3041,6 +3037,8 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
     right := node_end(left)
     middle := comp.body.len
     sign := comp.tokens[comp.nodes[n].tok].at
+    if comp.types[spot.type].kind == Atomic:
+        return fail(comp.types[spot.type].name + ATOMIC, sign)
     if o == "+=" and comp.types[spot.type].name == "&str":
         try concat(right, spot, first)
         return null
@@ -3151,8 +3149,21 @@ func value(n: i64, want: i64) -> Value|Fail:
         return fail("a function that returns nothing is a statement, not a value", at_of(n))
     if v.type == NEVER:
         return fail("a function that never returns is a statement, not a value", at_of(n))
+    if comp.types[v.type].kind == Atomic and comp.passed != n and comp.target != n: # a call or ptr takes it where it is
+        return fail(code_of(n) + " is " + comp.types[v.type].name + ", which is not a value: read it with get(" + code_of(n) + ")", at_of(n))
     reads(n)
     return v
+
+# the code of n as it is written, with the brackets it opens closed
+func code_of(n: i64) -> &strview:
+    first := comp.nodes[n].tok
+    last := first
+    for k in n..node_end(n):
+        first = min(first, comp.nodes[k].tok)
+        last = max(last, comp.nodes[k].tok)
+    while unclosed(first, last) > 0:
+        last += 1
+    return excerpt(first, last)
 
 func reads(n: i64):
     if local_of(n) != 0:
@@ -3183,6 +3194,10 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
     if comp.types[v.type].kind == Func:
         return put_text(place, Value{type = pointer(BYTES), at = load(v).at}, at)
     t := comp.types[v.type]
+    if t.kind == Atomic: # in a struct, what it holds now
+        one: &list[Value] = heap([])
+        append(one, v)
+        return put_text(place, try invoke("get", one, at), at)
     if t.name == "&str": # text goes as text, a += of a union that holds &str would take it back
         return put_text(place, try convert(v, try fat_type("strview", VOID, at), Arg{}, at), at)
     if t.kind == Simd:
@@ -4077,7 +4092,7 @@ func lookup(name: &strview) -> i64:
 
 func aggregate(t: i64) -> bool:
     k := comp.types[t].kind
-    return k == Struct or k == Fat or k == Union or k == Untagged or k == Array or k == Simd
+    return k == Struct or k == Fat or k == Union or k == Untagged or k == Array or k == Simd or k == Atomic
 
 func big(t: i64) -> bool:
     return aggregate(t) and comp.types[t].size > 128
@@ -4233,6 +4248,8 @@ func pointers(t: i64) -> u64:
                 mask = mask or words(pointers(item.type), 1)
             else:
                 mask = mask or pointers(item.type)
+    elif ty.kind == Atomic:
+        mask = pointers(ty.elem)
     return mask
 
 func words(mask: u64, shift: i64) -> u64:
