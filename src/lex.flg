@@ -1,31 +1,31 @@
 @trust
-func lex(file: usize) -> Fail?:
+func lex(file: i64) -> Fail?:
     code := comp.files[file].code
     base := comp.files[file].start
     bytes := items(code)
     nothing: &strview
-    opens: &list[usize]
+    opens: &list[i64]
     defer free(opens)
-    scopes: &list[usize]
+    scopes: &list[i64]
     defer free(scopes)
-    limits: &list[usize]
+    limits: &list[i64]
     defer free(limits)
-    widths: &list[usize]
+    widths: &list[i64]
     defer free(widths)
     append(widths, 0)
-    columns: &list[usize]
+    columns: &list[i64]
     defer free(columns)
     append(columns, 0)
-    head: usize = 0
-    width: usize = 0
-    at: usize = 0
-    line: usize = 1
+    head := 0
+    width := 0
+    at := 0
+    line := 1
     newline := true
     while true:
         if newline:
             newline = false
             start := at
-            column: usize = 0
+            column := 0
             while at < code.len and (bytes[at] == ' ' or bytes[at] == '\t'):
                 if bytes[at] == '\t':
                     column += 8 - column % 8
@@ -208,7 +208,7 @@ func is_digit(b: u8) -> bool:
 func is_hex(b: u8) -> bool:
     return is_digit(b) or b >= 'a' and b <= 'f' or b >= 'A' and b <= 'F'
 
-func escape_end(code: &strview, slash: usize, base: usize) -> usize|Fail:
+func escape_end(code: &strview, slash: i64, base: i64) -> i64|Fail:
     bytes := items(code)
     last := slash + 1
     if last >= code.len:
@@ -224,7 +224,7 @@ func escape_end(code: &strview, slash: usize, base: usize) -> usize|Fail:
         return fail("unknown escape sequence '\\" + printable(code, last) + "', the escapes are \\n \\t \\r \\0 \\e \\\\ \\\" \\' and \\x41", base + slash)
     return last
 
-func printable(code: &strview, at: usize) -> &strview:
+func printable(code: &strview, at: i64) -> &strview:
     b := items(code)[at]
     if b >= ' ' and b <= '~':
         return code[at:at + 1]

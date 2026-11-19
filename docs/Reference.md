@@ -160,13 +160,13 @@ The words that start a declaration (`func`, `type`, `module`, `use`, `extern`, `
 | `bool`, `i8`, `u8` | 1 |
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
-| `i64`, `u64`, `usize`, `f64`, pointers, function values, `Thread[T]` | 8 |
+| `i64`, `u64`, `f64`, pointers, function values, `Thread[T]` | 8 |
 | `simd[T, n]` | 16 |
 | void types, `null`, `IterationEnd` | 0 |
 
 `bytes` has no size, it only exists behind a pointer (`*bytes` is the `void *` of C, and the pointer that moves by bytes, see [Arithmetic](#arithmetic)). A variable of type `bytes` is an error: `variable x needs a size, bytes is a run of unknown length`.
 
-`@sizeof(T)` gives the size as an integer literal, so it takes the type of its place and alone it's an `i64`: `n := @sizeof(Point)` is an `i64` and `n: usize = @sizeof(Point)` a `usize`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
+`@sizeof(T)` gives the size as an integer literal, so it takes the type of its place and alone it's an `i64`: `n := @sizeof(Point)` is an `i64` and `n: i32 = @sizeof(Point)` an `i32`. `@offset_of(T, field)` gives the place of a field of a struct or a fat pointer the same way, `@offset_of(&str, len)` is 8. It takes one field, the one of a nested type is `@offset_of(Car.motor, power)`.
 
 Structs, unions and arrays are values, so assigning one, passing it or returning it copies it. A copy of more than 128 bytes is a call to `memcpy`. A literal that gives its values in order, `V{1.5, 2.5}` and not `V{x = 1.5, y = 2.5}`, puts the numbers, `bool`s and enums smaller than 8 bytes that share a word of 8 bytes together when all of them are constants, and writes that word at once, so a copy of the value reads each word from one write and doesn't wait for the processor to join the pieces. A word with a value computed when the program runs is written one field at a time: joining the fields costs instructions, and when the value lives in registers they have to be taken apart again.
 
@@ -211,7 +211,7 @@ A fat pointer is the address of the data and then its fields
 | `&str`, `&list[T]` | address, len, cap, arena | 32 |
 | `&map[K, V]` | address, len, cap, arena | 32 |
 
-A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
+`len` and `cap` are `i64`, like every length, count, position and size, so `l.len - 3` with two elements is `-1`. A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
 
 `arena` is a `*Arena`, the arena the memory lives in, and zero when it lives in the heap (see [Arenas](#arenas)). The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&slice` without copying anything.
 
@@ -220,6 +220,8 @@ A fat pointer starts with everything at zero, that's the empty one, and `append`
 Assigning a fat pointer copies its address and fields, not the data, so the two share the elements. If one of them grows, the other one doesn't see the new length, and if the grow moved the data the other one points to freed memory. That's why functions that grow a fat pointer take `*&` (see [Passing them to functions](Overview.md#passing-them-to-functions)).
 
 ## Numbers
+The integers are `i8`, `i16`, `i32`, `i64` and `u8`, `u16`, `u32`, `u64`, and the floats `f32` and `f64`. A length, a count, a position and a size are `i64`, the `size_t` of C too (see [Types](#types)), an address is a `*bytes`, and an unsigned number of 64 bits, like a hash or a handle of the system, is an `u64`. There is no `usize`, and naming it says what to write: `there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64`.
+
 ### Literals
 An integer literal has no type until you use it. It takes the type of where it goes if it fits, and alone it's an `i64`, or an `u64` above the largest `i64`
 ```flag
@@ -292,11 +294,11 @@ Assignments, declarations and `return` do all of that and also
 
 So `f(x)` with `x: i32` and `func f(n: i64)` passes `x` as an `i64`, like `n: i64 = x` does.
 
-Never implicit: signed to unsigned, types of the same size (`u64` and `usize` too), making a number smaller, integer to float and back, `f32` to `f64`, and a pointer to another pointer. Between integers the error says how: `cannot assign i64 to i32, an integer only grows by itself: convert it with i32(...)`. `null` is not a pointer, a pointer that can be missing is `*T?`.
+Never implicit: signed to unsigned, types of the same size (`u64` to `i64` too), making a number smaller, integer to float and back, `f32` to `f64`, and a pointer to another pointer. Between integers the error says how: `cannot assign i64 to i32, an integer only grows by itself: convert it with i32(...)`. `null` is not a pointer, a pointer that can be missing is `*T?`.
 
 ### T(x)
 Calling a number type converts
-- between integers it cuts or extends, extending with the sign of the source: `usize(-1)` from an `i32` is 18446744073709551615
+- between integers it cuts or extends, extending with the sign of the source: `u64(x)` with `x: i32 = -1` is 18446744073709551615
 - a float to an integer rounds toward zero and stays at the limits: `i32(1e300)` is 2147483647, and `nan` gives 0
 - a `bool` gives 1 or 0. There is no `bool(x)`, write `x != 0`
 - a literal is checked: `i8(300)` is an error
@@ -305,7 +307,7 @@ Calling a struct or an alias with one value does the same conversion as an assig
 
 ### as
 `as` reads the bytes of a value as another type, it never converts
-- two types without a tag and of the same size, numbers, `bool`, pointers, function values, structs, arrays, `simd` and fat pointers: `f32(1.5) as u32` gives the bits, `p as usize` gives the address, and with `type V2` of two `f32`, `V2{1.0, 2.0} as u64` is `0x400000003f800000` and `0x400000003f800000 as V2` the `V2` again. The padding of a struct is read too, whatever it holds. An integer literal on the left is the integer of the size of the type on the right, signed when it fits: `0x3f800000 as f32` is `1.0`, `-1 as u8` is `255`, and `300 as bool` is an error, `300 does not fit in u8`
+- two types without a tag and of the same size, numbers, `bool`, pointers, function values, structs, arrays, `simd` and fat pointers: `f32(1.5) as u32` gives the bits, `p as u64` gives the address, and with `type V2` of two `f32`, `V2{1.0, 2.0} as u64` is `0x400000003f800000` and `0x400000003f800000 as V2` the `V2` again. The padding of a struct is read too, whatever it holds. An integer literal on the left is the integer of the size of the type on the right, signed when it fits: `0x3f800000 as f32` is `1.0`, `-1 as u8` is `255`, and `300 as bool` is an error, `300 does not fit in u8`
 - a union to one of its members or to a smaller union, without checking the tag
 - a member in or out of an untagged union
 
@@ -609,7 +611,7 @@ The variable counts the loop, so it cannot be assigned: `i counts this loop, so 
 A range with an index (`for i, x in 0..3`) is an error, and a range only goes in a `for` or in a `case`: `a range goes in a for header or a case label, nothing else reads it`.
 
 ### Everything else
-Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter that counts the loop like the variable of a range, so it cannot be assigned either. Over an array, a list or a slice it's the index of `x`, also with `reverse`, where it goes down: over `[10, 20, 30]`, `for i, x in reverse l` gives `2 30`, `1 20`, `0 10`. Over text it counts the characters from 0, not the bytes, and over what `iter` gives it counts the rounds. Those know the index of an element only from the start, so there `reverse` with a counter is an error: `reverse over &strview has no index to give i, only an array, a list or a slice knows the index of each element: count in a variable`.
+Over an array, a list, a slice or text the compiler writes the loop itself: it reads the address and the length once, and every round copies one element into `x`, or one character of the text. For anything else `for x in value` calls `iter(value)` once, keeps what it gives, and calls `next` with a pointer to it every round. `next` returns the element or `IterationEnd`, a builtin void type that ends the loop, so the elements can be `null`. The element can be a union, and `for i, x in` adds a counter, an `i64`, that counts the loop like the variable of a range, so it cannot be assigned either. Over an array, a list or a slice it's the index of `x`, also with `reverse`, where it goes down: over `[10, 20, 30]`, `for i, x in reverse l` gives `2 30`, `1 20`, `0 10`. Over text it counts the characters from 0, not the bytes, and over what `iter` gives it counts the rounds. Those know the index of an element only from the start, so there `reverse` with a counter is an error: `reverse over &strview has no index to give i, only an array, a list or a slice knows the index of each element: count in a variable`.
 
 - Text gives each UTF-8 character as a `&strview` (`é` has `len` 2). A byte that is not part of a valid character comes alone, also each byte of an overlong form, a surrogate or a code above U+10FFFF, and `reverse` gives the same pieces. `items(text)` gives the bytes. The messages of the compiler read the code the same way, a byte that comes alone is shown as `\xc0`
 - A map gives its entries (`.key`, `.value`) in the order of its table, and it cannot be reversed: `&map[&strview, i32] has no reverse_iter, so reverse cannot walk it`. A fixed map gives them in the order they were put
@@ -679,7 +681,7 @@ They work on the innermost loop, there are no labels, and with a number they rea
 An error is a type marked with `type error`: a void type (`type error NotFound`), an enum of them (`type error enum FileError = CannotOpen|CannotRead`), or a struct with fields that say what happened
 ```flag
 type error BadLine:
-    line: usize
+    line: i64
     why: &strview
 ```
 An error with fields is a struct in everything else: it's built with `BadLine{3, "too long"}`, it can be generic, it prints as `BadLine{line = 3, why = too long}`, `==` compares its fields, and after `is BadLine` or in a `case BadLine:` its fields are there, `r.line`. A union can hold several errors with and without data, and `try`, `iferror` and `trust` treat them all alike. An alias cannot be marked as an error, the error is the type it names.
@@ -760,7 +762,7 @@ flag: index 5 is out of bounds, length 3
   in load, main.flg:20
   in main, main.flg:31
 ```
-`flag: out of memory` has no place and no chain, any allocation can be the one that fails. `try_reserve` makes room for what comes next and gives `NoMemory` instead of stopping (see [Memory](Library.md#memory)). The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
+`flag: out of memory` has no place and no chain, any allocation can be the one that fails. A negative size is never there either, so `reserve(l, -1)` stops with it. `try_reserve` makes room for what comes next and gives `NoMemory` instead of stopping (see [Memory](Library.md#memory)). The one about the standard output comes when the program ends and what it printed could not be written, and no `flush(stdout)` told it.
 
 The last four are crashes, what the system stops: a read or a write through a pointer to memory the program cannot touch, like a null pointer, says the address, an illegal instruction is most often a union that holds no valid tag, like memory you zeroed yourself (see [Unions](#unions)), and a recursion that goes too deep is a stack overflow. They write the chain too, without a place. The exit code is 128 plus the number of the signal, the table shows Linux, where a memory access can also be a bus error, 135, and macOS gives it 138. On Windows it's the code of the exception, like `0xc0000005`. The program ends with that code, not killed by the signal, so it leaves no core dump: to stop where it crashed, run it in a debugger (see [Debugging](#debugging)).
 
@@ -1126,7 +1128,7 @@ The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't sta
 `export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. Its name is a value of its C function type, the callback you give to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
+    func qsort(base: *bytes, count: i64, size: i64, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*
@@ -1166,11 +1168,13 @@ func drop(object: *Unknown):
 | `i8`, `u8`, `bool` | `signed char`, `unsigned char`, `bool` |
 | `i16`, `u16` | `short`, `unsigned short` |
 | `i32`, `u32` | `int`, `unsigned int` |
-| `i64`, `u64`, `usize` | `long long`, `unsigned long long`, `size_t` |
+| `i64`, `u64` | `long long`, `unsigned long long` |
 | `f32`, `f64` | `float`, `double` |
 | `*T`, `cstr` | pointers |
 | `extern func(T) -> U` | a pointer to a function |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
+
+A `size_t` is an `i64`, the type of a length, so `memcpy(to, from, l.len)` passes the length as it is, and a size of C never goes past the largest `i64`. A handle of the system, like a `pthread_t` or a `HANDLE`, is an `u64`, and a pointer is a pointer, so a test for the null pointer is `p as u64 == 0`.
 
 A `bool` that comes from C is 0 or 1 by its ABI, and one that C writes through a pointer has to be too (see [as](#as)).
 

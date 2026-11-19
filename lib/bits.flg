@@ -4,16 +4,16 @@ type Bits[$$words]:
     words: array[u64, $$words]
 
 func at(b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
-    n := usize(i)
+    n := u64(i) # a negative is past every bit
     if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
-    return ((b.words[n / 64] >> u64(n % 64)) and 1) != 0
+    return ((b.words[n / 64] >> n % 64) and 1) != 0
 
 func put(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
-    n := usize(i)
+    n := u64(i)
     if n >= $$w * 64:
         out_of_bounds(i, $$w * 64, place)
-    one := u64(1) << u64(n % 64)
+    one := u64(1) << n % 64
     if on:
         b.words[n / 64] = b.words[n / 64] or one
     else:
@@ -55,8 +55,8 @@ func empty(b: *Bits[$$w]) -> bool:
             return false
     return true
 
-func count(b: *Bits[$$w]) -> usize:
-    n: usize = 0
+func count(b: *Bits[$$w]) -> i64:
+    n := 0
     for i in 0..$$w:
         w := b.words[i]
         while w != 0:
@@ -66,13 +66,13 @@ func count(b: *Bits[$$w]) -> usize:
 
 priv type Ones[$$w]:
     words: array[u64, $$w]
-    at: usize
+    at: i64
     left: u64
 
 func iter(b: *Bits[$$w]) -> Ones[$$w]:
     return Ones[$$w]{b.words, 0, 0}
 
-func next(o: *Ones[$$w]) -> usize|IterationEnd:
+func next(o: *Ones[$$w]) -> i64|IterationEnd:
     while o.left == 0:
         if o.at == $$w:
             return IterationEnd

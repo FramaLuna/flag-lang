@@ -1,11 +1,11 @@
 module ring
 
 type fatptr ring[$T]:
-    len: usize
-    cap: usize
-    first: usize
+    len: i64
+    cap: i64
+    first: i64
 
-priv func slot(r: &ring[$T], i: usize) -> *$T:
+priv func slot(r: &ring[$T], i: i64) -> *$T:
     return (ptr(r.*) + (r.first + i) % r.cap * @sizeof($T)) as *$T
 
 priv func grow(r: *&ring[$T]):
@@ -15,7 +15,7 @@ priv func grow(r: *&ring[$T]):
     if cap < 8:
         cap = 8
     moved := malloc(cap * @sizeof($T))
-    if moved as usize == 0:
+    if moved as u64 == 0:
         out_of_memory()
     for i in 0..r.len:
         ((moved + i * @sizeof($T)) as *$T).* = slot(r.*, i).*
@@ -50,8 +50,8 @@ func take(r: *&ring[$T]) -> $T|null:
     return v
 
 func at(r: &ring[$T], i: $I, place: &strview = @here()) -> *$T where $I is Integer:
-    n := usize(i)
-    if n >= r.len:
+    n := i64(i)
+    if u64(n) >= u64(r.len): # a negative is past every length
         out_of_bounds(i, r.len, place)
     return slot(r, n)
 
@@ -61,14 +61,14 @@ func clear(r: *&ring[$T]):
 
 func free(r: *&ring[$T]):
     free(ptr(r.*.*))
-    r.* = usize(0) as *bytes
+    r.* = 0 as *bytes
     r.len = 0
     r.cap = 0
     r.first = 0
 
 priv type Walk[$T]:
     r: &ring[$T]
-    i: usize
+    i: i64
 
 func iter(r: &ring[$T]) -> Walk[$T]:
     return Walk[$T]{r, 0}

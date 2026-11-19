@@ -50,12 +50,12 @@ The functions
 - `create(path: &strview, append: bool = false) -> File|FsError` makes the file, or empties it, to write. With `append = true` it keeps what the file has and everything you write goes at its end
 - `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
-- `read(f: File, into: *&str, size: usize) -> usize|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
+- `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
 - `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you. It doesn't tell about a failed write, `flush` does
 - `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
-- `ready(files: &slice[File], seconds: f64 = 0.0) -> &slice[usize]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
+- `ready(files: &slice[File], seconds: f64 = 0.0) -> &slice[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
 
 `ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
@@ -114,7 +114,7 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 `parallel f(x)` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
 - `wait(t: Thread[$T]) -> $T` waits for the thread to end and gives what its function returned, `null` for a `Thread[null]`. It frees the block of the thread, so a thread is waited once, and the temporaries of the thread go to the scratch of the one that waits. A `wait` of yours for a `Thread` is an error, `wait of Thread belongs to the language, it cannot be declared again`, and for any other type it's an overload like any other. Of a `Thread` that never got a thread it stops the program: `flag: wait of a thread that was never started`
 - `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait(t)` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
-- `cores() -> usize` how many processors the system has online, to split a job in as many threads
+- `cores() -> i64` how many processors the system has online, to split a job in as many threads
 - `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
   - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
   - `close(held: Locked)` lets it go, `with` calls it
@@ -172,17 +172,17 @@ func main():
 
 A program that must go on without memory, like an engine that loads a level, makes room first with `try_reserve`, which gives the error `NoMemory` instead of ending the program, and then fills it without allocating. There is one for lists, text, maps and arenas
 ```flag
-func load(enemies: *&list[Enemy], count: usize) -> NoMemory?:
+func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
     try try_reserve(enemies, count)
     for i in 0..count:
         append(enemies, Enemy{hp = 10}) # the room is there, append doesn't allocate
     return null
 ```
-`try_reserve` takes a new block and copies into it, so what you had stays as it was when there is no memory. More than 2^63 bytes, or a size that doesn't fit in 64 bits, is `NoMemory` too, without asking the system.
+`try_reserve` takes a new block and copies into it, so what you had stays as it was when there is no memory. A negative size, or one whose bytes don't fit in an `i64`, is `NoMemory` too, without asking the system, and `reserve` stops the program with `flag: out of memory` for it.
 
 ### Temporary memory
 - `scratch() -> Scratch` marks the scratch memory, and `close` of the mark releases every temporary made after it. `with scratch():` does both
-- `temp(size: usize) -> *bytes` that many bytes of temporary memory
+- `temp(size: i64) -> *bytes` that many bytes of temporary memory
 - `temp(text: &strview) -> &strview` a temporary copy of the text, with a zero byte after it
 - `temp(items: &slice[$T]) -> &slice[$T]` a temporary copy of the elements, to return what you built in a list that you free
 
@@ -193,7 +193,7 @@ An `Arena` gives out pieces of big blocks and releases them all at once. It star
 - `arena(a, [...])` and `arena(a, {...})` the list or the map of the literal, in the arena, with the type of the place where it lands: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
 - `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
 - `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
-- `reserve(a: *Arena, size: usize)` makes room for `size` bytes, so the pieces until then don't ask the heap for a block, and `try_reserve(a: *Arena, size: usize) -> NoMemory?` the same with `NoMemory` when the system gives no more memory. Each piece takes its size rounded up to the alignment of the arena
+- `reserve(a: *Arena, size: i64)` makes room for `size` bytes, so the pieces until then don't ask the heap for a block, and `try_reserve(a: *Arena, size: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory. Each piece takes its size rounded up to the alignment of the arena
 - `count`, `used` and `blocks` are its fields: the blocks in use, the bytes used in the last one, and every block it has
 
 An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
@@ -208,8 +208,8 @@ A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own a
 On lists
 - `append(l: *&list[$T], v: $T)` adds `v` at the end. The first time it makes room for 8 elements, and then it doubles
 - `append(l: *&list[$T], items: &slice[$T])` adds all the elements at the end, also from the list itself
-- `reserve(l: *&list[$T], want: usize)` makes room for `want` elements, so the appends until then don't allocate
-- `try_reserve(l: *&list[$T], want: usize) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
+- `reserve(l: *&list[$T], want: i64)` makes room for `want` elements, so the appends until then don't allocate
+- `try_reserve(l: *&list[$T], want: i64) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
 - `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`. Like every function that takes a position, it counts from the start, and a negative one stops the program
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
@@ -217,10 +217,10 @@ On lists
 - `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
 
 On slices, so also on lists
-- `find(items: &slice[$T], v: $T) -> usize|null` the index of the first element `== v`
-- `find(items: &slice[$T], fits: func($T) -> bool) -> usize|null` the index of the first element that `fits` says yes to
+- `find(items: &slice[$T], v: $T) -> i64|null` the index of the first element `== v`
+- `find(items: &slice[$T], fits: func($T) -> bool) -> i64|null` the index of the first element that `fits` says yes to
 - `contains(items: &slice[$T], v: $T) -> bool`
-- `binary_search(items: &slice[$T], v: $T) -> usize|null` the index of `v` in a sorted slice, using `<`
+- `binary_search(items: &slice[$T], v: $T) -> i64|null` the index of `v` in a sorted slice, using `<`
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
 - `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
 - `flip(items: &slice[$T])` turns the elements around in place
@@ -253,14 +253,14 @@ Building a `&str`
 - `s = text` with a `&strview` copies the text into `s`, reusing its memory. Between two `&str` it doesn't copy, both share the text, so write `s = view(other)`
 - `add_byte(s: *&str, b: u8)` appends one byte
 - `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
-- `reserve(s: *&str, want: usize)` makes room for `want` bytes, so the appends until then don't allocate
-- `try_reserve(s: *&str, want: usize) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory
+- `reserve(s: *&str, want: i64)` makes room for `want` bytes, so the appends until then don't allocate
+- `try_reserve(s: *&str, want: i64) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory
 - `view(s: &str) -> &strview` a view of the text
 - `free(s: *&str)` releases the text and leaves it empty, and in an arena it only leaves it empty
 
 Searching and cutting
-- `find(s: &strview, part: &strview) -> usize|null` the byte index of the first `part`
-- `find_last(s: &strview, part: &strview) -> usize|null` the byte index of the last `part`
+- `find(s: &strview, part: &strview) -> i64|null` the byte index of the first `part`
+- `find_last(s: &strview, part: &strview) -> i64|null` the byte index of the last `part`
 - `contains(s: &strview, part: &strview) -> bool`
 - `starts_with(s: &strview, head: &strview) -> bool` and `ends_with(s: &strview, tail: &strview) -> bool`
 - `trim(s: &strview) -> &strview` without the spaces, tabs, `\n` and `\r` at both ends, a view. `trim_start` and `trim_end` do one end
@@ -300,7 +300,7 @@ A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` mak
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - `at`, `contains` and `remove` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`, `remove(m, "port")`
-- `reserve(m: *&map[$K, $V], want: usize)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
+- `reserve(m: *&map[$K, $V], want: i64)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
 - `clear(m: *&map[$K, $V])` removes every key and keeps the memory
 - `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
@@ -320,7 +320,7 @@ A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order 
 
 ### Indexes of your own types
 `x[i]` on your type calls your `at` (see [Indexing](Overview.md#indexing)) with the index as written, `g[-1]` too. The library stops the program with this one, so yours can do the same
-- `out_of_bounds(i: $I, len: usize)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: usize)` with `flag: slice 2:9 is out of bounds, length 3`
+- `out_of_bounds(i: $I, len: i64)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: i64)` with `flag: slice 2:9 is out of bounds, length 3`
 ```flag
 type Grid:
     cells: array[i32, 9]
@@ -353,7 +353,7 @@ The files are read and written in binary, the bytes are the same on every system
 ### Folders and paths
 - `exists(path: &strview) -> bool` if there is a file or a folder there
 - `is_dir(path: &strview) -> bool`, also for a folder that you cannot read
-- `file_size(path: &strview) -> usize|FsError` in bytes, without opening the file, so it works on one that you cannot read. A folder has no size, it's an error
+- `file_size(path: &strview) -> i64|FsError` in bytes, without opening the file, so it works on one that you cannot read. A folder has no size, it's an error
 - `modified(path: &strview) -> f64|FsError` when the file or the folder last changed, in seconds since 1970 like `now()` of `os`, with the fraction the system keeps: nanoseconds on Linux and macOS, 100 ns on Windows. It's how a program loads an asset again when it changes, `if modified(path) iferror 0.0 != loaded_at:`
 - `list_dir(path: &strview) -> &slice[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
 - `walk(folder: &strview) -> &slice[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
@@ -484,19 +484,19 @@ func main():
         print(text(d, tag))
     print(integer(d, get(d, 0, "user.age")) ifnull 0) # 0, there is no age
 ```
-`parse` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `usize|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
+`parse` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `i64|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
 - `parse(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid` of `utf8` does that
 - `free(d: *Document)` releases the nodes, not the text, and leaves the document empty
-- `get(d: Document, at: usize|null, path: &strview) -> usize|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
-- `children(d: Document, at: usize|null)` for a `for`: the values of an array or an object, in order, and nothing for anything else
-- `key(d: Document, at: usize|null) -> &strview` the key of the value `at` when it's inside an object, temporary, and empty when it's not
-- `count(d: Document, at: usize|null) -> usize` how many values an array or an object has
-- `item(d: Document, at: usize|null, index: usize) -> usize|null` the value at `index` of an array or an object. It walks from the start, so to go through all of them use `children`
-- `kind(d: Document, at: usize|null) -> Kind` what the value is, one of `Nothing`, `Boolean`, `Number`, `Text`, `Array` and `Object`. `null` and a missing node are `Nothing`
-- `text(d: Document, at: usize|null) -> &strview|null` a string with its escapes decoded, temporary
-- `number(d: Document, at: usize|null) -> f64|null`, `integer(d: Document, at: usize|null) -> i64|null` and `boolean(d: Document, at: usize|null) -> bool|null`
+- `get(d: Document, at: i64|null, path: &strview) -> i64|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
+- `children(d: Document, at: i64|null)` for a `for`: the values of an array or an object, in order, and nothing for anything else
+- `key(d: Document, at: i64|null) -> &strview` the key of the value `at` when it's inside an object, temporary, and empty when it's not
+- `count(d: Document, at: i64|null) -> i64` how many values an array or an object has
+- `item(d: Document, at: i64|null, index: i64) -> i64|null` the value at `index` of an array or an object. It walks from the start, so to go through all of them use `children`
+- `kind(d: Document, at: i64|null) -> Kind` what the value is, one of `Nothing`, `Boolean`, `Number`, `Text`, `Array` and `Object`. `null` and a missing node are `Nothing`
+- `text(d: Document, at: i64|null) -> &strview|null` a string with its escapes decoded, temporary
+- `number(d: Document, at: i64|null) -> f64|null`, `integer(d: Document, at: i64|null) -> i64|null` and `boolean(d: Document, at: i64|null) -> bool|null`
 - `text`, `number`, `integer` and `boolean` give `null` when the value is not of that kind, so `text(d, get(d, 0, "name")) ifnull "anonymous"` works. `integer` is also `null` for a number with decimals or an exponent, or one that doesn't fit in `i64`
-- `raw(d: Document, at: usize|null) -> &strview` the JSON text of the value, a view
+- `raw(d: Document, at: i64|null) -> &strview` the JSON text of the value, a view
 - `quoted(text: &strview) -> Quoted` the text as a JSON string, with the quotes and the escapes, to use with `+`, `+=` and `print`
 
 The keys of an object go with `key`
@@ -512,8 +512,8 @@ The error says where and what
 ```flag
 type error NotJson:
     reason: &strview
-    line: usize
-    column: usize
+    line: i64
+    column: i64
 ```
 `reason` says what is wrong, `line` and `column` start at 1 and the column counts bytes, like in the errors of the compiler. It prints as `not JSON at line 3, column 14: expected ':' after the key`.
 
@@ -527,7 +527,7 @@ TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them
 - `port(server: Server) -> u16` the port the server listens on
 - `close(server: Server)` stops listening
 - `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
-- `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: usize) -> usize|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
+- `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: i64) -> i64|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
 
 ```flag
 type error NetError:
@@ -579,7 +579,7 @@ func main():
 ```
 
 ### Waiting for many
-- `ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize]` waits until one of them can be read without waiting, or `seconds` pass, and gives the indexes of the ready ones, temporary: a `Socket` with bytes or its end, a `Server` with a connection to accept, an `Udp` with a datagram. 0 only asks, and a negative `seconds` waits as long as it takes. The elements are any of `Socket`, `Server` and `Udp`, or a union of them, so one list holds a server and its connections
+- `ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[i64]` waits until one of them can be read without waiting, or `seconds` pass, and gives the indexes of the ready ones, temporary: a `Socket` with bytes or its end, a `Server` with a connection to accept, an `Udp` with a datagram. 0 only asks, and a negative `seconds` waits as long as it takes. The elements are any of `Socket`, `Server` and `Udp`, or a union of them, so one list holds a server and its connections
 - `ready(x, seconds: f64 = 0.0) -> bool` the same for one of them
 
 ```flag
@@ -615,7 +615,7 @@ They are the same sequence on every run until you call `seed`, and they are not 
 
 ## utf8
 - `code(s: &strview) -> u32|null` the code of the first character, `null` when the text is empty or doesn't start with valid UTF-8: `code("é")` is 233
-- `count(s: &strview) -> usize` how many characters, the same that `for c in s` counts
+- `count(s: &strview) -> i64` how many characters, the same that `for c in s` counts
 - `valid(s: &strview) -> bool` if all the text is valid UTF-8, that is, no byte of it comes alone in `for c in s`
 
 To walk the characters use `for c in text`, and to add a character from its code, `add_char` of core.
@@ -637,7 +637,7 @@ func main():
 - `a or b` the union, `a and b` the intersection, `a - b` the numbers of `a` that are not in `b`, and `a xor b` the ones in only one of them
 - `a == b` and `a != b`
 - `not b` the numbers that are not in `b`
-- `empty(b) -> bool` and `count(b) -> usize`
+- `empty(b) -> bool` and `count(b) -> i64`
 - `for n in b` gives the numbers from the smallest, and `print` writes `{3, 70}`
 
 ## ring

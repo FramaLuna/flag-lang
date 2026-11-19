@@ -2,7 +2,7 @@ module fs
 
 priv extern "c":
     func fopen(path: cstr, mode: cstr) -> *bytes
-    func fwrite(from: *bytes, size: usize, count: usize, file: *bytes) -> usize
+    func fwrite(from: *bytes, size: i64, count: i64, file: *bytes) -> i64
     func fclose(file: *bytes) -> i32
     func stat(path: cstr, into: *bytes) -> i32
     func lstat(path: cstr, into: *bytes) -> i32
@@ -20,9 +20,9 @@ priv extern "c":
     func _wreaddir(dir: *bytes) -> *bytes
     func _wclosedir(dir: *bytes) -> i32
     func MoveFileExW(from: wstr, to: wstr, flags: u32) -> i32
-    func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: usize) -> usize
-    func GetFileInformationByHandle(file: usize, into: *array[u32, 13]) -> i32
-    func CloseHandle(handle: usize) -> i32
+    func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: u64) -> u64
+    func GetFileInformationByHandle(file: u64, into: *array[u32, 13]) -> i32
+    func CloseHandle(handle: u64) -> i32
     func GetLastError() -> u32
 
 func read_file(path: &strview) -> &str|FsError:
@@ -30,9 +30,9 @@ func read_file(path: &strview) -> &str|FsError:
     out: &str
     known := status(path)
     if known is Status:
-        reserve(out, usize(known.size) + 1)
-    got: usize|FsError = 1
-    while got is usize and got > 0:
+        reserve(out, known.size + 1)
+    got: i64|FsError = 1
+    while got is i64 and got > 0:
         if out.len == out.cap:
             reserve(out, out.len + 65536)
         got = read(f, out, out.cap - out.len)
@@ -49,10 +49,10 @@ func append_file(path: &strview, text: &strview) -> FsError?:
     return put_file(path, text, "ab")
 
 priv func put_file(path: &strview, text: &strview, mode: &strview) -> FsError?:
-    file := usize(0) as *bytes
+    file := 0 as *bytes
     with scratch():
         file = open_file(path, mode)
-    if file as usize == 0:
+    if file as u64 == 0:
         return FsError{errno(), "write", path}
     done := fwrite(ptr(text.*), 1, text.len, file)
     if fclose(file) != 0 or done != text.len:
@@ -66,11 +66,11 @@ func is_dir(path: &strview) -> bool:
     found := status(path)
     return found is Status and found.folder
 
-func file_size(path: &strview) -> usize|FsError:
+func file_size(path: &strview) -> i64|FsError:
     found := status(path) ifnull return FsError{failure(), "read the size of", path}
     if found.folder:
         return FsError{21, "read the size of", path} # EISDIR on every system
-    return usize(found.size)
+    return found.size
 
 func modified(path: &strview) -> f64|FsError:
     found := status(path) ifnull return FsError{failure(), "read the time of", path}
@@ -124,13 +124,13 @@ func make_dir(path: &strview) -> FsError?:
 
 func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
     dir := opendir(cstr(path))
-    if dir as usize == 0:
+    if dir as u64 == 0:
         return FsError{errno(), "list", path}
     names: &list[&strview]
     defer free(names)
-    name_at: usize = 19 if @linux() else 21 if @arm64() else 8 # d_name, on macOS x86_64 in the dirent of 32-bit inodes that the plain readdir gives
+    name_at: i64 = 19 if @linux() else 21 if @arm64() else 8 # d_name, on macOS x86_64 in the dirent of 32-bit inodes that the plain readdir gives
     entry := readdir(dir)
-    while entry as usize != 0:
+    while entry as u64 != 0:
         part := view((entry + name_at) as *u8)
         if part != "." and part != "..":
             append(names, temp(part))
@@ -141,12 +141,12 @@ func list_dir(path: &strview) -> &slice[&strview]|FsError where not @windows():
 
 func list_dir(path: &strview) -> &slice[&strview]|FsError where @windows():
     dir := _wopendir(wstr(path))
-    if dir as usize == 0:
+    if dir as u64 == 0:
         return FsError{errno(), "list", path}
     names: &list[&strview]
     defer free(names)
     entry := _wreaddir(dir)
-    while entry as usize != 0:
+    while entry as u64 != 0:
         part := temp((entry + 8) as wstr) # d_name of a struct _wdirent
         if part != "." and part != "..":
             append(names, part)
@@ -161,7 +161,7 @@ func walk(folder: &strview) -> &slice[&strview]|FsError:
     folders: &list[&strview]
     defer free(folders)
     append(folders, folder)
-    i: usize = 0
+    i := 0
     while i < folders.len:
         names := list_dir(folders[i])
         if names is FsError and i == 0:
@@ -197,7 +197,7 @@ func extension(path: &strview) -> &strview:
     while starts_with(name, "."):
         name = name[1:]
     dot := find_last(name, ".")
-    if dot is usize:
+    if dot is i64:
         return name[dot:]
     return ""
 
@@ -208,7 +208,7 @@ func dir_of(path: &strview) -> &strview:
 
 priv type Status:
     folder: bool
-    size: u64
+    size: i64
     modified: f64
 
 priv func status(path: &strview, follow_links: bool = true) -> Status? where not @windows():
@@ -225,7 +225,7 @@ priv func status(path: &strview, follow_links: bool = true) -> Status? where not
     at := ptr(room) as *bytes
     mode := ((at + place[0]) as *u16).* and 0xf000
     time := (at + place[2]) as *array[i64, 2] # a struct timespec
-    return Status{mode == 0x4000, ((at + place[1]) as *u64).*, f64(time.*[0]) + f64(time.*[1]) / 1000000000.0} # S_IFDIR
+    return Status{mode == 0x4000, ((at + place[1]) as *i64).*, f64(time.*[0]) + f64(time.*[1]) / 1000000000.0} # S_IFDIR
 
 # what _wstat64 does inside, without dropping the 100 ns of the time
 priv func status(path: &strview, follow_links: bool = true) -> Status? where @windows():
@@ -235,10 +235,10 @@ priv func status(path: &strview, follow_links: bool = true) -> Status? where @wi
     flags: u32 = 0x200_0000 # FILE_FLAG_BACKUP_SEMANTICS, so it opens a folder too
     if not follow_links:
         flags = flags or 0x20_0000 # FILE_FLAG_OPEN_REPARSE_POINT
-    file: usize = 0
+    file: u64 = 0
     with scratch():
-        file = CreateFileW(wstr(plain), 0x80, 7, usize(0) as *bytes, 3, flags, 0) # FILE_READ_ATTRIBUTES, shared, OPEN_EXISTING
-    if file == usize(0) - 1:
+        file = CreateFileW(wstr(plain), 0x80, 7, 0 as *bytes, 3, flags, 0) # FILE_READ_ATTRIBUTES, shared, OPEN_EXISTING
+    if file == 0xffff_ffff_ffff_ffff: # INVALID_HANDLE_VALUE
         return null
     info: array[u32, 13] # BY_HANDLE_FILE_INFORMATION
     known := GetFileInformationByHandle(file, ptr(info)) != 0
@@ -247,18 +247,18 @@ priv func status(path: &strview, follow_links: bool = true) -> Status? where @wi
         return null
     folder := (info[0] and 0x10) != 0 and (follow_links or (info[0] and 0x400) == 0) # a link or a junction is not a folder
     written := i64(u64(info[5]) or u64(info[6]) << 32) - 116444736000000000 # from 1601, in 100 ns
-    return Status{folder, u64(info[9]) or u64(info[8]) << 32, f64(written) / 10000000.0}
+    return Status{folder, i64(u64(info[9]) or u64(info[8]) << 32), f64(written) / 10000000.0}
 
-priv func layout() -> array[usize, 3] where @linux() and @x86_64():
+priv func layout() -> array[i64, 3] where @linux() and @x86_64():
     return [24, 48, 88] # where struct stat has st_mode, st_size and st_mtim
 
-priv func layout() -> array[usize, 3] where @linux() and not @x86_64():
+priv func layout() -> array[i64, 3] where @linux() and not @x86_64():
     return [16, 48, 88]
 
-priv func layout() -> array[usize, 3] where @macos() and @arm64():
+priv func layout() -> array[i64, 3] where @macos() and @arm64():
     return [4, 96, 48]
 
-priv func layout() -> array[usize, 3] where @macos() and @x86_64():
+priv func layout() -> array[i64, 3] where @macos() and @x86_64():
     return [8, 72, 40] # the stat of 32-bit inodes, the one of the plain symbol
 
 priv func failure() -> i32 where not @windows():
@@ -282,7 +282,7 @@ priv func make_one(path: &strview) -> i32 where @windows():
 priv func slash(c: u8) -> bool:
     return c == '/' or @windows() and c == '\\'
 
-priv func name_start(path: &strview) -> usize:
+priv func name_start(path: &strview) -> i64:
     for k in reverse 0..path.len:
         if slash(path[k]):
             return k + 1

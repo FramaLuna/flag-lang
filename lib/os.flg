@@ -22,8 +22,8 @@ priv extern "c":
     func getenv(name: cstr) -> cstr
     func clock_gettime(id: i32, into: *Clock) -> i32
     func nanosleep(want: *Clock, left: *Clock) -> i32
-    func read(fd: i32, at: *bytes, size: usize) -> i32
-    func write(fd: i32, at: *bytes, size: usize) -> i32
+    func read(fd: i32, at: *bytes, size: i64) -> i32
+    func write(fd: i32, at: *bytes, size: i64) -> i32
     func close(fd: i32) -> i32
     func pipe(fds: *i32) -> i32
     func pipe2(fds: *i32, flags: i32) -> i32
@@ -38,39 +38,39 @@ priv extern "c":
     func waitid(kind: i32, id: u32, info: *bytes, options: i32) -> i32
     func kill(pid: i32, signal: i32) -> i32
     func _exit(code: i32)
-    func readlink(path: cstr, into: *u8, size: usize) -> i64
+    func readlink(path: cstr, into: *u8, size: i64) -> i64
     func _NSGetExecutablePath(into: *u8, size: *u32) -> i32
     func realpath(path: cstr, into: *u8) -> cstr
-    func getcwd(into: *u8, size: usize) -> cstr
+    func getcwd(into: *u8, size: i64) -> cstr
     func chdir(path: cstr) -> i32
     func time(into: *i64) -> i64
     func localtime_r(when: *i64, into: *bytes) -> *bytes
-    func getrandom(into: *bytes, size: usize, flags: u32) -> i64
-    func getentropy(into: *bytes, size: usize) -> i32
+    func getrandom(into: *bytes, size: i64, flags: u32) -> i64
+    func getentropy(into: *bytes, size: i64) -> i32
     func dlopen(path: cstr, flags: i32) -> *bytes
     func dlerror() -> cstr
     func _wgetenv(name: wstr) -> wstr
     func _wgetcwd(into: wstr, size: i32) -> wstr
     func _wchdir(path: wstr) -> i32
-    func _get_osfhandle(fd: i32) -> usize
+    func _get_osfhandle(fd: i32) -> u64
     func _time64(into: *i64) -> i64
     func _localtime64_s(into: *bytes, when: *i64) -> i32
     func GetModuleFileNameW(module: *bytes, into: wstr, size: u32) -> u32
     func GetCommandLineW() -> wstr
     func LocalFree(memory: *bytes) -> *bytes
-    func GetStdHandle(which: u32) -> usize
-    func GetCurrentProcess() -> usize
-    func DuplicateHandle(from: usize, handle: usize, to: usize, copy: *usize, access: u32, inherit: i32, options: u32) -> i32
-    func CloseHandle(handle: usize) -> i32
-    func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: usize) -> usize
-    func InitializeProcThreadAttributeList(list: *bytes, count: u32, flags: u32, size: *usize) -> i32
-    func UpdateProcThreadAttribute(list: *bytes, flags: u32, attribute: usize, value: *bytes, size: usize, previous: *bytes, returned: *usize) -> i32
+    func GetStdHandle(which: u32) -> u64
+    func GetCurrentProcess() -> u64
+    func DuplicateHandle(from: u64, handle: u64, to: u64, copy: *u64, access: u32, inherit: i32, options: u32) -> i32
+    func CloseHandle(handle: u64) -> i32
+    func CreateFileW(path: wstr, access: u32, share: u32, security: *bytes, how: u32, flags: u32, template: u64) -> u64
+    func InitializeProcThreadAttributeList(list: *bytes, count: u32, flags: u32, size: *i64) -> i32
+    func UpdateProcThreadAttribute(list: *bytes, flags: u32, attribute: u64, value: *bytes, size: i64, previous: *bytes, returned: *i64) -> i32
     func DeleteProcThreadAttributeList(list: *bytes)
     func CreateProcessW(name: wstr, line: wstr, process: *bytes, thread: *bytes, inherit: i32, flags: u32, environment: *bytes, folder: wstr, startup: *StartupInfo, info: *ProcessInfo) -> i32
     func GetConsoleProcessList(into: *u32, count: u32) -> u32
-    func WaitForSingleObject(handle: usize, milliseconds: u32) -> u32
-    func GetExitCodeProcess(process: usize, code: *u32) -> i32
-    func TerminateProcess(process: usize, code: u32) -> i32
+    func WaitForSingleObject(handle: u64, milliseconds: u32) -> u32
+    func GetExitCodeProcess(process: u64, code: *u32) -> i32
+    func TerminateProcess(process: u64, code: u32) -> i32
     func GetLastError() -> u32
     func LoadLibraryW(path: wstr) -> *bytes
     func FormatMessageW(flags: u32, source: *bytes, code: u32, language: u32, into: wstr, size: u32, arguments: *bytes) -> u32
@@ -106,17 +106,17 @@ priv extern "bcrypt" where @windows():
 
 priv type StartupInfo: # STARTUPINFOEXW
     size: u32
-    texts: array[usize, 3]
+    texts: array[u64, 3]
     window: array[u32, 7]
     flags: u32
     show: array[u16, 4]
-    reserved: usize
-    handles: array[usize, 3]
+    reserved: u64
+    handles: array[u64, 3]
     attributes: *bytes
 
 priv type ProcessInfo: # PROCESS_INFORMATION
-    process: usize
-    thread: usize
+    process: u64
+    thread: u64
     ids: array[u32, 2]
 
 priv type Startup:
@@ -129,7 +129,7 @@ priv startup: Startup
 func env(name: &strview) -> &strview|null where not @windows():
     with scratch():
         found := getenv(cstr(name))
-        if found as usize != 0:
+        if found as u64 != 0:
             return view(found)
     return null
 
@@ -137,7 +137,7 @@ func env(name: &strview) -> &strview|null where @windows():
     with lock(startup.lock):
         with scratch():
             found := _wgetenv(wstr(name))
-            if found as usize == 0:
+            if found as u64 == 0:
                 return null
             value := temp(found)
             for kept in startup.values:
@@ -150,7 +150,7 @@ func env(name: &strview) -> &strview|null where @windows():
 func args() -> &slice[&strview] where not @windows():
     with lock(startup.lock):
         if startup.args.len == 0:
-            for i in 0..usize(@argc()):
+            for i in 0..@argc():
                 append(startup.args, view(((@argv() as *bytes + i * 8) as **u8).*))
         return startup.args
 
@@ -159,7 +159,7 @@ func args() -> &slice[&strview] where @windows():
         if startup.args.len == 0:
             count: i32 = 0
             given := CommandLineToArgvW(GetCommandLineW(), ptr(count))
-            for i in 0..usize(count):
+            for i in 0..count:
                 kept: &str # lives all the program
                 with scratch():
                     kept = temp(((given as *bytes + i * 8) as *wstr).*)
@@ -197,7 +197,7 @@ priv func captured(launched: &slice[&strview]|&strview, into: *&str) -> i32|FsEr
         reserve(into, into.len + 65536)
         got = read(fds[0], ptr(into.*.*) + into.len, 65536)
         if got > 0:
-            into.len += usize(got)
+            into.len += got
     close(fds[0])
     return finish(id)
 
@@ -250,13 +250,13 @@ priv func named(launched: &slice[&strview]|&strview) -> &strview:
     return launched[0]
 
 func random_bytes(into: &slice[u8]) where @linux():
-    at: usize = 0
+    at := 0
     while at < into.len:
         got := getrandom(ptr(into.*) + at, into.len - at, 0)
         if got < 0 and errno() != 4: # EINTR
             no_random(errno())
         if got > 0:
-            at += usize(got)
+            at += got
 
 func random_bytes(into: &slice[u8]) where @macos():
     for at in 0..(into.len + 255) / 256:
@@ -267,12 +267,12 @@ func random_bytes(into: &slice[u8]) where @macos():
             no_random(errno())
 
 func random_bytes(into: &slice[u8]) where @windows():
-    most: usize = 0x8000_0000 # BCryptGenRandom counts in 32 bits
+    most := 0x8000_0000 # BCryptGenRandom counts in 32 bits
     for at in 0..(into.len + most - 1) / most:
         part := into[at * most:]
         if part.len > most:
             part = part[:most]
-        failed := BCryptGenRandom(usize(0) as *bytes, ptr(part.*), u32(part.len), 2) # BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        failed := BCryptGenRandom(0 as *bytes, ptr(part.*), u32(part.len), 2) # BCRYPT_USE_SYSTEM_PREFERRED_RNG
         if failed != 0:
             no_random(failed)
 
@@ -344,8 +344,8 @@ priv func standard(fd: i32, number: i32) where @linux():
 
 # POSIX_SPAWN_CLOEXEC_DEFAULT closes in the program every file of this one but its three
 priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @macos():
-    actions := usize(0) as *bytes
-    attributes := usize(0) as *bytes
+    actions := 0 as *bytes
+    attributes := 0 as *bytes
     posix_spawn_file_actions_init(ptr(actions))
     posix_spawnattr_init(ptr(attributes))
     posix_spawnattr_setflags(ptr(attributes), 0x4000)
@@ -381,7 +381,7 @@ priv func arguments(launched: &slice[&strview]|&strview) -> **u8 where not @wind
     at := table
     for i in 0..=program.len:
         slot := (args + i * 8) as **u8
-        slot.* = usize(0) as *u8
+        slot.* = 0 as *u8
         if i < program.len:
             text := args + at
             memcpy(text, ptr(program[i].*), program[i].len)
@@ -424,7 +424,7 @@ priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) ->
                     line += part
                 else:
                     line += "\""
-                    slashes: usize = 0
+                    slashes := 0
                     for c in items(part):
                         if c == '"':
                             for k in 0..=slashes:
@@ -440,26 +440,26 @@ priv func spawn(launched: &slice[&strview]|&strview, input: i32, output: i32) ->
         flush()
         given := [input, output, -1]
         launch := StartupInfo{size = 112, flags = 0x100} # STARTF_USESTDHANDLES
-        nowhere: usize = 0 # the NUL device, for a standard handle that this program doesn't have
+        nowhere: u64 = 0 # the NUL device, for a standard handle that this program doesn't have
         for k in 0..3:
             source := GetStdHandle(u32(0xffff_fff6) - u32(k)) # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
             if given[k] >= 0:
                 source = _get_osfhandle(given[k])
-            if (source == 0 or source == usize(0) - 1) and nowhere == 0:
-                nowhere = CreateFileW(wstr("NUL"), 0xc000_0000, 3, usize(0) as *bytes, 3, 0, 0) # GENERIC_READ and GENERIC_WRITE, shared, OPEN_EXISTING
-            if source == 0 or source == usize(0) - 1:
+            if source == 0 or source == 0xffff_ffff_ffff_ffff: # none, or INVALID_HANDLE_VALUE
+                if nowhere == 0:
+                    nowhere = CreateFileW(wstr("NUL"), 0xc000_0000, 3, 0 as *bytes, 3, 0, 0) # GENERIC_READ and GENERIC_WRITE, shared, OPEN_EXISTING
                 source = nowhere
             DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), ptr(launch.handles[k]), 0, 1, 2) # inheritable, DUPLICATE_SAME_ACCESS
-        size: usize = 0
-        InitializeProcThreadAttributeList(usize(0) as *bytes, 1, 0, ptr(size))
+        size := 0
+        InitializeProcThreadAttributeList(0 as *bytes, 1, 0, ptr(size))
         launch.attributes = temp(size)
         InitializeProcThreadAttributeList(launch.attributes, 1, 0, ptr(size))
-        UpdateProcThreadAttribute(launch.attributes, 0, 0x20002, ptr(launch.handles) as *bytes, 24, usize(0) as *bytes, usize(0) as *usize) # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+        UpdateProcThreadAttribute(launch.attributes, 0, 0x20002, ptr(launch.handles) as *bytes, 24, 0 as *bytes, 0 as *i64) # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
         flags: u32 = 0x80000 # EXTENDED_STARTUPINFO_PRESENT
         consoles: u32 = 0
         if GetConsoleProcessList(ptr(consoles), 1) == 0:
             flags = flags or 0x800_0000 # CREATE_NO_WINDOW
-        made = CreateProcessW(usize(0) as wstr, wstr(line), usize(0) as *bytes, usize(0) as *bytes, 1, flags, usize(0) as *bytes, usize(0) as wstr, ptr(launch), ptr(info))
+        made = CreateProcessW(0 as wstr, wstr(line), 0 as *bytes, 0 as *bytes, 1, flags, 0 as *bytes, 0 as wstr, ptr(launch), ptr(info))
         code = GetLastError()
         DeleteProcThreadAttributeList(launch.attributes)
         for h in launch.handles:
@@ -480,10 +480,10 @@ priv func finish(pid: i64, place: &strview = @here()) -> i32 where not @windows(
 
 priv func finish(process: i64, place: &strview = @here()) -> i32 where @windows():
     code: u32 = 0
-    if WaitForSingleObject(usize(process), 0xffff_ffff) != 0:
+    if WaitForSingleObject(u64(process), 0xffff_ffff) != 0:
         gone("wait", place)
-    GetExitCodeProcess(usize(process), ptr(code))
-    CloseHandle(usize(process))
+    GetExitCodeProcess(u64(process), ptr(code))
+    CloseHandle(u64(process))
     return i32(code)
 
 # without taking it, so the pid is not reused until wait
@@ -493,13 +493,13 @@ priv func ended(pid: i64) -> bool where not @windows():
     return info[0] != 0 and info[2] >= 1 and info[2] <= 3 # si_code CLD_EXITED, CLD_KILLED or CLD_DUMPED, macOS gives a stopped one too
 
 priv func ended(process: i64) -> bool where @windows():
-    return WaitForSingleObject(usize(process), 0) == 0
+    return WaitForSingleObject(u64(process), 0) == 0
 
 priv func end(pid: i64) where not @windows():
     kill(i32(pid), 9) # SIGKILL
 
 priv func end(process: i64) where @windows():
-    TerminateProcess(usize(process), 137) # what a SIGKILL gives on the other systems
+    TerminateProcess(u64(process), 137) # what a SIGKILL gives on the other systems
 
 priv func exit_code(status: i32) -> i32 where not @windows():
     if (status and 127) != 0:
@@ -516,20 +516,20 @@ func executable() -> &strview where @linux():
         return ""
     found: &strview
     found = ptr(buf) as *bytes
-    found.len = usize(size)
+    found.len = size
     return temp(found)
 
 func executable() -> &strview where @macos():
     buf: array[u8, 4096]
     size: u32 = 4096
     full: array[u8, 4096]
-    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as *u8, ptr(full) as *u8) as usize == 0:
+    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as *u8, ptr(full) as *u8) as u64 == 0:
         return ""
     return temp(view(ptr(full) as *u8))
 
 func executable() -> &strview where @windows():
     buf: array[u16, 4096]
-    size := GetModuleFileNameW(usize(0) as *bytes, ptr(buf) as wstr, 4096)
+    size := GetModuleFileNameW(0 as *bytes, ptr(buf) as wstr, 4096)
     if size == 0 or size == 4096:
         return ""
     return replace(temp(ptr(buf) as wstr), "\\", "/")
@@ -539,13 +539,13 @@ func system_name() -> &strview:
 
 func current_dir() -> &strview where not @windows():
     buf: array[u8, 4096]
-    if getcwd(ptr(buf) as *u8, 4096) as usize == 0:
+    if getcwd(ptr(buf) as *u8, 4096) as u64 == 0:
         return ""
     return temp(view(ptr(buf) as *u8))
 
 func current_dir() -> &strview where @windows():
     buf: array[u16, 4096]
-    if _wgetcwd(ptr(buf) as wstr, 4096) as usize == 0:
+    if _wgetcwd(ptr(buf) as wstr, 4096) as u64 == 0:
         return ""
     return replace(temp(ptr(buf) as wstr), "\\", "/")
 
@@ -587,20 +587,20 @@ func clock() -> f64 where @macos():
     return seconds(c)
 
 func clock() -> f64 where @windows():
-    ticks: i64 = 0
-    rate: i64 = 1
+    ticks := 0
+    rate := 1
     QueryPerformanceCounter(ptr(ticks))
     QueryPerformanceFrequency(ptr(rate))
     return f64(ticks) / f64(rate)
 
 func date() -> Date where not @windows():
-    moment := time(usize(0) as *i64)
+    moment := time(0 as *i64)
     fields: array[i32, 16]
     localtime_r(ptr(moment), ptr(fields) as *bytes)
     return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
 
 func date() -> Date where @windows():
-    moment := _time64(usize(0) as *i64)
+    moment := _time64(0 as *i64)
     fields: array[i32, 16]
     _localtime64_s(ptr(fields) as *bytes, ptr(moment))
     return Date{fields[5] + 1900, fields[4] + 1, fields[3], fields[2], fields[1], fields[0], fields[6]}
@@ -636,10 +636,10 @@ operator +=(s: *&str, e: LoadError):
     s.* += "cannot load " + e.path + ": " + e.reason
 
 func load(path: &strview) -> Library|LoadError where not @windows():
-    handle := usize(0) as *bytes
+    handle := 0 as *bytes
     with scratch():
         handle = dlopen(cstr(path), i32(2 if @linux() else 6)) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
-    if handle as usize != 0:
+    if handle as u64 != 0:
         return Library{handle}
     reason := view(dlerror())
     if starts_with(reason, path) and starts_with(reason[path.len:], ": "):
@@ -647,22 +647,22 @@ func load(path: &strview) -> Library|LoadError where not @windows():
     return LoadError{path, temp(reason)}
 
 func load(path: &strview) -> Library|LoadError where @windows():
-    handle := usize(0) as *bytes
+    handle := 0 as *bytes
     code: u32 = 0
     with scratch():
         handle = LoadLibraryW(wstr(path))
         code = GetLastError()
-    if handle as usize != 0:
+    if handle as u64 != 0:
         return Library{handle}
     text: array[u16, 512]
-    FormatMessageW(0x1200, usize(0) as *bytes, code, 0, ptr(text) as wstr, 512, usize(0) as *bytes)
+    FormatMessageW(0x1200, 0 as *bytes, code, 0, ptr(text) as wstr, 512, 0 as *bytes)
     return LoadError{path, trim_end(temp(ptr(text) as wstr))}
 
 func symbol(library: Library, name: &strview) -> *bytes?:
-    found := usize(0) as *bytes
+    found := 0 as *bytes
     with scratch():
         found = dlsym(library.handle, cstr(name))
-    if found as usize == 0:
+    if found as u64 == 0:
         return null
     return found
 

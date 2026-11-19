@@ -6,9 +6,9 @@ type enum Kind:
 type Node:
     kind: Kind
     escaped: bool
-    from: usize
-    to: usize
-    size: usize
+    from: i64
+    to: i64
+    size: i64
 
 type Document:
     text: &strview
@@ -16,8 +16,8 @@ type Document:
 
 type error NotJson:
     reason: &strview
-    line: usize
-    column: usize
+    line: i64
+    column: i64
 
 operator +=(s: *&str, e: NotJson):
     s.* += "not JSON at line " + e.line + ", column " + e.column + ": " + e.reason
@@ -25,7 +25,7 @@ operator +=(s: *&str, e: NotJson):
 func parse(text: &strview) -> Document|NotJson:
     nodes: &list[Node]
     end := value(text, skip(items(text), 0), nodes, 0)
-    if end is usize and skip(items(text), end) < text.len:
+    if end is i64 and skip(items(text), end) < text.len:
         end = wrong(text, skip(items(text), end), "expected the end of the text after the value")
     if end is NotJson:
         free(nodes)
@@ -35,11 +35,11 @@ func parse(text: &strview) -> Document|NotJson:
 func free(d: *Document):
     free(d.nodes)
 
-func get(d: Document, at: usize|null, path: &strview) -> usize|null:
+func get(d: Document, at: i64|null, path: &strview) -> i64|null:
     found := at
     rest := path
     with scratch():
-        while found is usize and d.nodes[found].kind == Object:
+        while found is i64 and d.nodes[found].kind == Object:
             cut := find(items(rest), '.') ifnull rest.len
             name := rest[:cut]
             object := found
@@ -60,11 +60,11 @@ func get(d: Document, at: usize|null, path: &strview) -> usize|null:
 
 priv type Children:
     d: Document
-    at: usize
-    end: usize
+    at: i64
+    end: i64
     object: bool
 
-func children(d: Document, at: usize|null) -> Children:
+func children(d: Document, at: i64|null) -> Children:
     if at is null or d.nodes[at].kind != Array and d.nodes[at].kind != Object:
         return Children{d, 0, 0, false}
     return Children{d, at + 1, at + d.nodes[at].size, d.nodes[at].kind == Object}
@@ -72,7 +72,7 @@ func children(d: Document, at: usize|null) -> Children:
 func iter(c: Children) -> Children:
     return c
 
-func next(c: *Children) -> usize|IterationEnd:
+func next(c: *Children) -> i64|IterationEnd:
     if c.at >= c.end:
         return IterationEnd
     if c.object:
@@ -81,19 +81,19 @@ func next(c: *Children) -> usize|IterationEnd:
     c.at += c.d.nodes[c.at].size
     return value
 
-func count(d: Document, at: usize|null) -> usize:
-    n: usize = 0
+func count(d: Document, at: i64|null) -> i64:
+    n := 0
     for c in children(d, at):
         n += 1
     return n
 
-func item(d: Document, at: usize|null, index: usize) -> usize|null:
+func item(d: Document, at: i64|null, index: i64) -> i64|null:
     for i, c in children(d, at):
         if i == index:
             return c
     return null
 
-func key(d: Document, at: usize|null) -> &strview:
+func key(d: Document, at: i64|null) -> &strview:
     if at is null or at == 0 or d.nodes[at - 1].kind != Text:
         return ""
     b := items(d.text)
@@ -101,32 +101,32 @@ func key(d: Document, at: usize|null) -> &strview:
         return ""
     return trust text(d, at - 1)
 
-func kind(d: Document, at: usize|null) -> Kind:
+func kind(d: Document, at: i64|null) -> Kind:
     if at is null:
         return Nothing
     return d.nodes[at].kind
 
-func raw(d: Document, at: usize|null) -> &strview:
+func raw(d: Document, at: i64|null) -> &strview:
     if at is null:
         return ""
     return d.text[d.nodes[at].from:d.nodes[at].to]
 
-func number(d: Document, at: usize|null) -> f64|null:
+func number(d: Document, at: i64|null) -> f64|null:
     if at is null or d.nodes[at].kind != Number:
         return null
     return parse_float(raw(d, at))
 
-func integer(d: Document, at: usize|null) -> i64|null:
+func integer(d: Document, at: i64|null) -> i64|null:
     if at is null or d.nodes[at].kind != Number:
         return null
     return parse_int(raw(d, at))
 
-func boolean(d: Document, at: usize|null) -> bool|null:
+func boolean(d: Document, at: i64|null) -> bool|null:
     if at is null or d.nodes[at].kind != Boolean:
         return null
     return raw(d, at) == "true"
 
-func text(d: Document, at: usize|null) -> &strview|null:
+func text(d: Document, at: i64|null) -> &strview|null:
     if at is null or d.nodes[at].kind != Text:
         return null
     from := d.nodes[at].from + 1
@@ -158,7 +158,7 @@ func quoted(text: &strview) -> Quoted:
 operator +=(s: *&str, q: Quoted):
     digits: &strview = "0123456789abcdef"
     s.* += "\""
-    from: usize = 0
+    from := 0
     for i, c in items(q.text):
         if c < ' ' or c == '"' or c == '\\':
             s.* += q.text[from:i]
@@ -178,15 +178,15 @@ operator +=(s: *&str, q: Quoted):
 
 priv type Escape:
     code: u32
-    size: usize
+    size: i64
 
-priv func escape(s: &strview, at: usize) -> Escape|NotJson:
+priv func escape(s: &strview, at: i64) -> Escape|NotJson:
     if at + 1 == s.len:
         return wrong(s, at, "this string never closes")
     names: &strview = "\"\\/bfnrt"
     codes: &strview = "\"\\/\x08\x0c\n\r\t"
     simple := find(items(names), s[at + 1])
-    if simple is usize:
+    if simple is i64:
         return Escape{u32(codes[simple]), 2}
     if s[at + 1] != 'u':
         return wrong(s, at, "unknown escape, the escapes are \\\" \\\\ \\/ \\b \\f \\n \\r \\t and \\u00e9")
@@ -201,14 +201,14 @@ priv func escape(s: &strview, at: usize) -> Escape|NotJson:
         return wrong(s, at, pair)
     return Escape{0x10000 + (code - 0xD800) * 0x400 + low - 0xDC00, 12}
 
-priv func unicode(s: &strview, at: usize) -> u32|NotJson:
+priv func unicode(s: &strview, at: i64) -> u32|NotJson:
     if at + 6 <= s.len:
         code := parse_hex(s[at + 2:at + 6])
         if code is u64:
             return u32(code)
     return wrong(s, at, "\\u expects four hexadecimal digits: \\u00e9")
 
-priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) -> usize|NotJson:
+priv func value(s: &strview, start: i64, nodes: *&list[Node], depth: i64) -> i64|NotJson:
     b := items(s)
     at := start
     if at == b.len:
@@ -300,23 +300,23 @@ priv func value(s: &strview, start: usize, nodes: *&list[Node], depth: usize) ->
     nodes[n].size = nodes.len - n
     return at
 
-priv func wrong(s: &strview, at: usize, reason: &strview) -> NotJson:
-    line: usize = 1
-    start: usize = 0
+priv func wrong(s: &strview, at: i64, reason: &strview) -> NotJson:
+    line := 1
+    start := 0
     for i, c in items(s[:at]):
         if c == '\n':
             line += 1
             start = i + 1
     return NotJson{reason, line, at - start + 1}
 
-priv func skip(b: &slice[u8], start: usize) -> usize:
+priv func skip(b: &slice[u8], start: i64) -> i64:
     for at in start..b.len:
         c := b[at]
         if c > ' ' or c != ' ' and c != '\n' and c != '\r' and c != '\t':
             return at
     return b.len
 
-priv func skip_digits(b: &slice[u8], at: usize) -> usize:
+priv func skip_digits(b: &slice[u8], at: i64) -> i64:
     while at < b.len and b[at] >= '0' and b[at] <= '9':
         at += 1
     return at

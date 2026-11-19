@@ -11,9 +11,9 @@ priv extern "c":
     func setsockopt(fd: i64, level: i32, name: i32, value: *bytes, size: u32) -> i32
     func getaddrinfo(host: cstr, service: cstr, hints: *bytes, found: **bytes) -> i32
     func freeaddrinfo(found: *bytes)
-    func sendto(fd: i64, data: *bytes, size: usize, flags: i32, address: *bytes, address_size: u32) -> i32
-    func recvfrom(fd: i64, into: *bytes, size: usize, flags: i32, address: *bytes, address_size: *u32) -> i32
-    func inet_ntop(family: i32, address: *bytes, into: *u8, size: usize) -> cstr
+    func sendto(fd: i64, data: *bytes, size: i64, flags: i32, address: *bytes, address_size: u32) -> i32
+    func recvfrom(fd: i64, into: *bytes, size: i64, flags: i32, address: *bytes, address_size: *u32) -> i32
+    func inet_ntop(family: i32, address: *bytes, into: *u8, size: i64) -> cstr
     func fcntl(fd: i64, command: i32, ...) -> i32
     func close(fd: i64) -> i32
     func SetHandleInformation(handle: i64, mask: u32, flags: u32) -> i32
@@ -59,7 +59,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
         return NetError{code, "connect to", host + ":" + port}
     failed: NetError
     entry := found
-    while entry as usize != 0:
+    while entry as u64 != 0:
         fields := entry as *array[i32, 4]
         fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
         address := ((entry + address_in_info()) as **bytes).*
@@ -125,7 +125,7 @@ func address(host: &strview, port: u16) -> Address|NetError:
     found: *bytes
     code: i32 = 0
     with scratch():
-        code = getaddrinfo(cstr(host), usize(0) as cstr, ptr(hints) as *bytes, ptr(found))
+        code = getaddrinfo(cstr(host), 0 as cstr, ptr(hints) as *bytes, ptr(found))
     if code != 0:
         if code > 0:
             code = 0 - code
@@ -157,7 +157,7 @@ func receive(u: Udp, into: *&str) -> Address|NetError:
     got := recvfrom(i64(u.fd), ptr(into.*.*) + into.len, 65536, 0, ptr(address) as *bytes, ptr(size))
     if got < 0:
         return NetError{failure(), "receive", ""}
-    into.len += usize(got)
+    into.len += got
     out := Address{port = u16(address[2]) << 8 or u16(address[3])}
     for i in 0..16:
         out.ip[i] = address[8 + i]
@@ -175,7 +175,7 @@ operator +=(s: *&str, a: Address):
         inet_ntop(family6(), ptr(a.ip) as *bytes, ptr(text) as *u8, 64)
         s.* += "[" + view(ptr(text) as cstr) + "]:" + a.port
 
-func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[usize] where @can_assign(Socket|Server|Udp, $T):
+func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[i64] where @can_assign(Socket|Server|Udp, $T):
     files: &list[File]
     defer free(files)
     for x in waiting:
@@ -196,7 +196,7 @@ func ready(x: $T, seconds: f64 = 0.0) -> bool where @can_assign(Socket|Server|Ud
 func write(s: Socket, value: $T, place: &strview = @here()):
     write(file(s), value, place)
 
-func read(s: Socket, into: *&str, size: usize, place: &strview = @here()) -> usize|NetError:
+func read(s: Socket, into: *&str, size: i64, place: &strview = @here()) -> i64|NetError:
     got := read(file(s), into, size, place)
     if got is FsError:
         return NetError{got.code, got.action, got.path}
@@ -258,10 +258,10 @@ priv func sealed(kind: i32) -> i32:
     return kind or 0x80000 if @linux() else kind # SOCK_CLOEXEC
 
 priv func accepted(fd: i64) -> i64 where @linux():
-    return i64(accept4(fd, usize(0) as *bytes, usize(0) as *u32, 0x80000))
+    return i64(accept4(fd, 0 as *bytes, 0 as *u32, 0x80000))
 
 priv func accepted(fd: i64) -> i64 where not @linux():
-    return i64(accept(fd, usize(0) as *bytes, usize(0) as *u32))
+    return i64(accept(fd, 0 as *bytes, 0 as *u32))
 
 priv func prepare(fd: i64) where @linux():
     yes: i32 = 1
@@ -314,7 +314,7 @@ priv func open_udp() -> i64 where @windows():
     got: u32 = 0
     SetHandleInformation(fd, 1, 0)
     setsockopt(fd, 41, 27, ptr(no) as *bytes, 4)
-    WSAIoctl(fd, 0x9800_000c, ptr(no) as *bytes, 4, usize(0) as *bytes, 0, ptr(got), usize(0) as *bytes, usize(0) as *bytes) # SIO_UDP_CONNRESET off: an old ICMP port unreachable would fail the next receive
+    WSAIoctl(fd, 0x9800_000c, ptr(no) as *bytes, 4, 0 as *bytes, 0, ptr(got), 0 as *bytes, 0 as *bytes) # SIO_UDP_CONNRESET off: an old ICMP port unreachable would fail the next receive
     return fd
 
 priv func family6() -> i32:
@@ -339,7 +339,7 @@ priv func socket_address(a: Address) -> array[u8, 28] where @macos():
         out[8 + i] = a.ip[i]
     return out
 
-priv func address_in_info() -> usize:
+priv func address_in_info() -> i64:
     return 24 if @linux() else 32
 
 priv func inet_address() -> array[u8, 16] where @linux() or @windows():

@@ -124,7 +124,7 @@ func declaration(module: &strview, kept: bool) -> Fail?:
             indented := peek(":")
             comp.pos += 1
             separator: &strview = "|"
-            width: usize = 0
+            width := 0
             if indented:
                 separator = ","
                 width = here().text.len
@@ -213,7 +213,7 @@ func declaration(module: &strview, kept: bool) -> Fail?:
         comp.nodes.len = n
     return end_line()
 
-func fields(outer: usize) -> Fail?:
+func fields(outer: i64) -> Fail?:
     width := here().text.len
     while try next_line(outer, width):
         if here().kind != Name or comp.tokens[comp.pos + 1].text != ":":
@@ -234,7 +234,7 @@ func fields(outer: usize) -> Fail?:
         finish(f)
     return null
 
-func nested(n: usize, outer: Sym) -> Fail?:
+func nested(n: i64, outer: Sym) -> Fail?:
     k := comp.nodes[n].kind
     if k != Struct and k != Context and k != Fat:
         return null
@@ -250,7 +250,7 @@ func nested(n: usize, outer: Sym) -> Fail?:
         c = node_end(c)
     return null
 
-func declare(n: usize, sym: Sym) -> Fail?:
+func declare(n: i64, sym: Sym) -> Fail?:
     kind := comp.nodes[n].kind
     if kind == Extern:
         c := n + 1
@@ -262,7 +262,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
         return null
     at := comp.tokens[comp.nodes[n].tok].at
     id := comp.type_ids[sym.name]
-    if id is usize and id <= NEVER and kind != Func:
+    if id is i64 and id <= NEVER and kind != Func:
         return fail(sym.name + " is a built-in type, it cannot be declared again", at)
     if sym.name == "ptr" or sym.name == "print" or sym.name == "eprint":
         return fail(sym.name + " belongs to the language, it cannot be declared again", at)
@@ -310,7 +310,7 @@ func declare(n: usize, sym: Sym) -> Fail?:
     put(comp.names, sym.name, comp.syms.len - 1)
     return null
 
-func same_nodes(a: usize, b: usize, count: usize) -> bool:
+func same_nodes(a: i64, b: i64, count: i64) -> bool:
     for i in 0..count:
         x := comp.nodes[a + i]
         y := comp.nodes[b + i]
@@ -318,7 +318,7 @@ func same_nodes(a: usize, b: usize, count: usize) -> bool:
             return false
     return true
 
-func where_start(f: usize) -> usize:
+func where_start(f: i64) -> i64:
     c := kid(f, params(f))
     while c < node_end(f) and comp.nodes[c].kind != Where and comp.nodes[c].kind != Block:
         c = node_end(c)
@@ -348,7 +348,7 @@ func func_decl(external: bool) -> Fail?:
     n := begin(Func, comp.pos)
     comp.pos += 1
     try expect("(")
-    count: usize = 0
+    count := 0
     while not peek(")"):
         if peek("..") and comp.tokens[comp.pos + 1].text == ".":
             if not external or comp.tokens[comp.pos + 2].text != ")":
@@ -488,7 +488,7 @@ func block() -> Fail?:
     comp.width = outer
     return null
 
-func next_line(outer: usize, inner: usize) -> bool|Fail:
+func next_line(outer: i64, inner: i64) -> bool|Fail:
     t := here()
     if t.kind != Line or t.text.len <= outer:
         return false
@@ -508,7 +508,7 @@ func stmt() -> Fail?:
     elif after == ":=" or after == ":" and t.text != "else" and t.text != "case":
         try variable()
     elif t.text == "if":
-        opened: &list[usize]
+        opened: &list[i64]
         defer free(opened)
         append(opened, begin(If, comp.pos))
         comp.pos += 1
@@ -542,7 +542,7 @@ func stmt() -> Fail?:
         finish(n)
     elif t.text == "for":
         counted := comp.tokens[comp.pos + 2].text == ","
-        name := comp.pos + 1 + 2 * usize(counted)
+        name := comp.pos + 1 + 2 * i64(counted)
         if comp.tokens[comp.pos + 1].kind != Name or comp.tokens[name].kind != Name or comp.tokens[name + 1].text != "in":
             return fail("for expects a name and 'in' after it: for x in items: or for i, x in items:", t.at)
         if counted and comp.tokens[comp.pos + 1].text == comp.tokens[name].text:
@@ -575,7 +575,7 @@ func stmt() -> Fail?:
             comp.pos += 1
             c := begin(Case, comp.pos)
             comp.pos += 1
-            depth: usize = 0
+            depth := 0
             while depth > 0 or not peek(":") and here().kind != Line:
                 if peek("(") or peek("[") or peek("{"):
                     depth += 1
@@ -672,7 +672,7 @@ func assigning() -> bool:
     t := here()
     return t.kind == Symbol and (t.text == "=" or t.text == "+=" or t.text == "-=" or t.text == "*=" or t.text == "/=" or t.text == "%=")
 
-func expr(min: usize) -> Fail?:
+func expr(min: i64) -> Fail?:
     start := comp.nodes.len
     first := comp.pos
     if peek("not") and min <= 4:
@@ -684,12 +684,12 @@ func expr(min: usize) -> Fail?:
         comp.depth -= 1
     else:
         try unary()
-    operators: &list[usize]
+    operators: &list[i64]
     defer free(operators)
-    last: usize = 0
+    last := 0
     while true:
         t := here()
-        prec: usize = 0
+        prec := 0
         if t.kind == Symbol or t.kind == Name:
             switch t.text:
             case "or":
@@ -794,7 +794,7 @@ func unary() -> Fail?:
     converts := false
     listed := false
     if t.kind == Name and after == "[":
-        depth: usize = 0
+        depth := 0
         i := name + 1
         while comp.tokens[i].kind != Line and comp.tokens[i].kind != End:
             word := comp.tokens[i].text
@@ -857,7 +857,7 @@ func unary() -> Fail?:
     elif t.text == "{":
         n := begin(Pairs, comp.pos)
         comp.pos += 1
-        count: usize = 0
+        count := 0
         while not peek("}"):
             try argument()
             count += 1
@@ -876,7 +876,7 @@ func unary() -> Fail?:
         finish(n)
     else:
         return unexpected("a value goes here")
-    links: usize = 0
+    links := 0
     while true:
         comp.depth -= links # each link nests, its arguments do not
         if peek(".") and comp.tokens[comp.pos + 1].kind == Name:
@@ -921,7 +921,7 @@ func unary() -> Fail?:
     return null
 
 # here() is a (, and callee up to it is what it calls, nothing for a group
-func paren(callee: usize) -> Fail?:
+func paren(callee: i64) -> Fail?:
     open := comp.pos
     last := comp.tokens[open - 1]
     glued := last.at + last.text.len == here().at
@@ -940,7 +940,7 @@ func paren(callee: usize) -> Fail?:
         inside = excerpt(open + 1, open + 1)
     return fail("'" + last.text + "' is a keyword of the language, not a function, so a space goes after it: " + last.text + " " + inside, last.at)
 
-func deeper(at: usize) -> Fail?:
+func deeper(at: i64) -> Fail?:
     comp.depth += 1
     if comp.depth > DEEP:
         return fail("this code nests more than " + DEEP + " levels deep, move the inner part to a function or a variable", at)
@@ -969,7 +969,7 @@ func type_expr() -> Fail?:
     start := comp.nodes.len
     while true:
         at := comp.nodes.len
-        prefixes: usize = 0
+        prefixes := 0
         while peek("*") or peek("&"):
             try deeper(here().at)
             begin(TUnary, comp.pos)
@@ -981,7 +981,7 @@ func type_expr() -> Fail?:
         foreign := t.text == "extern" and comp.tokens[comp.pos + 1].text == "func" and comp.tokens[comp.pos + 2].text == "("
         if foreign or t.text == "func" and comp.tokens[comp.pos + 1].text == "(":
             n := begin(TFunc, comp.pos)
-            comp.pos += 2 + usize(foreign)
+            comp.pos += 2 + i64(foreign)
             while not peek(")"):
                 if here().kind == Name and comp.tokens[comp.pos + 1].text == ":":
                     return unexpected("a function type lists types without names: func(i32, i32) -> bool")
@@ -1051,7 +1051,7 @@ func qualifier() -> &strview:
         return module_of(here().text, file_of(here().at))
     return ""
 
-func qualified(kind: NodeKind) -> usize:
+func qualified(kind: NodeKind) -> i64:
     module := qualifier()
     if module.len > 0:
         comp.pos += 2
@@ -1103,14 +1103,14 @@ func unexpected(message: &strview) -> Fail?:
 func here() -> Token:
     return comp.tokens[comp.pos]
 
-func begin(kind: NodeKind, tok: usize) -> usize:
+func begin(kind: NodeKind, tok: i64) -> i64:
     append(comp.nodes, Node{kind, tok, 0, ""})
     return comp.nodes.len - 1
 
-func finish(n: usize):
+func finish(n: i64):
     comp.nodes[n].size = comp.nodes.len - n
 
-func wrap(start: usize, kind: NodeKind, tok: usize):
+func wrap(start: i64, kind: NodeKind, tok: i64):
     append(comp.nodes, Node{kind, tok, 0, ""})
     i := comp.nodes.len - 1
     while i > start:

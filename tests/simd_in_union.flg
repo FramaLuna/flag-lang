@@ -7,14 +7,14 @@ type Holder:
 
 kept: simd[i32, 4]|null = [5, 6, 7, 8]
 
-func aligned(at: usize) -> bool:
+func aligned(at: u64) -> bool:
     return at % 16 == 0
 
 func scaled(v: simd[f32, 4]|Err|null) -> simd[f32, 4]|null:
     if v is Err:
         return null
     if v is simd[f32, 4]:
-        print(aligned(ptr(v) as usize))
+        print(aligned(ptr(v) as u64))
         return v * 2.0
     return v
 
@@ -27,7 +27,7 @@ func main():
     print(kept)
     copy := kept
     if copy is simd[i32, 4]:
-        print(aligned(ptr(copy) as usize), " ", copy + 1)
+        print(aligned(ptr(copy) as u64), " ", copy + 1)
     many: &list[Holder]
     defer free(many)
     for i in 0..5:
@@ -36,6 +36,6 @@ func main():
     ok := true
     for h in many:
         if h.held is simd[f32, 4]:
-            ok = ok and aligned(ptr(h.held) as usize)
+            ok = ok and aligned(ptr(h.held) as u64)
     print(ok, " ", many[4].held, " ", many[5].held)
     print(kept == null)

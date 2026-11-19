@@ -59,12 +59,12 @@ func dwarf() -> &str:
     out += section("debug_info") + local + "debug_info:\n"
     procs := comp.procs[:-1] # the last one is the main of C
     needed: &list[bool]
-    numbers: &list[usize] # of each file in the line table, the order of its first dbgfile
+    numbers: &list[i64] # of each file in the line table, the order of its first dbgfile
     units: &list[bool]
     for file in 0..comp.files.len:
         append(numbers, 0)
         append(units, false)
-    numbered: usize = 0
+    numbered := 0
     for f in procs:
         if numbers[f.file] == 0:
             numbered += 1
@@ -83,7 +83,7 @@ func dwarf() -> &str:
             v := trust shared(d)
             units[file_of(comp.tokens[comp.nodes[d].tok].at)] = true
             needs(v.type, needed)
-    frame: usize = 6 # the DWARF number of rbp, x29 and fp
+    frame := 6 # the DWARF number of rbp, x29 and fp
     if comp.machine == "arm64":
         frame = 29
     elif comp.machine == "riscv64":
@@ -119,7 +119,7 @@ func dwarf() -> &str:
                 case Bool, Int, Uint, Float:
                     uleb(out, BASE_DIE)
                     asciz(out, ty.name)
-                    encoding: usize = 0x04 # DW_ATE_float
+                    encoding := 0x04 # DW_ATE_float
                     if ty.kind == Bool:
                         encoding = 0x02
                     elif ty.kind == Int:
@@ -149,7 +149,7 @@ func dwarf() -> &str:
                     uleb(out, POINTER_DIE)
                     out += "\t.byte 8\n" + reference(here + ".signature")
                     out += here + ".signature:\n"
-                    leaf := LEAF * usize(ty.count == 0)
+                    leaf := LEAF * i64(ty.count == 0)
                     if ty.ret == VOID:
                         uleb(out, PROCEDURE_TYPE_DIE + leaf)
                     else:
@@ -208,10 +208,10 @@ func dwarf() -> &str:
                         for m in members(t):
                             if comp.types[m].size == 0:
                                 uleb(out, VARIANT_DIE + LEAF)
-                                uleb(out, usize(comp.types[m].tag))
+                                uleb(out, comp.types[m].tag)
                             else:
                                 uleb(out, VARIANT_DIE)
-                                uleb(out, usize(comp.types[m].tag))
+                                uleb(out, comp.types[m].tag)
                                 uleb(out, MEMBER_DIE)
                                 asciz(out, comp.types[m].name)
                                 out += reference(local + "type" + m)
@@ -230,7 +230,7 @@ func dwarf() -> &str:
                             asciz(out, comp.types[m].name)
                         else:
                             asciz(out, "(" + comp.types[m].name + ")") # an enumerator Point would hide the type Point from gdb
-                        uleb(out, usize(comp.types[m].tag))
+                        uleb(out, comp.types[m].tag)
                     out += "\t.byte 0\n"
                 case:
                     uleb(out, STRUCT_DIE + LEAF)
@@ -256,12 +256,12 @@ func dwarf() -> &str:
                 uleb(out, GLOBAL_DIE)
                 asciz(out, text(d))
                 out += reference(local + "type" + v.type)
-                out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol_prefix() + comp.globals[usize(v.at.n)][1:] + "\n" # DW_OP_addr
+                out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol_prefix() + comp.globals[v.at.n][1:] + "\n" # DW_OP_addr
         for f in procs:
             if f.file == file:
                 inst := comp.insts[f.inst]
                 start := symbol_prefix() + f.name[1:]
-                leaf := LEAF * usize(f.mentioned == f.mentions)
+                leaf := LEAF * i64(f.mentioned == f.mentions)
                 if inst.ret == VOID:
                     uleb(out, PROCEDURE_DIE + leaf)
                 else:
@@ -276,7 +276,7 @@ func dwarf() -> &str:
                 aggregates := aggregate(inst.ret)
                 for k in f.mentions..f.mentioned:
                     aggregates = aggregates or comp.mentions[k].scope == 0 and aggregate(comp.mentions[k].type)
-                convention: usize = 1 # DW_CC_normal
+                convention := 1 # DW_CC_normal
                 if aggregates and not f.export:
                     convention = 3 # DW_CC_nocall, QBE does not pass a struct like C
                 out += "\t.byte " + convention + "\n"
@@ -295,7 +295,7 @@ func dwarf() -> &str:
     return out
 
 # the variables of a scope, and its inner scopes as blocks: a scope that opens the body of the function is the function itself
-func scope_dies(out: *&str, f: Proc, scope: usize, used: &list[bool], file: usize):
+func scope_dies(out: *&str, f: Proc, scope: i64, used: &list[bool], file: i64):
     local := label_prefix()
     for k in f.mentions..f.mentioned:
         m := comp.mentions[k]
@@ -309,7 +309,7 @@ func scope_dies(out: *&str, f: Proc, scope: usize, used: &list[bool], file: usiz
             uleb(out, line_of(comp.tokens[m.tok].at))
             out.* += reference(local + "type" + m.type)
             # DW_OP_fbreg 0, DW_OP_const4s with the offset of the slot, DW_OP_plus: gas writes a .sleb128 of a symbol as unsigned
-            out.* += "\t.byte " + (8 + usize(m.pointer != 0)) + "\n\t.byte 0x91\n\t.byte 0\n\t.byte 0x0d\n\t.long " + local + "slot" + k + "\n\t.byte 0x22\n"
+            out.* += "\t.byte " + (8 + i64(m.pointer != 0)) + "\n\t.byte 0x91\n\t.byte 0\n\t.byte 0x0d\n\t.long " + local + "slot" + k + "\n\t.byte 0x22\n"
             if m.pointer != 0:
                 out.* += "\t.byte 0x06\n" # DW_OP_deref, the slot holds the address of the variable
     for s in f.scopes + 1..=f.scoped:
@@ -322,7 +322,7 @@ func scope_dies(out: *&str, f: Proc, scope: usize, used: &list[bool], file: usiz
             if not body:
                 out.* += "\t.byte 0\n"
 
-func needs(t: usize, needed: *&list[bool]):
+func needs(t: i64, needed: *&list[bool]):
     while needed.len <= t:
         append(needed, false) # data_pointer can make a type
     if t == VOID or t == BYTES or needed[t]:
@@ -341,12 +341,12 @@ func needs(t: usize, needed: *&list[bool]):
         for i in 0..ty.count:
             needs(comp.items[ty.first + i].type, needed)
 
-func data_pointer(fat: usize) -> usize:
+func data_pointer(fat: i64) -> i64:
     if element(fat) == VOID:
         return pointer(BYTES)
     return pointer(element(fat))
 
-func context(t: usize) -> bool:
+func context(t: i64) -> bool:
     return comp.types[t].decl != 0 and comp.nodes[comp.types[t].decl].kind == Context
 
 func section(name: &strview) -> &str:
@@ -379,22 +379,22 @@ func symbol_prefix() -> &strview:
 
 func abbreviation(out: *&str, values: &slice[i64]):
     for n in values:
-        uleb(out, usize(n))
+        uleb(out, n)
     if values[2] == 1:
-        uleb(out, usize(values[0] + LEAF))
-        uleb(out, usize(values[1]))
+        uleb(out, values[0] + LEAF)
+        uleb(out, values[1])
         uleb(out, 0)
         for n in values[3:]:
-            uleb(out, usize(n))
+            uleb(out, n)
 
-func uleb(out: *&str, n: usize):
+func uleb(out: *&str, n: i64):
     out.* += "\t.uleb128 " + n + "\n"
 
 func asciz(out: *&str, s: &strview):
     out.* += "\t.asciz \""
     for b in items(s):
         if b < ' ' or b > '~' or b == '"' or b == '\\':
-            out.* += "\\" + usize(b >> 6) + usize(b >> 3 and 7) + usize(b and 7) # octal
+            out.* += "\\" + i64(b >> 6) + i64(b >> 3 and 7) + i64(b and 7) # octal
         else:
             add_byte(out, b)
     out.* += "\"\n"

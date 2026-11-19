@@ -136,7 +136,7 @@ Two integers of different types mix when one holds every value of the other, and
 ## Types
 ### Builtin types
 - `bool`
-- `i8`, `i16`, `i32`, `i64` and `u8`, `u16`, `u32`, `u64`, `usize`
+- `i8`, `i16`, `i32`, `i64` and `u8`, `u16`, `u32`, `u64`. A length, a count or a position is an `i64`, and there is no `usize`
 - `f32`, `f64`
 - `bytes`, raw memory of unknown size, only used behind a pointer
 
@@ -210,7 +210,7 @@ type Num = i32|f32
 ```
 `T?` is a short way to write `T|null`
 ```flag
-found: usize? = null
+found: i64? = null
 ```
 You check which type a union holds with `is`, and inside an `if` it narrows the type (see [If](#if)), or with the cases of a `switch` (see [Switch](#switch))
 ```flag
@@ -248,7 +248,7 @@ And numbers with `$$`
 ```flag
 type Ring[$T, $$n]:
     items: array[$T, $$n]
-    start: usize
+    start: i64
 
 func main():
     r: Ring[u8, 16]
@@ -303,7 +303,7 @@ print((second as *i64).*) # 20
 
 ## Fat pointers
 A fat pointer is a pointer with extra data, in flag we indicate it with '&' before the type.
-For example '&list[i32]' is a pointer to the elements of a list with the fields 'len: usize' and 'cap: usize'
+For example '&list[i32]' is a pointer to the elements of a list with the fields 'len: i64' and 'cap: i64'
 ```flag
 a: &list[i32]
 ```
@@ -324,8 +324,8 @@ The ones you own (`&str`, `&list` and `&map`) must be released with `free` when 
 You can declare your own fat pointers with `type fatptr`
 ```flag
 type fatptr ring[$T]:
-    len: usize
-    start: usize
+    len: i64
+    start: i64
 ```
 ### Passing them to functions
 When you pass a fat pointer to a function, the function gets a copy of it. The elements are shared, but if the function makes the copy grow, the original does not see it.
@@ -630,7 +630,7 @@ func biggest(a: $T, b: $T) -> $T:
         return a
     return b
 
-func size(a: array[$T, $$n]) -> usize:
+func size(a: array[$T, $$n]) -> i64:
     return $$n
 ```
 Given integers of different types, a `$T` takes the widest: `biggest(a, b)` with an `i32` and an `i64` is an `i64`. A `$T` inside a type like `&list[$T]` is fixed by it, so `append(l, k)` on a `&list[i64]` takes a `k: i32`.
@@ -972,7 +972,7 @@ An error is a type declared with `type error`, and a function that can fail retu
 type error NotFound
 type error enum FileError = CannotOpen|CannotRead
 
-func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
+func index_of(names: &list[&strview], name: &strview) -> i64|NotFound:
     for i, n in names:
         if n == name:
             return i
@@ -981,10 +981,10 @@ func index_of(names: &list[&strview], name: &strview) -> usize|NotFound:
 An error can also carry data, it's declared with fields like a struct, and narrowing it gives you its fields
 ```flag
 type error BadLine:
-    line: usize
+    line: i64
     why: &strview
 
-func check(line: usize, text: &strview) -> BadLine?:
+func check(line: i64, text: &strview) -> BadLine?:
     if text.len > 80:
         return BadLine{line, "too long"}
     return null
@@ -992,7 +992,7 @@ func check(line: usize, text: &strview) -> BadLine?:
 You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `trust`, or you ignore it on purpose with `_ =`
 ```flag
 got := index_of(names, "ana")
-if got is usize:
+if got is i64:
     print("found at ", got)
 _ = index_of(names, "bo")
 problem := check(3, line)
@@ -1131,7 +1131,7 @@ You declare C functions inside an `extern` block with the library they come from
 ```flag
 extern "c":
     func abs(x: i32) -> i32
-    func snprintf(into: *u8, size: usize, format: *u8, ...) -> i32
+    func snprintf(into: *u8, size: i64, format: *u8, ...) -> i32
 
 extern "m":
     func sqrt(x: f64) -> f64
@@ -1142,7 +1142,7 @@ extern "ws2_32" where @windows():
 A C string has the type `cstr` (it is a `*u8`), and a text literal or a `&str` is converted to a `cstr` for you when you pass it. Other text needs the function `cstr`, the copy lives in the temporary memory like the results of `+`, and `view` turns a `cstr` back into a `&strview`. Structs are passed like C does.
 ```flag
 extern "c":
-    func strlen(s: cstr) -> usize
+    func strlen(s: cstr) -> i64
 
 func main():
     name: cstr = cstr("hola")
@@ -1157,7 +1157,7 @@ extern "objc":
 `export func` makes a function that C can call, with the plain name and the C calling convention. Its name is a value of type `extern func(...)`, the function type of C, and that's how you pass callbacks to C
 ```flag
 extern "c":
-    func qsort(base: *bytes, count: usize, size: usize, compare: extern func(*i32, *i32) -> i32)
+    func qsort(base: *bytes, count: i64, size: i64, compare: extern func(*i32, *i32) -> i32)
 
 export func ascending(a: *i32, b: *i32) -> i32:
     return a.* - b.*

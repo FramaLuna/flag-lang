@@ -32,7 +32,7 @@ This is the compiler for the Flag programming language, my own language, a mix o
 type error NotFound:
     name: &strview
 
-func index_of(names: &slice[&strview], name: &strview) -> usize|NotFound:
+func index_of(names: &slice[&strview], name: &strview) -> i64|NotFound:
     for i, n in names:
         if n == name:
             return i
@@ -43,7 +43,7 @@ func main():
     for name in ["alice", "ada"]:
         found := index_of(ptr(names), name)
         switch found:
-        case usize:
+        case i64:
             print(name, " is at ", found)
         case NotFound:
             print("there is no ", found.name)
