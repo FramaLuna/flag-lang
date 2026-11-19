@@ -18,6 +18,8 @@ EMPTYARRAY = 16
 EMPTYMAP = 17
 ITERATIONEND = 18
 NEVER = 19
+BOOL8 = 20 # the lanes of a mask, bool8, bool16, bool32 and bool64
+BOOL64 = 23
 
 HEAD = 64 # core's Started, then the result of a thread
 HEAP = 1 # the arena of an owner whose memory is in the heap, the mark that core reads: 0 is an owner with no memory
@@ -400,6 +402,10 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail("never is what a function that never returns gives, a value cannot be never", tok.at)
         if id is i64 and id >= NULL and id < NEVER:
             return id
+        if id is i64 and id >= BOOL8 and id <= BOOL64 and comp.nodes[n - 1].kind == TName and comp.nodes[n - 1].size > 1 and text(n - 1) == "simd": # the first argument of simd
+            return id
+        if id is i64 and id >= BOOL8 and id <= BOOL64:
+            return fail(tok.text + " is a lane of a mask, it goes only inside a simd: simd[" + tok.text + ", " + 16 / comp.types[id].size + "]", tok.at)
     if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
         if args.len != 1 or args[0].type == VOID:
             return fail(BARE_THREAD, tok.at)
@@ -660,25 +666,50 @@ func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     id := comp.type_ids[view(key)]
     if id is i64:
         return id
+    if elem == BOOL:
+        forms: &str = heap("")
+        for size in [16, 32]:
+            if count <= size and size % count == 0 and size / count <= 8:
+                if forms.len > 0:
+                    forms += " or "
+                forms += "simd[bool" + 8 * size / count + ", " + count + "]"
+        if forms.len == 0:
+            forms += "simd[bool32, 4]"
+        return fail(key + " cannot hold bool, a mask names the width of its lanes: " + forms, at)
     if not numeric(elem) and e.kind != Bool:
-        return fail("the lanes of a simd hold numbers or bool, and " + e.name + " is neither", at)
-    if e.kind == Bool and count != 2 and count != 4 and count != 8 and count != 16:
-        return fail(key + " does not split a register of 16 bytes, a mask has 2, 4, 8 or 16 lanes", at)
-    if e.kind != Bool and e.size * count != 16:
+        return fail("the lanes of a simd hold numbers, or the bool8 to bool64 of a mask, and " + e.name + " is neither", at)
+    size := e.size * count
+    if size != 16 and size != 32:
+        fewer := 16 / e.size
         more: &strview
-        if e.size * count > 16:
+        if size > 32:
+            fewer = 32 / e.size
             more = ", or an array of them"
-        return fail(key + " is " + e.size * count + " bytes, and a simd is one register of 16: use simd[" + e.name + ", " + 16 / e.size + "]" + more, at)
-    return add_type(Type{kind = Simd, name = view(key), size = 16, align = 16, elem = elem, count = count})
+        return fail(key + " is " + size + " bytes, and a simd fills one or two registers of 16: use simd[" + e.name + ", " + fewer + "]" + more, at)
+    return add_type(Type{kind = Simd, name = view(key), size = size, align = 16, elem = elem, count = count})
 
+# the mask of a simd, with lanes as wide as its own
+func mask_of(t: i64, at: i64) -> i64|Fail:
+    lane := BOOL8
+    while comp.types[lane].size < comp.types[comp.types[t].elem].size:
+        lane += 1
+    return simd_of(lane, comp.types[t].count, at)
+
+# the integer that holds a lane, all ones for a true lane of a mask
 func lane_type(t: i64) -> i64:
     ty := comp.types[t]
-    if ty.kind != Simd or ty.elem != BOOL:
+    if ty.kind != Simd or comp.types[ty.elem].kind != Bool:
         return ty.elem
     lane := I8
-    while comp.types[lane].size < 16 / ty.count:
+    while comp.types[lane].size < comp.types[ty.elem].size:
         lane += 1
     return lane
+
+# the type of a lane of a simd or an element of an array as a value, where a lane of a mask is a bool
+func lane_value(t: i64) -> i64:
+    if comp.types[comp.types[t].elem].kind == Bool:
+        return BOOL
+    return comp.types[t].elem
 
 func thread_of(result: i64) -> i64:
     key: &str = heap("Thread[")

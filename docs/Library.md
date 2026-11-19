@@ -251,6 +251,9 @@ These take a `simd` and belong to the language, like its operators (see [SIMD](R
 - `sum(v)` adds the lanes in a fixed order, the upper half onto the lower half until one is left: `(v[0] + v[2]) + (v[1] + v[3])` for 4 lanes
 - `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of [Numbers](#numbers), and the `sqrt` of `math`, give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
 
+And this one is of core
+- `operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n] where $T != bool` makes a `simd` from as many elements, so `v: simd[f32, 4] = values[i:i + 4]` and `simd[f32, 8](values[0:8])` load the lanes. A slice of another length stops the program with `flag: a simd of 4 lanes takes a slice of 4, this one has 5`. The way back is the language's, `values[i:i + 4] = v` (see [SIMD](Reference.md#simd))
+
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
 - `s[i] -> u8` the byte `i`, a negative `i` that the compiler knows counts from the end. `s[i] = b` changes a `&str`, and a `&strview` only reads: `&strview is a view that only reads: change the text through the &str that owns it`

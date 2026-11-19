@@ -1407,7 +1407,7 @@ func collection(n: i64, want: i64) -> Value|Fail:
         slot := alloc(t)
         c := n + 1
         for i in 0..hint.count:
-            try set_lane(slot, t, i, try value(c, hint.elem), at_of(c))
+            try set_lane(slot, t, i, try value(c, lane_value(t)), at_of(c))
             c = node_end(c)
         return Value{type = t, at = slot, mem = true}
     want_key := VOID
@@ -1605,8 +1605,7 @@ func iterate(n: i64) -> Fail?:
                 store(t, Value{type = t, at = int_arg(0)}, slot)
         else:
             if comp.types[walked.type].kind == Simd:
-                lanes_of := comp.types[walked.type]
-                return fail("for does not walk the lanes of a simd, convert it to an array: for x in array[" + comp.types[lanes_of.elem].name + ", " + lanes_of.count + "](v)", at)
+                return fail("for does not walk the lanes of a simd, convert it to an array: for x in array[" + comp.types[lane_value(walked.type)].name + ", " + comp.types[walked.type].count + "](v)", at)
             args: &list[Value] = heap([])
             append(args, walked)
             walk: &strview = "for"
@@ -2049,7 +2048,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
                     if to.kind == Array:
                         amount = counted(to.count, "element", "elements")
                     return fail(to.name + " has " + amount + " and " + from.name + " has " + from.count, tok.at)
-                if to.elem == BOOL and given.type != BOOL and from.elem != BOOL:
+                if lane_value(target) == BOOL and given.type != BOOL and lane_value(given.type) != BOOL:
                     return fail(to.name + "() does not convert, a mask comes from a comparison: v != 0", tok.at)
                 return lanes("convert", ptr([given]), target, tok.at)
             if target == BOOL and given.type != BOOL:
@@ -2611,11 +2610,10 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
     case "convert":
         fits = from == to or comp.types[from].elem == I32 and lane_type(to) == F32
     if vectors() and in_register and fits:
-        parts: &list[Arg] = heap([])
-        for k in 0..args.len:
-            a := args[k]
+        scalars: &list[Arg] = heap([]) # what each argument that is not a simd gives every register: a number in each lane, or the amount of a shift
+        for a in args:
             if comp.types[a.type].kind == Simd:
-                append(parts, op1(V, "loadv", a.at))
+                append(scalars, Arg{})
             elif o == "<<" or o == ">>":
                 amount := load(a).at
                 most := i64(8 * comp.types[a.type].size) - 1 # as the scalar shift, which counts in 32 bits or 64
@@ -2627,99 +2625,106 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
                     amount = op(cls(a.type), "and", amount, int_arg(most))
                 if cls(a.type) == L and amount.kind != Const:
                     amount = op1(W, "copy", amount)
-                append(parts, amount)
+                append(scalars, amount)
             else:
                 x := a
                 if o == "convert":
-                    x = try convert_number(a, comp.types[to].elem, at)
+                    x = try convert_number(a, lane_value(to), at)
                 b := load(x).at
                 if raw != x.type:
                     b = mask_bits(b, raw)
-                append(parts, splat(raw, b))
-        x := parts[0]
-        y := x
-        if parts.len > 1:
-            y = parts[1]
+                append(scalars, splat(raw, b))
         s := letter(raw)
         int_lane := I32
         if ty.size == 8:
             int_lane = I64
         sign := int_arg(i64(1) << i64(8 * ty.size - 1))
-        picks_other := Arg{}
-        other := y
-        flip := false
-        switch o:
-        case "+":
-            x = op(V, "vadd" + s, x, y)
-        case "-":
-            x = op(V, "vsub" + s, x, y)
-        case "*":
-            x = op(V, "vmul" + s, x, y)
-        case "/":
-            x = op(V, "vdiv" + s, x, y)
-        case "and", "or", "xor":
-            x = op(V, "v" + o, x, y)
-        case "<<":
-            x = op(V, "vshl" + s, x, y)
-        case ">>":
-            if ty.kind == Int:
-                x = op(V, "vsar" + s, x, y)
-            else:
-                x = op(V, "vshr" + s, x, y)
-        case "==", "!=":
-            x = op(V, "vceq" + s, x, y)
-            flip = o == "!="
-        case "<":
-            x = greater(y, x, raw)
-        case ">":
-            x = greater(x, y, raw)
-        case "<=", ">=":
-            if o == ">=":
-                other = x
-                x = y
-                y = other
-            if float:
-                x = op(V, "vcle" + s, x, y)
-            else:
+        for half in 0..comp.types[to].size / 16: # a simd of 32 bytes is two registers of 16
+            parts: &list[Arg] = heap([])
+            for k, a in args:
+                if scalars[k].kind == Empty:
+                    append(parts, op1(V, "loadv", offset(a.at, 16 * half)))
+                else:
+                    append(parts, scalars[k])
+            x := parts[0]
+            y := x
+            if parts.len > 1:
+                y = parts[1]
+            picks_other := Arg{}
+            other := y
+            flip := false
+            switch o:
+            case "+":
+                x = op(V, "vadd" + s, x, y)
+            case "-":
+                x = op(V, "vsub" + s, x, y)
+            case "*":
+                x = op(V, "vmul" + s, x, y)
+            case "/":
+                x = op(V, "vdiv" + s, x, y)
+            case "and", "or", "xor":
+                x = op(V, "v" + o, x, y)
+            case "<<":
+                x = op(V, "vshl" + s, x, y)
+            case ">>":
+                if ty.kind == Int:
+                    x = op(V, "vsar" + s, x, y)
+                else:
+                    x = op(V, "vshr" + s, x, y)
+            case "==", "!=":
+                x = op(V, "vceq" + s, x, y)
+                flip = o == "!="
+            case "<":
+                x = greater(y, x, raw)
+            case ">":
                 x = greater(x, y, raw)
+            case "<=", ">=":
+                if o == ">=":
+                    other = x
+                    x = y
+                    y = other
+                if float:
+                    x = op(V, "vcle" + s, x, y)
+                else:
+                    x = greater(x, y, raw)
+                    flip = true
+            case "neg":
+                if float:
+                    x = op(V, "vxor", x, splat(int_lane, sign))
+                else:
+                    x = op(V, "vsub" + s, splat(raw, int_arg(0)), x)
+            case "not":
                 flip = true
-        case "neg":
-            if float:
-                x = op(V, "vxor", x, splat(int_lane, sign))
-            else:
-                x = op(V, "vsub" + s, splat(raw, int_arg(0)), x)
-        case "not":
-            flip = true
-        case "select":
-            picks_other = x
-            other = y
-            x = parts[2]
-        case "min":
-            if float:
-                x = op(V, "vmin" + s, x, y)
-            else:
-                picks_other = greater(x, y, raw)
-        case "max":
-            if float:
-                x = op(V, "vmax" + s, x, y)
-            else:
-                picks_other = greater(y, x, raw)
-        case "abs":
-            if float:
-                x = op(V, "vand", x, splat(int_lane, int_arg(sign.n - 1)))
-            else:
-                negative := op(V, "vsar" + s, x, int_arg(i64(8 * ty.size) - 1))
-                x = op(V, "vsub" + s, op(V, "vxor", x, negative), negative)
-        case "sqrt":
-            x = op1(V, "vsqrt" + s, x)
-        case "convert":
-            if raw != lane_type(to):
-                x = op1(V, "vitos", x)
-        if picks_other.kind != Empty:
-            x = op(V, "vxor", x, op(V, "vand", op(V, "vxor", other, x), picks_other))
-        if flip:
-            x = op(V, "vxor", x, splat(I32, int_arg(-1)))
-        add(Ins{op = "storev", a = x, b = slot})
+            case "select":
+                picks_other = x
+                other = y
+                x = parts[2]
+            case "min":
+                if float:
+                    x = op(V, "vmin" + s, x, y)
+                else:
+                    picks_other = greater(x, y, raw)
+            case "max":
+                if float:
+                    x = op(V, "vmax" + s, x, y)
+                else:
+                    picks_other = greater(y, x, raw)
+            case "abs":
+                if float:
+                    x = op(V, "vand", x, splat(int_lane, int_arg(sign.n - 1)))
+                else:
+                    negative := op(V, "vsar" + s, x, int_arg(i64(8 * ty.size) - 1))
+                    x = op(V, "vsub" + s, op(V, "vxor", x, negative), negative)
+            case "sqrt":
+                x = op1(V, "vsqrt" + s, x)
+            case "convert":
+                if raw != lane_type(to):
+                    x = op1(V, "vitos", x)
+            if picks_other.kind != Empty:
+                x = op(V, "vxor", x, op(V, "vand", op(V, "vxor", other, x), picks_other))
+            if flip:
+                x = op(V, "vxor", x, splat(I32, int_arg(-1)))
+            add(Ins{op = "storev", a = x, b = offset(slot, 16 * half)})
         return Value{type = to, at = slot, mem = true}
     given: &list[Value] = heap([])
     for a in args:
@@ -2777,7 +2782,7 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             if t.size == 4:
                 x = Value{type = F32, at = op1(S, "truncd", x.at)}
         case "convert":
-            x = try convert_number(x, comp.types[to].elem, at)
+            x = try convert_number(x, lane_value(to), at)
         case:
             x = try binary(o, x, parts[1], at)
         try set_lane(slot, to, i, x, at)
@@ -2845,7 +2850,7 @@ func mask_bits(b: Arg, raw: i64) -> Arg:
     return op1(cls(raw), "neg", b)
 
 func set_lane(slot: Arg, t: i64, i: i64, x: Value, at: i64) -> Fail?:
-    v := try convert(x, comp.types[t].elem, Arg{}, at)
+    v := try convert(x, lane_value(t), Arg{}, at)
     raw := lane_type(t)
     if raw != v.type:
         v = Value{type = raw, at = mask_bits(load(v).at, raw)}
@@ -2855,8 +2860,33 @@ func set_lane(slot: Arg, t: i64, i: i64, x: Value, at: i64) -> Fail?:
 func indexed(n: i64, assignment: i64) -> Value|Fail:
     tok := comp.tokens[comp.nodes[n].tok]
     none: Value
-    if assignment != 0 and kids(n) == 3:
-        return fail("a slice is a view, it cannot be assigned: assign its elements one by one", tok.at)
+    if assignment != 0 and kids(n) == 3: # values[i:i + 4] = v puts the lanes of a simd there
+        first := comp.body.len
+        slice := try indexed(n, 0)
+        middle := comp.body.len
+        v: Value
+        if text(assignment) == "=":
+            v = ahead(try value(node_end(n), VOID), first, middle)
+        if comp.types[v.type].kind != Simd or not sequence(slice.type):
+            return fail("a slice is a view, it cannot be assigned: assign its elements one by one", tok.at)
+        lanes := comp.types[v.type]
+        if lanes.elem != element(slice.type):
+            return fail(lanes.name + " goes into a slice of its lanes, and this one holds " + comp.types[element(slice.type)].name, tok.at)
+        field := field_of(slice.type, "len")
+        length := load(Value{type = field.type, at = offset(slice.at, field.n), mem = true})
+        l_bad := label()
+        l_good := label()
+        branch(op(W, cmp_name("cne", field.type), length.at, int_arg(lanes.count)), l_bad, l_good)
+        open_block(l_bad)
+        args: &list[Value] = heap([])
+        append(args, try in_heap(try fat_type("str", VOID, tok.at)))
+        try put_words(args[0], "a simd of " + lanes.count + " lanes goes into a slice of " + lanes.count + ", this one has ", tok.at)
+        try put_text(args[0], length, tok.at)
+        append(args, try place_of(tok.at))
+        try runtime("panic", args, tok.at)
+        open_block(l_good)
+        blit(v.at, op1(L, "loadl", slice.at), v.type)
+        return none
     passing := comp.passed == n
     first := comp.body.len
     base := try value(n + 1, VOID)
@@ -2883,7 +2913,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                 sign = "-"
             return fail(ty.name + " has " + counted(ty.count, "lane", "lanes") + ", there is no lane " + sign + index.n, at_of(kid(n, 1)))
         spot = lane(Value{type = t, at = addr, mem = true, place = base.place}, i64(index.n))
-        if ty.elem == BOOL and passing:
+        if lane_value(t) == BOOL and passing:
             append(comp.elements, Value{type = t, at = addr, mem = true})
             append(comp.elements, index)
             spot.element = comp.elements.len # a lane of a mask is made from its bits, a call that takes it by pointer would change a copy
@@ -3018,7 +3048,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
     if assignment == 0:
         return spot
-    mask := ty.kind == Simd and ty.elem == BOOL
+    mask := ty.kind == Simd and lane_value(t) == BOOL
     if not spot.place and not (mask and base.place):
         return fail("this element belongs to a value that is not a variable, assigning it would only change a copy", at_of(n + 1))
     if mask:
@@ -4236,7 +4266,8 @@ func blit(from: Arg, to: Arg, t: i64):
     if from.kind == to.kind and from.n == to.n:
         return
     if comp.types[t].kind == Simd and vectors():
-        add(Ins{op = "storev", a = op1(V, "loadv", from), b = to}) # a slot only loaded and stored whole becomes a register
+        for half in 0..comp.types[t].size / 16:
+            add(Ins{op = "storev", a = op1(V, "loadv", offset(from, 16 * half)), b = offset(to, 16 * half)}) # a slot only loaded and stored whole becomes a register
         return
     size := i64(comp.types[t].size)
     if not big(t):
@@ -4285,7 +4316,8 @@ func words(mask: u64, shift: i64) -> u64:
 
 func zero(t: i64, addr: Arg) -> Fail?:
     if comp.types[t].kind == Simd and vectors():
-        add(Ins{op = "storev", a = splat(I32, int_arg(0)), b = addr})
+        for half in 0..comp.types[t].size / 16:
+            add(Ins{op = "storev", a = splat(I32, int_arg(0)), b = offset(addr, 16 * half)})
         return null
     size := room(t)
     if size > 64:

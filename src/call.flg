@@ -113,7 +113,7 @@ func binary(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
         t := l.type
         if comp.types[t].kind != Simd:
             t = r.type
-        lane := comp.types[t].elem
+        lane := lane_value(t)
         shown := comp.types[t].name
         shift := o == "<<" or o == ">>"
         bits := o == "and" or o == "or" or o == "xor"
@@ -131,7 +131,7 @@ func binary(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
         if o == "%":
             return fail("% works on integers, and " + shown + " holds floats", at)
         if compares:
-            t = try simd_of(BOOL, comp.types[t].count, at)
+            t = try mask_of(t, at)
         return lanes(o, sides, t, at)
     if (o == "==" or o == "!=") and comp.types[l.type].kind == Array and holds_lanes(l.type):
         return fail(comp.types[l.type].name + " holds simd, whose == answers each lane: compare them with all(a[i] == b[i])", at)
@@ -231,7 +231,7 @@ func simd_args(o: &strview, args: &listview[Value], at: i64) -> i64|Fail:
     for a in args:
         if t == VOID and comp.types[a.type].kind == Simd:
             t = a.type
-    lane := comp.types[t].elem
+    lane := lane_value(t)
     for k in 0..args.len:
         a := args[k]
         given := comp.types[a.type]
@@ -416,20 +416,23 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 return fail(name + " of a simd belongs to the language, its arguments cannot be named", at)
         vector := comp.types[args[0].type]
         if name == "any" or name == "all" or name == "sum":
-            if name == "sum" and vector.elem == BOOL:
+            if name == "sum" and lane_value(args[0].type) == BOOL:
                 return fail("sum adds the lanes of numbers, and " + vector.name + " is a mask", at)
-            if name != "sum" and vector.elem != BOOL:
+            if name != "sum" and lane_value(args[0].type) != BOOL:
                 return fail(name + " asks about the lanes of a mask, and " + vector.name + " holds numbers: compare them first, like " + name + "(v > 0)", at)
-            copy := Value{type = args[0].type, at = alloc(args[0].type, true), mem = true} # the lanes are read from a slot of their own, so the simd stays whole in a register
-            blit(args[0].at, copy.at, args[0].type)
-            parts: &list[Value] = heap([])
-            for i in 0..vector.count:
-                append(parts, lane(copy, i))
             o: &strview = "+"
             if name == "any":
                 o = "or"
             elif name == "all":
                 o = "and"
+            whole := Value{type = args[0].type, at = alloc(args[0].type, true), mem = true} # the lanes are read from a slot of their own, so the simd stays whole in a register
+            blit(args[0].at, whole.at, args[0].type)
+            if vector.size == 32 and vectors(): # one instruction joins the halves, as the first round below would
+                half := try simd_of(vector.elem, vector.count / 2, at)
+                whole = try lanes(o, ptr([Value{type = half, at = whole.at, mem = true}, Value{type = half, at = offset(whole.at, 16), mem = true}]), half, at)
+            parts: &list[Value] = heap([])
+            for i in 0..comp.types[whole.type].count:
+                append(parts, lane(whole, i))
             while parts.len > 1:
                 half := parts.len / 2
                 for i in 0..half:
@@ -440,7 +443,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if comp.types[args[1].type].kind != Simd and comp.types[args[2].type].kind != Simd:
                 return fail("select chooses the lanes of a simd, and it gets two numbers: give it a simd", at)
             t := try simd_args(name, args[1:], at)
-            mask := try simd_of(BOOL, comp.types[t].count, at)
+            mask := try mask_of(t, at)
             if args[0].type != mask:
                 return fail("select expects " + comp.types[mask].name + " to choose the lanes of " + comp.types[t].name + " but got " + vector.name, at)
             return lanes(name, args, t, at)
@@ -468,7 +471,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         if name == "hash" and args.len == 1 and (k == Struct or k == Union) and try offers("==", ptr([args[0], args[0]]), at):
             return fail(comp.types[t].name + " declares == but not hash, and equal values need equal hashes: declare operator hash for " + comp.types[t].name + " too", at)
         if name == "hash" and args.len == 1 and k == Simd:
-            return fail(comp.types[t].name + " has no hash, its == answers each lane: use an array, array[" + comp.types[comp.types[t].elem].name + ", " + comp.types[t].count + "](v)", at)
+            return fail(comp.types[t].name + " has no hash, its == answers each lane: use an array, array[" + comp.types[lane_value(t)].name + ", " + comp.types[t].count + "](v)", at)
         if name == "hash" and args.len == 1 and not (k == Bool or k == Ptr or k == Func or k == Struct or k == Union or k == Array or k == Void):
             return fail(comp.types[t].name + " has no hash, declare one for it: operator hash(x: " + comp.types[t].name + ") -> u64", at)
         if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:

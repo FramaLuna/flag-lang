@@ -440,7 +440,7 @@ func main() -> i32:
         output += "/flag-run-" + getpid() + suffix
     elif output.len == 0:
         output = "a" + suffix
-    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bytes cstr wstr emptyarray emptyfixmap IterationEnd never"
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bytes cstr wstr emptyarray emptyfixmap IterationEnd never bool8 bool16 bool32 bool64"
     start := 0
     for k in 0..=builtin.len:
         if k == builtin.len or items(builtin)[k] == ' ':
@@ -464,6 +464,9 @@ func main() -> i32:
                 t.kind = Ptr
                 t.size = 8
                 t.elem = U8 + id - CSTR # u8 or u16
+            elif id >= BOOL8:
+                t.kind = Bool
+                t.size = 1 << (id - BOOL8)
             if t.size > 0:
                 t.align = t.size
             add_type(t)
