@@ -1,6 +1,6 @@
 Every function of the standard library, module by module.
 
-`core` is always there, without `use`. The other modules come with `use name`, flagc finds them in its library and you don't add any file.
+`core` is always there, without `use`. The other modules come with `use name`, flagc finds them in its library and you don't add any file. A module of your program with the name of one of these is the one your files see, and the library keeps its own. Code that is not here, like a package of someone else, comes with `use "path"` (see [Files, folders and the library](Reference.md#files-folders-and-the-library)).
 
 - [How to read this](#how-to-read-this)
 - [core](#core)

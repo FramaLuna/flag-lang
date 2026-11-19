@@ -78,12 +78,12 @@ error: no test has parse or lex in its name
 ### The C compiler
 The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link of a program is
 ```
-cc -o program program.s -L<library folder> -L<folder of each input> <the library of each extern> <what goes after -cc>
+cc -o program program.s -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
 ```
 where the library of an `extern` is `-lname`, `-framework X` or a file (see [extern](#extern)).
 A library, with `-shared`, has `-shared` before what you give, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
 
-The `-L` of the folders of your files means that you can put a `libsomething.a` next to your code and use it with `extern "something"`, or with `extern "libsomething.a"`.
+The `-L` of the folders of your files, those you give and those that a `use` in quotes loads, means that you can put a `libsomething.a` next to your code, or next to the code of a package, and use it with `extern "something"`, or with `extern "libsomething.a"`.
 
 If the C compiler cannot run you get
 ```
@@ -95,11 +95,13 @@ error: cannot run cc: No such file or directory, flagc links with a C compiler a
 
 The library is the `lib` folder next to the folder of flagc (`bin/../lib`). If it's not there flagc uses the copy of the library that is built inside it, and unpacks it the first time into a cache folder: `$XDG_CACHE_HOME/flag/<version>-<number>`, or `%LOCALAPPDATA%\flag\<version>-<number>` on Windows, or `$HOME/.cache/flag/<version>-<number>`, or `/tmp/flag/<version>-<number>`, where the number changes when the library does. So a single `flagc` file is enough to compile, and if you keep the `lib` folder next to it you can read and change the library.
 
-When a file says `use something` and no file you gave declares `module something`, flagc loads `something.flg` from the library, a module of the library is the file of its name.
+`use "vendor/vec"` loads the `.flg` files of a folder, without going into the folders inside it, and they are files of the program like the ones you give: a package of someone else is a folder that you copy, or a git submodule, and flagc never downloads anything. The path goes from the folder of the file that writes it, with `/`, or it's absolute, and the last folder names the module, so one of its files says `module vec` (see [Modules](#modules)). A folder used from several files, or given too, is loaded once. A path that names a file, `use "vendor/vec.flg"`, is an error that says where the file goes.
+
+So flagc loads core, the files and folders you give, the folders of their uses in quotes, also those that these folders use, and then the modules of the library. When a file of the program says `use something` and no file of the program declares `module something`, flagc loads `something.flg` from the library, a module of the library is the file of its name. A file of the library always gets the module of the library, also when the program has one with its name (see [Modules](#modules)).
 
 A file can start with the UTF-8 mark (the BOM) that some editors write, it's skipped.
 
-A file given twice is loaded once. The paths in the errors are the ones you gave, and the library is shown relative to the current folder when it's inside it.
+A file given twice is loaded once. The paths in the errors are the ones you gave, joined to the path of a `use` for the files it loads, and the library is shown relative to the current folder when it's inside it.
 
 ## Syntax
 ### Lines and blocks
@@ -214,7 +216,7 @@ A literal of pairs is one, and it asks for no memory. With a `fixmap` where it g
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A `simd` goes at byte 16, where its alignment puts it, so `simd[f32, 4]?` takes 32. A union of void types is only the tag, 4 bytes, that's why enums are small.
 
-The tag says which member the union holds. The builtin types have the first tags, in the order `null`, `bool`, `i8`... `bytes`, `cstr`, `wstr`... `IterationEnd`, `never`, so the tag of `null` is always 0, and any other type has a hash of its name, with its module, so it's the same in every program and every library that has the type, whatever order they declare their types in. The module of a `priv` type is its file, so a `priv` type doesn't cross. That's what lets a union cross between a program and a library it loads. The tag says which type it is, not what the type holds: a `Door` of the library with three fields and a `Door` of the program with two have the same tag, so `load_library` refuses a library that made a type with other fields or variants than the program (see [Libraries](#libraries)). Two types whose hashes give the same tag cannot be in one union, which almost never happens: `Open and Ajar have the same tag, so a union of them cannot tell which one it holds: rename one of them`. A tag doesn't change when you change the program, but don't save it to a file to read with another one either, write the name.
+The tag says which member the union holds. The builtin types have the first tags, in the order `null`, `bool`, `i8`... `bytes`, `cstr`, `wstr`... `IterationEnd`, `never`, so the tag of `null` is always 0, and any other type has a hash of its name, with its module, so it's the same in every program and every library that has the type, whatever order they declare their types in. The module of a `priv` type is its file, so a `priv` type doesn't cross. That's what lets a union cross between a program and a library it loads. A type of a module of the library that a module of the program hides is in the module `lib$math` there (see [Modules](#modules)), so its tag is not the one it has in other programs. The tag says which type it is, not what the type holds: a `Door` of the library with three fields and a `Door` of the program with two have the same tag, so `load_library` refuses a library that made a type with other fields or variants than the program (see [Libraries](#libraries)). Two types whose hashes give the same tag cannot be in one union, which almost never happens: `Open and Ajar have the same tag, so a union of them cannot tell which one it holds: rename one of them`. A tag doesn't change when you change the program, but don't save it to a file to read with another one either, write the name.
 
 An enum that gets no value starts as the first variant you wrote, also when another enum declared some of its variants before. A union written with the same variants is the same type, so it starts there too, and two enums with all the same variants would be one type with two starts, so that's an error: `type Paint = Color` gives an enum a second name. Any other union starts as its member with the lowest id: the builtin types first, then the types without data in the order they are declared, and then the others in the order the compiler makes them. So `T?` starts as `null`. Between two types with data, like `P|Q`, it follows the declarations most of the time but it's not something to rely on, give the value when it matters. The compiler writes that tag every time it makes the value, like the default value of a field: a variable, a field, an element, a literal. A default value of a field that holds the union wins over that start. An array of them is filled by a loop when the program runs, a `context` when each thread starts, the first one before `main`, and a constant and a `shared context` have it in their data. A library has no `main`, so there, and in a thread that C starts, it happens the first time the thread calls an `export func` (see [Libraries](#libraries)). Memory that you zero yourself, like what `calloc` gives, is `null` for a union that has `null`, and it's not a value at all for a union that doesn't: assign to it before you read it, printing it stops the program with an illegal instruction.
 
@@ -446,9 +448,10 @@ Then `where` removes the overloads whose condition is false.
 
 A module that has a `priv` function with the name of the call chooses among its own functions before the others (see [Modules](#modules)).
 
-When two overloads fit every argument the same, the one without extra arguments wins, `f(1)` with `f(a: i64)` and `f(..rest: i64)` calls the first (see [Extra arguments](#extra-arguments)), and then the nearest one: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one
+When two overloads fit every argument the same, the one without extra arguments wins, `f(1)` with `f(a: i64)` and `f(..rest: i64)` calls the first (see [Extra arguments](#extra-arguments)), and then the nearest one: the one of your module, then a global one, then one of another module. And if that doesn't decide either it's an error, with a note for each one, and when each one is of a module that the file uses the error says to name it
 ```
 error: ambiguous call to show, several overloads match (i32) equally
+error: ambiguous call to size, several overloads match (i32) equally: name the module, a.size or b.size
 ```
 
 The order of the declarations doesn't matter, a function can call one declared below it or in another file.
@@ -1020,17 +1023,21 @@ Every Mac with arm64 has the atomics of ARMv8.1, and an arm64 that runs Linux ma
 ## Modules
 - `module name` goes in the first line and `use` goes before the first declaration. A file doesn't `use` its own module, it already sees it
 - `use a` gives the names of `a` and `a.name`, `use a as m` gives only `m.name`. Without the `use`, `a.name` is an error. A nested type of a module is `a.Car.motor`
+- `use "vendor/vec"` loads a folder (see [Files, folders and the library](#files-folders-and-the-library)) and gives its module like `use vec`, and `use "vendor/vec" as v` gives `v.name`. The last folder of the path names the module, because `vec.dot` is read with the file, before the folder is loaded. So a folder whose name is not a name is an error, `'flag-vec' cannot name a module, the last folder of a use names its module: rename the folder`, and so is one without a file that says `module vec`, `vendor/vec has no file that says module vec, the last folder of a use names its module`
+- a module is every file that says `module name`, in any folder: the other files of a folder that a `use` loads can be of other modules or of none, and the module can have files elsewhere
+- the names of the modules are one space with no parts, one for the program and one for the library: two packages that each have a `module util` would be one module, so two folders of uses that hold the same module are an error, `vendor/a/util and vendor/b/util both hold module util, a program has one module of each name`. The files and folders you give that say the same module are one module, as always
 - `priv` hides a name from the files outside the module
 - a variable, a parameter or a constant cannot have the name of a module the file uses, or of its alias: `bits names a module in this file, a variable or a constant cannot take it`
 - in a file without a `module` line, `priv` hides the name from every other file. For its `priv` names that file is a module of its own, named like the file, and the messages say so: `helper is priv to the module a.flg, only the files of a.flg see it`
 - a `priv` name of a file without a module wins inside that file over a global one with the same name, so what a file keeps for itself never collides with the names of other files
 - a module that has a `priv` function keeps its name: a call to that name from inside the module chooses among the functions declared in the module first (in the file, for a file without a `module` line), `priv` or not, and the best fit of them wins over any function from outside, even one with closer types. So a function of yours never replaces a helper of the library
-- a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`
+- a name declared in two modules you use is an error when you use it without the module: `Thing is declared in both a and b, name the module: b.Thing`. A function is chosen by its arguments, so two modules can declare the same name, and only when the two fit a call equally the call is ambiguous: `ambiguous call to size, several overloads match (i32) equally: name the module, a.size or b.size`
 - when two functions fit a call equally, the one of your module wins over a global one, and a global one over one of another module. A function that fits better wins wherever it is, that's how your `put_text` or `==` is called from inside the library
 - `main` must be global, a `main` inside a module is not the start of the program
 - `ptr`, `print` and `eprint` belong to the language and not to core, so they are not names you can take: declaring a function, a type or a constant with one of them is an error, `print belongs to the language, it cannot be declared again`. A function cannot be named `hash` either, `hash(x)` calls `operator hash`
 - a local variable, a parameter, the variable of a `for` and its counter cannot take a name that is visible where they are declared: another local variable, or a constant or a context, also one of core or of a module the file uses without an alias, `stdout is a constant, a variable cannot take its name`, with a note at the declaration. Functions and types don't count, a local variable `twice` leaves the calls `twice(3)` to the function. The library doesn't see the names of your files here, so a context of yours never stops it from compiling
 - the global names of the library, those of core like `File`, `Integer`, `FsError` or `stdout`, give way to yours. Declare a `type File` and your files see yours while the library keeps its own, which the messages then call `core.File`. A function of yours with the same parameters as one of core's is the one your files call, and core keeps calling its own, and so do the checks that the compiler writes, like the `panic` of an index out of bounds (see [Runtime errors](#runtime-errors))
+- a whole module of the library gives way the same way. With a `module math` of yours, `use math` gives yours to your files, and `use math` in `raylib.flg` gives the library its own, which the messages call `lib$math`. Your files cannot reach that one, `sqrt is in the module math of the library, and the module math of this program hides it`, so a module of yours never breaks the library, and a new module of the library never breaks your program
 
 The library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring` and `raylib` (see the [Library](Library.md)).
 
@@ -1276,7 +1283,7 @@ On macOS the linker leaves the DWARF in the object file, so `-debug` assembles t
 On Windows gdb and lldb read the DWARF too. The debugger of Visual Studio reads PDB, which flagc doesn't write.
 
 ## Tests
-`flagc test` builds the tests of your files into a program and runs them. A test is a `func test_name()` with no parameters and no result, declared in a file you give to flagc, not in the library. A function whose name starts with `test_` and that has parameters or a result is a common function, a helper of the tests. Files without a test are an error, like a program without `main`
+`flagc test` builds the tests of your files into a program and runs them. A test is a `func test_name()` with no parameters and no result, declared in a file of the program, one you give to flagc or one that a `use` in quotes loads, not in the library. So the tests of a package that your files use run with yours, and the words after `--` are the way to choose. A function whose name starts with `test_` and that has parameters or a result is a common function, a helper of the tests. Files without a test are an error, like a program without `main`
 ```
 error: these files have no test, a test is a func test_name() with no parameters and no result
 ```
@@ -1501,7 +1508,7 @@ These are for editors and tools, they don't build the program.
 
 `-check` checks the code and prints the errors, it's the fast way to see if your code is right.
 
-`-overlay file` replaces the text of some files with the text in that file, so an editor can check what you are typing before you save. The file is a list of entries, and each one is the path in a line, the length in bytes in another line, and that many bytes of text.
+`-overlay file` replaces the text of some files with the text in that file, so an editor can check what you are typing before you save. The file is a list of entries, and each one is the path in a line, the length in bytes in another line, and that many bytes of text. It replaces files that exist: a new file of a folder that a `use` loads comes in when it's saved.
 
 `-at file:line:column` says what is at that place, it prints a `definition` line with where it's declared and `hover` lines with its type or its declaration. The column counts bytes, like the ones in the errors. A place that is not inside one of the files is a wrong command line: `-at main.flg:1:18 is past the end of the line, its last column is 13`
 ```sh

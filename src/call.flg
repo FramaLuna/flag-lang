@@ -866,19 +866,38 @@ func choose(name: &strview, module: &strview, args: &listview[Value], names: &li
             best = k
     for k in 0..fits.len:
         if k != best and not beats(scores[best], scores[k]):
-            if scores[k] == scores[best]:
-                _ = fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
-            else:
-                _ = fail("ambiguous call to " + name + ", no overload matches (" + listed(args) + ") at least as well as the others in every argument", at)
+            tied: &list[i64] = heap([])
             for i in 0..fits.len:
                 beaten := false
                 for j in 0..fits.len:
                     beaten = beaten or beats(scores[j], scores[i])
                 if not beaten:
-                    decl := comp.nodes[comp.syms[fits[i]].node].tok
-                    note("an overload of " + name + " is declared here", comp.tokens[decl].at)
-                    if noted(at, name):
-                        mark(decl)
+                    append(tied, fits[i])
+            apart := true # each one is of a module of its own, that this file names
+            ways: &str = heap("")
+            for i in reverse 0..tied.len:
+                m := comp.syms[tied[i]].module
+                apart = apart and m.len > 0 and module_of(m, file_of(at)) == m
+                for o in tied[i + 1:]:
+                    apart = apart and comp.syms[o].module != m
+                if i == 0:
+                    ways += " or "
+                elif ways.len > 0:
+                    ways += ", "
+                ways += m + "." + name
+            if scores[k] == scores[best] and apart:
+                _ = fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally: name the module, " + ways, at)
+            elif scores[k] == scores[best]:
+                _ = fail("ambiguous call to " + name + ", several overloads match (" + listed(args) + ") equally", at)
+            elif apart:
+                _ = fail("ambiguous call to " + name + ", no overload matches (" + listed(args) + ") at least as well as the others in every argument: name the module, " + ways, at)
+            else:
+                _ = fail("ambiguous call to " + name + ", no overload matches (" + listed(args) + ") at least as well as the others in every argument", at)
+            for f in tied:
+                decl := comp.nodes[comp.syms[f].node].tok
+                note("an overload of " + name + " is declared here", comp.tokens[decl].at)
+                if noted(at, name):
+                    mark(decl)
             return Fail
     found := 0
     if fits.len > 0:

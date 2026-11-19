@@ -1,4 +1,6 @@
 @trust
+use fs
+
 func parse() -> Fail?:
     file := comp.files.len - 1
     first := comp.pos
@@ -13,13 +15,31 @@ func parse() -> Fail?:
             continue
         if t.text == "module" and comp.pos == first + 1 or t.text == "use" and header:
             comp.pos += 1
-            if here().kind != Name:
-                return unexpected(t.text + " expects the name of a module after it")
             given := here().text
+            at := here().at
+            folder: &strview
+            if t.text == "use" and here().kind == Str:
+                folder = unquoted(given)
+                while folder.len > 1 and ends_with(folder, "/"):
+                    folder = folder[:-1]
+                given = base_name(folder)
+                if ends_with(given, ".flg"):
+                    return fail("a use in quotes names a folder, not a file: put " + given + " in a folder " + folder[:-4] + " and write use \"" + folder[:-4] + "\"", at)
+                valid := given.len > 0 and is_letter(items(given)[0]) and not reserved(given)
+                for b in items(given):
+                    valid = valid and (is_letter(b) or is_digit(b))
+                if not valid:
+                    return fail("'" + given + "' cannot name a module, the last folder of a use names its module: rename the folder", at)
+                if not starts_with(folder, "/") and not (@windows() and contains(folder, ":")):
+                    path := view(comp.files[file].path)
+                    folder = join_path(path[:path.len - base_name(path).len], folder)
+            elif here().kind != Name:
+                return unexpected(t.text + " expects the name of a module after it")
+            reached := layered(given, file)
             if t.text == "module":
                 try new_name(false)
-                module = given
-                comp.files[file].module = given
+                module = reached
+                comp.files[file].module = reached
             comp.pos += 1
             if t.text == "use":
                 name := given
@@ -32,11 +52,11 @@ func parse() -> Fail?:
                     alias = here().text
                     name = alias
                     comp.pos += 1
-                if given == module:
+                if reached == module:
                     return fail("this file is part of module " + given + ", it sees its names without use", t.at)
                 if module_of(name, file).len > 0:
                     return fail(name + " already names a module in this file", t.at)
-                append(comp.uses, Use{file, given, alias, t.at})
+                append(comp.uses, Use{file, reached, alias, at, folder})
             try end_line()
             continue
         header = false
@@ -52,7 +72,7 @@ func declaration(module: &strview, kept: bool) -> Fail?:
     after := comp.tokens[comp.pos + 1]
     if t.text == "module" and after.kind == Name:
         return fail("module goes on the first line of its file", t.at)
-    if t.text == "use" and after.kind == Name:
+    if t.text == "use" and (after.kind == Name or after.kind == Str):
         return fail("use goes in the header of the file, before the first declaration", t.at)
     if where_block():
         holds := try on_target()

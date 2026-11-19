@@ -44,12 +44,25 @@ func file_of(at: i64) -> i64:
     return f
 
 func module_of(name: &strview, file: i64) -> &strview:
-    if name == comp.files[file].module:
-        return name
+    if name == written(comp.files[file].module):
+        return comp.files[file].module
     for u in comp.uses:
-        if u.file == file and (u.alias == name or u.alias.len == 0 and u.module == name):
+        if u.file == file and (u.alias == name or u.alias.len == 0 and written(u.module) == name):
             return u.module
     return ""
+
+# a module of the library gives way to one of the program with its name, and inside the library it is lib$name
+func layered(name: &strview, file: i64) -> &strview:
+    if comp.files[file].library:
+        for f in comp.files:
+            if f.module == name and not f.library:
+                return "lib$" + name
+    return name
+
+func written(module: &strview) -> &strview:
+    if starts_with(module, "lib$"):
+        return module[4:]
+    return module
 
 func visible(s: i64, module: &strview, at: i64) -> bool:
     sym := comp.syms[s]
@@ -101,6 +114,8 @@ func hidden(name: &strview, function: bool, at: i64) -> Fail?:
                     alias = u.alias
             if sym.priv and not sym.library:
                 return fail(name + " is priv to the module " + sym.module + ", only the files of " + sym.module + " see it", at)
+            if not sym.priv and sym.module != written(sym.module):
+                return fail(name + " is in the module " + written(sym.module) + " of the library, and the module " + written(sym.module) + " of this program hides it", at)
             if alias.len > 0:
                 return fail(name + " is in the module " + sym.module + ": reach it as " + alias + "." + name, at)
             if not sym.priv:
@@ -113,7 +128,7 @@ func hidden(name: &strview, function: bool, at: i64) -> Fail?:
         path: &str = heap(join_path(comp.library, given))
         known := not ends_with(given, ".flg")
         for f in comp.files:
-            known = known or f.path == path or f.module == given[:-4]
+            known = known or f.library and f.path == path
         if not known:
             try add_file(path, read_file(view(path)), true)
             more = true

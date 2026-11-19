@@ -1155,6 +1155,15 @@ priv func foo():
 ```
 In a file without a module, priv hides the name from every other file.
 
+A package, code of someone else or a part of your program that lives apart, is a folder that you use with its path in quotes, from the folder of the file. The last folder names the module, and one of its files says `module vec`. flagc loads the `.flg` files of that folder, not those of the folders inside it, so `flagc run app/main.flg` is enough. flagc never downloads anything: a package is a folder that you copy, or a git submodule
+```flag
+use "vendor/vec"
+func main():
+    a := vec.V2{3.0, 4.0}
+    print(dot(a, a))
+```
+Two modules that you use can have a function with the same name, the arguments choose which one runs, and when both fit the same the error says to name the module: `ambiguous call to size, several overloads match (i32) equally: name the module, a.size or b.size`. A module of yours with the name of one of the library, like your own `math`, is the one your files see, and the library keeps using its own.
+
 A type brings its functions: a call sees the functions of the modules that declare the types of its arguments, and the types inside them, like `b.Door` in `a.Table[b.Door]`, without `use`. So a generic function of one module can call a function declared next to the type it was made for.
 
 ## The standard library
