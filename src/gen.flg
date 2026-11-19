@@ -1951,7 +1951,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             to := comp.items[shape.first + given.len].type
             try read_in_turn(given, c, to)
             v := given[-1]
-            if accepts(to, v) < 0 and not (comp.types[to].kind == Ptr and comp.types[to].elem == v.type):
+            if accepts(to, v) < 0 and not points_to(to, v.type):
                 return fail("this " + shape.name + " expects " + comp.types[to].name + " here but got " + comp.types[v.type].name, at_of(c))
             append(taken, to)
             c = node_end(c)
@@ -2232,6 +2232,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 return Value{type = BYTES, at = op1(L, "loadl", v.at), mem = true, place = true}
             if t.kind != Ptr:
                 return fail("only a pointer reads with .*, this is " + t.name, tok.at)
+            if comp.target == n and (v.type == CSTR or v.type == WSTR): # assigned, or given to ptr
+                return fail(code_of(n) + " cannot be written, " + t.name + " may point to a literal, which is read only: write through " + code_of(n + 1) + " as " + comp.types[pointer(t.elem)].name, tok.at)
             return Value{type = t.elem, at = load(v).at, mem = true, place = true}
         if o == "-" and v.lit and integer(v.type):
             if not v.neg and v.n > 1 << 63:
@@ -2972,7 +2974,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                 return invoke("[]=", args, tok.at)
             kept := try present(read, tok.at)
             place := try returned("[]=", args, tok.at)
-            if comp.types[place].kind == Ptr and comp.types[place].elem == kept:
+            if points_to(place, kept):
                 spot = Value{type = kept, at = load(try invoke("[]=", args, tok.at)).at, mem = true, place = true}
             elif placing:
                 return fail(comp.types[t].name + " gives a copy of its element and has no operator []=(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
@@ -3119,7 +3121,7 @@ func in_turn(values: &listview[Value], turns: i64, to: &listview[i64] = []):
             first = comp.turns[t - 2]
         end := comp.body.len
         for i in first..comp.turns[t]:
-            if not (i < to.len and comp.types[to[i]].kind == Ptr and comp.types[to[i]].elem == values[i].type):
+            if not (i < to.len and points_to(to[i], values[i].type)):
                 values[i] = now(values[i])
         postpone(comp.turns[t + 1], end)
     comp.turns.len = turns

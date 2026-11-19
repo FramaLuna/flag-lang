@@ -33,7 +33,7 @@ priv extern "c":
     func _pipe(fds: *i32, size: u32, mode: i32) -> i32
     func dup2(from: i32, to: i32) -> i32
     func fork() -> i32
-    func execvp(file: cstr, args: **u8) -> i32
+    func execvp(file: cstr, args: *cstr) -> i32
     func waitpid(pid: i32, status: *i32, options: i32) -> i32
     func waitid(kind: i32, id: u32, info: *bytes, options: i32) -> i32
     func kill(pid: i32, signal: i32) -> i32
@@ -97,8 +97,8 @@ priv extern "c" where @macos():
     func posix_spawnattr_init(attributes: **bytes) -> i32
     func posix_spawnattr_setflags(attributes: **bytes, flags: i16) -> i32
     func posix_spawnattr_destroy(attributes: **bytes) -> i32
-    func posix_spawnp(pid: *i32, file: *u8, actions: **bytes, attributes: **bytes, args: **u8, environment: **u8) -> i32
-    func _NSGetEnviron() -> ***u8
+    func posix_spawnp(pid: *i32, file: cstr, actions: **bytes, attributes: **bytes, args: *cstr, environment: *cstr) -> i32
+    func _NSGetEnviron() -> **cstr
 
 priv extern "shell32" where @windows():
     func CommandLineToArgvW(line: wstr, count: *i32) -> *wstr
@@ -153,7 +153,7 @@ func args() -> &listview[&strview] where not @windows():
     with lock(startup.given):
         if startup.given.value.args.len == 0:
             for i in 0..@argc():
-                append(startup.given.value.args, view(((@argv() as *bytes + i * 8) as **u8).*))
+                append(startup.given.value.args, view(((@argv() as *bytes + i * 8) as *cstr).*))
         return startup.given.value.args
 
 func args() -> &listview[&strview] where @windows():
@@ -369,7 +369,7 @@ priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32)
     return i64(pid)
 
 # the arguments as C takes them, in one block: a command goes to sh
-priv func arguments(launched: &listview[&strview]|&strview) -> **u8 where not @windows():
+priv func arguments(launched: &listview[&strview]|&strview) -> *cstr where not @windows():
     command := ["/bin/sh", "-c", ""]
     program: &listview[&strview]
     if launched is &strview:
@@ -384,15 +384,15 @@ priv func arguments(launched: &listview[&strview]|&strview) -> **u8 where not @w
     args := malloc(size)
     at := table
     for i in 0..=program.len:
-        slot := (args + i * 8) as **u8
-        slot.* = 0 as *u8
+        slot := (args + i * 8) as *cstr
+        slot.* = 0 as cstr
         if i < program.len:
             text := args + at
             memcpy(text, ptr(program[i].*), program[i].len)
             ((text + program[i].len) as *u8).* = 0
-            slot.* = text as *u8
+            slot.* = text as cstr
             at += program[i].len + 1
-    return args as **u8
+    return args as *cstr
 
 # the program inherits only its three handles, and gets no window of its own when this one has no console
 priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
@@ -527,9 +527,9 @@ func executable() -> &strview where @macos():
     buf: array[u8, 4096]
     size: u32 = 4096
     full: array[u8, 4096]
-    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as *u8, ptr(full) as *u8) as u64 == 0:
+    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as cstr, ptr(full) as *u8) as u64 == 0:
         return ""
-    return tmp(view(ptr(full) as *u8))
+    return tmp(view(ptr(full) as cstr))
 
 func executable() -> &strview where @windows():
     buf: array[u16, 4096]
@@ -545,7 +545,7 @@ func current_dir() -> &strview where not @windows():
     buf: array[u8, 4096]
     if getcwd(ptr(buf) as *u8, 4096) as u64 == 0:
         return ""
-    return tmp(view(ptr(buf) as *u8))
+    return tmp(view(ptr(buf) as cstr))
 
 func current_dir() -> &strview where @windows():
     buf: array[u16, 4096]

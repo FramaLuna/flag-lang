@@ -344,13 +344,15 @@ operator [](g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Inte
 ```
 
 ### C text
-- `cstr` is the type `*u8`, a text that ends with a zero byte
+- `cstr` is a type of the language, the text of C, a pointer to bytes that end with a zero (see [Text](Reference.md#text)). A text literal goes to one by itself
 - `cstr(text: &strview) -> cstr` a copy with the zero, temporary
-- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy. It's what the compiler calls when a `&str` goes as a `cstr`
+- `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
-- `wstr` is the type `*u16`, a text of Windows in UTF-16 that ends with a zero, what the functions of Windows with a `W` at the end take
+- `operator +=(s: *&str, c: cstr)` appends the text, so `print(c)` shows it, and nothing for a null pointer
+- `wstr` is a type of the language, a text of Windows in UTF-16 that ends with a zero, what the functions of Windows with a `W` at the end take
 - `wstr(text: &strview) -> wstr` the text in UTF-16 with the zero, temporary: `LoadLibraryW(wstr(path))`. A byte that is not UTF-8 becomes U+FFFD
-- `tmp(w: wstr) -> &strview` a text of Windows in UTF-8, temporary. Half of a pair of surrogates alone becomes U+FFFD
+- `tmp(w: wstr) -> &strview` a text of Windows in UTF-8, temporary, empty for a null pointer. Half of a pair of surrogates alone becomes U+FFFD
+- `operator +=(s: *&str, w: wstr)` appends the text in UTF-8, so `print(w)` shows it
 
 ## fs
 Files, folders and paths. A file that you read or write by parts is a `File` of [core](#files), and the errors are the `FsError` of core.
@@ -676,7 +678,7 @@ func main():
 ## raylib
 Windows, drawing in 2D and 3D, input, textures and audio with [raylib](https://www.raylib.com). The library comes with raylib built for Linux on x86_64, for other systems put your own `libraylib.a` in the `lib` folder.
 
-The functions keep the names and the parameters of raylib, so its [cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) explains them, and the text goes as `cstr`.
+The functions keep the names and the parameters of raylib, so its [cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) explains them, and the text goes as `cstr`: a literal by itself, a `&str` with `c_text(label)`.
 - Window: `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot`
 - Drawing: `BeginDrawing`, `EndDrawing`, `ClearBackground`, `BeginMode2D`, `EndMode2D`, `BeginMode3D`, `EndMode3D`
 - Keys and mouse: `IsKeyPressed`, `IsKeyDown`, `IsKeyReleased`, `GetKeyPressed`, `GetCharPressed`, `IsMouseButtonPressed`, `IsMouseButtonDown`, `IsMouseButtonReleased`, `GetMousePosition`, `GetMouseDelta`, `GetMouseWheelMove`

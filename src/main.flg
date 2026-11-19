@@ -272,11 +272,11 @@ extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
     func _wfullpath(into: wstr, path: wstr, size: i64) -> wstr
     func getpid() -> i32
-    func qbe_main(count: i32, args: **u8) -> i32
-    func flag_embedded(index: i64, name: **u8, size: *i64) -> *bytes
-    func flag_version() -> *u8
-    func flag_stamp() -> *u8
-    func flag_target() -> *u8
+    func qbe_main(count: i32, args: *cstr) -> i32
+    func flag_embedded(index: i64, name: *cstr, size: *i64) -> *bytes
+    func flag_version() -> cstr
+    func flag_stamp() -> cstr
+    func flag_target() -> cstr
     func isatty(fd: i32) -> i32
 
 func main() -> i32:
@@ -440,7 +440,7 @@ func main() -> i32:
         output += "/flag-run-" + getpid() + suffix
     elif output.len == 0:
         output = "a" + suffix
-    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bytes emptyarray emptyfixmap IterationEnd never"
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bytes cstr wstr emptyarray emptyfixmap IterationEnd never"
     start := 0
     for k in 0..=builtin.len:
         if k == builtin.len or items(builtin)[k] == ' ':
@@ -460,6 +460,10 @@ func main() -> i32:
                 t.size = 4 * (id - F32 + 1)
             elif id == BYTES:
                 t.kind = Bytes
+            elif id == CSTR or id == WSTR:
+                t.kind = Ptr
+                t.size = 8
+                t.elem = U8 + id - CSTR # u8 or u16
             if t.size > 0:
                 t.align = t.size
             add_type(t)
@@ -489,7 +493,7 @@ func main() -> i32:
             part: &str = heap(comp.library[:-1])
             part += ".part" + getpid()
             _ = make_dir(view(part))
-            name: *u8
+            name: cstr
             size := 0
             data := flag_embedded(0, ptr(name), ptr(size))
             k := 0
@@ -594,11 +598,11 @@ func main() -> i32:
     if write_file(view(ssa), listing()) is FsError:
         eprint(comp.err, "cannot write ", ssa)
         return 1
-    args := array[*u8, 8]{"qbe", "-t", cstr(backend), "-o", asm, ssa, 0 as *u8, 0 as *u8}
+    args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm), c_text(ssa), 0 as cstr, 0 as cstr}
     if comp.debug:
         args[5] = "-g"
-        args[6] = ssa
-    if qbe_main(6 + i32(comp.debug), ptr(args) as **u8) != 0:
+        args[6] = c_text(ssa)
+    if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
         return 1
     if comp.debug:
         comp.assembly += dwarf()

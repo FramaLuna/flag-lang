@@ -313,7 +313,7 @@ When you pass an argument, the value is converted only if it's
 - `[]` going to a view, the empty one. Alone `[]` and `{}` have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from emptyarray, an empty literal has no type of its own`
 - an owner of `never`, `&list[never]` or `&map[never, never]`, going to any list or map: it's what `heap([])`, `heap({})`, `arena(a, [])` and `arena(a, {})` give, an empty owner that holds nothing, so the place says what it holds. Alone it has no type either, `x := heap([])` is `x cannot take its type from an empty literal, write the type: x: &list[i32]`, and it doesn't give a `$T` its type
 - a literal that fits the type
-- a text literal, or a `&str`, going to a `cstr`
+- a text literal going to a `cstr` (see [Text](#text))
 - a value going to a union that has its type, or a union going to a bigger union. A value that converts to members goes in through the one it fits best (see [Choosing an overload](#choosing-an-overload)): a `&str` into `&strview|i32`, an `i32` into `i64|&strview`, a `&list[i32]` into `&listview[i32]?`, and an `i16` into `i32|i64` goes in as an `i32`. That's also why `["a", s]` with `s: &str` is an `array[&strview, 2]`, and `[a, b]` with `a: i32` and `b: i64` an `array[i64, 2]`: the element type of a literal leaves out a type that converts to another one in it
 - a member going in or out of an untagged union
 
@@ -345,7 +345,7 @@ From a value that is not a number or a `bool`, a number type converts like an as
 A `bool` whose byte is not 0 or 1 is not a value of Flag, like a union without `null` that was never assigned: what `if`, `==` and `not` do with it is not defined. `as` makes one from an `u8` or from a struct of one byte, and so can an untagged union like `u8||bool`, a pointer or C.
 
 ### Pointers into fat pointers
-Assigning a `*bytes`, or a pointer to the element type, to a fat pointer sets only its address, and you set `len` yourself. It's how the library builds views over memory
+Assigning a `*bytes`, or a pointer to the element type, to a fat pointer sets only its address, and you set `len` yourself. It's how the library builds views over memory. A `cstr` is not such a pointer, `view(c)` reads its length (see [Text](#text))
 ```flag
 buf: array[u8, 4] = [104, 111, 108, 97]
 text: &strview
@@ -1377,7 +1377,7 @@ func drop(object: *Unknown):
 | `i32`, `u32` | `int`, `unsigned int` |
 | `i64`, `u64` | `long long`, `unsigned long long` |
 | `f32`, `f64` | `float`, `double` |
-| `*T`, `cstr` | pointers |
+| `*T`, `cstr`, `wstr` | pointers |
 | `extern func(T) -> U` | a pointer to a function |
 | structs, tuples, arrays inside structs, untagged unions | the same struct or union by value |
 
@@ -1388,14 +1388,18 @@ A `bool` that comes from C is 0 or 1 by its ABI, and one that C writes through a
 Tagged unions, fat pointers, the function values of Flag and `simd` can't cross to C, pass their parts or a pointer: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 
 ### Variadic functions
-A C function can end with `...`, the extra arguments that C passes one by one. A `func` of Flag gathers its extra arguments in a view instead, with `..items: T` (see [Extra arguments](#extra-arguments)), and `...` there is an error: `... is for the extra arguments of a C function, a func of Flag gathers them as ..items: T`. An `extern func` cannot have `..items`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, an integer literal goes as an `i32`, the `int` of C, when it fits, so `printf("%d", 7)` is right, and text is not converted there, use `cstr`.
+A C function can end with `...`, the extra arguments that C passes one by one. A `func` of Flag gathers its extra arguments in a view instead, with `..items: T` (see [Extra arguments](#extra-arguments)), and `...` there is an error: `... is for the extra arguments of a C function, a func of Flag gathers them as ..items: T`. An `extern func` cannot have `..items`. The extra arguments must be integers, floats, `bool`, pointers or `extern func` values, not function values of Flag, `f32` goes as a `double` like C does, an integer literal goes as an `i32`, the `int` of C, when it fits, so `printf("%d", 7)` is right, and a text literal goes as a `cstr`, so `printf("%s\n", "hola")` is right too. Other text goes like to a `cstr` parameter, with `cstr(s)` or `c_text(s)`.
 
 ### Text
-`cstr` is `*u8`, a text that ends with a zero byte
-- a text literal goes as a `cstr` without copying, literals already end with a zero
-- a `&str` goes as a `cstr` without copying when it has room for the zero after its text, and as a temporary copy when it's full. It never grows the text, so the other copies of that `&str` stay good
-- any other `&strview` needs `cstr(text)`, that makes a temporary copy
-- `view(c)` turns a `cstr` back into a `&strview`
+`cstr` is the text of C, a pointer to bytes that end with a zero. It's a type of its own, so what goes to a `cstr` says that it has the zero, and a `*u8` parameter takes no text
+- a text literal, a constant of text or an `@embed` goes as a `cstr` by itself, without copying: it already ends with a zero, in the read-only data of the program
+- a `&str` goes with `cstr(s)`, a temporary copy, or `c_text(s)`, which writes the zero after its text when it has room and gives its address. Alone it's an error that says so, `a &str goes to C with cstr(s), a temporary copy, or c_text(s), which writes a 0 after its text`, and any other `&strview` needs `cstr(s)`
+- a `*u8` that you know ends with a zero, like a buffer that C filled, goes with `as`: `view(ptr(buf) as cstr)`. Without it, `*u8 goes to cstr only with as cstr, which says a 0 ends its text`, and the other way is `c as *u8`
+- `view(c)` turns a `cstr` into a `&strview` over its text, empty when `c` is 0. A `&strview` doesn't take one by itself, `a cstr becomes a &strview with view(c), which reads its length`
+- `print(c)` and `"" + c` show the text, and nothing for a `cstr` at 0, while `c as u64` is the address, and `==` compares the addresses like on any pointer
+- `c.*` reads the first byte, and writing through `c` is an error, because a `cstr` may point to a literal: `c.* cannot be written, cstr may point to a literal, which is read only: write through c as *u8`
+
+`wstr` is the text of Windows in UTF-16, a pointer to `u16` that end with a zero, what the functions with a `W` at the end take. Nothing goes to it by itself, a literal neither: `wstr(s)` makes a temporary copy, and `tmp(w)` reads one back into UTF-8. `print(w)` shows the text, and `as` works like for a `cstr`.
 
 C's `printf` keeps what it prints in a buffer of its own, so into a pipe or a file its lines and the ones of `print` come out of order. Call `flush()` before C prints, and C's `fflush(NULL)` after it.
 
@@ -1559,7 +1563,6 @@ The last five are for `atomic`. QBE has five instructions of one total order, th
 ## Rough edges
 Things that work in a way that may surprise you, so be aware
 - Writing into a text literal through `items`, `ptr`, `as` or C compiles, and stops the program when it runs, `flag: invalid memory access` (see [Fat pointers](#fat-pointers)). A constant kept in data is read-only too, except on macOS. Copy the text to a `&str` first
-- `v: &strview = some_cstr` sets only the address and leaves `len` at 0 (see [Pointers into fat pointers](#pointers-into-fat-pointers)), `view(c)` is what reads the length
 - A function value of an overloaded or generic function needs a place that says its type. An argument is not one, so give it to a variable with its type first
 - An array or struct literal takes no type from the parameter it goes to, `f(ptr([1, 2]))` is a `*array[i64, 2]` even where `f` takes a `&listview[i32]`: give it to a variable with its type first
 - `trust` on a real error gives garbage, and it can crash

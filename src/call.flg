@@ -540,6 +540,16 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             hint = ", x[a:b] calls operator [:] where it called slice before 0.6: declare operator [:] in place of func slice"
         if name == "operator next" and try offers("next", args, at):
             hint = ", for calls operator next where it called next before 0.6: declare operator next in place of func next"
+        crossing: &strview = ""
+        for k, a in args:
+            s := first_sym(name)
+            while s != 0 and crossing.len == 0:
+                f := comp.syms[s].node
+                if callable(s, module, args, at) and k < params(f) and text(kid(f, k)) != ".." and not generic(kid(f, k)):
+                    crossing = text_of_c(a, try resolve(kid(f, k) + 1))
+                s = comp.syms[s].next
+        if crossing.len > 0:
+            hint = ", " + crossing
         gathered := false
         free_type := 0 # the $T that ..items leaves without a type when no extra argument gives it one
         g := first_sym(name)
@@ -653,6 +663,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             v := args[k]
             if v.lit and integer(v.type) and fits(v, I32): # the int of C
                 v = try convert(v, I32, Arg{}, at)
+            if v.lit and textual(v.type):
+                v = try convert(v, CSTR, Arg{}, at)
+            if textual(v.type):
+                return fail(text_of_c(v, CSTR), at)
             t := comp.types[v.type]
             if aggregate(v.type) or t.kind == Void or t.kind == Func and not t.foreign:
                 return fail(name + " expects integers, floats, bool and pointers after its declared parameters but got " + t.name, at)
@@ -897,7 +911,7 @@ func near(s: i64, at: i64) -> i64:
 
 func hand(given: Value, to: i64, foreign: bool, at: i64) -> Pass|Fail:
     v := given
-    if comp.types[to].kind == Ptr and comp.types[to].elem == given.type:
+    if points_to(to, given.type):
         v = address(given)
     else:
         v = try convert(given, to, Arg{}, at)
@@ -1190,7 +1204,7 @@ func match(n: i64, v: Value) -> i64|Fail:
             return -1
         return inner + STEP
     if node.kind == TUnary and tok.text == "*":
-        if t.kind == Ptr:
+        if points_to(v.type, t.elem):
             inner := try match(n + 1, Value{type = t.elem, at = v.at})
             if inner < 0 or try resolve(n + 1) != t.elem:
                 return -1
@@ -1374,7 +1388,7 @@ func accepts(to: i64, v: Value) -> i64:
         return STEP
     if v.lit and integer(v.type) and target.kind == Float:
         return i64(to == F64) # below any integer
-    if (v.lit or comp.types[v.type].name == "&str") and comp.types[v.type].kind == Fat and target.kind == Ptr and target.elem == U8:
+    if v.lit and textual(v.type) and to == CSTR:
         return STEP
     if untagged_member(to, v.type) or untagged_member(v.type, to) or target.kind == Union and within(v.type, to):
         return STEP
@@ -1445,12 +1459,8 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         if to == F32:
             f.at.kind = Single
         return Value{type = to, at = f.at}
-    if v.lit and from.kind == Fat and target.kind == Ptr and target.elem == U8:
+    if v.lit and textual(v.type) and to == CSTR: # a literal ends with a 0 already
         return Value{type = to, at = op1(L, "loadl", v.at)}
-    if from.name == "&str" and target.kind == Ptr and target.elem == U8:
-        args: &list[Value] = heap([])
-        append(args, v)
-        return invoke("c_text", args, at)
     if (target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
         found := try member_for(to, v, at)
         if found != VOID:
@@ -1504,6 +1514,9 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         return Value{type = to, at = slot, mem = true}
     if integer(v.type) and integer(to):
         return fail("cannot assign " + from.name + " to " + target.name + ", an integer only grows by itself: convert it with " + target.name + "(...)", at)
+    crossing := text_of_c(v, to)
+    if crossing.len > 0:
+        return fail(crossing, at)
     return fail("cannot assign " + from.name + " to " + target.name + ", and no operator = makes " + target.name + " from it", at)
 
 func member_for(to: i64, v: Value, at: i64) -> i64|Fail:
@@ -1570,6 +1583,31 @@ func untagged_member(t: i64, m: i64) -> bool:
         if comp.items[comp.types[t].first + i].type == m:
             return true
     return false
+
+# a pointer to t, which takes a variable of t by its address, and not a text of C
+func points_to(p: i64, t: i64) -> bool:
+    return comp.types[p].kind == Ptr and comp.types[p].elem == t and p != CSTR and p != WSTR
+
+# how a text of C goes to or from a text of Flag or a pointer, or nothing when v goes there by itself or they are no such pair
+func text_of_c(v: Value, to: i64) -> &strview:
+    from := comp.types[v.type].name
+    if (to == CSTR or to == WSTR) and points_to(v.type, comp.types[to].elem):
+        return from + " goes to " + comp.types[to].name + " only with as " + comp.types[to].name + ", which says a 0 ends its text"
+    if (v.type == CSTR or v.type == WSTR) and points_to(to, comp.types[v.type].elem):
+        return from + " goes to " + comp.types[to].name + " only with as " + comp.types[to].name
+    if points_to(to, U8) and textual(v.type):
+        return "*u8 takes no text, the text of C is cstr"
+    if to == CSTR and from == "&str":
+        return "a &str goes to C with cstr(s), a temporary copy, or c_text(s), which writes a 0 after its text"
+    if to == CSTR and textual(v.type) and not v.lit:
+        return "a &strview goes to C with cstr(s), a temporary copy"
+    if to == WSTR and textual(v.type):
+        return "a text goes to C as wstr with wstr(s), a temporary copy in UTF-16"
+    if v.type == CSTR and textual(to):
+        return "a cstr becomes a &strview with view(c), which reads its length"
+    if v.type == WSTR and textual(to):
+        return "a wstr becomes a &strview with tmp(w), a temporary copy in UTF-8"
+    return ""
 
 func widens(from: i64, to: i64) -> bool:
     a := comp.types[from]
@@ -1743,7 +1781,7 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
 
 # held says that addr holds a value already, so an owner there copies a view into its memory, and a new one has none
 func assign(addr: Arg, t: i64, v: Value, at: i64, held: bool = false) -> Fail?:
-    if comp.types[t].kind == Fat and comp.types[v.type].kind == Ptr and (comp.types[v.type].elem == BYTES or comp.types[v.type].elem == element(t)):
+    if comp.types[t].kind == Fat and (points_to(v.type, BYTES) or points_to(v.type, element(t))):
         store(v.type, v, addr)
         return null
     dest := addr

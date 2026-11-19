@@ -141,12 +141,8 @@ func panic(message: &strview, place: &strview = @here()) -> never:
 func on_panic(hook: func(&strview, &strview)):
     failure.hook = hook
 
-type cstr = *u8
-
 func cstr(text: &strview) -> cstr:
-    return ptr(tmp(text).*) as *u8
-
-type wstr = *u16
+    return ptr(tmp(text).*) as cstr
 
 func wstr(text: &strview) -> wstr:
     out := tmp(text.len * 2 + 2) as *u16
@@ -166,12 +162,14 @@ func wstr(text: &strview) -> wstr:
         at.* = u16(code)
         at = (at as *bytes + 2) as *u16
     at.* = 0
-    return out
+    return out as wstr
 
 func tmp(w: wstr) -> &strview:
+    if w as u64 == 0:
+        return ""
     out: &str = heap("")
     defer free(out)
-    at := w
+    at := w as *u16
     while at.* != 0:
         code := u32(at.*)
         at = (at as *bytes + 2) as *u16
@@ -480,9 +478,15 @@ func view(s: &str) -> &strview:
 func view(c: cstr) -> &strview:
     out: &strview
     if c as u64 != 0:
-        out = c
+        out = c as *u8
         out.len = strlen(c)
     return out
+
+operator +=(s: *&str, c: cstr):
+    s.* += view(c)
+
+operator +=(s: *&str, w: wstr):
+    s.* += tmp(w)
 
 func view(bytes: &listview[u8]) -> &strview:
     out: &strview
@@ -725,7 +729,7 @@ func c_text(s: &str) -> cstr:
         return cstr(view(s))
     last := (ptr(s.*) + s.len) as *u8
     last.* = 0
-    return ptr(s.*) as *u8
+    return ptr(s.*) as cstr
 
 operator =(s: *&str, v: &strview) -> &str:
     s.len = 0
@@ -1036,7 +1040,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
     out = ptr(buf) as *bytes
     out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
     while digits < most:
-        back := strtod(at, 0 as *bytes)
+        back := strtod(at as cstr, 0 as *bytes)
         if back == f or single and f32(back) == f32(f):
             break
         digits += 1
@@ -1123,7 +1127,7 @@ operator +=(s: *&str, f: Fixed):
         if tie and out[-1] % 2 == 1:
             bits.* += 2
             out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
-        if out[0] == '-' and strtod(ptr(out.*) as *u8, 0 as *bytes) == 0.0:
+        if out[0] == '-' and strtod(ptr(out.*) as cstr, 0 as *bytes) == 0.0:
             out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
 

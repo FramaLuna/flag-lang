@@ -1218,7 +1218,7 @@ You declare C functions inside an `extern` block with the library they come from
 ```flag
 extern "c":
     func abs(x: i32) -> i32
-    func snprintf(into: *u8, size: i64, format: *u8, ...) -> i32
+    func snprintf(into: *u8, size: i64, format: cstr, ...) -> i32
 
 extern "m":
     func sqrt(x: f64) -> f64
@@ -1226,7 +1226,7 @@ extern "m":
 extern "ws2_32" where @windows():
     func WSAStartup(version: u16, into: *bytes) -> i32
 ```
-A C string has the type `cstr` (it is a `*u8`), and a text literal or a `&str` is converted to a `cstr` for you when you pass it. Other text needs the function `cstr`, the copy lives in the temporary memory like the results of `+`, and `view` turns a `cstr` back into a `&strview`. Structs are passed like C does.
+A C string has the type `cstr`, a pointer to a text that ends with a zero, and a text literal goes to a `cstr` by itself. Other text needs the function `cstr`, a copy that lives in the temporary memory like the results of `+`, or `c_text` for a `&str`, and `view` turns a `cstr` back into a `&strview`. `print` of a `cstr` shows its text. Structs are passed like C does.
 ```flag
 extern "c":
     func strlen(s: cstr) -> i64
