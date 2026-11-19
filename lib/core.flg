@@ -191,9 +191,9 @@ priv MOST = 0x7fff_ffff_ffff_ffff # the most bytes C allocates at once, PTRDIFF_
 
 func out_of_memory() -> never:
     tell(9)
-    message: &strview = "flag: out of memory\n"
-    write(2, ptr(message.*), message.len)
-    exit(9)
+    drain()
+    report("flag: out of memory\n")
+    _exit(9)
 
 func out_of_bounds(i: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
     panic("index " + i + " is out of bounds, length " + len, place)
@@ -2244,10 +2244,7 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
     tell(code)
     if what == "stack overflow":
         c.leaf = 0 # the stack pointer can be past the end of the stack
-    if try_lock(io.lock):
-        for s in io.streams:
-            if s as u64 != 0 and try_lock(s.writing):
-                drain(s)
+    drain()
     report("flag: ")
     report(what)
     if what == "invalid memory access":
@@ -2256,6 +2253,13 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
     report("\n")
     trace(c)
     _exit(code)
+
+# what was written goes out, without memory and without waiting for a lock, and the locks it takes stay taken: the program ends
+priv func drain():
+    if try_lock(io.lock):
+        for s in io.streams:
+            if s as u64 != 0 and try_lock(s.writing):
+                drain(s)
 
 # the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
 priv func trace(c: Crash):

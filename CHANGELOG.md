@@ -52,6 +52,7 @@ Changed
 - Lengths are `i64`: the `len` and `cap` of every fat pointer, the counter of a `for` over an array, a list, a slice or text, and every length, count, position and size of the library, like what `find`, `binary_search`, `read`, `ready`, `cores` and `file_size` give, the `count` of `utf8` and of `bits`, and the nodes of `json`. `l.len - 3` with two elements is `-1`, where it was 18446744073709551615, and a length mixes and compares with the other signed integers without a conversion
 - There is no `usize`: a length or a count is an `i64`, an address is a `*bytes`, and an `extern` declares the `size_t` of C as `i64`, so `memcpy(to, from, l.len)` takes the length as it is. Naming it is an error, `there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64`, and `Integer` of core lost it. A handle of the system, like a `pthread_t` or a `HANDLE`, is an `u64`, and a test for the null pointer is `p as u64 == 0`
 - The builtin types after `u64` have one tag less, because the tag of a builtin type is its place among them: the tag of `f32` is 10 where it was 11. So a union that holds an `f32`, an `f64` or `IterationEnd` does not cross between a program built with 0.6 and a library built with 0.5
+- `not`, `and` and `or` of a `bool` that the compiler knows give one it knows: `not @windows()` and `@linux() and @x86_64()` choose the side of `a if c else b` while it compiles, and `@windows() and f()` is `false` on Linux without checking `f()`, where they were computed when the program ran
 - A negative size is never there, like a size too big: `reserve(l, -1)` stops with `flag: out of memory`, and `try_reserve` of a list, a text, a map or an arena gives `NoMemory`, without asking the system. `temp(-1)` and an arena stop the same way
 
 New
@@ -60,7 +61,7 @@ New
 - `a..=b`, the range that ends at `b`, in a `for` and in a `case`, with the precedence of `..`. The loop never computes `b + 1`, so it reaches the end of the type: with `last: u8 = 255`, `for b in 0..=last` runs 256 times, where `0..last + 1` didn't run, and `case 128..=255:` fits a `u8`
 - `not` of an integer flips its bits with the width of its type, `not u8(1)` is `254`, and `not` of a literal takes the type of its place like the literal does: `mask: u32 = not 0xff` is `0xffff_ff00`
 - `operator not`, with one parameter, the only unary operator a type can declare
-- `a if c else b`, the loosest operator. `c` runs first and then only the side it chose, `a` sees what `c` narrowed and `b` what `not c` narrowed, and it nests to the right. Its type follows the rule of `ifnull`, and a side can be a call that never returns: `n := given if given is i64 else panic("no number")`
+- `a if c else b`, the loosest operator. `c` runs first and then only the side it chose, `a` sees what `c` narrowed and `b` what `not c` narrowed, and it nests to the right. Its type follows the rule of `ifnull`, and a side can be a call that never returns: `n := given if given is i64 else panic("no number")`. When the compiler knows `c`, like `@linux()`, a constant `bool` or `@sizeof($T) == 8`, it's the side it chose, and a literal when that side is one: `19 if @linux() else 8` goes to an `i32` and can be the size of an array. The other side is read but not checked, like a `where` block that doesn't hold
 - `return`, `break` and `continue` go as the last link of `iferror` and `ifnull`, and leave like a call that never returns, so the value has no error or `null` after them: `cut := find(line, "=") ifnull return BadLine{i + 1}`, `n := parse_int(text) ifnull return null`, `total += parse_int(text) ifnull continue`. A default value cannot hold them, it runs in the caller: `a default value runs in the caller, so return would return from the caller: write a value after ifnull`
 - When `a ifnull b` or `a iferror b` is a whole statement, `b` can be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Where a value is needed it's an error, `an assignment on the right of ifnull is a statement of its own, n would be left without a value`
 - `x == null` and `x != null`, and `==` and `!=` with any void type of the union, narrow like `is`, in both orders: `if x != null:` narrows the block, `if x == null: return` leaves `x` without `null`, and `c == Red` narrows an enum
@@ -73,13 +74,16 @@ New
 
 Fixed
 - `-memory` follows the temporaries of a thread through a function that waits for it: `s = finish(t)` inside a `with scratch():`, with a `finish` of yours that returns `wait(t)`, and `print(s)` after the `with` warns `s points to memory that may be freed already`, like a `wait` in place did
-- QBE stopped with an assertion on rv64 when a big function spilled the condition of a branch more than 2 KiB below its frame pointer, and so did flagc with `-target linux-riscv64`: the address of the slot goes through a register, as for a load. QBE has forty-seven changes
+- QBE stopped with an assertion on rv64 when a big function spilled the condition of a branch more than 2 KiB below its frame pointer, and so did flagc with `-target linux-riscv64`: the address of the slot goes through a register, as for a load
 - `-memory` took the text `join` of core for the wait of a thread, so it lost the temporary that `join(words, "-")` gives, and a `with scratch():` that released it before a read said nothing
 - `func f(a: i32, a: i32)` compiled, and `f(1, 2)` gave 2: two parameters with one name are `variable a is already declared and still in scope`, and so is `for x, x in l`, where the counter hid the element
+- `out_of_memory()` sends out what the program printed before its message, so with the output in a file `flag: out of memory` comes after what was printed, where it came first. It asks for no memory and ends at once, like a crash
+- A count above the largest `i64` is an error, `array[u8, 0x8000_0000_0000_0000]` gives `9223372036854775808 does not fit in i64, the largest i64 is 9223372036854775807`, where its `$$n` was negative
 - A type with a `$T` inside matches only the type it names: `count(m: &map[$K, &strview])` took a `&map[&strview, &str]` and then failed with `cannot assign &map[&strview, &str] to &map[&strview, &strview]`, and `*$T`, `array[$T, $$n]` and `Thread[$T]` took another type than the `$T` that a parameter before them bound. Now they are `no overload of count matches (&map[&strview, &str])`
 
 Faster
 - Checking the compiler takes 4 % fewer instructions, 918 M where it took 958 M: a call to a function without `$T` makes its instance without matching its arguments again, which choosing the overload already did
+- A division or a remainder of a signed integer by a power of two that the compiler knows is shifts, like one without sign: `len / 2` and `i % 8` on `i64`, which lengths are now. A loop of `i / 2 + i % 8 + i / 64` over 100 million `i64` takes 0.58 G cycles where it took 7.8 G. QBE has forty-eight changes
 
 ## 0.5.0
 

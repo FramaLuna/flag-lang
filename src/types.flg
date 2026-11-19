@@ -399,22 +399,27 @@ func instance(n: i64, fat: bool) -> i64|Fail:
 func count_of(n: i64) -> i64|null|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
+    count: u64
     if node.kind == Literal:
-        return i64(try int_value(tok.text, tok.at))
-    if node.kind != TName or node.size != 1:
+        count = try int_value(tok.text, tok.at)
+    elif node.kind != TName or node.size != 1:
         return null
-    if tok.kind == Generic:
+    elif tok.kind == Generic:
         b := bound(tok.text)
         if b != 0 and comp.binds[b - 1].type == VOID:
             return comp.binds[b - 1].n
         return null
-    s := try named(tok.text, node.module, tok.at)
-    if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
-        return null
-    v := try constant(s, VOID, tok.at)
-    if not v.lit or v.neg or not integer(v.type):
-        return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
-    return i64(v.n)
+    else:
+        s := try named(tok.text, node.module, tok.at)
+        if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
+            return null
+        v := try constant(s, VOID, tok.at)
+        if not v.lit or v.neg or not integer(v.type):
+            return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
+        count = v.n
+    if count > largest(I64):
+        return fail("" + count + " does not fit in i64, the largest i64 is " + largest(I64), tok.at)
+    return i64(count)
 
 func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     sym := comp.syms[s]

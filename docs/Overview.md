@@ -656,7 +656,7 @@ func kind(v: $T) -> &strview where $T is i32|i64:
 func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
-It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`. Those are a `bool` in any expression too, `if @windows():`, but an `if` checks both branches on every system.
+It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`. Those are a `bool` in any expression too, `if @windows():`, but an `if` checks both branches on every system. `a if c else b` with a `c` the compiler knows is only the side it chose, so `19 if @linux() else 8` is a literal that goes to an `i32`.
 
 A `where` at the start of a line opens a block that exists only where it holds. Inside a function it holds statements, so code that calls a C function of one system goes there, and at the root it holds declarations, only for a system or a processor
 ```flag

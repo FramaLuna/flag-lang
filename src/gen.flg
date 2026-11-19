@@ -2037,6 +2037,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 return lanes("not", ptr([v]), v.type, tok.at)
             if t.kind == Simd:
                 return fail("not works on lanes of integers and masks, and " + t.name + " holds floats: reinterpret it as bits with as simd[u" + 8 * lane.size + ", " + t.count + "]", tok.at)
+            if v.type == BOOL and v.lit:
+                return truth(v.n == 0)
             if v.type == BOOL:
                 return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
             if v.lit and integer(v.type) and v.neg:
@@ -2201,7 +2203,10 @@ func operation(n: i64, want: i64) -> Value|Fail:
         i -= 1
         k := chain[i]
         o = text(k)
-        if (o == "and" or o == "or") and l.type == BOOL:
+        if (o == "and" or o == "or") and l.type == BOOL and l.lit:
+            if (l.n == 1) == (o == "and"): # a left side the compiler knows leaves the right one, or decides alone, like a if c else b
+                l = try condition(node_end(k + 1))
+        elif (o == "and" or o == "or") and l.type == BOOL:
             slot := alloc(BOOL)
             l_done := label()
             add(Ins{op = "storew", a = int_arg(i64(o == "or")), b = slot})
@@ -2285,6 +2290,8 @@ func choice(n: i64, want: i64) -> Value|Fail:
     at := comp.tokens[comp.nodes[n].tok].at
     cond := node_end(n + 1)
     c := try condition(cond)
+    if c.lit: # the compiler knows c, so the side it chose is all there is, like a where
+        return value(n + 1 if c.n == 1 else node_end(cond), want)
     l_sides := array[u32, 2]{label(), label()}
     l_ends := array[u32, 2]{label(), label()}
     branch(c.at, l_sides[0], l_sides[1])

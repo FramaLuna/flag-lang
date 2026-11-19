@@ -168,7 +168,7 @@ func main():
 - `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c)), and `@sizeof(T)` the size of a type in bytes, as an integer literal. They belong to the language, not to core (see [Builtins](Reference.md#builtins))
 - `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`. A `*bytes` moves by bytes with `+` and `-`, so `memcpy(to + 8, from, n)` writes 8 bytes past `to` (see [Arithmetic](Reference.md#arithmetic))
-- `out_of_memory()` writes `flag: out of memory` to the error output and ends the program with exit code 9. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
+- `out_of_memory()` sends out what the program printed, writes `flag: out of memory` to the error output and ends the program at once with exit code 9, like a crash, without asking for memory. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
 
 A program that must go on without memory, like an engine that loads a level, makes room first with `try_reserve`, which gives the error `NoMemory` instead of ending the program, and then fills it without allocating. There is one for lists, text, maps and arenas
 ```flag

@@ -62,7 +62,7 @@ func connect(host: &strview, port: u16) -> Socket|NetError:
     while entry as u64 != 0:
         fields := entry as *array[i32, 4]
         fd := i64(socket(fields.*[1], sealed(fields.*[2]), fields.*[3]))
-        address := ((entry + address_in_info()) as **bytes).*
+        address := ((entry + ADDRESS_IN_INFO) as **bytes).*
         size := ((entry + 16) as *u32).*
         if fd >= 0:
             prepare(fd)
@@ -130,7 +130,7 @@ func address(host: &strview, port: u16) -> Address|NetError:
         if code > 0:
             code = 0 - code
         return NetError{code, "find", host}
-    raw := ((found + address_in_info()) as **array[u8, 28]).*
+    raw := ((found + ADDRESS_IN_INFO) as **array[u8, 28]).*
     out := Address{port = port}
     if (found as *array[i32, 4]).*[1] == 2: # AF_INET
         out.ip[10] = 255
@@ -172,7 +172,7 @@ operator +=(s: *&str, a: Address):
         inet_ntop(2, ptr(a.ip[12]) as *bytes, ptr(text) as *u8, 64)
         s.* += view(ptr(text) as cstr) + ":" + a.port
     else:
-        inet_ntop(family6(), ptr(a.ip) as *bytes, ptr(text) as *u8, 64)
+        inet_ntop(FAMILY6, ptr(a.ip) as *bytes, ptr(text) as *u8, 64)
         s.* += "[" + view(ptr(text) as cstr) + "]:" + a.port
 
 func ready(waiting: &slice[$T], seconds: f64 = 0.0) -> &slice[i64] where @can_assign(Socket|Server|Udp, $T):
@@ -317,12 +317,11 @@ priv func open_udp() -> i64 where @windows():
     WSAIoctl(fd, 0x9800_000c, ptr(no) as *bytes, 4, 0 as *bytes, 0, ptr(got), 0 as *bytes, 0 as *bytes) # SIO_UDP_CONNRESET off: an old ICMP port unreachable would fail the next receive
     return fd
 
-priv func family6() -> i32:
-    return 23 if @windows() else 30 if @macos() else 10
+priv FAMILY6 = 23 if @windows() else 30 if @macos() else 10
 
 priv func socket_address(a: Address) -> array[u8, 28] where not @macos():
     out: array[u8, 28] # a struct sockaddr_in6
-    out[0] = u8(family6())
+    out[0] = FAMILY6
     out[2] = u8(a.port >> 8)
     out[3] = u8(a.port and 255)
     for i in 0..16:
@@ -332,15 +331,14 @@ priv func socket_address(a: Address) -> array[u8, 28] where not @macos():
 priv func socket_address(a: Address) -> array[u8, 28] where @macos():
     out: array[u8, 28]
     out[0] = 28 # sin6_len
-    out[1] = u8(family6())
+    out[1] = FAMILY6
     out[2] = u8(a.port >> 8)
     out[3] = u8(a.port and 255)
     for i in 0..16:
         out[8 + i] = a.ip[i]
     return out
 
-priv func address_in_info() -> i64:
-    return 24 if @linux() else 32
+priv ADDRESS_IN_INFO = 24 if @linux() else 32
 
 priv func inet_address() -> array[u8, 16] where @linux() or @windows():
     return array[u8, 16]{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
