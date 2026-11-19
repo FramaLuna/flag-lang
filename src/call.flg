@@ -733,7 +733,16 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, extras: Value, at: i64) -
         blit(extras.at, offset(block.at, used), extras.type)
         add(Ins{op = "storel", a = offset(block.at, used), b = offset(block.at, view)})
     first := comp.body.len
-    store(ty.ret, try emit(code, passes, ty.ret, false, at, shape), offset(block.at, HEAD))
+    used = start + 8
+    for k in 0..ty.count: # a value that is not a number or a pointer goes to the function from the block, like in the thread
+        t := comp.items[ty.first + k].type
+        if aggregate(t):
+            passes[k].arg = offset(block.at, used)
+        used += room(t)
+    if big(ty.ret): # and the result goes to the block
+        try emit(code, passes, ty.ret, false, at, shape, offset(block.at, HEAD))
+    else:
+        store(ty.ret, try emit(code, passes, ty.ret, false, at, shape), offset(block.at, HEAD))
     for i in first..comp.body.len:
         comp.body[i].ghost = true # the call as -memory sees it, in this thread
     args.len = 0
@@ -901,13 +910,14 @@ func hand(given: Value, to: i64, foreign: bool, at: i64) -> Pass|Fail:
     return Pass{how, x, is_number(x)}
 
 # a call through a function value keeps its type in c, -memory follows it into each function taken as that type
-func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64, shape: i64 = VOID) -> Value|Fail:
+func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64, shape: i64 = VOID, into: Arg = Arg{}) -> Value|Fail:
     i := Ins{op = "call", a = callee, c = int_arg(shape), first = u32(comp.passes.len)}
     for p in passes:
         append(comp.passes, p)
-    result := Arg{}
+    result := into
     if big(ret) and not foreign:
-        result = alloc(ret)
+        if into.kind == Empty:
+            result = alloc(ret)
         append(comp.passes, Pass{L, result, false})
     elif ret != VOID and ret != NEVER:
         i.cls = try passing(ret, foreign, at)

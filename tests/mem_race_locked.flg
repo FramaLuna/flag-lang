@@ -1,0 +1,20 @@
+type Pool:
+    served: Lock[i64]
+    names: Lock[&list[&str]]
+
+func serve(p: *Pool, name: &strview):
+    with lock(p.served):
+        p.served.value += 1
+    owned: &str = heap(name)
+    with lock(p.names):
+        append(p.names.value, owned)
+
+func main():
+    pool := Pool{names = Lock[&list[&str]]{value = heap([])}}
+    t := parallel serve(pool, "one")
+    serve(pool, "two")
+    wait(t)
+    print(pool.served.value, " ", pool.names.value.len)
+    for name in pool.names.value:
+        free(name)
+    free(pool.names.value)

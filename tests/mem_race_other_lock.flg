@@ -1,0 +1,19 @@
+type Shared:
+    count: Lock[i64]
+    other: Lock[i64]
+
+type Holder:
+    shared: *Shared
+
+func work(h: Holder):
+    with lock(h.shared.count):
+        h.shared.count.value += 1
+    with lock(h.shared.other):
+        h.shared.count.value += 1
+
+func main():
+    s: Shared
+    t := parallel work(Holder{ptr(s)})
+    work(Holder{ptr(s)})
+    wait(t)
+    print(s.count.value)

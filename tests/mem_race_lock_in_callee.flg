@@ -1,0 +1,14 @@
+func bump(count: *Lock[i64]):
+    count.value += 1 # the one that calls it holds the lock
+
+func work(count: *Lock[i64]):
+    for i in 0..1000:
+        with lock(count):
+            bump(count)
+
+func main():
+    count: Lock[i64]
+    t := parallel work(count)
+    work(count)
+    wait(t)
+    print(count.value)

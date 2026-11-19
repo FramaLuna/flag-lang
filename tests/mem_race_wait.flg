@@ -1,0 +1,18 @@
+type Result:
+    sum: i64
+    count: i64
+
+func total(items: &listview[i64], out: *Result):
+    for x in items:
+        out.sum += x
+        out.count += 1
+
+func main():
+    items: &list[i64] = heap([1, 2, 3])
+    defer free(items)
+    r: Result
+    r.sum = 0 # before parallel the thread sees it
+    t := parallel total(items, r)
+    print(items.len) # both read, nothing changes
+    wait(t)
+    print(r.sum, " ", r.count) # after wait this sees what it wrote

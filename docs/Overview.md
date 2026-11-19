@@ -1035,7 +1035,17 @@ func main():
     for w in workers:
         wait(w)
 ```
-`print` writes each line whole, so the lines of two threads never mix. `-memory` checks threads too: a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it. What the threads change at once in shared memory is yours to guard.
+`print` writes each line whole, so the lines of two threads never mix. What a thread writes another one sees after `parallel`, `wait`, a `Lock`, a `Channel` or an atomic, and `done` only says that the thread ended: what it wrote is read after `wait`. `-memory` checks threads too: two threads that may use the same memory at once while one of them changes it, outside a lock that both hold and outside an atomic, a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it.
+```flag
+func add(count: *i64):
+    count.* += 1
+
+func main():
+    count: i64
+    a := parallel add(ptr(count))
+    add(ptr(count)) # -memory: count is changed by a thread that may run at the same time as this
+    wait(a)
+```
 
 ## Error handling
 ### The error type
@@ -1251,7 +1261,7 @@ A library that a program loads is built with `-shared`, and the program loads it
 
 ## Memory safety
 ### The flag
-Compiling with `-memory` checks the memory of your program at compile time. Outside `@trust`, a program that it passes without warnings doesn't lose memory, doesn't free it twice or free what is not on the heap, and doesn't use it after it was freed: its border is `trust`, `as`, moving a `*bytes` and what C does (see [The memory checker](Reference.md#the-memory-checker)). It warns about:
+Compiling with `-memory` checks the memory of your program at compile time. Outside `@trust`, a program that it passes without warnings doesn't lose memory, doesn't free it twice or free what is not on the heap, doesn't use it after it was freed, and has no two threads that use the same memory at once while one of them changes it: its border is `trust`, `as`, moving a `*bytes` and what C does (see [The memory checker](Reference.md#the-memory-checker)). It warns about:
 - memory that is never freed
 - memory freed twice
 - memory used after it was freed or after a list grew and moved it
@@ -1259,6 +1269,7 @@ Compiling with `-memory` checks the memory of your program at compile time. Outs
 - `free` of a pointer that lives in an arena, and an arena that is never freed
 - pointers to the stack of a function, or of a block, used after it ended
 - an owner that may grow without memory, because only some path gave it one
+- two threads that use the same memory at once while one of them changes it, outside a lock that both hold
 
 It is optional because it makes the compilation slower.
 ```sh
