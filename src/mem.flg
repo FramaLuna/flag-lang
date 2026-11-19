@@ -287,7 +287,7 @@ func check_memory():
         if func.node != 0:
             f.shown = text(func.node)
             if comp.tokens[comp.nodes[func.node].tok].kind != Name:
-                quoted: &str = "'"
+                quoted: &str = heap("'")
                 quoted += text(func.node) + "'"
                 f.shown = view(quoted)
         for k in func.temps..func.last + 2:
@@ -1447,13 +1447,13 @@ func visit(block: i64):
                     else:
                         text += " is never freed"
                     warn(view(text), x.pos, "it is still not freed when this returns", o.pos, x.strict)
-                escape(given, o.pos)
+                escape(given, o.pos, true)
                 if not mem.fn.settles:
                     outlived(mem.fn.arenas and mem.marks.live, 0, "")
                 for id in mem.present:
                     owner := i64(mem.fn.cells[id].owner)
                     if mem.ticked[id] == mem.tick and (owner == RETURNED or owner < SLOTS and (mem.fn.outer[owner] or may[owner])):
-                        escape(cell_value(id), o.pos)
+                        escape(cell_value(id), o.pos, true)
             mem.seen = false
 
 # wait moves the scratch of the thread to the one of this thread, or of the caller when the thread came from it
@@ -2406,8 +2406,12 @@ func translate(v: Target) -> Target:
     out.writer = v.writer
     return out
 
-func escape(v: Target, pos: i64):
+# a pointer into the stack that this function returns, or gives to a thread that may outlive it
+func escape(v: Target, pos: i64, returned: bool):
     if v.slot == 0:
+        return
+    if returned:
+        warn(STACK, pos, "", 0, false)
         return
     shown := mem.fn.shown
     text: &str
@@ -2442,12 +2446,12 @@ func outlived(released: Set, at: i64, note: &strview):
             warn("the thread that receives this temporary may still use it when its with scratch() releases it: wait for that thread inside it, or send a &str", mem.fn.objs[h].sent, note, at, false)
 
 func leaving(v: Target, pos: i64):
-    escape(v, pos)
+    escape(v, pos, false)
     carried := reach(v, FromValue)
     for id in mem.present:
         owner := i64(mem.fn.cells[id].owner)
         if mem.ticked[id] == mem.tick and owner < SLOTS and carried[owner]:
-            escape(cell_value(id), pos)
+            escape(cell_value(id), pos, false)
 
 func reach(given: Target, how: Reach) -> Set:
     seen := followed(given, how)

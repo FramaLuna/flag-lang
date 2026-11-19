@@ -105,7 +105,7 @@ func hidden(name: &strview, function: bool, at: i64) -> Fail?:
     more := false
     names := list_dir(comp.library) iferror return null
     for given in names:
-        path: &str = join_path(comp.library, given)
+        path: &str = heap(join_path(comp.library, given))
         known := not ends_with(given, ".flg")
         for f in comp.files:
             known = known or f.path == path or f.module == given[:-4]
@@ -130,15 +130,19 @@ func find_type(name: &strview, path: &strview, at: i64) -> i64|Fail:
     return 0
 
 func fat_type(name: &strview, elem: i64, at: i64) -> i64|Fail:
-    s := first_sym(name)
-    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat):
-        s = comp.syms[s].next
-    if s == 0:
-        return fail("the language needs the fat pointer " + name + ", and the library does not declare it", at)
     args: &list[Item]
     if elem != VOID:
         append(args, Item{name = "", type = elem})
-    return make_type(s, args, true, at)
+    return core_type(name, args, at)
+
+# a type that core declares and a literal is, like the &strview of a text or the fixmap of pairs
+func core_type(name: &strview, args: &list[Item], at: i64) -> i64|Fail:
+    s := first_sym(name)
+    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat and comp.nodes[comp.syms[s].node].kind != Struct):
+        s = comp.syms[s].next
+    if s == 0:
+        return fail("the language needs the type " + name + ", and the library does not declare it", at)
+    return make_type(s, args, comp.nodes[comp.syms[s].node].kind == Fat, at)
 
 # the tag of a builtin is its place among them, so null is 0, and any other tag is a hash of the type, the same in every program and library that has it
 func add_type(t: Type) -> i64:
@@ -185,7 +189,7 @@ func enclosed(t: i64) -> &strview:
     return ty.name
 
 func pointer(t: i64) -> i64:
-    key: &str = "*"
+    key: &str = heap("*")
     key += enclosed(t)
     id := comp.type_ids[view(key)]
     if id is i64:
@@ -201,7 +205,7 @@ func members(t: i64) -> &list[i64]:
         append(out, t)
     return out
 
-func union_of(parts: &list[i64], kind: TypeKind, at: i64) -> i64|Fail:
+func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
     flat: &list[i64]
     defer free(flat)
     spread: &list[i64]
@@ -254,9 +258,9 @@ func union_of(parts: &list[i64], kind: TypeKind, at: i64) -> i64|Fail:
 
 func concrete(t: i64, at: i64) -> i64|Fail:
     if t == EMPTYARRAY or t == EMPTYMAP:
-        example: &strview = "x: &list[i32] = []"
+        example: &strview = "x: &list[i32] = heap([])"
         if t == EMPTYMAP:
-            example = "x: &map[&strview, i32] = {}"
+            example = "x: fixmap[&strview, i32, 4] = {}"
         return fail("no type can be made from " + comp.types[t].name + ", an empty literal has no type of its own: give it one first, like " + example, at)
     return t
 
@@ -377,6 +381,8 @@ func instance(n: i64, fat: bool) -> i64|Fail:
         count := try count_of(c)
         if count is i64:
             append(args, Item{name = "", type = VOID, n = count})
+        elif fat:
+            append(args, Item{name = "", type = try result_type(c)}) # &list[never] holds nothing, so it goes where any list goes
         else:
             append(args, Item{name = "", type = try resolve(c)})
         c = node_end(c)
@@ -611,7 +617,7 @@ func arg_name(a: Item) -> &strview:
 
 func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
-    key: &str = "array["
+    key: &str = heap("array[")
     key += e.name + ", " + count + "]"
     id := comp.type_ids[view(key)]
     if id is i64:
@@ -622,7 +628,7 @@ func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
 
 func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
-    key: &str = "simd["
+    key: &str = heap("simd[")
     key += e.name + ", " + count + "]"
     id := comp.type_ids[view(key)]
     if id is i64:
@@ -648,7 +654,7 @@ func lane_type(t: i64) -> i64:
     return lane
 
 func thread_of(result: i64) -> i64:
-    key: &str = "Thread["
+    key: &str = heap("Thread[")
     key += comp.types[result].name + "]"
     id := comp.type_ids[view(key)]
     if id is i64:
@@ -657,7 +663,7 @@ func thread_of(result: i64) -> i64:
 
 # a type given as an argument, the value a type $T parameter takes
 func given_of(t: i64) -> i64:
-    key: &str = "type "
+    key: &str = heap("type ")
     key += comp.types[t].name
     id := comp.type_ids[view(key)]
     if id is i64:

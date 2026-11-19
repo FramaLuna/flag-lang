@@ -54,14 +54,15 @@ b := 2.5 # 'b' is 'f64'
 Assignments can do some transformations between types, for example:
 ```flag
 view: &strview = "hello" # a text literal is a '&strview'
-text: &str = view # the text is copied into a new '&str' that you own
+text: &str = heap(view) # heap copies the text into a new '&str' that you own
 back: &strview = text # a '&str' can be used as a '&strview' without copying
+text = "bye" # copies into the memory text has
 small: u8 = 7
 n: i64 = small # smaller integers grow to bigger ones
 maybe: i64|null = a # a value goes into a union that has its type
-b: *array[i64, 2] = heap([1, 2])
-l: &list[i64] = b # here '*array[i64, 2]' is transformed to '&list[i64]' at assignment
+l: &list[i64] = heap([1, 2]) # a list in the heap with a copy of the array
 ```
+A new owner, like `text`, gets its memory from `heap` or from an [arena](#arenas), so `text: &str = view` is an error that says so: `this &str is new and has no memory to copy &strview into: write heap(...) or arena(a, ...) around the value`.
 The other conversions are written like a call to the type
 ```flag
 c := f64(a) / 2.0
@@ -74,14 +75,16 @@ d := u8(a)
 - Characters: `'a'` is the number of that character (97), an integer literal, so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
-- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is empty, it becomes an empty list, listview or text (see [Lists](#lists)), so the place must say which: `x := []` alone has no type
-- Maps: `{"ana": 30, "bo": 25}` is a `&map[&strview, i64]` and `{}` is an empty map (see [Maps](#maps))
+- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is the empty one, an `emptyarray`, that becomes an empty array or listview, so the place must say which: `x := []` alone has no type
+- Maps: `{"ana": 30, "bo": 25}` is a `fixmap[&strview, i64, 2]` that holds just those, and `{}` is the empty one, an `emptyfixmap` (see [Maps](#maps))
+
+No literal asks for memory: a list, a text or a map that grows is made from one with `heap` or `arena`, `heap([1, 2])`, `heap("hello")` or `heap({"ana": 30})`
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types))
 
 When you give the type, the literal takes it
 ```flag
 a: array[u8, 3] = [1, 2, 3]
-ages: &map[&strview, u8] = {"ana": 30}
+ages: fixmap[&strview, u8, 4] = {"ana": 30}
 ```
 `ptr` passes the type on to what it points to, so an array literal or a constant can be a listview of another integer type
 ```flag
@@ -156,7 +159,7 @@ type User:
 ```
 You can build them with the fields in order, or naming them. The fields you don't name start at zero
 ```flag
-a := User{"ana", 30}
+a := User{heap("ana"), 30} # a &str field owns its text, so heap gives it one
 b := User{age = 30}
 ```
 or at their default value, when they have one. It's written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
@@ -172,7 +175,7 @@ big := Window{width = 1920, height = 1080} # untitled too
 ```
 When the place already says the type, like a variable with its type, a return, a field or an element of an array, you can leave the name out
 ```flag
-c: User = {"bo", 25}
+c: User = {heap("bo"), 25}
 d: User = {age = 25}
 ```
 You can nest structured types
@@ -326,7 +329,7 @@ A fat pointer starts empty, you don't need to create it, just use it
 a: &list[i32]
 append(a, 1)
 ```
-The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected.
+The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`.
 
 You can declare your own fat pointers with `type fatptr`
 ```flag
@@ -764,11 +767,12 @@ A recursive function, the `main` that starts the program and an `export` functio
 ## Strings
 There are two kinds of text: `&strview` is a view of some text, and `&str` is text that you own and can grow. A text literal is a `&strview`.
 ```flag
-name: &str = "ana" # copies the text into a '&str'
+name: &str = heap("ana") # copies the text into a '&str' in the heap
 defer free(name)
 name += " and bo" # appends to the text you own
 print(name.len, " ", name[0:3]) # 10 ana
 ```
+A `&strview` assigned to a `&str` is copied into the memory the `&str` has, `name = "bo"`, while two `&str` share theirs.
 `+` joins text with anything that can be printed, numbers are formatted
 ```flag
 line := "hi " + name + ", you are " + 30
@@ -830,10 +834,11 @@ print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true
 The lanes are `f32`, `i32` and `u32` by 4, `f64`, `i64` and `u64` by 2, `i16` and `u16` by 8, and `i8` and `u8` by 16. A comparison gives a mask, `select` takes each lane from one side or the other, and `min`, `max`, `abs` and `sqrt` work on each lane. On x86_64 and arm64 an operation is one or a few instructions of the processor, and the values stay in registers, so code on 4 lanes runs about 4 times as fast as on one number. More lanes are an array of them, `array[simd[f32, 4], 8]`. The details are in [SIMD](Reference.md#simd).
 
 ## Lists
-A `&list[T]` is a list that grows as you add elements. It starts empty, and you can also start it from an array on the heap
+A `&list[T]` is a list that grows as you add elements. It starts empty, and `heap` makes one with a copy of an array or of a listview
 ```flag
 empty: &list[i64] = heap([])
-start: &list[i64] = heap([1, 2, 3]) # the list owns the heap array, with len and cap 3
+start := heap([1, 2, 3]) # a &list[i64] in the heap
+bytes := heap([u8(1), 2]) # the literal says the type of its elements, not the place
 ```
 ```flag
 nums: &list[i32]
@@ -852,9 +857,9 @@ Only a negative index the compiler knows, a literal or a constant, counts from t
 Also `find` (gives the index or null), `contains`, `flip` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and listviews](Library.md#lists-and-listviews). Two lists or listviews compare with `==` element by element.
 
 ## Maps
-A `&map[K, V]` is a hash map, you can start it empty or with a literal
+A `&map[K, V]` is a hash map, you can start it empty or from a literal, which alone is a `fixmap` that holds just its pairs
 ```flag
-ages := {"bo": 25} # &map[&strview, i64]
+ages := heap({"bo": 25}) # &map[&strview, i64]
 defer free(ages)
 ages["ana"] = 30 # the same as put(ages, "ana", 30)
 age := ages["ana"] # i64|null, null when there is no ana
@@ -864,7 +869,7 @@ ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]`, with keys that it owns, is read and removed with a `&strview` too: `ports[line[:4]]`. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `operator hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]` owns its keys: a new key is copied, also from a `&strview` like `ports[line[:4]] = 80`, and `remove`, `clear` and `free` free them. `ptr(ages["ana"])` points at the value inside the map, adding the key at zero when it is missing, and it goes bad when the map grows, like a pointer into a list. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `operator hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -888,7 +893,7 @@ func main():
     append(enemies, Enemy{hp = 10}) # grows in level
     name: &str = arena(level, "boss") # text that lives in level
     name += " final" # grows in level too
-    counts: &map[&strview, i32] = arena(level, {"orc": 2})
+    counts := arena(level, {"orc": 2}) # a &map[&strview, i64] in level
     print(boss.hp, " ", enemies.len, " ", name, " ", counts)
 ```
 A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` and a list you declare use the heap, like always.
@@ -977,8 +982,7 @@ func main():
     for k in 0..4:
         append(workers, parallel worker(jobs))
     for name in ["a.txt", "b.txt", "c.txt"]:
-        owned: &str = name # the worker frees what it gets, so it gets text it owns
-        send(jobs, owned)
+        send(jobs, heap(name)) # the worker frees what it gets, so it gets text it owns
     close(jobs)
     for w in workers:
         wait(w)

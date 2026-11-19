@@ -327,6 +327,11 @@ func append(l: *&list[$T], items: &listview[$T]):
     memcpy(ptr(l.*.*) + l.len * @sizeof($T), ptr(items.*), items.len * @sizeof($T))
     l.len += items.len
 
+operator =(l: *&list[$T], items: &listview[$T]) -> &list[$T]:
+    clear(l)
+    append(l, items)
+    return l.*
+
 func pop(l: *&list[$T]) -> $T|null:
     if l.len == 0:
         return null
@@ -539,10 +544,55 @@ func arena(a: *Arena, v: $T) -> *$T:
     p.* = v
     return p
 
+# the arena 0 is the heap, and an owner of never holds nothing, so it goes where any owner of its kind goes
+func heap(items: emptyarray) -> &list[never]:
+    return arena(0 as *Arena, items)
+
+func arena(a: *Arena, items: emptyarray) -> &list[never]:
+    out: &list[never]
+    out.arena = a
+    return out
+
+func heap(pairs: emptyfixmap) -> &map[never, never]:
+    return arena(0 as *Arena, pairs)
+
+func arena(a: *Arena, pairs: emptyfixmap) -> &map[never, never]:
+    out: &map[never, never]
+    out.arena = a
+    return out
+
+func heap(text: &strview) -> &str:
+    return arena(0 as *Arena, text)
+
 func arena(a: *Arena, text: &strview) -> &str:
     out: &str
     out.arena = a
     out += text
+    return out
+
+func heap(items: &listview[$T]) -> &list[$T]:
+    return arena(0 as *Arena, items)
+
+func arena(a: *Arena, items: &listview[$T]) -> &list[$T]:
+    out: &list[$T]
+    out.arena = a
+    append(out, items)
+    return out
+
+func heap(items: array[$T, $$n]) -> &list[$T]:
+    return arena(0 as *Arena, items)
+
+func arena(a: *Arena, items: array[$T, $$n]) -> &list[$T]:
+    return arena(a, items[:])
+
+func heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
+    return arena(0 as *Arena, pairs)
+
+func arena(a: *Arena, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
+    out: &map[$K, $V]
+    out.arena = a
+    for e in pairs:
+        out[e.key] = e.value
     return out
 
 func clear(a: *Arena):
@@ -1867,25 +1917,38 @@ priv func locate(m: &map[$K, $V], key: $Q) -> i64:
         i = (i + 1) and m.cap - 1
     return i
 
-func put(m: *&map[$K, $V], key: $K, value: $V):
+# keys of text are copies that the map frees, so those maps have functions of their own
+func put(m: *&map[$K, $V], key: $K, value: $V) where $K != &str:
     put(m, key).* = value
 
-operator []=(m: *&map[$K, $V], key: $K, value: $V):
+func put(m: *&map[&str, $V], key: &strview, value: $V):
+    put(m, key).* = value
+
+operator []=(m: *&map[$K, $V], key: $K, value: $V) where $K != &str:
     put(m, key, value)
 
-operator []=(m: *&map[$K, $V], key: $K) -> *$V:
+operator []=(m: *&map[&str, $V], key: &strview, value: $V):
+    put(m, key, value)
+
+operator []=(m: *&map[$K, $V], key: $K) -> *$V where $K != &str:
     return put(m, key)
 
-priv func put(m: *&map[$K, $V], key: $K) -> *$V:
+operator []=(m: *&map[&str, $V], key: &strview) -> *$V:
+    return put(m, key)
+
+priv func put(m: *&map[$K, $V], key: $Q) -> *$V:
     reserve(m, m.len + 1)
     i := locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
-        table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = key}
+        where $K == &str:
+            table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = arena(m.arena, key)}
+        where $K != &str:
+            table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = key}
         m.len += 1
     return ptr(table[i].value)
 
-operator [](m: &map[$K, $V], key: $K) -> $V|null:
+operator [](m: &map[$K, $V], key: $K) -> $V|null where $K != &str:
     return found(m, key)
 
 operator [](m: &map[&str, $V], key: &strview) -> $V|null:
@@ -1900,13 +1963,13 @@ priv func found(m: &map[$K, $V], key: $Q) -> $V|null:
         return null
     return table[i].value
 
-func contains(m: &map[$K, $V], key: $K) -> bool:
+func contains(m: &map[$K, $V], key: $K) -> bool where $K != &str:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func contains(m: &map[&str, $V], key: &strview) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
-func remove(m: *&map[$K, $V], key: $K) -> $V|null:
+func remove(m: *&map[$K, $V], key: $K) -> $V|null where $K != &str:
     return removed(m, key)
 
 func remove(m: *&map[&str, $V], key: &strview) -> $V|null:
@@ -1920,6 +1983,8 @@ priv func removed(m: *&map[$K, $V], key: $Q) -> $V|null:
     if table[hole].hash == 0:
         return null
     value := table[hole].value
+    where $K == &str:
+        free(table[hole].key)
     j := hole
     while table[(j + 1) and m.cap - 1].hash != 0:
         j = (j + 1) and m.cap - 1
@@ -1965,10 +2030,15 @@ func try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?:
 func clear(m: *&map[$K, $V]):
     table := slots(m.*)
     for i in 0..table.len:
+        where $K == &str:
+            if table[i].hash != 0:
+                free(table[i].key)
         table[i].hash = 0
     m.len = 0
 
 func free(m: *&map[$K, $V]):
+    where $K == &str:
+        clear(m)
     discard(m.arena, ptr(m.*.*))
     m.* = 0 as *bytes
     m.len = 0

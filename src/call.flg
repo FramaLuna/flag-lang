@@ -339,7 +339,7 @@ func invoke(name: &strview, args: &list[Value], at: i64) -> Value|Fail:
     names: &list[&strview]
     return call(name, "", args, names, at, false)
 
-func returned(name: &strview, args: &list[Value], at: i64) -> i64|Fail:
+func returned(name: &strview, args: &listview[Value], at: i64) -> i64|Fail:
     names: &list[&strview]
     best := try choose(name, "", args, names, at)
     if best == 0:
@@ -500,7 +500,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if comp.types[holder].kind == Ptr:
                 holder = comp.types[holder].elem
             if comp.types[holder].kind == Fat and text(comp.types[holder].decl) == "map":
-                hint = ", a pointer to a value of a map goes bad when the map grows, so core keeps that put for itself: change the value in place with m[k] += v or m[k].field = v, or pass m[k] where a pointer goes, append(m[k], v)"
+                hint = ", the put that gives a pointer to a value is for the operators of core: the pointer is ptr(m[k]), and m[k] += v or m[k].field = v change the value in place"
         failed := fail("no overload of " + name + " matches (" + listed(args) + ")" + hint, at)
         said := 0
         s := first_sym(name)
@@ -669,13 +669,13 @@ func place_of(at: i64) -> Value|Fail:
     return Value{type = try fat_type("strview", VOID, at), at = text_data(view(location(at))), mem = true, lit = true}
 
 func written(label: &strview, t: i64, ret: i64, at: i64) -> i64:
-    key: &str = label
+    key: &str = heap(label)
     key += "." + t
     id := comp.inst_ids[view(key)]
     if id is i64:
         free(key)
         return id
-    name: &str = "$"
+    name: &str = heap("$")
     name += label + "." + comp.insts.len
     append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0, false})
     append(comp.inst_binds, Item{name = "$T", type = t})
@@ -693,7 +693,7 @@ func instantiate_for(f: i64, order: &list[i64], args: &list[Value], taken: *&lis
     close_frame(saved)
     return id
 
-func choose(name: &strview, module: &strview, args: &list[Value], names: &list[&strview], at: i64) -> i64|Fail:
+func choose(name: &strview, module: &strview, args: &listview[Value], names: &list[&strview], at: i64) -> i64|Fail:
     key: &str
     key += name + "|" + module + "|" + file_of(at)
     for a in args:
@@ -766,7 +766,7 @@ func beats(a: &list[i64], b: &list[i64]) -> bool:
         better = better or a[k] > b[k]
     return better or a[-1] > b[-1]
 
-func listed(args: &list[Value]) -> &str:
+func listed(args: &listview[Value]) -> &str:
     shown: &str
     for a in args:
         if shown.len > 0:
@@ -821,7 +821,7 @@ func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64) ->
     return Value{type = ret, at = result, mem = aggregate(ret)}
 
 # the score of each argument, matched in rounds: first what fixes a $T, then a $T alone or in a union, which takes the widest of its integers, then the literals, which take what is bound
-func bind(f: i64, order: &list[i64], args: &list[Value]) -> &list[i64]?|Fail:
+func bind(f: i64, order: &list[i64], args: &listview[Value]) -> &list[i64]?|Fail:
     scores: &list[i64] # -r until round r matches its argument
     for a in args:
         append(scores, 0)
@@ -1000,6 +1000,8 @@ func match(n: i64, v: Value) -> i64|Fail:
         return -1
     if node.kind == TName and tok.kind == Generic:
         b := bound(tok.text)
+        if b == 0 and v.type == NEVER: # what heap([]) holds, which gives a $T no type
+            return -1
         if b == 0:
             append(comp.binds, Item{name = tok.text, type = v.type})
             return 0
@@ -1153,7 +1155,7 @@ func prefix(from: i64, to: i64) -> bool:
     if a.kind != Fat or b.kind != Fat or from == to or b.count > a.count or type_params(a.decl) != type_params(b.decl):
         return false
     for i in 0..type_params(a.decl):
-        if comp.items[a.args + i].type != comp.items[b.args + i].type or comp.items[a.args + i].n != comp.items[b.args + i].n:
+        if comp.items[a.args + i].type != NEVER and (comp.items[a.args + i].type != comp.items[b.args + i].type or comp.items[a.args + i].n != comp.items[b.args + i].n):
             return false
     for i in 0..b.count:
         if comp.items[a.first + i].name != comp.items[b.first + i].name or comp.items[a.first + i].type != comp.items[b.first + i].type:
@@ -1239,15 +1241,10 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         if slot.kind == Empty:
             slot = alloc(to)
         try zero(to, slot)
-        if comp.types[v.type].kind == Ptr:
+        if comp.types[v.type].kind == Ptr and comp.types[v.type].elem != EMPTYARRAY:
             store(v.type, v, slot)
-            count := 0
-            if comp.types[v.type].elem != EMPTYARRAY:
-                count = comp.types[comp.types[v.type].elem].count
-            for i in 0..comp.types[to].count:
-                field := comp.items[comp.types[to].first + i]
-                if field.name == "len" or field.name == "cap":
-                    store(field.type, Value{type = field.type, at = int_arg(i64(count))}, offset(slot, field.n))
+            length := field_of(to, "len")
+            store(length.type, Value{type = length.type, at = int_arg(comp.types[comp.types[v.type].elem].count)}, offset(slot, length.n))
         return Value{type = to, at = slot, mem = true}
     from := comp.types[v.type]
     target := comp.types[to]
@@ -1309,6 +1306,8 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
     args: &list[Value]
     append(args, Value{type = to, at = dest, mem = true, place = true})
     append(args, v)
+    if owner(to) and dest.kind == Empty and accepts(to, Value{type = try returned("heap", args[1:], at)}) >= 0:
+        return fail("this " + target.name + " is new and has no memory to copy " + from.name + " into: write heap(...) or arena(a, ...) around the value", at)
     if try offers("=", args, at):
         if dest.kind == Empty:
             args[0].at = alloc(to)
@@ -1360,19 +1359,17 @@ func member_for(to: i64, v: Value, at: i64) -> i64|Fail:
         return VOID
     return found
 
+# [] and an array through a pointer go to a view of their elements, an owner gets its memory from heap or arena
 func spread(from: i64, to: i64) -> bool:
-    target := comp.types[to]
-    if target.kind != Fat:
-        return false
     elem := element(to)
-    if from == EMPTYMAP:
-        return text(target.decl) == "map"
-    if from == EMPTYARRAY:
-        return elem != VOID
-    p := comp.types[from]
-    if p.kind != Ptr or elem == VOID:
+    if comp.types[to].kind != Fat or owner(to) or elem == VOID:
         return false
-    return p.elem == EMPTYARRAY or comp.types[p.elem].kind == Array and comp.types[p.elem].elem == elem
+    p := comp.types[from]
+    return from == EMPTYARRAY or p.kind == Ptr and (p.elem == EMPTYARRAY or comp.types[p.elem].kind == Array and comp.types[p.elem].elem == elem)
+
+# a fat pointer that grows into its cap, so it owns its memory, which a view does not
+func owner(t: i64) -> bool:
+    return comp.types[t].kind == Fat and field_of(t, "cap").type != VOID
 
 func element(fat: i64) -> i64:
     params := type_params(comp.types[fat].decl)
@@ -1405,7 +1402,7 @@ func widens(from: i64, to: i64) -> bool:
     b := comp.types[to]
     return integer(from) and integer(to) and b.size > a.size and (a.kind == b.kind or a.kind == Uint)
 
-func offers(name: &strview, args: &list[Value], at: i64) -> bool|Fail:
+func offers(name: &strview, args: &listview[Value], at: i64) -> bool|Fail:
     names: &list[&strview]
     return try choose(name, "", args, names, at) != 0
 
@@ -1417,7 +1414,7 @@ func described(name: &strview, t: i64) -> &strview:
     out += name + ": " + comp.types[t].name
     return view(out)
 
-func callable(s: i64, module: &strview, args: &list[Value], at: i64) -> bool:
+func callable(s: i64, module: &strview, args: &listview[Value], at: i64) -> bool:
     sym := comp.syms[s]
     if comp.nodes[sym.node].kind != Func:
         return false
@@ -1554,7 +1551,7 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
     if target.kind == Float:
         if from.kind == Uint and from.size == 4:
             return Value{type = to, at = op1(cls(to), "ultof", op1(L, "extuw", x))}
-        name: &str = "u"
+        name: &str = heap("u")
         if from.kind == Int:
             name = "s"
         if from.size == 8:
@@ -1570,11 +1567,15 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
         x = op1(W, "copy", x)
     return Value{type = to, at = extend(to, x)}
 
-func assign(addr: Arg, t: i64, v: Value, at: i64) -> Fail?:
+# held says that addr holds a value already, so an owner there copies a view into its memory, and a new one has none
+func assign(addr: Arg, t: i64, v: Value, at: i64, held: bool = false) -> Fail?:
     if comp.types[t].kind == Fat and comp.types[v.type].kind == Ptr and (comp.types[v.type].elem == BYTES or comp.types[v.type].elem == element(t)):
         store(v.type, v, addr)
         return null
-    converted := try convert(v, t, addr, at)
+    dest := addr
+    if owner(t) and not held:
+        dest = Arg{}
+    converted := try convert(v, t, dest, at)
     if not converted.mem or converted.at.kind != addr.kind or converted.at.n != addr.n:
         store(t, converted, addr)
     return null

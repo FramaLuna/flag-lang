@@ -5,6 +5,7 @@ UNKNOWN = "a constant with a type holds a value the compiler knows, made of lite
 KNOWN = "a default value is one the compiler knows, made of literals and constants, or the empty heap([]), heap(\"\") or heap({})"
 ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
 VIEW = "&strview is a view that only reads: change the text through the &str that owns it"
+STACK = "cannot return a pointer to the stack as it will be cleared at return"
 
 func gen_program(check: bool, testing: bool) -> Fail?:
     comp.entry = NONE # a type checks its defaults when it is made, and they can call functions before main is found
@@ -685,7 +686,7 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
     while s != 0:
         export = export or comp.syms[s].node == f and comp.syms[s].export
         s = comp.syms[s].next
-    name: &str = "$"
+    name: &str = heap("$")
     symbol := kid(f, params(f))
     while symbol < node_end(f) and comp.nodes[symbol].kind != Literal:
         symbol = node_end(symbol)
@@ -727,13 +728,14 @@ func gen(n: i64, want: i64) -> Value|Fail:
         v := none
         if c < node_end(n):
             v = try value(c, t)
-            if t == VOID:
-                t = v.type
-        if t == EMPTYARRAY or t == EMPTYMAP:
+        ty := comp.types[v.type]
+        if t == VOID and (v.type == EMPTYARRAY or v.type == EMPTYMAP or ty.kind == Fat and type_params(ty.decl) > 0 and comp.items[ty.args].type == NEVER): # heap([]) is a &list[never]
             example: &strview = ": &list[i32]"
-            if t == EMPTYMAP:
+            if v.type == EMPTYMAP or ty.kind == Fat and text(ty.decl) == "map":
                 example = ": &map[&strview, i32]"
             return fail(tok.text + " cannot take its type from an empty literal, write the type: " + tok.text + example, tok.at)
+        if t == VOID:
+            t = v.type
         if comp.types[t].kind == Bytes:
             return fail("variable " + tok.text + " needs a size, bytes is a run of unknown length", tok.at)
         slot := alloc(t, true)
@@ -784,7 +786,10 @@ func gen(n: i64, want: i64) -> Value|Fail:
             return none
         if comp.ret == VOID:
             return fail("this function returns nothing, return expects no value", tok.at)
-        try leave(try value(n + 1, comp.ret), at_of(n + 1))
+        v := try value(n + 1, comp.ret)
+        if stacked(n + 1) != 0:
+            return fail(STACK, at_of(n + 1))
+        try leave(v, at_of(n + 1))
         return none
     case If:
         before := comp.vars.len
@@ -1236,44 +1241,28 @@ func gen(n: i64, want: i64) -> Value|Fail:
             return fail("'*' does not go before a value, write: " + text(n + 1) + ".*", tok.at)
         return fail(comp.types[try resolve(n)].name + " is a type, not a value", at_of(n))
     case:
-        return collection(n, want, 0)
+        return collection(n, want)
 
-func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
+func collection(n: i64, want: i64) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     fitting: &list[i64]
     for m in members(want):
         k := comp.types[m].kind
-        if node.kind == Items and (k == Array or k == Simd or sequence(m)) or node.kind == Pairs and (k == Struct or k == Fat and text(comp.types[m].decl) == "map"):
+        if node.kind == Items and (k == Array or k == Simd or sequence(m) and not owner(m)) or node.kind == Pairs and k == Struct:
             append(fitting, m)
     t := want
     if fitting.len == 1:
         t = fitting[0]
     hint := comp.types[t]
     fixed := hint.kind == Struct and text(hint.decl) == "fixmap"
-    shape: &strview = "map"
-    example: &strview = "x: &map[&strview, i32] = arena(a, {})"
-    if node.kind == Items:
-        shape = "list"
-        example = "x: &list[i32] = arena(a, [])"
-    given: Value
-    at := tok.at
-    owned := false
-    if arena != 0:
-        given = try value(arena, VOID)
-        at = at_of(arena)
-        owned = hint.kind == Fat and text(hint.decl) == shape
-    if node.size == 1 and arena != 0 and not owned and want != VOID:
-        return fail("this empty " + shape + " lives in an arena as a &" + shape + ", which cannot land in " + comp.types[want].name, tok.at)
-    if node.size == 1 and arena != 0 and not owned:
-        return fail("this empty " + shape + " lives in an arena and gets its type from where it lands, and nothing here gives a &" + shape + ": " + example, tok.at)
-    if node.size == 1 and (owned or hint.kind == Struct or hint.kind == Array):
-        return placed(t, given, at)
+    if node.size == 1 and (hint.kind == Struct or hint.kind == Array):
+        return fresh(t)
     if node.size == 1 and node.kind == Items:
         return Value{type = EMPTYARRAY}
     if node.size == 1:
         return Value{type = EMPTYMAP}
-    if node.kind == Items and hint.kind == Simd and arena == 0:
+    if node.kind == Items and hint.kind == Simd:
         if kids(n) != hint.count:
             return fail(hint.name + " holds " + counted(hint.count, "lane", "lanes") + " but this literal gives " + counted(kids(n), "value", "values"), tok.at)
         slot := alloc(t)
@@ -1286,9 +1275,9 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
     want_value := VOID
     if node.kind == Items and hint.kind == Array and hint.count == kids(n):
         want_value = hint.elem
-    if node.kind == Items and sequence(t):
+    if node.kind == Items and sequence(t) and not owner(t):
         want_value = element(t)
-    if node.kind == Pairs and (hint.kind == Fat and text(hint.decl) == "map" or fixed):
+    if fixed:
         want_key = comp.items[hint.args].type
         want_value = comp.items[hint.args + 1].type
     keys: &list[Value]
@@ -1303,30 +1292,19 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
     if want_value == VOID:
         want_value = try common(values, tok.at)
     if node.kind == Items:
-        whole := try placed(try array_of(want_value, values.len, tok.at), Value{}, tok.at)
+        whole := try fresh(try array_of(want_value, values.len, tok.at))
         for i in 0..values.len:
             try assign(offset(whole.at, i * comp.types[want_value].size), want_value, values[i], tok.at)
-        if arena == 0:
-            return whole
-        if not owned:
-            t = try fat_type("list", want_value, tok.at)
-        list := try placed(t, given, at)
-        args: &list[Value]
-        append(args, list)
-        append(args, try convert(address(whole), try fat_type("listview", want_value, tok.at), Arg{}, tok.at))
-        try invoke("append", args, tok.at)
-        return list
+        return whole
     if fixed and keys.len > comp.items[hint.args + 2].n:
         return fail(hint.name + " holds " + counted(comp.items[hint.args + 2].n, "entry", "entries") + " but this literal gives " + keys.len, tok.at)
-    if want_key == VOID and hint.kind != Struct and hint.kind != Fat:
-        map := first_sym("map")
-        while map != 0 and (comp.syms[map].module.len > 0 or not comp.syms[map].library or comp.nodes[comp.syms[map].node].kind != Fat):
-            map = comp.syms[map].next
+    if hint.kind != Struct: # alone, the pairs make a fixmap that holds just them
         args: &list[Item]
         append(args, Item{name = "", type = try common(keys, tok.at)})
         append(args, Item{name = "", type = want_value})
-        t = try make_type(map, args, true, tok.at)
-    made := try placed(t, given, at)
+        append(args, Item{name = "", type = VOID, n = keys.len})
+        t = try core_type("fixmap", args, tok.at)
+    made := try fresh(t)
     for i in 0..keys.len:
         pair: &list[Value]
         append(pair, made)
@@ -1335,22 +1313,11 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
         try invoke("[]=", pair, tok.at)
     return made
 
-func placed(t: i64, arena: Value, at: i64) -> Value|Fail:
+# a value of t as it is born: zeros, tags and default values
+func fresh(t: i64) -> Value|Fail:
     made := Value{type = t, at = alloc(t), mem = true}
     try zero(t, made.at)
-    if arena.type == VOID:
-        return made
-    for i in 0..comp.types[t].count:
-        f := comp.items[comp.types[t].first + i]
-        if f.name == "arena":
-            given := arena
-            if comp.types[f.type].elem == given.type:
-                given = address(given)
-            if given.type != f.type:
-                return fail("arena(a, ...) expects the Arena it allocates in, or a pointer to one, but got " + comp.types[arena.type].name, at)
-            store(f.type, given, offset(made.at, f.n))
-            return made
-    return fail(comp.types[t].name + " has no field arena to remember one, so it cannot live in an arena", at)
+    return made
 
 func iterate(n: i64) -> Fail?:
     node := comp.nodes[n]
@@ -1405,13 +1372,13 @@ func iterate(n: i64) -> Fail?:
             walked = Value{type = pointee, at = load(walked).at, mem = true, place = true}
         seq := walked.type
         addr = walked.at
-        t = len_field(try fat_type("strview", VOID, tok.at)).type # a for counts in the type of a length
+        t = field_of(try fat_type("strview", VOID, tok.at), "len").type # a for counts in the type of a length
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
             end = literal(false, u64(comp.types[seq].count))
         elif sequence(seq):
             elem = element(seq)
-            field := len_field(seq)
+            field := field_of(seq, "len")
             end = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
             addr = op1(L, "loadl", addr)
     if range or elem != VOID:
@@ -1453,7 +1420,7 @@ func iterate(n: i64) -> Fail?:
         walker := walked
         if chars:
             addr = op1(L, "loadl", walked.at)
-            field := len_field(walked.type)
+            field := field_of(walked.type, "len")
             end = load(Value{type = field.type, at = offset(walked.at, field.n), mem = true})
             slot = alloc(t)
             if backward:
@@ -1534,7 +1501,7 @@ func iterate(n: i64) -> Fail?:
             store(t, Value{type = t, at = next}, slot)
             place = alloc(item, true)
             add(Ins{op = "storel", a = here, b = place})
-            field := len_field(item)
+            field := field_of(item, "len")
             store(field.type, Value{type = field.type, at = size}, offset(place, field.n))
         else:
             args: &list[Value]
@@ -1886,7 +1853,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
                 c = node_end(c)
             line := Value{type = try fat_type("str", VOID, tok.at), at = load(try runtime("line", values, tok.at)).at, mem = true, place = true}
             append(values, to)
-            field := len_field(line.type)
+            field := field_of(line.type, "len")
             append(values, load(Value{type = field.type, at = offset(line.at, field.n), mem = true}))
             c = n + 1
             for part in parts:
@@ -1908,18 +1875,18 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
                 return fail("@embed expects the path of the file as text, from the folder of this file: @embed(\"shader.spv\")", tok.at)
             path := join_path(dir_of(view(comp.files[file_of(tok.at)].path)), unquoted(text(n + 1)))
-            key: &str = "@"
+            key: &str = heap("@")
             key += path
             id := comp.stored[view(key)] ifnull i64(comp.globals.len)
             if id == i64(comp.globals.len):
                 size := file_size(path)
                 if size is FsError:
                     return fail("" + size + ", and @embed reads the file when it compiles, with its path from the folder of this file", at_of(n + 1))
-                pair: &str = "$flag.embed."
+                pair: &str = heap("$flag.embed.")
                 pair += id
                 global(view(pair))
                 put(comp.stored, view(key), id)
-                label: &str = "flag.file."
+                label: &str = heap("flag.file.")
                 label += id
                 comp.data += read_only(true) + "data " + pair + " = { l $" + label + ", l " + size + " }\n"
                 if comp.system == "linux":
@@ -1966,20 +1933,14 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             pointee := want
             if comp.types[want].kind == Ptr:
                 pointee = comp.types[want].elem
-            return address(try value(a, pointee))
+            assigned := comp.target
+            comp.target = a # x[i] of a map gives its place, like the left of an assignment
+            v := try value(a, pointee)
+            comp.target = assigned
+            return address(v)
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
-    if empty_owner(n):
-        if threaded:
-            return fail("parallel runs a function in a new thread, and heap of an empty literal is not one: wrap it in a func", tok.at)
-        if comp.nodes[n + 1].kind == Literal:
-            return placed(try fat_type("str", VOID, tok.at), Value{}, tok.at)
-        return value(n + 1, want)
-    if name == "arena" and node.module.len == 0 and kids(n) == 2 and (comp.nodes[kid(n, 1)].kind == Items or comp.nodes[kid(n, 1)].kind == Pairs):
-        if threaded:
-            return fail("parallel runs a function in a new thread, and arena of a literal is not one: wrap it in a func", tok.at)
-        return collection(kid(n, 1), want, n + 1)
     c := n + 1
     while c < node_end(n):
         label: &strview
@@ -2014,6 +1975,18 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             append(values, try value(c, VOID))
             comp.passed = 0
         c = node_end(c)
+    if name == "free" and node.module.len == 0 and values.len == 1:
+        x := stacked(n + 1)
+        chosen := comp.syms[try choose(name, "", values, names, tok.at)].node
+        if x != 0 and chosen != 0 and (body(chosen) == 0 or comp.tokens[comp.nodes[kid(chosen, 0) + 2].tok].kind == Generic): # the free of C, or the one of core that gives it the pointer
+            low := comp.nodes[x].tok
+            high := low
+            for i in x..node_end(x):
+                low = min(low, comp.nodes[i].tok)
+                high = max(high, comp.nodes[i].tok)
+            while unclosed(low, high) > 0:
+                high += 1
+            return fail("free cannot release " + excerpt(low, high) + ", it is not on the heap", at_of(x))
     return call(name, node.module, values, names, tok.at, threaded)
 
 # whether the program is built for the system or the processor that a builtin like @linux names, null for any other name
@@ -2355,14 +2328,16 @@ func choice(n: i64, want: i64) -> Value|Fail:
 func either(a: Value, b: Value, at: i64) -> i64|Fail:
     if a.type == NEVER or a.lit and b.type != NEVER and accepts(b.type, a) >= 0:
         return b.type
-    if b.type == NEVER or b.lit and accepts(a.type, b) >= 0 or try assignable(a.type, b.type, at):
+    if b.type == NEVER or accepts(a.type, b) >= 0:
         return a.type
-    if widens(a.type, b.type):
+    if accepts(b.type, a) >= 0:
         return b.type
+    if try assignable(a.type, b.type, at):
+        return a.type
     return union_of(ptr([a.type, b.type]), Union, at)
 
 # each lane of to is the scalar o of the same lane of args, where a number stands in every lane
-func lanes(o: &strview, args: &list[Value], to: i64, at: i64) -> Value|Fail:
+func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
     slot := alloc(to)
     from := to
     in_register := comp.types[to].kind == Simd
@@ -2672,7 +2647,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         length := literal(false, u64(comp.types[t].count))
         if not array:
             elem = element(t)
-            field := len_field(t)
+            field := field_of(t, "len")
             length = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
             addr = op1(L, "loadl", addr)
         wide := U64
@@ -2734,7 +2709,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                     if comp.types[holder].kind == Ptr:
                         place = load(base).at
                         holder = comp.types[holder].elem
-                    field := len_field(holder)
+                    field := field_of(holder, "len")
                     if field.type == VOID:
                         return fail("this slice has no end, so it ends at the len of " + comp.types[holder].name + ", and it has no field len: write the end", tok.at)
                     length = load(Value{type = field.type, at = offset(place, field.n), mem = true})
@@ -2758,6 +2733,8 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         while under < n and (comp.nodes[under].kind == Field or comp.nodes[under].kind == Index):
             under += 1
         placing := assignment == 0 and under == n
+        if placing and comp.nodes[comp.target - 1].kind != Assign and read != VOID: # ptr(x[i]) points at the element when operator []=(x, i) gives its place, and else at a copy
+            placing = comp.types[try returned("[]=", args, tok.at)].kind == Ptr
         if (assignment != 0 or placing) and read != VOID and comp.types[read].kind != Ptr:
             if assignment != 0 and text(assignment) == "=":
                 middle := comp.body.len
@@ -2867,7 +2844,7 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
         if accepts(spot.type, v) < 0 and accepts(outside.type, v) >= 0:
             append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, false, false})
             place = Value{type = outside.type, at = outside.addr}
-    return assign(place.at, place.type, v, at)
+    return assign(place.at, place.type, v, at, true)
 
 func postpone(first: i64, middle: i64):
     last := comp.body.len
@@ -3088,12 +3065,12 @@ func textual(t: i64) -> bool:
 func sequence(t: i64) -> bool:
     return comp.types[t].kind == Fat and (starts_with(comp.types[t].name, "&list[") or starts_with(comp.types[t].name, "&listview["))
 
-# the field len of a struct or a fat pointer, an Item of type VOID when it has none
-func len_field(t: i64) -> Item:
+# the field of a struct or a fat pointer with that name, an Item of type VOID when it has none
+func field_of(t: i64, name: &strview) -> Item:
     ty := comp.types[t]
     if ty.kind == Struct or ty.kind == Fat:
         for i in 0..ty.count:
-            if comp.items[ty.first + i].name == "len":
+            if comp.items[ty.first + i].name == name:
                 return comp.items[ty.first + i]
     return Item{}
 
@@ -3254,7 +3231,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
     if inner or not aggregate(v.type) or v.at.kind != Temp:
         return v
     end := comp.body.len
-    data: &str = ""
+    data: &str = heap("")
     data += "align " + data_align(v.type) + " { "
     if try image(v.type, given, data) != 0:
         comp.body.len = end
@@ -3264,7 +3241,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
     drop(first, slots, held)
     id := comp.stored[view(data)] ifnull i64(comp.globals.len)
     if id == i64(comp.globals.len):
-        name: &str = "$flag.const."
+        name: &str = heap("$flag.const.")
         name += id
         global(view(name))
         put(comp.stored, view(data), id)
@@ -3692,6 +3669,36 @@ func held(found: i64, at: i64) -> Value:
         mark(local.tok, described(local.name, local.type))
     return Value{type = local.type, at = local.addr, mem = true, place = not local.counts}
 
+# what n, ptr(x) or ptr(x) as T, points to when that lives in the stack of this function, or 0: a variable, a parameter, a field or an element held in one, or a temporary
+func stacked(n: i64) -> i64:
+    if comp.nodes[n].kind == Binary and text(n) == "as":
+        n += 1
+    if comp.nodes[n].kind != Call or text(n) != "ptr" or comp.nodes[n].module.len > 0 or kids(n) != 1:
+        return 0
+    k := comp.nodes[n + 1].kind
+    o := text(n + 1)
+    if (k == Unary or k == Binary) and (o == ".*" or o == "try" or o == "trust" or o == "as"):
+        return 0
+    if k != Name and k != Field and k != Index:
+        return n + 1
+    chain: &list[i64]
+    x := n + 1
+    while comp.nodes[x].kind == Field or comp.nodes[x].kind == Index and kids(x) == 2:
+        append(chain, x)
+        x += 1
+    if local_of(x) == 0:
+        return 0
+    t := comp.vars[local_of(x) - 1].type
+    for c in reverse chain:
+        ty := comp.types[t]
+        if comp.nodes[c].kind == Index and ty.kind == Array:
+            t = ty.elem
+        elif comp.nodes[c].kind == Field and (ty.kind == Struct or ty.kind == Fat):
+            t = field_of(t, text(c)).type
+        else:
+            return 0
+    return n + 1
+
 func local_of(n: i64) -> i64:
     if comp.nodes[n].kind != Name or comp.nodes[n].module.len > 0:
         return 0
@@ -3950,7 +3957,7 @@ func room(t: i64) -> i64:
     return size
 
 func text_data(text: &strview) -> Arg:
-    key: &str = "\""
+    key: &str = heap("\"")
     key += text
     found := comp.stored[view(key)]
     if found is i64:
@@ -3960,7 +3967,7 @@ func text_data(text: &strview) -> Arg:
     length := text_bytes(comp.data, text)
     comp.data += "b 0 }\n" + read_only(true) + "data $flag.sv." + id + " = { l $flag.str." + id + ", l " + length + " }\n" # the data of the compiler is in flag., a function is name.number
     append(comp.texts, length)
-    name: &str = "$flag.sv."
+    name: &str = heap("$flag.sv.")
     name += id
     made := global(view(name))
     put(comp.stored, view(key), made.n)

@@ -165,7 +165,9 @@ func main():
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
-- `free(p: *$T)` releases what `heap` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`
+- `heap(text: &strview) -> &str`, `heap(items: &listview[$T]) -> &list[$T]`, `heap(items: array[$T, $$n]) -> &list[$T]` and `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]` make an owner in the heap with a copy, also of a literal: `heap("text")`, `heap([1, 2])`, `heap({"a": 1})`. A literal keeps its own types, so `heap([u8(1), 2])` is a `&list[u8]`
+- `heap(items: emptyarray) -> &list[never]`, `heap(pairs: emptyfixmap) -> &map[never, never]` and `heap("")` are the empty owners, which ask for nothing until they grow: `names: &list[&strview] = heap([])`. A `&list[never]` goes to any list and a `&map[never, never]` to any map
+- `free(p: *$T)` releases what `heap(v: $T)` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`, and `free(ptr(x))` of a variable is an error, `free cannot release x, it is not on the heap`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c)), and `@sizeof(T)` the size of a type in bytes, as an integer literal. They belong to the language, not to core (see [Builtins](Reference.md#builtins))
 - `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`. A `*bytes` moves by bytes with `+` and `-`, so `memcpy(to + 8, from, n)` writes 8 bytes past `to` (see [Arithmetic](Reference.md#arithmetic))
 - `out_of_memory()` sends out what the program printed, writes `flag: out of memory` to the error output and ends the program at once with exit code 9, like a crash, without asking for memory. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
@@ -190,7 +192,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, like a list, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
 - `arena(a: *Arena, v: $T) -> *$T` a copy of the value, like `heap`, in the arena
 - `arena(a: *Arena, text: &strview) -> &str` a copy of the text, in the arena
-- `arena(a, [...])` and `arena(a, {...})` the list or the map of the literal, in the arena, with the type of the place where it lands: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
+- `arena(a: *Arena, items: &listview[$T]) -> &list[$T]`, `arena(a, items: array[$T, $$n])`, `arena(a, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`, and the empty `arena(a, items: emptyarray) -> &list[never]` and `arena(a, pairs: emptyfixmap) -> &map[never, never]`, like `heap`, in the arena: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
 - `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
 - `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
 - `reserve(a: *Arena, size: i64)` makes room for `size` bytes, so the pieces until then don't ask the heap for a block, and `try_reserve(a: *Arena, size: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory. Each piece takes its size rounded up to the alignment of the arena
@@ -215,6 +217,7 @@ On lists
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
 - `clear(l: *&list[$T])` removes every element and keeps the memory
 - `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
+- `l = items` with a `&listview[$T]` copies the elements into `l`, reusing its memory. Between two `&list` it doesn't copy, both share the elements, so write `l = other[:]`, and a new list is `heap(items)`
 
 On listviews, so also on lists
 - `find(items: &listview[$T], v: $T) -> i64|null` the index of the first element `== v`
@@ -257,7 +260,7 @@ A `&strview` is a view of text and a `&str` is text that you own and that grows.
 
 Building a `&str`
 - `s += x` appends anything that can be printed
-- `s = text` with a `&strview` copies the text into `s`, reusing its memory. Between two `&str` it doesn't copy, both share the text, so write `s = view(other)`
+- `s = text` with a `&strview` copies the text into `s`, reusing its memory. Between two `&str` it doesn't copy, both share the text, so write `s = view(other)`, and a new text is `heap(text)`
 - `add_byte(s: *&str, b: u8)` appends one byte
 - `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
 - `reserve(s: *&str, want: i64)` makes room for `want` bytes, so the appends until then don't allocate
@@ -301,16 +304,17 @@ And three helpers
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
 
 ### Maps
-A `&map[$K, $V]` is a hash map that you own. It starts empty, and `{"a": 1}` makes one.
+A `&map[$K, $V]` is a hash map that you own. It starts empty, and `heap({"a": 1})` makes one with the pairs of a literal.
 - `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `operator [](m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
-- `m[k]`, `contains` and `remove` of a `&map[&str, $V]` also take a `&strview`, so text you own as keys is found with a view or a literal: `m["port"]`, `contains(m, line[:4])`, `remove(m, "port")`
+- a `&map[&str, $V]` owns its keys: `m[k] = v`, `put`, `m[k] += v` and `ptr(m[k])` copy a new key into memory of the map, also from a `&strview`, `m["port"] = 80`, and `remove`, `clear` and `free` free the keys. Its `m[k]`, `contains` and `remove` take a `&strview` too: `contains(m, line[:4])`, `remove(m, "port")`. The generic functions leave a key `&str` to these
+- `ptr(m[k])` a pointer to the value inside the map, and a key that isn't there is added with a zero value. It goes bad when the map grows
 - `reserve(m: *&map[$K, $V], want: i64)` makes room for `want` keys, so the `put`s until then don't allocate, and `try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null` takes out the key and gives its value, `null` when it wasn't there
-- `clear(m: *&map[$K, $V])` removes every key and keeps the memory
-- `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The keys and values are not released, free them first when they own memory
+- `clear(m: *&map[$K, $V])` removes every key and keeps the memory, and frees the `&str` keys
+- `free(m: *&map[$K, $V])` releases the map and leaves it empty, and in an arena it only leaves it empty. The values are not released, free them first when they own memory, and the keys neither, except the `&str` keys, which are the map's
 - `for e in m` gives each entry, an `entry[$K, $V]` with `e.key` and `e.value`, in the order of the table
 - `hash(key) -> u64` the hash of a key, what its `operator hash` gives. Core has one for integers, one for floats (`0.0` and `-0.0` are the same key) and one for text, and the compiler makes the others (see [Operators](Reference.md#operators))
 
@@ -319,7 +323,7 @@ A key needs `==` and `operator hash`. Numbers, text, `bool`, enums, pointers, ar
 A float `nan` is not `==` to itself, so as a key it's never found again, and every `put` of it adds one more entry.
 
 ### Fixed maps
-A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order they were put, so it doesn't allocate and you don't free it. Looking for a key reads the entries one by one, so it's for small maps.
+A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order they were put, so it doesn't allocate and you don't free it. A literal of pairs alone is one with just its pairs, `{"a": 1}` is a `fixmap[&strview, i64, 1]`. Looking for a key reads the entries one by one, so it's for small maps.
 - `put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?` adds the key or changes its value, and gives the error `MapFull` when there is no room for a new key. An assignment cannot pass that error on, so `m[k] = v` doesn't compile on a fixed map: write `try put(m, k, v)`
 - `m[k]`, `contains` and `clear` like a map
 - `remove` like a map, and the entries after it keep their order
