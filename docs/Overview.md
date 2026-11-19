@@ -331,7 +331,7 @@ A fat pointer gets its memory before you use it: one you own from `heap` or `are
 a: &list[i32] = heap([])
 append(a, 1)
 ```
-Using one that no path gave a value is an error, `a is used before it gets a value, and &list[i32] starts without one: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`.
+Using one that no path gave a value is an error, `a is used before it gets a value, and &list[i32] starts without one: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`. `-memory` warns about it before: `append cannot grow a, it may have no memory to grow in: give it heap([])`.
 The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`.
 
 You can declare your own fat pointers with `type fatptr`
@@ -1243,19 +1243,20 @@ A library that a program loads is built with `-shared`, and the program loads it
 
 ## Memory safety
 ### The flag
-Compiling with `-memory` checks the memory of your program at compile time, and warns about:
+Compiling with `-memory` checks the memory of your program at compile time. Outside `@trust`, a program that it passes without warnings doesn't lose memory, doesn't free it twice or free what is not on the heap, and doesn't use it after it was freed: its border is `trust`, `as`, moving a `*bytes` and what C does (see [The memory checker](Reference.md#the-memory-checker)). It warns about:
 - memory that is never freed
 - memory freed twice
 - memory used after it was freed or after a list grew and moved it
 - temporaries used after their `with scratch():` ended, and memory of an arena used after `free` or `clear` of it
 - `free` of a pointer that lives in an arena, and an arena that is never freed
-- pointers to the stack of a function that leave it
+- pointers to the stack of a function, or of a block, used after it ended
+- an owner that may grow without memory, because only some path gave it one
 
 It is optional because it makes the compilation slower.
 ```sh
 flagc main.flg -o main -memory
 ```
-It sees the elements of a list, an array or a map as one, so freeing them in a loop and then the list is clean, and freeing only some of them is not reported (see [Elements](Reference.md#elements)). It follows the member a union holds, so `if result is Bad: return` and then freeing what the other member holds is clean.
+It follows the elements of a list, an array or a map as none, some or all freed, so freeing them in a loop and then the list is clean, and freeing only some of them warns (see [Elements](Reference.md#elements)). It follows the member a union holds, so `if result is Bad: return` and then freeing what the other member holds is clean.
 ### @trust @check
 `@trust` hides the warnings of the code you already checked. At the end of a line it covers that line and the block it opens, and on a line of its own it covers everything after it at that indentation, so at the top of a file it covers all the file
 ```flag

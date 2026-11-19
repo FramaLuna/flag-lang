@@ -398,7 +398,7 @@ func gen_from(from: i64) -> i64|Fail:
                 terminate("ret", int_arg(0))
             else:
                 h := alloc(U64)
-                add(Ins{op = "storel", a = int_arg(0), b = h})
+                add(Ins{op = "storel", a = int_arg(0), b = h, number = true})
                 if ty.kind == Bool:
                     try mix(h, Value{type = U64, at = op1(L, "extuw", a.at)}, inst.at)
                 elif ty.kind == Ptr or ty.kind == Func:
@@ -427,7 +427,7 @@ func gen_from(from: i64) -> i64|Fail:
                     open_block(l_done)
                 elif ty.kind == Array:
                     index := alloc(I64)
-                    add(Ins{op = "storel", a = int_arg(0), b = index})
+                    add(Ins{op = "storel", a = int_arg(0), b = index, number = true})
                     l_head := label()
                     l_body := label()
                     l_done := label()
@@ -437,7 +437,7 @@ func gen_from(from: i64) -> i64|Fail:
                     branch(op(W, "cultl", k, int_arg(i64(ty.count))), l_body, l_done)
                     open_block(l_body)
                     try mix(h, Value{type = ty.elem, at = op(L, "add", a.at, times(k, comp.types[ty.elem].size)), mem = true}, inst.at)
-                    add(Ins{op = "storel", a = op(L, "add", k, int_arg(1)), b = index})
+                    add(Ins{op = "storel", a = op(L, "add", k, int_arg(1)), b = index, number = true})
                     jump(l_head)
                     open_block(l_done)
                 terminate("ret", op1(L, "loadl", h))
@@ -3268,7 +3268,7 @@ func mix(h: Arg, part: Value, at: i64) -> Fail?:
     one: &list[Value] = heap([])
     append(one, part)
     x := load(try convert_number(try invoke("hash", one, at), U64, at)).at
-    add(Ins{op = "storel", a = op(L, "mul", op(L, "xor", op1(L, "loadl", h), x), int_arg(FNVPRIME)), b = h})
+    add(Ins{op = "storel", a = op(L, "mul", op(L, "xor", op1(L, "loadl", h), x), int_arg(FNVPRIME)), b = h, number = true})
     return null
 
 # where field name of t is declared, or at for a tuple, which has no declaration
@@ -3701,6 +3701,9 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
             if unknown != 0:
                 return unknown
         return 0
+    if kind == Items and node_end(n) == n + 1 and ty.kind == Fat and field_of(t, "arena").type == VOID: # the empty view
+        zeros(out, ty.size)
+        return 0
     if quoted and ty.name == "&strview":
         id := comp.globals[text_data(unquoted(text(n))).n][9:]
         out.* += "l $flag.str." + id + ", l " + comp.texts[trust parse_int(id)] + ", "
@@ -3795,14 +3798,14 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
         l_head := label()
         l_body := label()
         l_done := label()
-        add(Ins{op = "storel", a = int_arg(0), b = slot})
+        add(Ins{op = "storel", a = int_arg(0), b = slot, number = true})
         jump(l_head)
         open_block(l_head)
         i := op1(L, "loadl", slot)
         branch(op(W, "cultl", i, int_arg(i64(ty.count))), l_body, l_done)
         open_block(l_body)
         try stamp(ty.elem, op(L, "add", offset(addr, at), op(L, "mul", i, int_arg(i64(comp.types[ty.elem].size)))), 0)
-        add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = slot})
+        add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = slot, number = true})
         jump(l_head)
         open_block(l_done)
     return null
@@ -3815,7 +3818,7 @@ func set_tag(t: i64, member: i64, addr: Arg):
     name: &strview = "storew"
     if comp.types[t].size > 4:
         name = "storel" # the whole word, so a copy of it reads one store
-    add(Ins{op = name, a = tag_of(member), b = addr})
+    add(Ins{op = name, a = tag_of(member), b = addr, number = true})
 
 func tag_test(v: Value, tags: &list[i64]) -> Arg:
     current := tag(v)
@@ -4190,7 +4193,7 @@ func store(t: i64, v: Value, addr: Arg):
         name = "storeh"
     elif ty.size == 4:
         name = "storew"
-    add(Ins{op = name, a = x, b = addr})
+    add(Ins{op = name, a = x, b = addr, number = integer(t)})
 
 func blit(from: Arg, to: Arg, t: i64):
     if from.kind == to.kind and from.n == to.n:

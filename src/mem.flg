@@ -11,6 +11,7 @@ POOLED = 1 << 62
 
 EXACT = 4096
 FAR = 1 << 30
+RUN = 1 << 18
 HOPS = 3
 VISITS = 30
 ROUNDS = 20
@@ -382,7 +383,7 @@ func check_memory():
                 o.code = Load
             elif starts_with(name, "load"):
                 o.code = Word
-            elif name == "storel":
+            elif name == "storel" and not i.number:
                 o.code = Store
             elif starts_with(name, "store"):
                 o.code = Clear
@@ -415,6 +416,12 @@ func check_memory():
                     o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
                 case "ret":
                     o.code = Leave
+                    if f.blob: # the value goes back like a blit into the caller's place
+                        t := i64(func.cls) - AGG
+                        if func.cls >= CAGG:
+                            t = i64(func.cls) - CAGG
+                        o.size = u32(comp.types[t].size)
+                        o.mask = pointers(t)
                 case "hlt":
                     o.code = Halt
                 case "ended":
@@ -1236,10 +1243,28 @@ func visit(block: i64):
                         if ob.root > 0 and ob.root <= o.count:
                             name = named(mem.args[i64(o.first) + ob.root - 1].temp, g, ob.root - 1)
                         why := refusal(b, ob.loose)
+                        homeless: &strview = "" # why it cannot grow: its arena is 0 on every path, or on some path in a word followed path by path
+                        if marks.killed[x] and ob.home != 0:
+                            arena := obj_of(g, i64(ob.home) - 1)
+                            v := arena_of(ob)
+                            followed := arena.depth == 0
+                            if not followed:
+                                at := plus(binding(arena.parent), arena.off, arena.stride, arena.count)
+                                holder := sole(at)
+                                followed = at.off != ANY and at.stride == 0 and holder != NONE and (holder >= SLOTS or mem.fn.outer[holder])
+                            zero := v.live[NOWHERE] and (not plain(v) or v.off == 0 or v.off == ANY)
+                            if zero and (plain(v) and v.off == 0 or followed and not v.element):
+                                homeless = ", it may have no memory to grow in"
+                                if arena.depth == 1 and arena.root > 0:
+                                    given := emptied(mem.fns[g].places[mem.fns[g].params[arena.root - 1]])
+                                    if given.len > 0:
+                                        homeless = ", it may have no memory to grow in: give it " + given
                         if marks.freed[x] and why.len > 0:
                             refuse(who, name, why, b, mem.fns[g].strict)
                         elif marks.killed[x] and offheap(b):
-                            immovable(who, name, mem.fns[g].strict)
+                            immovable(who, name, ", it is not on the heap", mem.fns[g].strict)
+                        elif homeless.len > 0:
+                            immovable(who, name, homeless, mem.fns[g].strict)
                         elif marks.used[x]:
                             stale(b, name, mem.fns[g].strict)
                         if marks.killed[x]:
@@ -1378,7 +1403,7 @@ func visit(block: i64):
             given := mem.args[o.first + u32(o.code == Resize)]
             first := target_of(given)
             if mem.speak and offheap(first):
-                immovable(comp.tokens[token_at(o.pos)].text, mem.fn.names[given.temp], false)
+                immovable(comp.tokens[token_at(o.pos)].text, mem.fn.names[given.temp], ", it is not on the heap", false)
             blocks := freeable(first.live)
             for h in blocks:
                 condemn(h, first.must[h], false)
@@ -1578,10 +1603,7 @@ func visit(block: i64):
                 drop(i64(wipe) - 1)
                 wipe = mem.fn.cells[wipe - 1].next
             if mem.fn.blob:
-                for owner in given.live - mem.pinned:
-                    pass_back(owner, given)
-                if given.slot != 0 and given.slot != ALL:
-                    pass_back(SLOTS + i64(given.slot) - 1, given)
+                transfer(Target{live = bit(RETURNED), must = bit(RETURNED)}, given, i64(o.size), o.mask)
                 given = number(0)
             if mem.final:
                 unseen := mem.fn.heaps - mem.marks.live - reach(given, ByAny)
@@ -1623,7 +1645,7 @@ func visit(block: i64):
                 for id in mem.present:
                     owner := i64(mem.fn.cells[id].owner)
                     if mem.ticked[id] == mem.tick and (owner == RETURNED or owner < SLOTS and (mem.fn.outer[owner] or may[owner])):
-                        escape(cell_value(id), o.pos, true)
+                        escape(cell_value(id), o.pos, owner >= SLOTS or not mem.fn.outer[owner]) # what stays in a context or in the caller's memory is not returned
             mem.seen = false
 
 # wait moves the scratch of the thread to the one of this thread, or of the caller when the thread came from it
@@ -1632,21 +1654,6 @@ func reap(thread: Target):
     for h in reach(thread, FromValue) and mem.fn.arenas:
         if mem.fn.objs[h].born == NONE:
             mem.fn.objs[h].born = i64(mem.here)
-
-func pass_back(owner: i64, given: Target):
-    for views in [false, true]: # settling a word drops its views
-        k := mem.fn.heads[owner]
-        while k != 0:
-            c := mem.fn.cells[k - 1]
-            if mem.ticked[k - 1] == mem.tick and (c.member != 0) == views and not (views and given.member != 0):
-                v := cell_value(k - 1)
-                if given.member != 0:
-                    v = gather(Target{}, owner, c.off, c.stride, c.count, given.member, alive(mem.marks))
-                if c.off == ANY or given.off == ANY or given.stride != 0 or c.stride != 0:
-                    settle(cell_at(RETURNED, ANY, 0, 0, c.member), v, false)
-                elif c.off >= given.off:
-                    settle(cell_at(RETURNED, c.off - given.off, 0, 0, c.member), v, true)
-            k = c.next
 
 func snapshot() -> State:
     out := State{marks = mem.marks, seen = true}
@@ -1713,6 +1720,7 @@ func merge(a: State, b: State, s: i64) -> State:
             if c.member != 0:
                 view := mem.pool[out.vals[-1]]
                 refer(id, view.live or view.dead)
+            alone(views, c, a.vals[i])
             i += 1
         elif i == a.ids.len or b.ids[j] < a.ids[i]:
             id := b.ids[j]
@@ -1723,6 +1731,7 @@ func merge(a: State, b: State, s: i64) -> State:
                 if c.member != 0:
                     view := mem.pool[out.vals[-1]]
                     refer(id, view.live or view.dead)
+                alone(views, c, b.vals[j])
             j += 1
         else:
             id := a.ids[i]
@@ -1757,6 +1766,12 @@ func merge(a: State, b: State, s: i64) -> State:
             append(out.ids, u32(v >> 32))
             append(out.vals, u32(v and 0xffff_ffff))
     return out
+
+# a word that one path wrote as a member and the other never wrote: read as that member it is what that path wrote
+func alone(views: *&list[u64], c: Cell, val: u32):
+    w := mem.pool[val].writer
+    if w != 0 and c.member == 0 and (c.owner >= SLOTS or not mem.fn.outer[i64(c.owner)]):
+        append(views, (u64(cell_at(i64(c.owner), c.off, c.stride, c.count, w)) << 32) or u64(val))
 
 func missing(st: State, c: Cell) -> Target:
     if c.owner < SLOTS and mem.fn.focus[i64(c.owner)]: # a path that never made the element of the round
@@ -1873,7 +1888,7 @@ func plus(a: Target, off: i32, stride: i32, count: u32) -> Target:
         out.count = 0
         if a.stride == 0:
             out.count = count
-    if out.off < 0 or out.off >= FAR or out.stride > EXACT or out.stride != 0 and out.off > EXACT:
+    if out.off < 0 or out.off >= FAR or out.stride > EXACT or out.stride != 0 and out.off >= RUN:
         out.off = ANY
         out.stride = 0
         out.count = 0
@@ -1896,7 +1911,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out.live = a.live or b.live
     out.dead = a.dead or b.dead
     out.must = (a.must or not la) and (b.must or not lb) and out.live
-    out.element = a.element and (b.element or plain(b)) or b.element and plain(a)
+    out.element = a.element and (b.element or not followable(b)) or b.element and not followable(a)
     if a.writer != b.writer:
         out.writer = 0
     out.killer = max(a.killer, b.killer)
@@ -1920,7 +1935,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
         out.member = b.member
     elif plain(b) or a.off == b.off and a.stride == b.stride and a.count == b.count:
         return out
-    elif a.off == ANY or b.off == ANY or a.stride != 0 and b.stride != 0 and a.stride != b.stride or (a.off - b.off) % stride != 0 or stride > EXACT or a.off > EXACT and b.off > EXACT:
+    elif a.off == ANY or b.off == ANY or a.stride != 0 and b.stride != 0 and a.stride != b.stride or (a.off - b.off) % stride != 0 or stride > EXACT or a.off >= RUN and b.off >= RUN:
         out.off = ANY
         out.stride = 0
         out.count = 0
@@ -1955,7 +1970,7 @@ func fetch(a: Target) -> Target:
         return number(0)
     if count > 1 or not exact:
         out.must = Set{}
-    if not exact and not plain(out):
+    if not exact:
         out.element = true
     return out
 
@@ -2036,7 +2051,9 @@ func settle(id: i64, given: Target, exact: bool):
                         w.writer = ALL
                         rewrite(i64(k) - 1, w)
                     k = d.next
-    if plain(v):
+    if plain(v) and v.off != 0 and v.off != ANY and v.stride == 0: # a pointer that holds a number holds the mark of the heap
+        v = Target{live = bit(STATIC), must = bit(STATIC), writer = given.writer}
+    elif plain(v):
         v = number(0)
         v.writer = given.writer
     if exact and c.off != ANY and c.stride == 0:
@@ -2086,7 +2103,7 @@ func through(word: Target, member: u32) -> Target:
 
 func place(id: i64, v: Target):
     c := mem.fn.cells[id]
-    if plain(v) and v.off == 0 and v.stride == 0 and (c.owner >= SLOTS or not mem.fn.outer[i64(c.owner)]):
+    if plain(v) and v.off == 0 and v.stride == 0 and v.writer == 0 and (c.owner >= SLOTS or not mem.fn.outer[i64(c.owner)]):
         drop(id)
         return
     if v.slot != 0 and v.slot != ALL:
@@ -2139,7 +2156,7 @@ func child(owner: i64, off: i32, stride: i32) -> u64:
     if off != ANY and stride == 0:
         code = u64(off + 1)
     elif off != ANY:
-        code = (u64(stride) << 13) or u64(off)
+        code = u64(FAR + 1) + u64(stride) * RUN + u64(off) # past every exact one
     return (u64(owner) << 40) or (code << 8) or FIELD
 
 func cell_at(owner: i64, off: i32, stride: i32, count: u32, member: u32) -> i64:
@@ -2561,7 +2578,7 @@ func chunk(arena: Target, name: &strview, key: u64, given: Obj) -> i64:
 
 func lodge(arena: Target, key: u64, given: Obj) -> i64:
     given.home = home_of(arena)
-    if pointing(arena) and given.home == 0:
+    if followable(arena) and given.home == 0:
         return chunk(arena, "", key, given)
     return birth(key, given)
 
@@ -2584,12 +2601,12 @@ func refuse(who: &strview, name: &strview, why: &strview, v: Target, strict: boo
         text += who + " cannot release this memory" + why
     warn(view(text), mem.ops[mem.here].pos, "it may be freed here", v.killer, strict)
 
-func immovable(who: &strview, name: &strview, strict: bool):
+func immovable(who: &strview, name: &strview, why: &strview, strict: bool):
     text: &str = heap("")
     if name.len > 0:
-        text += who + " cannot grow " + name + ", it is not on the heap"
+        text += who + " cannot grow " + name + why
     else:
-        text += who + " cannot grow this memory, it is not on the heap"
+        text += who + " cannot grow this memory" + why
     warn(view(text), mem.ops[mem.here].pos, "", 0, strict)
 
 func touch_args(o: Op):
@@ -2771,6 +2788,8 @@ func binding(x: i64) -> Target:
     return out
 
 func translate(v: Target) -> Target:
+    if plain(v):
+        return v
     out: Target
     live := alive(mem.marks)
     must: Set
