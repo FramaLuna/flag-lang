@@ -511,7 +511,7 @@ func where_block() -> bool:
 func on_target() -> bool|Fail:
     start := comp.nodes.len
     try where_clause()
-    values: &list[bool]
+    values: &list[bool] = heap([])
     defer free(values)
     for n in reverse start + 1..comp.nodes.len:
         o := text(n)
@@ -568,7 +568,7 @@ func stmt() -> Fail?:
     elif after == ":=" or after == ":" and t.text != "else" and t.text != "case":
         try variable()
     elif t.text == "if":
-        opened: &list[i64]
+        opened: &list[i64] = heap([])
         defer free(opened)
         append(opened, begin(If, comp.pos))
         comp.pos += 1
@@ -744,7 +744,7 @@ func expr(min: i64) -> Fail?:
         comp.depth -= 1
     else:
         try unary()
-    operators: &list[i64]
+    operators: &list[i64] = heap([])
     defer free(operators)
     last := 0
     while true:
@@ -1058,7 +1058,7 @@ func type_expr() -> Fail?:
             finish(n)
         elif t.kind == Name or t.kind == Generic:
             n := qualified(TName)
-            outer: &str
+            outer: &str = heap("")
             while peek(".") and comp.tokens[comp.pos + 1].kind == Name:
                 if outer.len > 0:
                     outer += "."

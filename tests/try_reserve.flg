@@ -8,7 +8,7 @@ func fill(l: *&list[i64], count: i64) -> NoMemory?:
 
 func main():
     huge := 0x7fff_ffff_ffff_ffff
-    numbers: &list[i64]
+    numbers: &list[i64] = heap([])
     defer free(numbers)
     print(try_reserve(numbers, huge), " ", try_reserve(numbers, -1), " ", numbers.cap)
     print(try_reserve(numbers, 1 << 61), " ", numbers.cap) # its bytes would not fit in 64 bits
@@ -17,13 +17,13 @@ func main():
     for i in 0..100:
         append(numbers, i64(i))
     print(ptr(numbers.*) == room, " ", numbers[-1])
-    marks: &list[Mark]
+    marks: &list[Mark] = heap([])
     defer free(marks)
     print(try_reserve(marks, 10), " ", marks.cap)
-    text: &str
+    text: &str = heap("")
     defer free(text)
     print(try_reserve(text, huge), " ", try_reserve(text, -1), " ", try_reserve(text, 50), " ", text.cap)
-    counts: &map[&strview, i32]
+    counts: &map[&strview, i32] = heap({})
     defer free(counts)
     print(try_reserve(counts, huge), " ", try_reserve(counts, -1), " ", try_reserve(counts, 100), " ", counts.cap)
     counts["a"] = 1

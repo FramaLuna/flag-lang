@@ -3,17 +3,16 @@ func lex(file: i64) -> Fail?:
     code := comp.files[file].code
     base := comp.files[file].start
     bytes := items(code)
-    nothing: &strview
-    opens: &list[i64]
+    opens: &list[i64] = heap([])
     defer free(opens)
-    scopes: &list[i64]
+    scopes: &list[i64] = heap([])
     defer free(scopes)
-    limits: &list[i64]
+    limits: &list[i64] = heap([])
     defer free(limits)
-    widths: &list[i64]
+    widths: &list[i64] = heap([])
     defer free(widths)
     append(widths, 0)
-    columns: &list[i64]
+    columns: &list[i64] = heap([])
     defer free(columns)
     append(columns, 0)
     head := 0
@@ -195,10 +194,10 @@ func lex(file: i64) -> Fail?:
                     return fail("unexpected '" + code[start:at] + "', the bracket open here is '" + code[opener:opener + 1] + "'", base + start)
     if opens.len > 0:
         return fail("this bracket never closes", base + opens[-1])
-    append(comp.tokens, Token{Line, nothing, base + code.len, line})
-    append(comp.tokens, Token{End, nothing, base + code.len, line})
-    append(comp.tokens, Token{End, nothing, base + code.len, line})
-    append(comp.tokens, Token{End, nothing, base + code.len, line})
+    append(comp.tokens, Token{Line, "", base + code.len, line})
+    append(comp.tokens, Token{End, "", base + code.len, line})
+    append(comp.tokens, Token{End, "", base + code.len, line})
+    append(comp.tokens, Token{End, "", base + code.len, line})
     for k in scopes:
         comp.trusted[k].to = base + code.len
     return null

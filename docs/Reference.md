@@ -184,14 +184,18 @@ A nested field is inline in the struct, and its type is named after the struct a
 
 A field of a struct, a fat pointer or a context can have a default value, `size: i32 = 640`. It's written every time a value of the type is born, after the zeros and the tags (see [Unions](#unions)) and before what a literal gives: a variable, a literal that doesn't give the field, each element of an array, the value of a new key of a map, a context when a thread starts, and the constants and the `shared context`, whose data has it. So `Settings{}` and `s: Settings` have every field at its default. Memory that you zero yourself, like what `calloc` gives, and what `as` reads don't have it. The value is one the compiler knows, the same that a constant keeps in data: numbers, text, constants, variants, `null`, the name of a function, literals of them, and the empty owners `heap([])`, `heap("")` and `heap({})` (see [Who owns what](#who-owns-what)). It sees the constants and the type parameters of the declaration, not the variables where the value is born, and anything that would run is an error, `a default value is one the compiler knows, made of literals and constants, or the empty heap([]), heap("") or heap({}), and this one is computed when the program runs`. A default reads no field, `the default of area cannot read the field width, a default value is one ...`, and a text literal goes to a `&str` only through `heap`, which would run (see [Fat pointers](#fat-pointers)). A field that shares the storage of another has none, it starts as that one does: `low cannot have a default value, it shares the storage of whole and starts as whole does`. The defaults of a generic type are checked for each type it's made of, `value: $T = 1.5` is fine in a `Box[f32]` and an error in a `Box[i32]`, with a note at the place that made it.
 
+A fat pointer is not a value at zero (see [Fat pointers](#fat-pointers)), and neither is a struct or an array that holds one in a field without a default. So such a field is given in each literal, `Token expects a value for text, &strview starts without one: give it in the literal, or give the field a default`, a variable of the struct has no value until it gets one, like a fat pointer, and a context cannot hold one (see [Contexts](#contexts)). The empty owners, `""` and `[]` are the usual defaults: `names: &list[&strview] = heap([])`. A field whose type is a type parameter starts as that type does, a fat pointer there has no memory, like the value of a new key of a map: `Box[&str]{}` compiles, and growing its `&str` stops the program (see [Runtime errors](#runtime-errors)).
+
 A field with `@other` uses the same bytes as a field declared above it, it cannot be bigger than that field, and a literal can fill only one of the two. It starts with the same zero bytes as the field above, so when it holds a union without `null` it's not a value until you assign it. Printing skips the shared fields, and a struct with shared fields cannot be passed to C by value.
 
 A `packed type` has no padding, each field starts where the one before ends and its alignment is 1, so `packed type T:` with `a: u8` and `b: i64` takes 9 bytes. Fields can share storage with `@` there too. A packed struct cannot be passed to C by value, pass a pointer.
 
-A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. A list of values `[...]` takes the one array or `simd` of a union the same way, and a literal of pairs `{k: v}` its one `fixmap`: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with every field at its default value, or at zero.
+A struct literal without the name, `{1, 2}` or `{x = 1}`, takes the type from where it goes: a variable with its type, an assignment, a `return`, a field of another literal or an element of an array with its type. When that type is a union with one struct in it, the literal takes that struct, so `return {1, 2}` works in a function that returns `Point?`, and so does `m["a"] = {1, 2}` on a map of points. A list of values `[...]` takes the one array or `simd` of a union the same way, and a literal of pairs `{k: v}` its one `fixmap`: `v: simd[f32, 4]? = [1.0, 2.0, 3.0, 4.0]`. Anywhere else there is no type to take: `a {...} without a type needs a place that gives it one: p: Point = {1, 2}`. `{}` there is the value with every field at its default value, or at zero, and a field that needs a value is an error as in any literal.
 
 ### Arrays
 `array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `@sizeof` that takes the type of where you use it. N is an `i64`, so a bigger count is an error: `array[u8, 0x8000_0000_0000_0000]` gives `9223372036854775808 does not fit in i64, the largest i64 is 9223372036854775807`.
+
+An array of fat pointers, or of structs that need a value, is given whole: `names: array[&strview, 3]` has no value until `names = ["a", "b", "c"]`, writing `names[0]` before that is an error, and `array[&strview, 2]{}` is `array[&strview, 2] expects every element, &strview starts without a value`.
 
 ### Fixed maps
 `fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `@sizeof(fixmap[i32, i32, 2])` is 24.
@@ -217,9 +221,15 @@ A fat pointer is the address of the data and then its fields
 | `&str`, `&list[T]` | address, len, cap, arena | 32 |
 | `&map[K, V]` | address, len, cap, arena | 32 |
 
-`len` and `cap` are `i64`, like every length, count, position and size, so `l.len - 3` with two elements is `-1`. A fat pointer starts with everything at zero, that's the empty one, and `append`, `put` and `+=` allocate the memory the first time. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
+`len` and `cap` are `i64`, like every length, count, position and size, so `l.len - 3` with two elements is `-1`. The map is a table of `cap` slots (the hash, the key and the value) with open addressing, a hash of 0 is a free slot, `cap` is a power of two and at least 16.
 
-`&str`, `&list` and `&map` own their memory: they grow into their `cap`, and `arena` is a `*Arena`, the arena the memory lives in, and zero when it lives in the heap (see [Arenas](#arenas)). `&strview` and `&listview` are views, with a size that doesn't change. The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&listview` without copying anything.
+A fat pointer is used only after it gets its memory: an owner from an allocator, `heap(...)` or `arena(a, ...)`, and a view from the data it sees. `heap([])`, `heap("")` and `heap({})` are the empty owners in the heap, which ask for nothing until they grow, and `""` and `[]` the empty views. At zero a fat pointer is not a value, so a variable declared without one gets it later, and using it where no path gave it one is an error
+```
+error: names is used before it gets a value, and &list[&strview] starts without one: names: &list[&strview] = heap([])
+```
+The compiler follows each variable through the branches of an `if` or a `switch`: a branch doesn't see what another one gave, and after them the variable has a value when one of them gave it. In a loop it sees what was given before the loop and before in the body. Assigning a view to one that has no value is the copy that needs memory, `this &str is new and has no memory to copy &strview into: write heap(...) or arena(a, ...) around the value`. When some path gives it a value and another doesn't, it compiles, and an owner that grows without memory stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`, and the same for `&str` and `&map` (see [Runtime errors](#runtime-errors)). A field, an element of an array and a context get theirs where the value is born (see [Structs](#structs)), and the value of a new key of a map is born at zero, so a list or a text kept in a map gets its memory before it grows: `groups[k] = heap([])` (see [Assignments](#assignments)).
+
+`&str`, `&list` and `&map` own their memory: they grow into their `cap`, and `arena` says where the memory lives: a `*Arena`, or `1`, the mark of the heap, or `0` when it has none (see [Arenas](#arenas)). `free` keeps the `arena`, so a freed owner grows again in the same place. `&strview` and `&listview` are views, with a size that doesn't change. The views start like the ones that own, so a `&str` is a `&strview` and a `&list` a `&listview` without copying anything.
 
 `x.*` is the data of a fat pointer, so `ptr(x.*)` is its address as a `*bytes`.
 
@@ -480,8 +490,8 @@ func make(kind: type $T) -> $T:
 
 func main():
     p := make(Point)
-    items := make(&list[i32])
-    print(p, " ", items.len) # Point{x = 0, y = 0} 0
+    n := make(i64)
+    print(p, " ", n) # Point{x = 0, y = 0} 0
 ```
 - the argument is any type: `Point`, `m.Point`, `Box[i32]`, `Car.motor`, `&list[i32]`, `i32?`, `func(i32) -> bool`. A name that is a variable or a constant is a value, and a `type $T` doesn't take a value: `no overload of make matches (i64)`
 - after `type` goes a bare `$T`, with no shape and no default value: `type expects a bare $T after it, with no shape and no default value: kind: type $T`. It goes only in a parameter of a `func` with a body, not in an operator, an `extern func`, a function type, a field or a variable
@@ -587,9 +597,9 @@ An expression runs in the order it's written, left to right: the operands of an 
 ### Assignments
 In an assignment the right side runs first, and then the place on the left is found. So `l[0] = grow(l)` writes into the list as `grow` left it, and in `a[i()] = v()` it's `v` that runs first. Only a variable, a field, an element or what a pointer points to can be assigned.
 
-When `x[i]` gives a copy, like on a map, `x[i] = v` is `operator []=(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts and `lines[k] += text` appends to a `&str` that starts empty. When the type has an `operator []=(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once, and so does assigning a field or an element of it: `players[name].score += 10`, `pairs[a][b] += 1`. The right side runs first and the pointer is used at once, so a right side that grows the map is safe. The pointer is used at once, and the one that `ptr(x[i])` gives, below, goes bad at the next `put` that moves the table. Without it, like on a fixed map, a field of `x[i]` cannot be assigned, it would only change a copy. On a fixed map `operator []=` gives `MapFull?` and an assignment cannot pass an error on, so `x[i] = v` and `x[i] += v` don't compile there: call `try put(m, k, v)`.
+When `x[i]` gives a copy, like on a map, `x[i] = v` is `operator []=(x, i, v)`, and `v` takes its type from what `x[i]` gives, so `m["a"] = show` picks the overload of `show` that the map holds. `x[i] += v` reads the copy, adds and puts it back. A copy that is `null`, a key that is not in the map, counts as zero like a new variable, so `counts[word] += 1` counts. The zero of a `&str`, a `&list` or a `&map` has no memory, so the value of a new key gets its memory before it grows, `lines[k] = heap("")`, and `lines[k] += text` on a key that isn't there stops the program. When the type has an `operator []=(x, i)` that gives a pointer to the value and adds the key at zero when it is missing, like a map has, `x[i] += v` changes the value there and looks the key up once, and so does assigning a field or an element of it: `players[name].score += 10`, `pairs[a][b] += 1`. The right side runs first and the pointer is used at once, so a right side that grows the map is safe. The pointer is used at once, and the one that `ptr(x[i])` gives, below, goes bad at the next `put` that moves the table. Without it, like on a fixed map, a field of `x[i]` cannot be assigned, it would only change a copy. On a fixed map `operator []=` gives `MapFull?` and an assignment cannot pass an error on, so `x[i] = v` and `x[i] += v` don't compile there: call `try put(m, k, v)`.
 
-A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `operator []=(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map. The map is not touched while the call runs, so a call that grows it is safe. Without an `operator []=(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy.
+A call that takes `x[i]` where a pointer goes, when `x[i]` gives a copy, gets a pointer to a copy, `null` made zero, and after the call `operator []=(x, i, copy)` puts it back with the key it read: `append(groups[k], v)` adds to a list kept in a map, once `groups[k] = heap([])` gave it its memory. The map is not touched while the call runs, so a call that grows it is safe. Without an `operator []=(x, i, v)` that gives nothing it doesn't compile, the call would only change the copy.
 
 `ptr(x[i])` points at the value inside `x` when `operator []=(x, i)` gives its place, like on a map, and a key that is missing is added at zero: `q := ptr(m["a"])` and `q.* = P{50}` changes the map. It points into the table, so it goes bad when the map grows, like `ptr(l[i])` when a list grows, and `-memory` reports a use after that. Without that operator, like on a `fixmap`, it points to a copy, like `ptr` of any value that is not a variable, and nothing puts that one back.
 
@@ -773,6 +783,7 @@ These stop the program, and write the message to the error output
 | `flag: wait of a process that is not running: it was never started, or it was waited already`, also for `done` and `kill` | 134 |
 | `flag: cannot read random bytes: ...`, when the system gives none | 134 |
 | `flag: cannot start a thread, the system refuses one more` | 134 |
+| `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`, and the same for `&str` and `&map` (see [Fat pointers](#fat-pointers)) | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
 | `flag: invalid memory access at 0x0` | 139 |
@@ -782,7 +793,7 @@ These stop the program, and write the message to the error output
 | `flag: the test takes more than 10 s`, in `flagc test` | 142 |
 | `flag: this program needs an x86-64-v2 processor (SSE4.2)`, at the start of a program with `simd` | 132 |
 
-The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared
+The ones with exit code 134 write the place after the message (`  --> main.flg:12:11`), and then the chain of calls that led there, one line for each function of yours with the line where it's declared. An owner that grows without memory has no place, it grows inside the library, so the chain starts at the function of yours that grew it, and `panic(message, "")` leaves the place out too
 ```
 flag: index 5 is out of bounds, length 3
   --> main.flg:12:11
@@ -854,7 +865,7 @@ names: array[&strview, 3] = ["one", "two", "three"]
 origin: Point = {0, 0}
 handler: func(i32) -> i32 = twice
 ```
-Its value is one the compiler knows: numbers, `true` and `false`, characters, text literals, constants, `null` and enum variants, the name of a function, `ptr` of a `shared context`, the empty `heap([])`, `heap("")` and `heap({})`, and struct and array literals of them. Anything that would have to run is an error, also in a constant that nothing reads
+Its value is one the compiler knows: numbers, `true` and `false`, characters, text literals, constants, `null` and enum variants, the name of a function, `ptr` of a `shared context`, the empty `heap([])`, `heap("")` and `heap({})`, kept with the mark of the heap, and struct and array literals of them. Anything that would have to run is an error, also in a constant that nothing reads
 ```
 error: a constant with a type holds a value the compiler knows, made of literals and constants, and this one is computed when the program runs: without the type it is computed where it is read
 ```
@@ -865,7 +876,7 @@ Like any constant it cannot change: `limit += 1` is `limit is a constant, it can
 A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`. A constant is not a type, `x: limit` is `limit is a constant, not a type`.
 
 ### Contexts
-A context is a value with fields that every function sees. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Its fields start at zero or at their default values (see [Structs](#structs)), and a nested block makes a type like `app.inner`. Who can see it follows the module rules, like a type, and a local variable or a parameter cannot take its name, `app is a context, a variable cannot take its name`. There are three kinds, and the word goes before `context`, after `priv`
+A context is a value with fields that every function sees. It's also a type and a value, so you can print it or take `ptr(app.depth)`. Its fields start at zero or at their default values (see [Structs](#structs)), and a nested block makes a type like `app.inner`. Nothing runs to give a field a value when a thread starts, so a fat pointer, or what holds one, has a default: `names: &list[&strview] = heap([])`, and without one it's `app.names starts without a value, and a context gets only the defaults of its fields: names: &list[&strview] = heap([])`. Who can see it follows the module rules, like a type, and a local variable or a parameter cannot take its name, `app is a context, a variable cannot take its name`. There are three kinds, and the word goes before `context`, after `priv`
 ```flag
 context app:             # one for each thread, at its start in each new thread
     depth: i32
@@ -943,7 +954,8 @@ Flag doesn't have a garbage collector, you free what you allocate.
 - `&str`, `&list` and `&map` own their memory, you free them with `free`
 - `&strview` and `&listview` are views, they don't own anything. A literal asks for no memory either: `"..."` is a `&strview` of read-only data, `[1, 2]` an array, `[]` an `emptyarray`, `{k: v}` a `fixmap` and `{}` an `emptyfixmap`
 - `heap` makes an owner in the heap from what it holds: `heap("text")`, or of any text, a `&str`, `heap([1, 2])`, or of a list or a listview, a `&list`, and `heap({"a": 1})`, or of a `fixmap`, a `&map`, each with a copy. The literal keeps its own types, the place doesn't give them: `heap([1, 2])` is a `&list[i64]`, so a `&list[u8]` is `heap([u8(1), 2])`. They are functions of core
-- `heap([])`, `heap("")` and `heap({})` are an empty owner, a list, a text or a map in the heap that has no memory until it grows, the one at zero: `names: &list[&strview] = heap([])` asks for nothing. The list and the map are a `&list[never]` and a `&map[never, never]`, which go to any list or map. The compiler knows them, so they go where a value has to be known, like the default value of a field
+- `heap([])`, `heap("")` and `heap({})` are an empty owner, a list, a text or a map in the heap that has no block until it grows, only the mark of the heap in its `arena`: `names: &list[&strview] = heap([])` asks for nothing. The list and the map are a `&list[never]` and a `&map[never, never]`, which go to any list or map, and where the place says the type they are made of that type. The compiler knows them and writes them without the call, so they go where a value has to be known, like the default value of a field
+- an owner declared without a value has no memory, it gets one from `heap` or `arena` before it grows (see [Fat pointers](#fat-pointers))
 - `heap(value)` of anything else copies it to the heap and gives you a pointer, you free it with `free(p)`. `free` of a pointer to a `&str`, `&list`, `&map` or `Arena` is their own `free`, which releases what they hold, so a block that holds one, like `heap(m)` of a map, is freed with `free(p as *bytes)`
 - `arena(a, ...)` does the same in the arena `a`, and `free(a)` releases it with everything else in `a`
 - a list of `&str` owns each text, freeing the list doesn't free them, free them first
@@ -956,11 +968,11 @@ Many functions give you a temporary result, that lives in a scratch memory that 
 
 `with scratch():` marks the scratch memory, and when the block ends everything temporary made inside it is released. Keep a temporary after that and it's garbage, so copy it to a `&str` if you need it later
 ```flag
-kept: &str
+kept: &str = heap("")
 defer free(kept)
 with scratch():
     line := "id " + 42
-    kept = line # copies the text into memory you own
+    kept = line # copies the text into memory you own, in the heap
 print(kept)
 ```
 A program that never uses `with scratch():` keeps every temporary until it ends. That's fine for small programs, and for loops that run a lot put the body inside `with scratch():`.
@@ -968,7 +980,7 @@ A program that never uses `with scratch():` keeps every temporary until it ends.
 The scratch memory is an `Arena` of core, in a context, so each thread has its own, and `scratch()` marks it and `with` goes back to the mark. Its verb is `tmp`, like `heap` and `arena` for theirs: `tmp(text)` is a temporary copy of the text.
 
 ### Arenas
-An `Arena` gives out pieces of big blocks that it asks the heap for, 64 KiB each, or the size of a request that doesn't fit in one. It's a struct of core that starts empty, like a list, and every place that allocates has its verb: `heap(v)` the heap, `tmp(...)` the scratch memory and `arena(a, ...)` the arena `a`. Nothing chooses an arena for you, `heap` always uses the heap.
+An `Arena` gives out pieces of big blocks that it asks the heap for, 64 KiB each, or the size of a request that doesn't fit in one. It's a struct of core that starts empty, its `blocks` a list in the heap, and every place that allocates has its verb: `heap(v)` the heap, `tmp(...)` the scratch memory and `arena(a, ...)` the arena `a`. Nothing chooses an arena for you, `heap` always uses the heap.
 ```flag
 level: Arena
 defer free(level)
@@ -1012,7 +1024,7 @@ A message names your variable when there is one, with the fields you wrote after
 A warning has a note that points to the other place involved. `it may be freed here` points to the `free`, or to the call that freed or moved the memory, and `it is still not freed when this returns` points to the `return` that loses it, or to the name of the function when it ends without one
 ```flag
 func main():
-    names: &list[i32]
+    names: &list[i32] = heap([])
     defer free(names)
     append(names, 1)
     first := ptr(names[0])
@@ -1045,7 +1057,7 @@ The price is what it doesn't see: freeing only some of the elements, freeing the
 It doesn't follow the values of the conditions, it looks at every path. It does follow `is`: after `if node is *Node:` it knows that the other path has no node to free. And it keeps apart what each member of a union holds, also when two members keep a pointer in the same place, like `Shape` and `Bad` here, and when the paths that made the union meet
 ```flag
 type Shape:
-    points: &list[i32]
+    points: &list[i32] = heap([])
 
 type error Bad:
     reason: &strview

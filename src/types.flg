@@ -18,6 +18,7 @@ ITERATIONEND = 16
 NEVER = 17
 
 HEAD = 64 # core's Started, then the result of a thread
+HEAP = 1 # the arena of an owner whose memory is in the heap, the mark that core reads: 0 is an owner with no memory
 BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thread[null] when it returns nothing"
 NO_USIZE = "there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64"
 DEEP = 500
@@ -130,13 +131,13 @@ func find_type(name: &strview, path: &strview, at: i64) -> i64|Fail:
     return 0
 
 func fat_type(name: &strview, elem: i64, at: i64) -> i64|Fail:
-    args: &list[Item]
+    args: &list[Item] = heap([])
     if elem != VOID:
-        append(args, Item{name = "", type = elem})
+        append(args, Item{type = elem})
     return core_type(name, args, at)
 
 # a type that core declares and a literal is, like the &strview of a text or the fixmap of pairs
-func core_type(name: &strview, args: &list[Item], at: i64) -> i64|Fail:
+func core_type(name: &strview, args: &listview[Item], at: i64) -> i64|Fail:
     s := first_sym(name)
     while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat and comp.nodes[comp.syms[s].node].kind != Struct):
         s = comp.syms[s].next
@@ -150,7 +151,7 @@ func add_type(t: Type) -> i64:
         comp.spelled += t.name.len
     t.tag = u32(comp.types.len) - 1
     if comp.types.len > NEVER:
-        shape: &str
+        shape: &str = heap("")
         defer free(shape)
         if t.kind == Ptr or t.kind == Array or t.kind == Thread:
             shape += "" + t.kind + "[" + comp.types[t.elem].tag + ", " + t.count + "]"
@@ -160,7 +161,7 @@ func add_type(t: Type) -> i64:
                 shape += ", " + comp.types[comp.items[t.first + i].type].tag
             shape += ")"
         elif t.kind == Union or t.kind == Untagged:
-            parts: &list[u32]
+            parts: &list[u32] = heap([])
             defer free(parts)
             for i in 0..t.count:
                 append(parts, comp.types[comp.items[t.first + i].type].tag)
@@ -197,7 +198,7 @@ func pointer(t: i64) -> i64:
     return add_type(Type{kind = Ptr, name = view(key), size = 8, align = 8, elem = t})
 
 func members(t: i64) -> &list[i64]:
-    out: &list[i64]
+    out: &list[i64] = heap([])
     if comp.types[t].kind == Union:
         for i in 0..comp.types[t].count:
             append(out, comp.items[comp.types[t].first + i].type)
@@ -206,9 +207,9 @@ func members(t: i64) -> &list[i64]:
     return out
 
 func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
-    flat: &list[i64]
+    flat: &list[i64] = heap([])
     defer free(flat)
-    spread: &list[i64]
+    spread: &list[i64] = heap([])
     defer free(spread)
     for p in parts:
         ty := comp.types[try concrete(p, at)]
@@ -229,7 +230,7 @@ func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
     separator: &strview = "|"
     if kind == Untagged:
         separator = "||"
-    key: &str
+    key: &str = heap("")
     for m in flat:
         if key.len > 0:
             key += separator
@@ -237,21 +238,21 @@ func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
     id := comp.type_ids[view(key)]
     if id is i64:
         return id
-    tags: &list[u32]
+    tags: &list[u32] = heap([])
     defer free(tags)
     for m in flat:
         append(tags, comp.types[m].tag)
     sort(tags)
     for i in 1..tags.len:
         if kind == Union and tags[i] == tags[i - 1]:
-            same: &list[&strview]
+            same: &list[&strview] = heap([])
             for m in flat:
                 if comp.types[m].tag == tags[i]:
                     append(same, comp.types[m].name)
             return fail(same[0] + " and " + same[1] + " have the same tag, so a union of them cannot tell which one it holds: rename one of them", at)
     first := comp.items.len
     for m in flat:
-        append(comp.items, Item{name = "", type = m})
+        append(comp.items, Item{type = m})
     made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0], stamped = kind == Union and flat[0] != NULL})
     try lay_out(made, at)
     return made
@@ -317,11 +318,10 @@ func resolve(n: i64) -> i64|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     if node.kind == Struct:
-        none: &list[Item]
         s := 1
         while comp.syms[s].node != n:
             s += 1
-        return make_type(s, none, false, tok.at)
+        return make_type(s, [], false, tok.at)
     if node.kind == TUnary and tok.text == "&":
         if comp.nodes[n + 1].kind != TName:
             return fail("'&' expects the name of a fat pointer type after it", tok.at)
@@ -330,7 +330,7 @@ func resolve(n: i64) -> i64|Fail:
         return pointer(try resolve(n + 1))
     if node.kind == TUnary and tok.text == "type":
         return given_of(try resolve(n + 1))
-    parts: &list[i64]
+    parts: &list[i64] = heap([])
     if node.kind == TUnary:
         append(parts, try resolve(n + 1))
         append(parts, NULL)
@@ -375,16 +375,16 @@ func result_type(n: i64) -> i64|Fail:
 func instance(n: i64, fat: bool) -> i64|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
-    args: &list[Item]
+    args: &list[Item] = heap([])
     c := n + 1
     while c < node_end(n):
         count := try count_of(c)
         if count is i64:
-            append(args, Item{name = "", type = VOID, n = count})
+            append(args, Item{type = VOID, n = count})
         elif fat:
-            append(args, Item{name = "", type = try result_type(c)}) # &list[never] holds nothing, so it goes where any list goes
+            append(args, Item{type = try result_type(c)}) # &list[never] holds nothing, so it goes where any list goes
         else:
-            append(args, Item{name = "", type = try resolve(c)})
+            append(args, Item{type = try resolve(c)})
         c = node_end(c)
     if node.module.len == 0 and args.len == 0:
         id := comp.type_ids[tok.text]
@@ -450,11 +450,11 @@ func count_of(n: i64) -> i64|null|Fail:
         return fail("" + count + " does not fit in i64, the largest i64 is " + largest(I64), tok.at)
     return i64(count)
 
-func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
+func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
     sym := comp.syms[s]
     decl := sym.node
     kind := comp.nodes[decl].kind
-    key: &str
+    key: &str = heap("")
     if fat:
         key += "&"
     if sym.module.len > 0:
@@ -529,8 +529,9 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
         align = 8
     made := add_type(Type{kind = shape, name = view(key), args = arg_start, decl = decl, error = sym.error, packed = sym.packed})
     append(comp.resolving, decl)
-    fields: &list[Item]
+    fields: &list[Item] = heap([])
     stamped := false
+    hollow := kind == Fat
     while c < node_end(decl):
         name := text(c)
         field_at := comp.tokens[comp.nodes[c].tok].at
@@ -564,6 +565,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
                 offset = align_up(offset, f.align)
             append(fields, Item{name = name, type = ft, n = offset, default = given})
             stamped = stamped or given != 0 or f.stamped
+            hollow = hollow or bare(made, fields[-1])
             offset += f.size
             if offset > HUGE:
                 return too_large(key, field_at)
@@ -575,6 +577,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     comp.types[made].first = comp.items.len
     comp.types[made].count = fields.len
     comp.types[made].stamped = stamped
+    comp.types[made].hollow = hollow
     for f in fields:
         append(comp.items, f)
     comp.types[made].size = align_up(offset, align)
@@ -596,7 +599,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     slots := comp.slots.len
     held := comp.held.len
     born := zero(made, alloc(made))
-    known: &str
+    known: &str = heap("")
     defer free(known)
     unknown := 0
     if born is null:
@@ -609,6 +612,10 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
         return Fail
     drop(body, slots, held)
     return made
+
+# a field that starts without a value when its type is born: one that holds a fat pointer and has no default, unless a type parameter gives its type, which starts as that type does, like the value of a new key of a map
+func bare(t: i64, f: Item) -> bool:
+    return comp.types[f.type].hollow and f.default == 0 and not f.shared and comp.tokens[comp.nodes[field_node(t, f.name) + 1].tok].kind != Generic
 
 func arg_name(a: Item) -> &strview:
     if a.type == VOID:
@@ -624,7 +631,7 @@ func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
         return id
     if e.size > 0 and count > HUGE / e.size:
         return too_large(view(key), at)
-    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count, stamped = e.stamped})
+    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count, stamped = e.stamped, hollow = e.hollow})
 
 func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
@@ -671,7 +678,7 @@ func given_of(t: i64) -> i64:
     return add_type(Type{kind = Given, name = view(key), align = 1, elem = t})
 
 func func_of(taken: &list[i64], ret: i64, foreign: bool) -> i64:
-    key: &str
+    key: &str = heap("")
     if foreign:
         key += "extern "
     key += "func("
@@ -687,7 +694,7 @@ func func_of(taken: &list[i64], ret: i64, foreign: bool) -> i64:
         return id
     first := comp.items.len
     for t in taken:
-        append(comp.items, Item{name = "", type = t})
+        append(comp.items, Item{type = t})
     return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
 
 # the frame where the declaration of t reads its type parameters, as the default value of a field does

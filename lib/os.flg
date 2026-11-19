@@ -122,8 +122,8 @@ priv type ProcessInfo: # PROCESS_INFORMATION
     ids: array[u32, 2]
 
 priv type Startup:
-    args: &list[&strview]
-    values: &list[&strview] # what env gave on Windows, kept so it lives like the environment does
+    args: &list[&strview] = heap([])
+    values: &list[&strview] = heap([]) # what env gave on Windows, kept so it lives like the environment does
 
 priv shared context startup:
     given: Lock[Startup]
@@ -162,7 +162,7 @@ func args() -> &listview[&strview] where @windows():
             count: i32 = 0
             given := CommandLineToArgvW(GetCommandLineW(), ptr(count))
             for i in 0..count:
-                kept: &str # lives all the program
+                kept: &str = heap("") # lives all the program
                 with scratch():
                     kept = tmp(((given as *bytes + i * 8) as *wstr).*)
                 append(startup.given.value.args, view(kept))
@@ -394,7 +394,7 @@ priv func arguments(launched: &listview[&strview]|&strview) -> **u8 where not @w
 
 # the program inherits only its three handles, and gets no window of its own when this one has no console
 priv func spawn(launched: &listview[&strview]|&strview, input: i32, output: i32) -> i64|FsError where @windows():
-    line: &str
+    line: &str = heap("")
     defer free(line)
     made: i32 = 0
     code: u32 = 0

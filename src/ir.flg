@@ -92,13 +92,13 @@ func label_prefix() -> &strview:
     return "L"
 
 func listing() -> &str:
-    ids: &map[&strview, i64]
+    ids: &map[&strview, i64] = heap({})
     defer free(ids)
-    sizes: &list[i64]
+    sizes: &list[i64] = heap([])
     defer free(sizes)
-    rooms: &list[i64]
+    rooms: &list[i64] = heap([])
     defer free(rooms)
-    framed: &list[bool]
+    framed: &list[bool] = heap([])
     defer free(framed)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
@@ -120,16 +120,16 @@ func listing() -> &str:
                 given.arg = named(given.arg, names, first)
                 append(comp.passes, given)
             p.params = params
-            slots: &list[Ins]
-            body: &list[Ins]
-            pool: &list[Ins]
+            slots: &list[Ins] = heap([])
+            body: &list[Ins] = heap([])
+            pool: &list[Ins] = heap([])
             for k in p.code..p.end:
                 i := renamed(comp.code[k], names, first, hop)
                 g := callee(i, ids)
                 if g < f and (sizes[g] <= SMALL and not large and rooms[g] <= ROOMY and (rooms[g] <= SNUG or not p.recursive) or declared(comp.procs[g].node) == "inline") and not comp.procs[g].recursive and not framed[g] and not comp.procs[g].export:
                     q := comp.procs[g]
                     inner := fresh(q.temps, q.last)
-                    taken: &list[i64]
+                    taken: &list[i64] = heap([])
                     for j in 0..q.count:
                         want := comp.passes[q.params + j]
                         given := comp.passes[i.first + j]
@@ -184,7 +184,7 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
+        cut: &list[bool] = heap([]) # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
         for t in p.temps..=p.last:
             append(cut, false)
         for k in p.params..p.params + p.count:
@@ -207,9 +207,9 @@ func listing() -> &str:
         append(sizes, stays)
         append(rooms, room)
         append(framed, frame)
-    live: &list[bool]
+    live: &list[bool] = heap([])
     defer free(live)
-    work: &list[i64]
+    work: &list[i64] = heap([])
     defer free(work)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
@@ -223,16 +223,16 @@ func listing() -> &str:
             if g < comp.procs.len and not live[g]:
                 live[g] = true
                 append(work, g)
-    written: &list[Proc]
+    written: &list[Proc] = heap([])
     for index, f in comp.procs:
         if live[index]:
             append(written, f)
     comp.procs = written
-    out: &str
-    moved: &list[i64]
+    out: &str = heap("")
+    moved: &list[i64] = heap([])
     for l in 0..=comp.labels:
         append(moved, 0)
-    dropped: &list[bool]
+    dropped: &list[bool] = heap([])
     for i in comp.code:
         append(dropped, i.ghost)
     for t in 0..comp.reached:
@@ -241,7 +241,7 @@ func listing() -> &str:
     out += comp.c_defs
     out += comp.data
     out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
-    places: &str
+    places: &str = heap("")
     place := 16 + 16 * comp.procs.len
     for f in comp.procs:
         hidden := f.node == 0 or comp.insts[f.inst].library
@@ -376,7 +376,7 @@ func cut_at(cut: &list[bool], a: Arg, first: u32) -> bool:
     return a.kind == Temp and cut[a.n - i64(first)]
 
 func fresh(first: u32, last: u32) -> &list[Arg]:
-    names: &list[Arg]
+    names: &list[Arg] = heap([])
     for k in first..=last:
         comp.temps += 1
         append(names, Arg{Temp, i64(comp.temps)})

@@ -105,8 +105,8 @@ type Obj:
     killed: i64
     freed: i64
     sent: i64
-    name: &strview
-    from: &strview
+    name: &strview = ""
+    from: &strview = ""
     parent: i64
     root: i64
     site: i64
@@ -138,15 +138,15 @@ type Marks:
     waited: Set
 
 type State:
-    ids: &list[u32]
-    vals: &list[u32]
-    temps: &list[u32]
+    ids: &list[u32] = heap([])
+    vals: &list[u32] = heap([])
+    temps: &list[u32] = heap([])
     marks: Marks
     seen: bool
 
 type Summary:
-    ids: &list[u32]
-    aims: &list[Target]
+    ids: &list[u32] = heap([])
+    aims: &list[Target] = heap([])
     marks: Marks
     seen: bool
 
@@ -163,26 +163,26 @@ type Warning:
     strict: bool
 
 type Fn:
-    name: &strview
-    shown: &strview
-    params: &list[u32]
-    copies: &list[bool]
-    spans: &list[Span]
-    names: &list[&strview]
-    variables: &list[bool] # a temp that is a variable keeps its name, a slot of temporaries takes the name of what it holds
-    places: &list[i64]
-    cross: &list[bool]
-    last: &list[u32]
-    crossing: &list[u32]
-    calls: &list[i64]
-    swaps: &list[u32]
-    slots: &list[u32]
-    alive: &list[u64]
-    keys: &list[u64]
-    objs: &list[Obj]
-    cells: &list[Cell]
-    heads: &list[u32]
-    found: &list[Warning]
+    name: &strview = ""
+    shown: &strview = ""
+    params: &list[u32] = heap([])
+    copies: &list[bool] = heap([])
+    spans: &list[Span] = heap([])
+    names: &list[&strview] = heap([])
+    variables: &list[bool] = heap([]) # a temp that is a variable keeps its name, a slot of temporaries takes the name of what it holds
+    places: &list[i64] = heap([])
+    cross: &list[bool] = heap([])
+    last: &list[u32] = heap([])
+    crossing: &list[u32] = heap([])
+    calls: &list[i64] = heap([])
+    swaps: &list[u32] = heap([])
+    slots: &list[u32] = heap([])
+    alive: &list[u64] = heap([])
+    keys: &list[u64] = heap([])
+    objs: &list[Obj] = heap([])
+    cells: &list[Cell] = heap([])
+    heads: &list[u32] = heap([])
+    found: &list[Warning] = heap([])
     sum: Summary
     ret: Target
     heaps: Set
@@ -203,7 +203,7 @@ type Fn:
     stacked: bool
     dirty: bool
     done: bool
-    stuck: &strview
+    stuck: &strview = ""
     runs: i64
     node: i64
     inst: i64
@@ -211,37 +211,37 @@ type Fn:
 context mem:
     pinned: Set
     noheap: Set
-    fns: &list[Fn]
-    ids: &map[&strview, i64]
-    shared: &map[&strview, u32]
-    globals: &list[&strview]
-    callees: &list[&strview]
-    ops: &list[Op]
-    args: &list[Operand]
+    fns: &list[Fn] = heap([])
+    ids: &map[&strview, i64] = heap({})
+    shared: &map[&strview, u32] = heap({})
+    globals: &list[&strview] = heap([])
+    callees: &list[&strview] = heap([])
+    ops: &list[Op] = heap([])
+    args: &list[Operand] = heap([])
     f: i64
     fn: Fn
     here: u32
     words: i64
     viewed: bool
-    temps: &list[Target]
-    active: &list[u32]
-    cur: &list[Target]
-    fresh: &list[u32]
-    ticked: &list[u32]
-    present: &list[u32]
-    known: &list[u32]
-    pool: &list[Target]
-    pooled: &map[Target, u32]
-    refs: &list[&list[u32]]
-    swept: &list[u64]
-    interned: &list[u32]
-    renamed: &list[u32]
+    temps: &list[Target] = heap([])
+    active: &list[u32] = heap([])
+    cur: &list[Target] = heap([])
+    fresh: &list[u32] = heap([])
+    ticked: &list[u32] = heap([])
+    present: &list[u32] = heap([])
+    known: &list[u32] = heap([])
+    pool: &list[Target] = heap([])
+    pooled: &map[Target, u32] = heap({})
+    refs: &list[&list[u32]] = heap([])
+    swept: &list[u64] = heap([])
+    interned: &list[u32] = heap([])
+    renamed: &list[u32] = heap([])
     ages: u32
     tick: u32
     marks: Marks
     seen: bool
-    ins: &list[State]
-    held: &list[u64]
+    ins: &list[State] = heap([])
+    held: &list[u64] = heap([])
     exit: State
     ret: Target
     final: bool
@@ -250,16 +250,16 @@ context mem:
     strong: Set
     callee: i64
     call: u32
-    who: &strview
-    binds: &list[Target]
+    who: &strview = ""
+    binds: &list[Target] = heap([])
     bound: Set
-    writes: &list[Write]
-    order: &list[u64]
-    warnings: &list[Warning]
-    said: &map[&strview, bool]
-    index: &map[u64, u32]
+    writes: &list[Write] = heap([])
+    order: &list[u64] = heap([])
+    warnings: &list[Warning] = heap([])
+    said: &map[&strview, bool] = heap({})
+    index: &map[u64, u32] = heap({})
     counter: i64
-    stack: &list[i64]
+    stack: &list[i64] = heap([])
 
 operator <(a: Warning, b: Warning) -> bool:
     return a.at < b.at
@@ -267,13 +267,13 @@ operator <(a: Warning, b: Warning) -> bool:
 func check_memory():
     mem.pinned = bit(NOWHERE) or bit(OUTSIDE) or bit(STATIC)
     mem.noheap = bit(STATIC) or bit(RETURNED)
-    labels: &map[u32, u32]
+    labels: &map[u32, u32] = heap({})
     defer free(labels)
-    blocks: &list[u32]
+    blocks: &list[u32] = heap([])
     defer free(blocks)
-    born: &list[u32]
+    born: &list[u32] = heap([])
     defer free(born)
-    derived: &list[u32]
+    derived: &list[u32] = heap([])
     defer free(derived)
     for func in comp.procs:
         clear(labels)
@@ -460,7 +460,7 @@ func check_memory():
                 append(f.crossing, u32(t))
         put(mem.ids, f.name, mem.fns.len)
         append(mem.fns, f)
-    exact: &list[bool] # the name is the path the program wrote, not an element of it
+    exact: &list[bool] = heap([]) # the name is the path the program wrote, not an element of it
     defer free(exact)
     for g in 0..mem.fns.len:
         spans := mem.fns[g].spans
@@ -573,7 +573,7 @@ func check_memory():
                     for item in comp.items[ty.first:ty.first + ty.count]:
                         if not item.shared and item.n <= off and off < item.n + comp.types[item.type].size:
                             if exact[heir]:
-                                path: &str
+                                path: &str = heap("")
                                 path += name + "." + item.name
                                 name = view(path)
                             place = item.type
@@ -587,7 +587,7 @@ func check_memory():
                     place = pointee(place)
                 places[heir] = place
                 mem.fns[g].names[heir] = name
-    closes: &list[i64]
+    closes: &list[i64] = heap([])
     defer free(closes)
     for k in 0..mem.ops.len:
         if mem.ops[k].code == Rewind:
@@ -646,7 +646,7 @@ func named(t: u32, g: i64, k: i64) -> &strview:
         place = VOID
         for item in comp.items[ty.first:ty.first + ty.count]:
             if item.n == 0 and not item.shared and comp.types[item.type].size > 0:
-                path: &str
+                path: &str = heap("")
                 path += name + "." + item.name
                 name = view(path)
                 place = item.type
@@ -709,7 +709,7 @@ func connect(v: i64):
             mem.fns[v].low = mem.fns[w].order
     if mem.fns[v].low != mem.fns[v].order:
         return
-    members: &list[i64]
+    members: &list[i64] = heap([])
     defer free(members)
     while true:
         w := trust pop(mem.stack)
@@ -746,7 +746,7 @@ func connect(v: i64):
             analyze(f)
     for f in members:
         for w in mem.fns[f].found:
-            key: &str
+            key: &str = heap("")
             key += w.text + " " + w.at
             if contains(mem.said, view(key)):
                 free(key)
@@ -784,7 +784,7 @@ func analyze(f: i64) -> bool:
     mem.pool.len = 0
     clear(mem.pooled)
     while mem.refs.len < SLOTS:
-        nothing: &list[u32]
+        nothing: &list[u32] = heap([])
         append(mem.refs, nothing)
         append(mem.swept, u64(0))
     for k in 0..SLOTS:
@@ -802,7 +802,7 @@ func analyze(f: i64) -> bool:
             mem.temps[params[k]] = Target{live = bit(e), must = bit(e)}
     spans := mem.fn.spans
     none: State
-    queued: &list[bool]
+    queued: &list[bool] = heap([])
     defer free(queued)
     for b in 0..spans.len:
         append(mem.ins, none)
@@ -863,7 +863,7 @@ func analyze(f: i64) -> bool:
         for k in spans[0].first..spans[-1].end:
             if at == 0:
                 at = mem.ops[k].pos
-        text: &str
+        text: &str = heap("")
         text += "-memory gives up on " + mem.fn.shown + ", " + mem.fn.stuck + ", so its checks are incomplete"
         warn(view(text), at, "", 0, false)
     mem.final = false
@@ -1051,7 +1051,7 @@ func visit(block: i64):
             given := target_of(o.a)
             if mem.speak and (not empty((given.live or given.dead) - mem.pinned) or given.slot != 0):
                 name := mem.fn.names[o.a.temp]
-                text: &str
+                text: &str = heap("")
                 if name.len > 0:
                     text += "-memory cannot follow " + name + " once it is stored as an integer, store it with a pointer type"
                 else:
@@ -1132,7 +1132,7 @@ func visit(block: i64):
                             t := mem.fns[g].places[mem.fns[g].params[k]]
                             found := lockable(Target{}, t, true)
                             if mine and found.type != VOID:
-                                text: &str
+                                text: &str = heap("")
                                 text += mem.fn.names[given.temp] + " goes by value to " + who + ", a copy of "
                                 if found.name.len == 0:
                                     text += kind_of(found.type)
@@ -1160,7 +1160,7 @@ func visit(block: i64):
                                 sibling := ob.depth > 0 and oy.depth > 0 and ob.parent == oy.parent
                                 shared := not empty((b.live and c.live) - mem.pinned) or b.slot != 0 and c.slot != 0 and (b.slot == c.slot or b.slot == ALL or c.slot == ALL)
                                 if y != x and not sibling and (ob.root > 0 or oy.root > 0) and (marks.used[y] or marks.killed[y]) and shared:
-                                    said: &str
+                                    said: &str = heap("")
                                     said += who + " may free memory that it also reads through another argument"
                                     warn(view(said), o.pos, "", 0, mem.fns[g].strict)
                                     break
@@ -1435,7 +1435,7 @@ func visit(block: i64):
                     x := mem.fn.objs[h]
                     if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]) or x.home != 0 or x.alone:
                         continue
-                    text: &str
+                    text: &str = heap("")
                     if x.name.len > 0:
                         text += "the memory allocated here for " + x.name
                     elif x.from.len > 0:
@@ -1530,7 +1530,7 @@ func merge(a: State, b: State, s: i64) -> State:
     la := alive(x)
     lb := alive(y)
     dying := not (la or lb)
-    views: &list[u64]
+    views: &list[u64] = heap([])
     defer free(views)
     i := 0
     j := 0
@@ -2154,7 +2154,7 @@ func touch(a: Target, name: &strview):
 
 func stale(a: Target, name: &strview, strict: bool):
     if mem.speak and not empty(a.dead):
-        text: &str
+        text: &str = heap("")
         if name.len > 0:
             text += name + " points to memory that may be freed already"
         else:
@@ -2220,7 +2220,7 @@ func home_of(arena: Target) -> u32:
     return u32(entry) + 1
 
 func refuse(who: &strview, name: &strview, why: &strview, v: Target, strict: bool):
-    text: &str
+    text: &str = heap("")
     if name.len > 0:
         text += who + " cannot release " + name + why
     else:
@@ -2279,7 +2279,7 @@ func copied(from: Target, t: i64, name: &strview):
     if found.type == VOID:
         return
     kind := text(comp.types[found.type].decl)
-    text: &str
+    text: &str = heap("")
     text += "this copies "
     if found.name.len > 0 and name.len > 0:
         text += "the " + kind + " " + found.name + " in " + name + ","
@@ -2315,7 +2315,7 @@ func lockable(from: Target, t: i64, any: bool) -> Item:
                 continue
             found := lockable(plus(from, i32(item.n), 0, 0), item.type, any)
             if found.type != VOID:
-                path: &str
+                path: &str = heap("")
                 path += item.name
                 if found.name.len > 0:
                     path += "." + found.name
@@ -2414,7 +2414,7 @@ func escape(v: Target, pos: i64, returned: bool):
         warn(STACK, pos, "", 0, false)
         return
     shown := mem.fn.shown
-    text: &str
+    text: &str = heap("")
     if v.slot == ALL:
         text += "a pointer into the stack of " + shown + " cannot leave " + shown
     else:
@@ -2434,7 +2434,7 @@ func outlived(released: Set, at: i64, note: &strview):
         return
     for h in reach(Target{live = running}, FromValue) and released:
         if not mem.fn.objs[h].pool and mem.fn.objs[h].born != NONE:
-            text: &str
+            text: &str = heap("")
             text += "a thread may still use this temporary when "
             if at != 0:
                 text += "its with scratch() releases it: wait for the thread inside it, or give it a &str"

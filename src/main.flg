@@ -44,10 +44,10 @@ type Node:
     module: &strview
 
 type Sym:
-    name: &strview
+    name: &strview = ""
     node: i64
     next: i64
-    module: &strview
+    module: &strview = ""
     priv: bool
     error: bool
     packed: bool
@@ -74,9 +74,10 @@ type Type:
     packed: bool
     foreign: bool
     stamped: bool # it starts at something other than zero: the tag of a union without null, or the default value of a field
+    hollow: bool # zero is not a value of it: a fat pointer, or a struct or an array that holds one with no default
 
 type Item:
-    name: &strview
+    name: &strview = ""
     type: i64
     n: i64
     shared: bool
@@ -159,6 +160,7 @@ type Local:
     limit: u64
     counts: bool
     unread: bool
+    given: bool # some path gave it a value, which one of a hollow type declared without a value has not
 
 type Value:
     type: i64
@@ -184,58 +186,59 @@ type Deferred:
     subject: Value
 
 context comp:
-    files: &list[Source]
-    uses: &list[Use]
-    libs: &list[&strview]
-    library: &str
-    tokens: &list[Token]
-    trusted: &list[Trust]
-    nodes: &list[Node]
+    files: &list[Source] = heap([])
+    uses: &list[Use] = heap([])
+    libs: &list[&strview] = heap([])
+    library: &str = heap("")
+    tokens: &list[Token] = heap([])
+    trusted: &list[Trust] = heap([])
+    nodes: &list[Node] = heap([])
     pos: i64
     width: i64
     depth: i64
-    syms: &list[Sym]
-    names: &map[&strview, i64]
-    types: &list[Type]
-    type_ids: &map[&strview, i64]
-    items: &list[Item]
-    binds: &list[Item]
+    syms: &list[Sym] = heap([])
+    names: &map[&strview, i64] = heap({})
+    types: &list[Type] = heap([])
+    type_ids: &map[&strview, i64] = heap({})
+    items: &list[Item] = heap([])
+    binds: &list[Item] = heap([])
     frame: i64
-    insts: &list[Inst]
-    inst_ids: &map[&strview, i64]
-    inst_binds: &list[Item]
-    chosen: &map[&strview, i64]
-    resolving: &list[i64]
+    insts: &list[Inst] = heap([])
+    inst_ids: &map[&strview, i64] = heap({})
+    inst_binds: &list[Item] = heap([])
+    chosen: &map[&strview, i64] = heap({})
+    resolving: &list[i64] = heap([])
     spelled: i64
-    c_types: &list[i64]
-    c_defs: &str
-    data: &str
-    texts: &list[i64]
-    stored: &map[&strview, i64]
-    globals: &list[&strview]
-    global_ids: &map[&strview, i64]
+    c_types: &list[i64] = heap([])
+    c_defs: &str = heap("")
+    data: &str = heap("")
+    texts: &list[i64] = heap([])
+    stored: &map[&strview, i64] = heap({})
+    globals: &list[&strview] = heap([])
+    global_ids: &map[&strview, i64] = heap({})
     reached: i64
-    procs: &list[Proc]
-    code: &list[Ins]
-    body: &list[Ins]
-    slots: &list[Ins]
-    spare: &list[i64]
-    held: &list[i64]
-    passes: &list[Pass]
-    mentions: &list[Mention]
-    scopes: &list[i64]
+    procs: &list[Proc] = heap([])
+    code: &list[Ins] = heap([])
+    body: &list[Ins] = heap([])
+    slots: &list[Ins] = heap([])
+    spare: &list[i64] = heap([])
+    held: &list[i64] = heap([])
+    passes: &list[Pass] = heap([])
+    mentions: &list[Mention] = heap([])
+    scopes: &list[i64] = heap([])
     scope: i64
     temps: u32
-    numbers: &list[bool]
+    numbers: &list[bool] = heap([])
     labels: u32
     at: i64
     site: i64
     target: i64
     passed: i64
-    elements: &list[Value]
-    vars: &list[Local]
-    defers: &list[Deferred]
-    loops: &list[Loop]
+    elements: &list[Value] = heap([])
+    vars: &list[Local] = heap([])
+    given: &list[i64] = heap([]) # the locals that got their first value, in order, so a branch takes back what the one before it gave
+    defers: &list[Deferred] = heap([])
+    loops: &list[Loop] = heap([])
     leaving: i64
     staying: i64
     ret: i64
@@ -244,15 +247,15 @@ context comp:
     live: bool
     inst: i64
     entry: i64 # main, the main of C
-    tests: &list[i64]
+    tests: &list[i64] = heap([])
     settler: i64 # main, when the program starts threads
     stamping: bool # a context of a thread starts at something other than zero, which stamp writes when the thread enters
     asked: i64
-    defined: &list[i64]
-    hover: &str
-    assembly: &str # written after what QBE writes: the files of @embed and the DWARF
-    system: &strview
-    machine: &strview
+    defined: &list[i64] = heap([])
+    hover: &str = heap("")
+    assembly: &str = heap("") # written after what QBE writes: the files of @embed and the DWARF
+    system: &strview = ""
+    machine: &strview = ""
     choosing: bool
     debug: bool
     shared: bool
@@ -277,19 +280,19 @@ func main() -> i32:
         comp.err = "\e[1;31merror:\e[0m "
         comp.note = "\e[1;36mnote:\e[0m "
         comp.warn = "\e[1;33mwarning:\e[0m "
-    output: &str
+    output: &str = heap("")
     keep := false
     check := false
     memory := false
     overlay: &strview
     query: &strview|null = null
     target := view(flag_target())
-    inputs: &list[&strview]
-    rest: &list[&strview]
+    inputs: &list[&strview] = heap([])
+    rest: &list[&strview] = heap([])
     arguments := args()
     testing := arguments.len > 1 and arguments[1] == "test"
     running := arguments.len > 1 and arguments[1] == "run" or testing
-    program: &list[&strview]
+    program: &list[&strview] = heap([])
     seconds := 10
     passing := false
     i := 1 + i64(running)
@@ -396,7 +399,7 @@ func main() -> i32:
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
-    texts: &map[&strview, &strview]
+    texts: &map[&strview, &strview] = heap({})
     if overlay.len > 0:
         given := read_file(overlay)
         if given is FsError:
@@ -498,7 +501,7 @@ func main() -> i32:
             eprint(comp.err, "cannot unpack the library into ", comp.library)
             return 1
     core: &str = heap(join_path(comp.library, "core.flg"))
-    loaded: &list[&strview]
+    loaded: &list[&strview] = heap([])
     append(loaded, real_path(view(core)))
     if add_file(core, read_source(view(core), texts), true) is Fail:
         return 1
@@ -597,7 +600,7 @@ func main() -> i32:
     if append_file(view(asm), comp.assembly) is FsError:
         eprint(comp.err, "cannot write ", asm)
         return 1
-    cc: &list[&strview]
+    cc: &list[&strview] = heap([])
     compiler: &strview = "cc"
     given := env("CC")
     if given is &strview and given.len > 0:
@@ -611,13 +614,13 @@ func main() -> i32:
     object += ".o"
     apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
     if apart:
-        assembling: &list[&strview]
+        assembling: &list[&strview] = heap([])
         append(assembling, cc)
         append(assembling, ptr(["-c", "-o", view(object), view(asm)]))
         if not ran(assembling, linking):
             return 1
         source = view(object)
-    link: &list[&strview]
+    link: &list[&strview] = heap([])
     append(link, cc)
     append(link, "-o")
     append(link, output)
@@ -649,7 +652,7 @@ func main() -> i32:
         me = "./" + me
     code: i32|FsError = 0
     if testing:
-        chosen: &list[i64]
+        chosen: &list[i64] = heap([])
         for k in comp.tests:
             picked := program.len == 0
             for word in program:
@@ -657,25 +660,22 @@ func main() -> i32:
             if picked:
                 append(chosen, k)
         if chosen.len == 0:
-            words: &str
+            words: &str = heap("")
             for word in program:
                 if words.len > 0:
                     words += " or "
                 words += word
             eprint(comp.err, "no test has ", words, " in its name")
             code = 2
-        commands: &list[&list[&strview]]
-        codes: &list[i32|FsError]
-        said: &list[&str]
-        for j, k in chosen:
-            command: &list[&strview]
-            append(command, ptr([me, test_name(k), "" + seconds]))
-            append(commands, command)
+        commands: &list[&list[&strview]] = heap([])
+        codes: &list[i32|FsError] = heap([])
+        said: &list[&str] = heap([])
+        for k in chosen:
+            append(commands, heap([me, test_name(k), "" + seconds]))
             append(codes, 0)
-            none: &str
-            append(said, none)
+            append(said, heap(""))
         queue: Channel[i64, 64]
-        workers: &list[Thread[null]]
+        workers: &list[Thread[null]] = heap([])
         while workers.len < cores() and workers.len < chosen.len:
             append(workers, parallel run_tests(ptr(queue), commands, codes, said))
         for j in 0..chosen.len:
@@ -757,7 +757,7 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
         if comp.files.len > 0:
             last := comp.files[-1]
             start = last.start + last.code.len + 1
-        own: &str
+        own: &str = heap("")
         for b in items(base_name(view(path))):
             if is_letter(b) or is_digit(b) or b == '.':
                 add_byte(own, b)
@@ -793,8 +793,8 @@ func show(at: i64):
     bytes := items(f.code)
     local := at - f.start
     first := line_start(at) - f.start
-    line: &str
-    pad: &str
+    line: &str = heap("")
+    pad: &str = heap("")
     i := first
     while i < f.code.len and bytes[i] != '\n':
         b := bytes[i]
@@ -816,7 +816,7 @@ func show(at: i64):
 
 func location(at: i64) -> &str:
     f := comp.files[file_of(at)]
-    out: &str
+    out: &str = heap("")
     out += f.path + ":" + line_of(at) + ":" + (at - line_start(at) + 1)
     return out
 

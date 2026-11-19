@@ -126,8 +126,9 @@ func panic(message: &strview, place: &strview = @here()) -> never:
     flush()
     report("flag: ")
     report(message)
-    report("\n  --> ")
-    report(place)
+    if place.len > 0:
+        report("\n  --> ")
+        report(place)
     report("\n")
     frame := flag_frame()
     trace(Crash{frame, 0, frame, 0, 0})
@@ -168,7 +169,7 @@ func wstr(text: &strview) -> wstr:
     return out
 
 func tmp(w: wstr) -> &strview:
-    out: &str
+    out: &str = heap("")
     defer free(out)
     at := w
     while at.* != 0:
@@ -278,7 +279,7 @@ func reserve(l: *&list[$T], want: i64):
     bytes := cap * @sizeof($T)
     if bytes / cap != @sizeof($T):
         out_of_memory()
-    grown := resize(l.arena, ptr(l.*.*), l.cap * @sizeof($T), bytes)
+    grown := resize(l.arena, ptr(l.*.*), l.cap * @sizeof($T), bytes, NO_LIST)
     if grown as u64 == 0 and bytes > 0:
         out_of_memory()
     l.* = grown
@@ -294,7 +295,7 @@ func try_reserve(l: *&list[$T], want: i64) -> NoMemory?:
     bytes := cap * @sizeof($T)
     if bytes / cap != @sizeof($T):
         return NoMemory
-    grown := resize(l.arena, 0 as *bytes, 0, bytes)
+    grown := resize(l.arena, 0 as *bytes, 0, bytes, NO_LIST)
     if grown as u64 == 0 and bytes > 0:
         return NoMemory
     memcpy(grown, ptr(l.*.*), l.len * @sizeof($T))
@@ -511,7 +512,7 @@ func reserve(s: *&str, want: i64):
     if want <= s.cap:
         return
     cap := doubled(s.cap, want, 32)
-    grown := resize(s.arena, ptr(s.*.*), s.cap, cap)
+    grown := resize(s.arena, ptr(s.*.*), s.cap, cap, NO_TEXT)
     if grown as u64 == 0:
         out_of_memory()
     s.* = grown
@@ -523,7 +524,7 @@ func try_reserve(s: *&str, want: i64) -> NoMemory?:
     if want <= s.cap:
         return null
     cap := doubled(s.cap, want, 32)
-    grown := resize(s.arena, 0 as *bytes, 0, cap)
+    grown := resize(s.arena, 0 as *bytes, 0, cap, NO_TEXT)
     if grown as u64 == 0:
         return NoMemory
     memcpy(grown, ptr(s.*.*), s.len)
@@ -533,7 +534,7 @@ func try_reserve(s: *&str, want: i64) -> NoMemory?:
     return null
 
 type Arena:
-    blocks: &list[&strview]
+    blocks: &list[&strview] = heap([])
     count: i64
     used: i64
 
@@ -544,53 +545,59 @@ func arena(a: *Arena, v: $T) -> *$T:
     p.* = v
     return p
 
-# the arena 0 is the heap, and an owner of never holds nothing, so it goes where any owner of its kind goes
+# the arena of an owner whose memory is in the heap, which the compiler writes too: 0 is an owner with no memory
+priv HEAP = 1
+priv NO_LIST = "this &list has no memory to grow in: give it heap([]) or arena(a, [])"
+priv NO_TEXT = "this &str has no memory to grow in: give it heap(\"\") or arena(a, \"\")"
+priv NO_MAP = "this &map has no memory to grow in: give it heap({}) or arena(a, {})"
+
+# the words of an owner, to make one in its arena
+priv type Owner:
+    data: *bytes
+    len: i64
+    cap: i64
+    arena: *Arena
+
+# an owner of never holds nothing, so it goes where any owner of its kind goes
 func heap(items: emptyarray) -> &list[never]:
-    return arena(0 as *Arena, items)
+    return arena(HEAP as *Arena, items)
 
 func arena(a: *Arena, items: emptyarray) -> &list[never]:
-    out: &list[never]
-    out.arena = a
-    return out
+    return Owner{arena = a} as &list[never]
 
 func heap(pairs: emptyfixmap) -> &map[never, never]:
-    return arena(0 as *Arena, pairs)
+    return arena(HEAP as *Arena, pairs)
 
 func arena(a: *Arena, pairs: emptyfixmap) -> &map[never, never]:
-    out: &map[never, never]
-    out.arena = a
-    return out
+    return Owner{arena = a} as &map[never, never]
 
 func heap(text: &strview) -> &str:
-    return arena(0 as *Arena, text)
+    return arena(HEAP as *Arena, text)
 
 func arena(a: *Arena, text: &strview) -> &str:
-    out: &str
-    out.arena = a
+    out := Owner{arena = a} as &str
     out += text
     return out
 
 func heap(items: &listview[$T]) -> &list[$T]:
-    return arena(0 as *Arena, items)
+    return arena(HEAP as *Arena, items)
 
 func arena(a: *Arena, items: &listview[$T]) -> &list[$T]:
-    out: &list[$T]
-    out.arena = a
+    out := Owner{arena = a} as &list[$T]
     append(out, items)
     return out
 
 func heap(items: array[$T, $$n]) -> &list[$T]:
-    return arena(0 as *Arena, items)
+    return arena(HEAP as *Arena, items)
 
 func arena(a: *Arena, items: array[$T, $$n]) -> &list[$T]:
     return arena(a, items[:])
 
 func heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
-    return arena(0 as *Arena, pairs)
+    return arena(HEAP as *Arena, pairs)
 
 func arena(a: *Arena, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
-    out: &map[$K, $V]
-    out.arena = a
+    out := Owner{arena = a} as &map[$K, $V]
     for e in pairs:
         out[e.key] = e.value
     return out
@@ -639,9 +646,11 @@ priv func take(a: *Arena, size: i64) -> *bytes:
     a.used += need
     return out
 
-priv func resize(a: *Arena, at: *bytes, size: i64, wanted: i64) -> *bytes:
-    if a as u64 == 0:
+priv func resize(a: *Arena, at: *bytes, size: i64, wanted: i64, no_memory: &strview) -> *bytes:
+    if a as u64 == HEAP:
         return realloc(at, wanted)
+    if a as u64 == 0:
+        panic(no_memory, "") # no place, it would be here: the chain shows the function that grew it
     held := (size + 15) / 16 * 16
     last := a.count > 0 and at + held == ptr(a.blocks[a.count - 1].*) + a.used
     if last:
@@ -654,7 +663,7 @@ priv func resize(a: *Arena, at: *bytes, size: i64, wanted: i64) -> *bytes:
     return grown
 
 priv func discard(a: *Arena, at: *bytes):
-    if a as u64 == 0:
+    if a as u64 == HEAP:
         free(at)
 
 priv func reclaim(a: *Arena, freeing: bool):
@@ -814,7 +823,7 @@ func contains(s: &strview, part: &strview) -> bool:
     return find(s, part) is i64
 
 func replace(s: &strview, old: &strview, new: &strview) -> &strview:
-    out: &str
+    out: &str = heap("")
     defer free(out)
     rest := s
     cut := find(rest, old)
@@ -827,7 +836,7 @@ func replace(s: &strview, old: &strview, new: &strview) -> &strview:
     return tmp(out)
 
 func join(parts: &listview[$T], separator: &strview) -> &strview:
-    out: &str
+    out: &str = heap("")
     defer free(out)
     for i, part in parts:
         if i > 0:
@@ -878,7 +887,7 @@ priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
 
 func words(s: &strview) -> &listview[&strview]:
-    found: &list[&strview]
+    found: &list[&strview] = heap([])
     defer free(found)
     bytes := items(s)
     at := 0
@@ -1471,18 +1480,18 @@ priv type Stream:
     open: bool
     socket: bool
     by_lines: bool
-    path: &str
+    path: &str = heap("")
 
 priv type Outbox:
-    unsent: &str
+    unsent: &str = heap("")
     failed: i32 # the code of the first write that failed
 
 priv type Inbox:
-    received: &str
+    received: &str = heap("")
     given: i64 # how much of it read and read_line gave
 
 priv type Streams:
-    streams: &list[*Stream]
+    streams: &list[*Stream] = heap([])
     last: i32
 
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
@@ -1546,7 +1555,7 @@ func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
 
 # print formats its line here, and a print inside the += of a value adds its own after it
 priv context printing:
-    line: &str
+    line: &str = heap("")
 
 priv func line() -> *&str:
     return ptr(printing.line)
@@ -1672,7 +1681,7 @@ func ready(f: File, seconds: f64 = 0.0, place: &strview = @here()) -> bool:
 
 func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where not @windows():
     flush() # what you wrote goes out before the program waits for an answer
-    polled: &list[array[i32, 2]] # each a struct pollfd: the descriptor, POLLIN, and what poll finds
+    polled: &list[array[i32, 2]] = heap([]) # each a struct pollfd: the descriptor, POLLIN, and what poll finds
     defer free(polled)
     limit := milliseconds(seconds)
     for f in files:
@@ -1682,7 +1691,7 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
             limit = 0
     while poll(ptr(polled.*), polled.len, limit) < 0 and errno() == 4: # EINTR
         pass
-    found: &list[i64]
+    found: &list[i64] = heap([])
     defer free(found)
     for i, p in polled:
         if p[1] >> 16 != 0 or buffered(files[i]):
@@ -1694,9 +1703,9 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
     flush()
     limit := milliseconds(seconds)
     began := GetTickCount64()
-    sockets: &list[Polled]
+    sockets: &list[Polled] = heap([])
     defer free(sockets)
-    found: &list[i64]
+    found: &list[i64] = heap([])
     defer free(found)
     while true:
         clear(sockets)
@@ -2010,7 +2019,7 @@ func try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?:
         cap = 16
     while cap < want * 2:
         cap *= 2
-    grown := resize(m.arena, 0 as *bytes, 0, cap * @sizeof(Slot[$K, $V]))
+    grown := resize(m.arena, 0 as *bytes, 0, cap * @sizeof(Slot[$K, $V]), NO_MAP)
     if grown as u64 == 0:
         return NoMemory
     old := slots(m.*)
@@ -2207,7 +2216,7 @@ priv type Test:
     run: func()
 
 priv shared context testing:
-    overtime: &str # what a test says when its time is up
+    overtime: &str = heap("") # what a test says when its time is up
     thread: u64 # the thread that runs the test, on Windows
 
 # the main of the program that flagc test builds: it runs the test it names, in the seconds it gives

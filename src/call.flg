@@ -107,7 +107,7 @@ func binary(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
             return truth(x >= y)
     compares := o == "==" or o == "!=" or o == "<" or o == "<=" or o == ">" or o == ">="
     if (comp.types[l.type].kind == Simd or comp.types[r.type].kind == Simd) and not try offers(o, ptr([l, r]), at):
-        sides: &list[Value]
+        sides: &list[Value] = heap([])
         append(sides, l)
         append(sides, r)
         t := l.type
@@ -308,7 +308,7 @@ func panic_if(bad: Arg, message: &strview, at: i64) -> Fail?:
     l_good := label()
     branch(bad, l_bad, l_good)
     open_block(l_bad)
-    args: &list[Value]
+    args: &list[Value] = heap([])
     append(args, Value{type = try fat_type("strview", VOID, at), at = text_data(message), mem = true})
     append(args, try place_of(at))
     try runtime("panic", args, at)
@@ -321,7 +321,7 @@ func operate(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
         name = "=="
     elif o == ">" or o == "<=" or o == ">=":
         name = "<"
-    args: &list[Value]
+    args: &list[Value] = heap([])
     if o == ">" or o == "<=":
         append(args, r)
         append(args, l)
@@ -336,11 +336,11 @@ func operate(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
     return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
 
 func invoke(name: &strview, args: &list[Value], at: i64) -> Value|Fail:
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     return call(name, "", args, names, at, false)
 
 func returned(name: &strview, args: &listview[Value], at: i64) -> i64|Fail:
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     best := try choose(name, "", args, names, at)
     if best == 0:
         return VOID
@@ -377,7 +377,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 return fail(name + " asks about the lanes of a mask, and " + vector.name + " holds numbers: compare them first, like " + name + "(v > 0)", at)
             copy := Value{type = args[0].type, at = alloc(args[0].type, true), mem = true} # the lanes are read from a slot of their own, so the simd stays whole in a register
             blit(args[0].at, copy.at, args[0].type)
-            parts: &list[Value]
+            parts: &list[Value] = heap([])
             for i in 0..vector.count:
                 append(parts, lane(copy, i))
             o: &strview = "+"
@@ -433,7 +433,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 ret = U64
                 label = "hash"
             id := written(label, t, ret, at)
-            passes: &list[Pass]
+            passes: &list[Pass] = heap([])
             for a in args:
                 x := load(a).at
                 how := cls(t)
@@ -517,13 +517,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     if noted(at, name):
         mark(comp.nodes[f].tok)
     order := trust arrange(f, args.len, names)
-    taken: &list[i64]
+    taken: &list[i64] = heap([])
     id := try instantiate_for(f, order, args, ptr(taken), at)
     if id == comp.entry:
         return fail(ENTRY, at)
     foreign := body(f) == 0 or comp.insts[id].export
-    passes: &list[Pass]
-    back: &list[Value]
+    passes: &list[Pass] = heap([])
+    back: &list[Value] = heap([])
     for k in 0..order.len:
         if comp.types[taken[k]].kind == Given:
             continue # a type takes nothing at run time
@@ -555,7 +555,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                         slot := alloc(p.type)
                         store(p.type, p, slot)
                         p.at = slot
-                    append(comp.vars, Local{text(i), p.type, p.at, comp.loops.len, comp.nodes[kid(f, j)].tok, 0, false, false})
+                    append(comp.vars, Local{text(i), p.type, p.at, comp.loops.len, comp.nodes[kid(f, j)].tok, 0, false, false, true})
             site := comp.site
             comp.site = at
             saved := open_frame() # it sees the $T of its function, not those of the caller
@@ -596,7 +596,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
     result := try emit(global(comp.insts[id].name), passes, comp.insts[id].ret, foreign, at)
     while back.len > 0:
         element := back[back.len - 3:]
-        three: &list[Value]
+        three: &list[Value] = heap([])
         append(three, element)
         back.len -= 3
         if not try offers("[]=", three, at):
@@ -616,7 +616,7 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, at: i64) -> Value|Fail:
     copied := inherited()
     for t in copied:
         size += room(t)
-    args: &list[Value]
+    args: &list[Value] = heap([])
     append(args, literal(false, u64(size)))
     block := try runtime("spawn", args, at)
     add(Ins{op = "storel", a = code, b = offset(block.at, start)})
@@ -649,12 +649,11 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, at: i64) -> Value|Fail:
 
 # the contexts that a thread of parallel starts with a copy of, from the thread that starts it
 func inherited() -> &list[i64]:
-    out: &list[i64]
-    none: &list[Item]
+    out: &list[i64] = heap([])
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Context and declared(d) == "inherited":
-            append(out, trust make_type(k, none, false, 0))
+            append(out, trust make_type(k, [], false, 0))
     return out
 
 # a call as core sees it: the runtime is priv, and a check of the compiler calls the panic of core, not one of yours
@@ -694,7 +693,7 @@ func instantiate_for(f: i64, order: &list[i64], args: &list[Value], taken: *&lis
     return id
 
 func choose(name: &strview, module: &strview, args: &listview[Value], names: &list[&strview], at: i64) -> i64|Fail:
-    key: &str
+    key: &str = heap("")
     key += name + "|" + module + "|" + file_of(at)
     for a in args:
         key += "|" + a.type
@@ -712,8 +711,8 @@ func choose(name: &strview, module: &strview, args: &listview[Value], names: &li
     while s != 0:
         kept = kept or comp.syms[s].priv and callable(s, module, args, at)
         s = comp.syms[s].next
-    fits: &list[i64]
-    scores: &list[&list[i64]]
+    fits: &list[i64] = heap([])
+    scores: &list[&list[i64]] = heap([])
     s = first_sym(name)
     while s != 0:
         f := comp.syms[s].node
@@ -767,7 +766,7 @@ func beats(a: &list[i64], b: &list[i64]) -> bool:
     return better or a[-1] > b[-1]
 
 func listed(args: &listview[Value]) -> &str:
-    shown: &str
+    shown: &str = heap("")
     for a in args:
         if shown.len > 0:
             shown += ", "
@@ -822,7 +821,7 @@ func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64) ->
 
 # the score of each argument, matched in rounds: first what fixes a $T, then a $T alone or in a union, which takes the widest of its integers, then the literals, which take what is bound
 func bind(f: i64, order: &list[i64], args: &listview[Value]) -> &list[i64]?|Fail:
-    scores: &list[i64] # -r until round r matches its argument
+    scores: &list[i64] = heap([]) # -r until round r matches its argument
     for a in args:
         append(scores, 0)
     c := f + 1
@@ -887,7 +886,7 @@ func arrange(f: i64, count: i64, names: &list[&strview]) -> &list[i64]?:
     variadic := fixed > 0 and text(kid(f, fixed - 1)) == ".."
     if variadic:
         fixed -= 1
-    order: &list[i64]
+    order: &list[i64] = heap([])
     for k in 0..fixed:
         append(order, count)
     next := 0
@@ -938,7 +937,7 @@ func c_type(t: i64, at: i64) -> u32|Fail:
         return fail(ty.name + " cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do", at)
     if ty.packed:
         return fail(ty.name + " cannot cross the C ABI by value, it is packed: pass a pointer", at)
-    fields: &str
+    fields: &str = heap("")
     for i in 0..ty.count:
         item := comp.items[ty.first + i]
         e := item.type
@@ -947,7 +946,7 @@ func c_type(t: i64, at: i64) -> u32|Fail:
             count = comp.types[e].count
             e = comp.types[e].elem
         k := comp.types[e].kind
-        one: &str
+        one: &str = heap("")
         if item.shared:
             return fail(ty.name + " cannot cross the C ABI by value, its field " + item.name + " shares storage: pass a pointer, or declare that part as an untagged union", at)
         elif comp.types[e].size == 0:
@@ -1014,7 +1013,7 @@ func match(n: i64, v: Value) -> i64|Fail:
             return STEP
         return score
     if node.kind == TUnion or node.kind == TUnary and tok.text == "?":
-        plain: &list[i64]
+        plain: &list[i64] = heap([])
         binder := 0
         if node.kind == TUnary:
             append(plain, NULL)
@@ -1028,7 +1027,7 @@ func match(n: i64, v: Value) -> i64|Fail:
                 for m in members(try resolve(c)):
                     append(plain, m)
             c = node_end(c)
-        rest: &list[i64]
+        rest: &list[i64] = heap([])
         for m in members(v.type):
             if not contains(plain, m):
                 append(rest, m)
@@ -1253,7 +1252,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             return Value{type = to, at = int_arg(i64(largest(to) - v.n + 1))}
         if fits(v, to):
             return Value{type = to, at = v.at}
-        shown: &str
+        shown: &str = heap("")
         if v.flipped:
             shown += "not " + (v.n - 1)
         elif v.neg:
@@ -1274,7 +1273,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
     if v.lit and from.kind == Fat and target.kind == Ptr and target.elem == U8:
         return Value{type = to, at = op1(L, "loadl", v.at)}
     if from.name == "&str" and target.kind == Ptr and target.elem == U8:
-        args: &list[Value]
+        args: &list[Value] = heap([])
         append(args, v)
         return invoke("c_text", args, at)
     if (target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
@@ -1303,7 +1302,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             set_tag(to, v.type, slot)
             store(v.type, v, payload(slot, v.type))
         return Value{type = to, at = slot, mem = true}
-    args: &list[Value]
+    args: &list[Value] = heap([])
     append(args, Value{type = to, at = dest, mem = true, place = true})
     append(args, v)
     if owner(to) and dest.kind == Empty and accepts(to, Value{type = try returned("heap", args[1:], at)}) >= 0:
@@ -1347,7 +1346,7 @@ func member_for(to: i64, v: Value, at: i64) -> i64|Fail:
         elif score == best and score >= 0:
             tied = m
     if tied != VOID and v.lit:
-        shown: &str
+        shown: &str = heap("")
         if v.neg:
             shown += "-"
         if comp.types[v.type].kind == Float:
@@ -1403,14 +1402,14 @@ func widens(from: i64, to: i64) -> bool:
     return integer(from) and integer(to) and b.size > a.size and (a.kind == b.kind or a.kind == Uint)
 
 func offers(name: &strview, args: &listview[Value], at: i64) -> bool|Fail:
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     return try choose(name, "", args, names, at) != 0
 
 func noted(at: i64, name: &strview = "") -> bool:
     return comp.asked != 0 and comp.tokens[comp.asked - 1].at == at and (name.len == 0 or comp.tokens[comp.asked - 1].text == name)
 
 func described(name: &strview, t: i64) -> &strview:
-    out: &str
+    out: &str = heap("")
     out += name + ": " + comp.types[t].name
     return view(out)
 
@@ -1455,7 +1454,7 @@ func holds(n: i64) -> bool|Fail:
     if node.kind == Unary and o == "not":
         return not try holds(left)
     if node.kind == Binary and (o == "and" or o == "or"):
-        chain: &list[i64]
+        chain: &list[i64] = heap([])
         c := n
         while comp.nodes[c].kind == Binary and (text(c) == "and" or text(c) == "or"):
             append(chain, c)
@@ -1483,7 +1482,7 @@ func holds(n: i64) -> bool|Fail:
 
 func assignable(to: i64, from: i64, at: i64) -> bool|Fail:
     v := Value{type = from}
-    args: &list[Value]
+    args: &list[Value] = heap([])
     append(args, Value{type = to, mem = true})
     append(args, v)
     if accepts(to, v) >= 0 or try offers("=", args, at):

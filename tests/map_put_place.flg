@@ -4,7 +4,7 @@ type Pos:
 
 type Player:
     pos: Pos
-    name: &str
+    name: &str = heap("")
 
 func grow(m: *&map[i64, Player]) -> i32:
     for i in 200..300:
@@ -12,12 +12,12 @@ func grow(m: *&map[i64, Player]) -> i32:
     return 5
 
 func main():
-    counts: &map[&strview, i32]
+    counts: &map[&strview, i32] = heap({})
     defer free(counts)
     for word in split("a b a c b a", " "):
         counts[word] += 1
     print(counts["a"], " ", counts["b"], " ", counts["c"], " ", counts.len)
-    totals: &map[i64, &list[i64]]
+    totals: &map[i64, &list[i64]] = heap({})
     for i in 0..10:
         list: &list[i64] = totals[i % 3] ifnull heap([])
         append(list, i)
@@ -27,7 +27,7 @@ func main():
     for e in totals:
         free(e.value)
     free(totals)
-    many: &map[i64, i64]
+    many: &map[i64, i64] = heap({})
     defer free(many)
     for i in 0..1000:
         many[i] = i * 2
@@ -37,7 +37,7 @@ func main():
     for i in 0..500:
         _ = remove(many, i * 2)
     print(sum, " ", many.len, " ", many[3], " ", many[4])
-    players: &map[i64, Player]
+    players: &map[i64, Player] = heap({})
     players[7].pos.x += 3
     players[7].pos.y = 4
     players[7].name += "ana"
@@ -50,9 +50,11 @@ func main():
     for e in players:
         free(e.value.name)
     free(players)
-    pairs: &map[&strview, &map[&strview, i32]]
+    pairs: &map[&strview, &map[&strview, i32]] = heap({})
     last: &strview = ""
     for w in words("a b a b a c"):
+        if not contains(pairs, last):
+            pairs[last] = heap({})
         pairs[last][w] += 1
         last = w
     print(pairs[""], " ", pairs["a"], " ", pairs["b"])

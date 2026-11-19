@@ -12,7 +12,7 @@ type Node:
 
 type Document:
     text: &strview
-    nodes: &list[Node]
+    nodes: &list[Node] = heap([])
 
 type error NotJson:
     reason: &strview
@@ -23,7 +23,7 @@ operator +=(s: *&str, e: NotJson):
     s.* += "not JSON at line " + e.line + ", column " + e.column + ": " + e.reason
 
 func parse_json(text: &strview) -> Document|NotJson:
-    nodes: &list[Node]
+    nodes: &list[Node] = heap([])
     end := value(text, skip(items(text), 0), nodes, 0)
     if end is i64 and skip(items(text), end) < text.len:
         end = wrong(text, skip(items(text), end), "expected the end of the text after the value")
@@ -134,7 +134,7 @@ func text(d: Document, at: i64|null) -> &strview|null:
     if not d.nodes[at].escaped:
         return tmp(d.text[from:to])
     b := items(d.text)
-    out: &str
+    out: &str = heap("")
     defer free(out)
     i := from
     while i < to:

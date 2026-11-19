@@ -160,9 +160,9 @@ type User:
 You can build them with the fields in order, or naming them. The fields you don't name start at zero
 ```flag
 a := User{heap("ana"), 30} # a &str field owns its text, so heap gives it one
-b := User{age = 30}
+b := User{age = 30, name = heap("bo")}
 ```
-or at their default value, when they have one. It's written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
+or at their default value, when they have one. A fat pointer is not a value at zero (see [Fat pointers](#fat-pointers)), so `User{age = 30}` is an error, `User expects a value for name, &str starts without one: give it in the literal, or give the field a default`. A default is written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
 ```flag
 type Window:
     title: &strview = "untitled"
@@ -176,7 +176,7 @@ big := Window{width = 1920, height = 1080} # untitled too
 When the place already says the type, like a variable with its type, a return, a field or an element of an array, you can leave the name out
 ```flag
 c: User = {heap("bo"), 25}
-d: User = {age = 25}
+d: User = {age = 25, name = heap("cy")}
 ```
 You can nest structured types
 ```flag
@@ -324,11 +324,12 @@ The library has these fat pointers
 - `&list[T]`, a list that you own and can grow
 - `&map[K, V]`, a hash map that you own
 
-A fat pointer starts empty, you don't need to create it, just use it
+A fat pointer gets its memory before you use it: one you own from `heap` or `arena`, and a view from what it sees. `heap([])`, `heap("")` and `heap({})` are the empty ones in the heap, they ask for no memory until they grow
 ```flag
-a: &list[i32]
+a: &list[i32] = heap([])
 append(a, 1)
 ```
+Using one that no path gave a value is an error, `a is used before it gets a value, and &list[i32] starts without one: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`.
 The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`.
 
 You can declare your own fat pointers with `type fatptr`
@@ -347,7 +348,7 @@ func add_two(l: *&list[i32]):
     l[0] += 1
 
 func main():
-    nums: &list[i32]
+    nums: &list[i32] = heap([])
     append(nums, 1)
     add_two(nums) # the same as add_two(ptr(nums))
     print(nums) # [2, 2]
@@ -517,7 +518,7 @@ for row in 0..10:
 `defer` runs a statement when the block where you wrote it ends, also when you leave it with return, break or continue. They run in reverse order
 ```flag
 func main():
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     defer free(names)
     append(names, "ana")
 ```
@@ -658,7 +659,7 @@ func make(kind: type $T) -> $T:
 
 func main():
     p := make(Point)
-    items := make(&list[i32])
+    n := make(i64)
 ```
 ### Where
 `where` chooses an overload at compile time, with conditions over the types and numbers of the call
@@ -834,14 +835,14 @@ print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true
 The lanes are `f32`, `i32` and `u32` by 4, `f64`, `i64` and `u64` by 2, `i16` and `u16` by 8, and `i8` and `u8` by 16. A comparison gives a mask, `select` takes each lane from one side or the other, and `min`, `max`, `abs` and `sqrt` work on each lane. On x86_64 and arm64 an operation is one or a few instructions of the processor, and the values stay in registers, so code on 4 lanes runs about 4 times as fast as on one number. More lanes are an array of them, `array[simd[f32, 4], 8]`. The details are in [SIMD](Reference.md#simd).
 
 ## Lists
-A `&list[T]` is a list that grows as you add elements. It starts empty, and `heap` makes one with a copy of an array or of a listview
+A `&list[T]` is a list that grows as you add elements. It gets its memory from `heap` or `arena`: `heap([])` is an empty one, and `heap` of an array or a listview makes one with a copy
 ```flag
 empty: &list[i64] = heap([])
 start := heap([1, 2, 3]) # a &list[i64] in the heap
 bytes := heap([u8(1), 2]) # the literal says the type of its elements, not the place
 ```
 ```flag
-nums: &list[i32]
+nums: &list[i32] = heap([])
 defer free(nums)
 append(nums, 5)
 append(nums, 3)
@@ -869,7 +870,7 @@ ages["cy"] += 1 # a key that is not there counts as zero, so this counts
 for e in ages:
     print(e.key, " ", e.value)
 ```
-Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]` owns its keys: a new key is copied, also from a `&strview` like `ports[line[:4]] = 80`, and `remove`, `clear` and `free` free them. `ptr(ages["ana"])` points at the value inside the map, adding the key at zero when it is missing, and it goes bad when the map grows, like a pointer into a list. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `operator hash`.
+Also `contains`, `remove` (gives the value or null) and `clear`. A `&map[&str, V]` owns its keys: a new key is copied, also from a `&strview` like `ports[line[:4]] = 80`, and `remove`, `clear` and `free` free them. `ptr(ages["ana"])` points at the value inside the map, adding the key at zero when it is missing, and it goes bad when the map grows, like a pointer into a list. A field or an element of a value changes in place, and a key that isn't there is added with a zero value: `players[name].score += 10`, `pairs[a][b] += 1`. The zero of a list, a text or a map has no memory, so give a new key one before it grows, `groups[k] = heap([])`, and then `append(groups[k], v)`. The keys can be numbers, text, `bool`, enums, pointers, arrays, structs and unions of them, or anything that has `==` and `operator hash`.
 
 A `fixmap[K, V, N]` is a fixed map, it keeps up to N entries inside itself in the order you put them, so it never allocates and you don't free it. `put` gives `MapFull` when there is no room for a new key
 ```flag
@@ -886,7 +887,7 @@ type Enemy:
     hp: i32
 
 func main():
-    level: Arena # starts empty, like a list
+    level: Arena # starts empty
     defer free(level) # releases all of it
     boss := arena(level, Enemy{hp = 100}) # a *Enemy in level, like heap(v)
     enemies: &list[Enemy] = arena(level, []) # an empty list that lives in level
@@ -896,7 +897,7 @@ func main():
     counts := arena(level, {"orc": 2}) # a &map[&strview, i64] in level
     print(boss.hp, " ", enemies.len, " ", name, " ", counts)
 ```
-A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` and a list you declare use the heap, like always.
+A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` uses the heap, like always.
 
 `clear(a)` releases everything and keeps the blocks to use them again, which is what the memory of one frame of a game wants
 ```flag
@@ -909,12 +910,12 @@ while running:
 The scratch memory of the temporaries is an arena too, the one `with scratch():` marks, and each thread has its own. An arena you make is not shared between [threads](#threads) without a `Lock`. The rules are in [Arenas](Reference.md#arenas).
 
 ## Contexts
-A context is global state of each thread: the fields start at zero or at their default value, every function can use them, and each thread has its own
+A context is global state of each thread: the fields start at zero or at their default value, every function can use them, and each thread has its own. Nothing runs to give a field a value, so a fat pointer there has a default
 ```flag
 context app:
     depth: u32
     level: i32 = 3
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
 
 func deeper():
     app.depth += 1
@@ -940,7 +941,7 @@ func sum(from: i64, to: i64) -> i64:
     return total
 
 func main():
-    pieces: &list[Thread[i64]]
+    pieces: &list[Thread[i64]] = heap([])
     defer free(pieces)
     n := cores() # the processors of the system
     for k in 0..n:
@@ -977,7 +978,7 @@ func worker(jobs: *Channel[&str, 16]):
 
 func main():
     jobs: Channel[&str, 16]
-    workers: &list[Thread[null]]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..4:
         append(workers, parallel worker(jobs))

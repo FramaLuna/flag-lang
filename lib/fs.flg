@@ -53,7 +53,7 @@ priv func open_flags() -> array[i32, 4] where @windows():
 
 func read_file(path: &strview) -> &str|FsError:
     f := try open_file(path)
-    out: &str
+    out: &str = heap("")
     known := status(path)
     if known is Status:
         reserve(out, known.size + 1)
@@ -152,7 +152,7 @@ func list_dir(path: &strview) -> &listview[&strview]|FsError where not @windows(
     dir := opendir(cstr(path))
     if dir as u64 == 0:
         return FsError{errno(), "list", path}
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     defer free(names)
     name_at := 19 if @linux() else 21 if @arm64() else 8 # d_name, on macOS x86_64 in the dirent of 32-bit inodes that the plain readdir gives
     entry := readdir(dir)
@@ -169,7 +169,7 @@ func list_dir(path: &strview) -> &listview[&strview]|FsError where @windows():
     dir := _wopendir(wstr(path))
     if dir as u64 == 0:
         return FsError{errno(), "list", path}
-    names: &list[&strview]
+    names: &list[&strview] = heap([])
     defer free(names)
     entry := _wreaddir(dir)
     while entry as u64 != 0:
@@ -182,9 +182,9 @@ func list_dir(path: &strview) -> &listview[&strview]|FsError where @windows():
     return tmp(names)
 
 func walk_dir(folder: &strview) -> &listview[&strview]|FsError:
-    files: &list[&strview]
+    files: &list[&strview] = heap([])
     defer free(files)
-    folders: &list[&strview]
+    folders: &list[&strview] = heap([])
     defer free(folders)
     append(folders, folder)
     i := 0

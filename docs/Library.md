@@ -144,7 +144,7 @@ func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     close(results)
 
 func main():
-    workers: &list[Thread[null]]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..cores():
         append(workers, parallel add(1000))
@@ -189,7 +189,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 - `tmp(items: &listview[$T]) -> &listview[$T]` a temporary copy of the elements, to return what you built in a list that you free
 
 ### Arenas
-An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, like a list, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
+An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
 - `arena(a: *Arena, v: $T) -> *$T` a copy of the value, like `heap`, in the arena
 - `arena(a: *Arena, text: &strview) -> &str` a copy of the text, in the arena
 - `arena(a: *Arena, items: &listview[$T]) -> &list[$T]`, `arena(a, items: array[$T, $$n])`, `arena(a, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`, and the empty `arena(a, items: emptyarray) -> &list[never]` and `arena(a, pairs: emptyfixmap) -> &map[never, never]`, like `heap`, in the arena: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
@@ -201,7 +201,7 @@ An `Arena` gives out pieces of big blocks and releases them all at once. It star
 An arena is not shared between threads without a `Lock`: give each thread its own, or guard every use of a shared one.
 
 ### Lists and listviews
-A `&listview[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows, like `&strview` and `&str` for text. Both start empty, and a list goes wherever a listview is asked.
+A `&listview[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows, like `&strview` and `&str` for text. A list gets its memory from `heap` or `arena`, `heap([])` is an empty one in the heap, `[]` is the empty listview, and a list goes wherever a listview is asked. A list that grows without memory stops the program, `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])` (see [Fat pointers](Reference.md#fat-pointers)).
 - `s[i]` the element `i`, you can also assign to it. A negative `i` that the compiler knows, a literal or a constant, counts from the end: `s[-1]` is the last one. Out of bounds stops the program, also a negative `i` computed when the program runs (see [Runtime errors](Reference.md#runtime-errors))
 - `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for x in s`, `for i, x in s` and `for x in reverse s`
@@ -304,10 +304,10 @@ And three helpers
 The compiler prints the rest: structs as `Point{x = 1, y = 2}`, arrays as `[1, 2]`, a union as the value it holds and a void type as its name. Declare `operator +=` to print your type another way (see [Printing](Overview.md#printing)).
 
 ### Maps
-A `&map[$K, $V]` is a hash map that you own. It starts empty, and `heap({"a": 1})` makes one with the pairs of a literal.
+A `&map[$K, $V]` is a hash map that you own. It gets its memory from `heap` or `arena`: `heap({})` is an empty one in the heap, and `heap({"a": 1})` makes one with the pairs of a literal.
 - `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `operator [](m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
-- `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`, `pairs[a][b] += 1`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
+- `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`. The zero of a `&str`, a `&list` or a `&map` has no memory, so a new key gets it before it grows: `groups[k] = heap([])`, then `pairs[a][b] += 1` or `append(groups[k], v)`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
 - a `&map[&str, $V]` owns its keys: `m[k] = v`, `put`, `m[k] += v` and `ptr(m[k])` copy a new key into memory of the map, also from a `&strview`, `m["port"] = 80`, and `remove`, `clear` and `free` free the keys. Its `m[k]`, `contains` and `remove` take a `&strview` too: `contains(m, line[:4])`, `remove(m, "port")`. The generic functions leave a key `&str` to these
 - `ptr(m[k])` a pointer to the value inside the map, and a key that isn't there is added with a zero value. It goes bad when the map grows
@@ -405,7 +405,7 @@ A program that cannot start is an `FsError` with the action `run`: `cannot run g
 use os
 
 func main():
-    text: &str
+    text: &str = heap("")
     defer free(text)
     code := output(ptr(["git", "status", "--short"]), text)
     if code is FsError:
@@ -583,7 +583,7 @@ func main():
     if u is NetError:
         eprint(u)
         return
-    got: &str
+    got: &str = heap("")
     defer free(got)
     while true:
         got.len = 0
@@ -597,7 +597,7 @@ func main():
 - `ready(x, seconds: f64 = 0.0) -> bool` the same for one of them
 
 ```flag
-waiting: &list[Socket|Server]
+waiting: &list[Socket|Server] = heap([])
 append(waiting, server)
 while true:
     with scratch():
@@ -654,12 +654,12 @@ func main():
 - `for n in b` gives the numbers from the smallest, and `print` writes `{3, 70}`
 
 ## ring
-A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest. It always lives in the heap, an arena doesn't make one.
+A `&ring[$T]` is a queue that grows as you add elements at either end, and takes them out of either end without moving the rest. It always lives in the heap, an arena doesn't make one, and `ring(kind: type $T) -> &ring[$T]` makes an empty one.
 ```flag
 use ring
 
 func main():
-    q: &ring[i32]
+    q := ring(i32)
     defer free(q)
     append(q, 1)
     append(q, 2)

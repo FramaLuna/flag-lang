@@ -7,7 +7,7 @@ HEIGHT = 24
 
 func band(first: i32, last: i32) -> &str:
     shades: &strview = " .:-=+*#%@"
-    out: &str
+    out: &str = heap("")
     for row in first..last:
         for column in 0..WIDTH:
             x := -2.2 + 3.0 * f64(column) / f64(WIDTH)
@@ -46,12 +46,12 @@ func count(numbers: *Channel[i64, 64]):
         tally.primes.value += found
 
 func main():
-    bands: &list[Thread[&str]]
+    bands: &list[Thread[&str]] = heap([])
     defer free(bands)
     n := i32(cores())
     for k in 0..n:
         append(bands, parallel band(HEIGHT * k / n, HEIGHT * (k + 1) / n))
-    texts: &list[&str]
+    texts: &list[&str] = heap([])
     defer free(texts)
     for b in bands:
         append(texts, wait(b))
@@ -60,7 +60,7 @@ func main():
         free(text)
 
     numbers: Channel[i64, 64]
-    workers: &list[Thread[null]]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..n:
         append(workers, parallel count(numbers))
