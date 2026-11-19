@@ -382,9 +382,9 @@ func gen_from(from: usize) -> usize|Fail:
                 h := alloc(U64)
                 add(Ins{op = "storel", a = int_arg(0), b = h})
                 if ty.kind == Bool:
-                    try mix(h, Value{type = USIZE, at = op1(L, "extuw", a.at)}, inst.at)
+                    try mix(h, Value{type = U64, at = op1(L, "extuw", a.at)}, inst.at)
                 elif ty.kind == Ptr or ty.kind == Func:
-                    try mix(h, Value{type = USIZE, at = a.at}, inst.at)
+                    try mix(h, Value{type = U64, at = a.at}, inst.at)
                 elif ty.kind == Struct:
                     for k in 0..ty.count:
                         field := comp.items[ty.first + k]
@@ -392,7 +392,7 @@ func gen_from(from: usize) -> usize|Fail:
                             note(ty.name + " has no hash of its own, so hash mixes the hashes of its fields, and this is field " + field.name, comp.tokens[comp.nodes[field_node(t, field.name)].tok].at)
                             return Fail
                 elif ty.kind == Union:
-                    try mix(h, Value{type = USIZE, at = op1(L, "extuw", tag(a))}, inst.at)
+                    try mix(h, Value{type = U64, at = op1(L, "extuw", tag(a))}, inst.at)
                     l_done := label()
                     for m in members(t):
                         if comp.types[m].size > 0:
@@ -408,7 +408,7 @@ func gen_from(from: usize) -> usize|Fail:
                     jump(l_done)
                     open_block(l_done)
                 elif ty.kind == Array:
-                    index := alloc(USIZE)
+                    index := alloc(I64)
                     add(Ins{op = "storel", a = int_arg(0), b = index})
                     l_head := label()
                     l_body := label()
@@ -1372,9 +1372,7 @@ func iterate(n: usize) -> Fail?:
             t = end.type
         if not end.lit and end.type != t and not widens(end.type, t):
             return fail("a range cannot mix " + comp.types[start.type].name + " and " + comp.types[end.type].name + ", neither holds every value of the other: convert one end with " + comp.types[start.type].name + "(...) or " + comp.types[end.type].name + "(...)", at)
-        if start.lit and not start.neg:
-            limit = usize(1) << 63 # it never goes below where it starts, so it is never negative
-        if limit != 0 and end.lit and not end.neg:
+        if start.lit and not start.neg and end.lit and not end.neg:
             limit = end.n + usize(inclusive)
     else:
         walked = try value(subject, VOID)
@@ -1383,13 +1381,14 @@ func iterate(n: usize) -> Fail?:
             walked = Value{type = pointee, at = load(walked).at, mem = true, place = true}
         seq := walked.type
         addr = walked.at
-        t = USIZE
+        t = len_field(try fat_type("strview", VOID, tok.at)).type # a for counts in the type of a length
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
             end = literal(false, comp.types[seq].count)
         elif sequence(seq):
             elem = element(seq)
-            end = load(Value{type = USIZE, at = offset(addr, 8), mem = true})
+            field := len_field(seq)
+            end = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
             addr = op1(L, "loadl", addr)
     if range or elem != VOID:
         low := load(try convert(start, t, Arg{}, at)).at
@@ -1418,10 +1417,10 @@ func iterate(n: usize) -> Fail?:
             mention(tok.text, place, elem, node.tok)
             append(comp.vars, Local{tok.text, elem, place, comp.loops.len, node.tok, 0, false, false})
         if counter != 0:
-            count := alloc(USIZE)
-            store(USIZE, Value{type = USIZE, at = current}, count)
-            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
+            count := alloc(t)
+            store(t, Value{type = t, at = current}, count)
+            mention(text(counter), count, t, comp.nodes[counter].tok)
+            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         append(comp.loops, Loop{l_exit, l_step, comp.defers.len, false})
     else:
         if backward and counter != 0:
@@ -1430,12 +1429,13 @@ func iterate(n: usize) -> Fail?:
         walker := walked
         if chars:
             addr = op1(L, "loadl", walked.at)
-            end = load(Value{type = USIZE, at = offset(walked.at, 8), mem = true})
-            slot = alloc(USIZE)
+            field := len_field(walked.type)
+            end = load(Value{type = field.type, at = offset(walked.at, field.n), mem = true})
+            slot = alloc(t)
             if backward:
-                store(USIZE, end, slot)
+                store(t, end, slot)
             else:
-                store(USIZE, Value{type = USIZE, at = int_arg(0)}, slot)
+                store(t, Value{type = t, at = int_arg(0)}, slot)
         else:
             if comp.types[walked.type].kind == Simd:
                 lanes_of := comp.types[walked.type]
@@ -1452,18 +1452,18 @@ func iterate(n: usize) -> Fail?:
             store(walker.type, walker, slot)
         count := Arg{}
         if counter != 0:
-            count = alloc(USIZE)
-            store(USIZE, Value{type = USIZE, at = int_arg(-1)}, count)
+            count = alloc(t)
+            store(t, Value{type = t, at = int_arg(-1)}, count)
         jump(l_head)
         open_block(l_head)
         if counter != 0:
-            store(USIZE, Value{type = USIZE, at = op(L, "add", load(Value{type = USIZE, at = count, mem = true}).at, int_arg(1))}, count)
-            mention(text(counter), count, USIZE, comp.nodes[counter].tok)
-            append(comp.vars, Local{text(counter), USIZE, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
+            store(t, Value{type = t, at = op(L, "add", load(Value{type = t, at = count, mem = true}).at, int_arg(1))}, count)
+            mention(text(counter), count, t, comp.nodes[counter].tok)
+            append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, true, false})
         item: usize = VOID
         place := Arg{}
         if chars:
-            i := load(Value{type = USIZE, at = slot, mem = true}).at
+            i := load(Value{type = t, at = slot, mem = true}).at
             if backward:
                 branch(op(W, "cultl", int_arg(0), i), l_body, l_exit)
             else:
@@ -1474,13 +1474,13 @@ func iterate(n: usize) -> Fail?:
             near := here
             if backward:
                 near = op(L, "sub", here, int_arg(1))
-            sized := alloc(USIZE)
+            sized := alloc(t)
             l_one := label()
             l_wide := label()
             l_piece := label()
             branch(op(W, "cultw", op1(W, "loadub", near), int_arg(0x80)), l_one, l_wide)
             open_block(l_one)
-            store(USIZE, Value{type = USIZE, at = int_arg(1)}, sized)
+            store(t, Value{type = t, at = int_arg(1)}, sized)
             jump(l_piece)
             open_block(l_wide)
             trail := Arg{}
@@ -1501,18 +1501,19 @@ func iterate(n: usize) -> Fail?:
             high := op(W, "sub", int_arg(0xbf), op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xed)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf4)), int_arg(0x30))))
             inside := op(W, "and", op(W, "cugew", second, low), op(W, "culew", second, high))
             whole := op1(L, "extuw", op(W, "and", op(W, "ceql", w, op(L, "add", trail, int_arg(1))), inside))
-            store(USIZE, Value{type = USIZE, at = op(L, "add", int_arg(1), op(L, "mul", whole, trail))}, sized)
+            store(t, Value{type = t, at = op(L, "add", int_arg(1), op(L, "mul", whole, trail))}, sized)
             jump(l_piece)
             open_block(l_piece)
-            size := load(Value{type = USIZE, at = sized, mem = true}).at
+            size := load(Value{type = t, at = sized, mem = true}).at
             next := op(L, "add", i, size)
             if backward:
                 next = op(L, "sub", i, size)
                 here = op(L, "add", addr, next)
-            store(USIZE, Value{type = USIZE, at = next}, slot)
+            store(t, Value{type = t, at = next}, slot)
             place = alloc(item, true)
             add(Ins{op = "storel", a = here, b = place})
-            store(USIZE, Value{type = USIZE, at = size}, offset(place, 8))
+            field := len_field(item)
+            store(field.type, Value{type = field.type, at = size}, offset(place, field.n))
         else:
             args: &list[Value]
             append(args, Value{type = pointer(walker.type), at = slot})
@@ -1864,7 +1865,8 @@ func called(n: usize, want: usize, threaded: bool) -> Value|Fail:
                 c = node_end(c)
             line := Value{type = try fat_type("str", VOID, tok.at), at = load(try runtime("line", values, tok.at)).at, mem = true, place = true}
             append(values, to)
-            append(values, load(Value{type = USIZE, at = offset(line.at, 8), mem = true}))
+            field := len_field(line.type)
+            append(values, load(Value{type = field.type, at = offset(line.at, field.n), mem = true}))
             c = n + 1
             for part in parts:
                 try put_text(line, part, at_of(c))
@@ -2024,7 +2026,11 @@ func operation(n: usize, want: usize) -> Value|Fail:
                 return fail("- expects a signed number or a float on its right, this is " + t.name, tok.at)
             if t.kind == Simd:
                 return lanes("neg", ptr([v]), v.type, tok.at)
-            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", load(v).at))}
+            x := load(v).at
+            if x.kind == Const: # a typed constant stays one the compiler knows, wrapped at its width
+                bits := i64(64 - 8 * t.size)
+                return Value{type = v.type, at = int_arg((0 - x.n) << bits >> bits)}
+            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", x))}
         if o == "not":
             if t.kind == Simd and lane.kind != Float:
                 return lanes("not", ptr([v]), v.type, tok.at)
@@ -2088,8 +2094,16 @@ func operation(n: usize, want: usize) -> Value|Fail:
     if o == "as":
         v := try value(left, VOID)
         to := try resolve(right)
-        from := comp.types[v.type]
         dest := comp.types[to]
+        if v.lit and integer(v.type): # the integer of the size of to, signed when it fits
+            width: usize = I8
+            while width < I64 and comp.types[width].size < dest.size:
+                width += 1
+            if comp.types[width].size == dest.size:
+                if not fits(v, width):
+                    width += U8 - I8
+                v = try convert(v, width, Arg{}, tok.at)
+        from := comp.types[v.type]
         if untagged_member(to, v.type) or untagged_member(v.type, to):
             return convert(v, to, Arg{}, tok.at)
         if from.kind == Union and within(to, v.type):
@@ -2621,30 +2635,35 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
         if not integer(index.type):
             return fail("an array index expects an integer, this one is " + comp.types[index.type].name, at_of(kid(n, 1)))
         elem := comp.types[t].elem
-        length := int_arg(i64(comp.types[t].count))
-        limit: usize = 0
-        if local_of(kid(n, 1)) != 0:
-            limit = comp.vars[local_of(kid(n, 1)) - 1].limit
-        known := array and (index.lit and not index.neg and index.n < comp.types[t].count or limit != 0 and limit <= comp.types[t].count)
+        length := literal(false, comp.types[t].count)
         if not array:
             elem = element(t)
-            length = load(Value{type = USIZE, at = offset(addr, 8), mem = true}).at
+            field := len_field(t)
+            length = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
             addr = op1(L, "loadl", addr)
-        wide: usize = USIZE
-        if comp.types[index.type].kind == Int and limit == 0 and not known:
+        wide: usize = U64
+        if comp.types[index.type].kind == Int:
             wide = I64
         raw := load(try convert_number(index, wide, tok.at)).at
         i := raw
-        if wide == I64:
-            i = op(L, "add", raw, op(L, "and", op(L, "sar", raw, int_arg(63)), length))
+        back := from_end(index)
+        if back:
+            i = op(L, "add", length.at, raw)
+        limit: usize = 0
+        if local_of(kid(n, 1)) != 0:
+            limit = comp.vars[local_of(kid(n, 1)) - 1].limit
+        known := array and limit != 0 and limit <= comp.types[t].count
+        if array and index.at.kind == Const:
+            place := index.at.n + i64(back) * i64(comp.types[t].count)
+            known = place >= 0 and place < i64(comp.types[t].count)
         if not known:
             l_out := label()
             l_in := label()
-            branch(op(W, "cultl", i, length), l_in, l_out)
+            branch(op(W, "cultl", i, length.at), l_in, l_out)
             open_block(l_out)
             bounds: &list[Value]
             append(bounds, Value{type = wide, at = raw})
-            append(bounds, Value{type = USIZE, at = length})
+            append(bounds, length)
             try invoke("out_of_bounds", bounds, tok.at)
             open_block(l_in)
         scaled := times(i, comp.types[elem].size)
@@ -2662,32 +2681,35 @@ func indexed(n: usize, assignment: usize) -> Value|Fail:
         else:
             append(args, base)
         if kids(n) == 3:
-            end := none
+            ends := [index, none]
             if comp.nodes[kid(n, 2)].kind != Block:
-                end = try value(kid(n, 2), VOID)
-            elif array:
-                end = literal(false, comp.types[t].count)
-            else:
-                holder := t
-                place := addr
-                if comp.types[holder].kind == Ptr:
-                    place = load(base).at
-                    holder = comp.types[holder].elem
-                for i in 0..comp.types[holder].count:
-                    f := comp.items[comp.types[holder].first + i]
-                    if f.name == "len" and (comp.types[holder].kind == Struct or comp.types[holder].kind == Fat):
-                        end = load(Value{type = f.type, at = offset(place, f.n), mem = true})
-                if end.type == VOID:
-                    return fail("this slice has no end, so it ends at the len of " + comp.types[holder].name + ", and it has no field len: write the end", tok.at)
-                if integer(index.type):
-                    wide: usize = USIZE
-                    if index.neg or not index.lit and comp.types[index.type].kind == Int:
-                        wide = I64
-                    end = try convert_number(end, wide, tok.at)
-                    if not index.lit:
-                        index = try convert_number(index, wide, tok.at)
-            append(args, index)
-            append(args, end)
+                ends[1] = try value(kid(n, 2), VOID)
+            own := not array and not sequence(t) and not textual(t) # a type of yours, its slice gets a negative end as written
+            if ends[1].type == VOID or not own and (from_end(ends[0]) or from_end(ends[1])):
+                length := literal(false, comp.types[t].count)
+                if not array:
+                    holder := t
+                    place := addr
+                    if comp.types[holder].kind == Ptr:
+                        place = load(base).at
+                        holder = comp.types[holder].elem
+                    field := len_field(holder)
+                    if field.type == VOID:
+                        return fail("this slice has no end, so it ends at the len of " + comp.types[holder].name + ", and it has no field len: write the end", tok.at)
+                    length = load(Value{type = field.type, at = offset(place, field.n), mem = true})
+                if ends[1].type == VOID:
+                    ends[1] = length
+                signed := false
+                for k, e in ends:
+                    if not own and from_end(e):
+                        wide := load(try convert_number(length, I64, tok.at)).at
+                        counted := op(L, "add", wide, e.at)
+                        ends[k] = Value{type = I64, at = op(L, "sub", counted, op(L, "and", wide, op(L, "sar", counted, int_arg(63))))} # before the start it stays as written, for the message
+                    signed = signed or comp.types[ends[k].type].kind == Int and (not ends[k].lit or ends[k].neg)
+                for k, e in ends:
+                    if signed and integer(e.type) and not e.lit:
+                        ends[k] = try convert_number(e, I64, tok.at)
+            append(args, ends[:])
             return invoke("slice", args, tok.at)
         append(args, index)
         read := try returned("at", args, tok.at)
@@ -2911,8 +2933,8 @@ func put_text(place: Value, v: Value, at: usize) -> Fail?:
                 try put_words(place, " = ", at)
                 try put_text(place, Value{type = f.type, at = offset(v.at, f.n), mem = true}, at)
         return put_words(place, "}", at)
-    index := alloc(USIZE)
-    zero(USIZE, index)
+    index := alloc(I64)
+    zero(I64, index)
     l_head := label()
     l_body := label()
     l_comma := label()
@@ -2921,7 +2943,7 @@ func put_text(place: Value, v: Value, at: usize) -> Fail?:
     try put_words(place, "[", at)
     jump(l_head)
     open_block(l_head)
-    i := load(Value{type = USIZE, at = index, mem = true}).at
+    i := load(Value{type = I64, at = index, mem = true}).at
     branch(op(W, "cultl", i, int_arg(i64(t.count))), l_body, l_done)
     open_block(l_body)
     branch(op(W, "ceql", i, int_arg(0)), l_item, l_comma)
@@ -2930,7 +2952,7 @@ func put_text(place: Value, v: Value, at: usize) -> Fail?:
     jump(l_item)
     open_block(l_item)
     try put_text(place, Value{type = t.elem, at = op(L, "add", v.at, times(i, comp.types[t.elem].size)), mem = true}, at)
-    store(USIZE, Value{type = USIZE, at = op(L, "add", i, int_arg(1))}, index)
+    store(I64, Value{type = I64, at = op(L, "add", i, int_arg(1))}, index)
     jump(l_head)
     open_block(l_done)
     return put_words(place, "]", at)
@@ -3024,6 +3046,19 @@ func textual(t: usize) -> bool:
 
 func sequence(t: usize) -> bool:
     return comp.types[t].kind == Fat and (starts_with(comp.types[t].name, "&list[") or starts_with(comp.types[t].name, "&slice["))
+
+# the field len of a struct or a fat pointer, an Item of type VOID when it has none
+func len_field(t: usize) -> Item:
+    ty := comp.types[t]
+    if ty.kind == Struct or ty.kind == Fat:
+        for i in 0..ty.count:
+            if comp.items[ty.first + i].name == "len":
+                return comp.items[ty.first + i]
+    return Item{}
+
+# a negative index that the compiler knows, which counts from the end
+func from_end(v: Value) -> bool:
+    return comp.types[v.type].kind == Int and v.at.kind == Const and v.at.n < 0
 
 func at_of(n: usize) -> usize:
     first := comp.nodes[n].tok
@@ -3380,7 +3415,7 @@ func stamp(t: usize, addr: Arg, at: usize):
             if not comp.items[ty.first + i].shared:
                 stamp(comp.items[ty.first + i].type, addr, at + comp.items[ty.first + i].n)
     elif ty.kind == Array and tagged(ty.elem):
-        slot := alloc(USIZE)
+        slot := alloc(I64)
         l_head := label()
         l_body := label()
         l_done := label()
@@ -3479,24 +3514,24 @@ func run_defers(from: usize) -> Fail?:
     return null
 
 func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
-    count := alloc(USIZE)
-    store(USIZE, Value{type = USIZE, at = int_arg(0)}, count)
+    count := alloc(I64)
+    store(I64, Value{type = I64, at = int_arg(0)}, count)
     l_scan := label()
     l_byte := label()
     l_next := label()
     l_done := label()
     jump(l_scan)
     open_block(l_scan)
-    k := load(Value{type = USIZE, at = count, mem = true}).at
+    k := load(Value{type = I64, at = count, mem = true}).at
     branch(op(W, "and", op(W, "cultl", k, most), op(W, "cultl", k, left)), l_byte, l_done)
     open_block(l_byte)
     b := op1(W, "loadub", op(L, "add", first, op(L, "mul", k, int_arg(step))))
     branch(op(W, "ceqw", op(W, "and", b, int_arg(0xc0)), int_arg(0x80)), l_next, l_done)
     open_block(l_next)
-    store(USIZE, Value{type = USIZE, at = op(L, "add", k, int_arg(1))}, count)
+    store(I64, Value{type = I64, at = op(L, "add", k, int_arg(1))}, count)
     jump(l_scan)
     open_block(l_done)
-    return load(Value{type = USIZE, at = count, mem = true}).at
+    return load(Value{type = I64, at = count, mem = true}).at
 
 func statements(n: usize) -> Fail?:
     defers := comp.defers.len

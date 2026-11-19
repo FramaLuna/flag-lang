@@ -201,17 +201,12 @@ func out_of_bounds(i: $I, len: usize, place: &strview = @here()) -> never where 
 func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) -> never where $I is Integer:
     panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
 
-func natural(i: $I, len: usize) -> usize where $I is Integer:
-    if i < 0:
-        return len + usize(i) # wraps into the length, or stays past it
-    return usize(i)
-
 type fatptr slice[$T]:
     len: usize
 
 func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is Integer:
-    first := natural(from, s.len)
-    last := natural(to, s.len)
+    first := usize(from)
+    last := usize(to)
     if first > last or last > s.len:
         out_of_bounds(from, to, s.len, place)
     out: &slice[$T]
@@ -304,7 +299,7 @@ func pop(l: *&list[$T]) -> $T|null:
     return p.*
 
 func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
-    n := natural(at, l.len)
+    n := usize(at)
     if n > l.len:
         out_of_bounds(at, l.len, place)
     append(l, v)
@@ -313,7 +308,7 @@ func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is
     l[n] = v
 
 func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
-    n := natural(at, l.len)
+    n := usize(at)
     if n >= l.len:
         out_of_bounds(at, l.len, place)
     kept := l[n]
@@ -418,8 +413,8 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
         k += 1
 
 func swap(s: &slice[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
-    a := natural(i, s.len)
-    b := natural(j, s.len)
+    a := usize(i)
+    b := usize(j)
     if a >= s.len:
         out_of_bounds(i, s.len, place)
     if b >= s.len:
@@ -462,8 +457,8 @@ func items(s: &strview) -> &slice[u8]:
     return out
 
 func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
-    first := natural(from, v.len)
-    last := natural(to, v.len)
+    first := usize(from)
+    last := usize(to)
     if first > last or last > v.len:
         out_of_bounds(from, to, v.len, place)
     out: &strview

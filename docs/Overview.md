@@ -263,6 +263,7 @@ type Size:
 raw := f32(1.5) as u32 # the bits of the float
 key := Size{640, 480} as u64 # the 8 bytes of a Size as one number
 back := key as Size # and the Size again
+one := 0x3f800000 as f32 # a literal is the integer of that size, so this is 1.0
 ```
 It can also take a type out of a union, but it does not check the tag, so check it with `is` first.
 
@@ -608,7 +609,7 @@ func main():
     boiling: Celsius = 212.0 # 100 degrees
 ```
 ### Indexing
-`x[i]` calls `at(x, i)`, so your types can be indexed too. When `at` gives a pointer you can also assign to `x[i]`
+`x[i]` calls `at(x, i)` with the index as written, a negative one too, so your types can be indexed too. When `at` gives a pointer you can also assign to `x[i]`
 ```flag
 type Grid:
     cells: array[i32, 9]
@@ -792,7 +793,7 @@ a := [1, 2, 3] # array[i64, 3]
 b: array[u8, 16] # starts at zero
 c := array[i32, 2]{4, 5} # you can also name the type
 a[0] = 10 # indexes are checked, going out stops the program with an error
-print(a[-1], " ", a.len) # a negative index counts from the end, so this is 3 3
+print(a[-1], " ", a.len) # a negative index you write counts from the end, so this is 3 3
 for x in a:
     print(x)
 ```
@@ -833,6 +834,8 @@ print(nums[-1], " ", nums[-2]) # 9 5, negative indexes count from the end
 last := pop(nums) # the last element, or null if the list is empty
 first := remove(nums, 0) # takes out the element at 0
 ```
+Only a negative index the compiler knows, a literal or a constant, counts from the end. One computed when the program runs is out of bounds like any other, so `nums[i - 1]` with `i` at 0 stops the program, and functions like `insert` and `remove` take their position from the start.
+
 Also `find` (gives the index or null), `contains`, `flip` (turns the list around in place) and `binary_search` for a sorted list, see [Lists and slices](Library.md#lists-and-slices). Two lists or slices compare with `==` element by element.
 
 ## Maps

@@ -305,11 +305,13 @@ Calling a struct or an alias with one value does the same conversion as an assig
 
 ### as
 `as` reads the bytes of a value as another type, it never converts
-- two types without a tag and of the same size, numbers, `bool`, pointers, function values, structs, arrays, `simd` and fat pointers: `f32(1.5) as u32` gives the bits, `p as usize` gives the address, and with `type V2` of two `f32`, `V2{1.0, 2.0} as u64` is `0x400000003f800000` and `0x400000003f800000 as V2` the `V2` again. The padding of a struct is read too, whatever it holds
+- two types without a tag and of the same size, numbers, `bool`, pointers, function values, structs, arrays, `simd` and fat pointers: `f32(1.5) as u32` gives the bits, `p as usize` gives the address, and with `type V2` of two `f32`, `V2{1.0, 2.0} as u64` is `0x400000003f800000` and `0x400000003f800000 as V2` the `V2` again. The padding of a struct is read too, whatever it holds. An integer literal on the left is the integer of the size of the type on the right, signed when it fits: `0x3f800000 as f32` is `1.0`, `-1 as u8` is `255`, and `300 as bool` is an error, `300 does not fit in u8`
 - a union to one of its members or to a smaller union, without checking the tag
 - a member in or out of an untagged union
 
 `as` never writes a tag, so nothing becomes a union with it, and two unions of the same size don't read as each other. Anything else is `cannot reinterpret i32 as i64, they do not have the same byte size`.
+
+A `bool` whose byte is not 0 or 1 is not a value of Flag, like a union without `null` that was never assigned: what `if`, `==` and `not` do with it is not defined. `as` makes one from an `u8` or from a struct of one byte, and so can an untagged union like `u8||bool`, a pointer or C.
 
 ### Pointers into fat pointers
 Assigning a `*bytes`, or a pointer to the element type, to a fat pointer sets only its address, and you set `len` yourself. It's how the library builds views over memory
@@ -773,11 +775,11 @@ The chain
 
 The program reads it from the frame pointers, that every function keeps, and a table in the program says which function each return address belongs to, with the name and place of each function of yours: about 50 bytes for each function written to the program, and with the frame pointers 1 % of the size of the compiler. The handler of the crashes is set when the program starts, before `main`, and every thread, the first one too, keeps a stack of 64 KiB for it, so a stack overflow can be told in any of them. It asks for no memory and waits for no lock, a crash can come from inside `malloc`, and a crash inside the report ends the program at once with the same code. A function whose frame can go past a page touches each page as it lowers the stack, so even a frame bigger than the guard page at the end of a stack stops there, and never writes over the stack of another thread. A program that sets its own handler for `SIGSEGV`, `SIGBUS`, `SIGILL` or `SIGFPE` replaces it.
 
-A negative index counts from the end, `l[-1]` is the last element, and it's an error when it goes before the first one. A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, slices and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. The length goes as an `i64` when the start is a signed integer that is not a literal, or a negative literal, and as an `usize` when not, and a start that is not a literal is converted to that type too, so `s[i:]` works with any integer `i` and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
+A negative index that the compiler knows counts from the end: a literal or a constant, with a type or without one, so `l[-1]` is the last element and `l[-N]` with `N = 2` the one before it, and it's an error when it goes before the first one. `l[-k]` is `l[l.len - k]` written short, on arrays, lists, slices and text, the ones the language indexes itself. A negative index computed when the program runs is out of bounds like any other, `flag: index -1 is out of bounds, length 2`, so `l[i - 1]` with `i` at 0 stops the program, and so does `l[(i - 1) % n]`, because `%` keeps the sign of the left side: `l[(i + n - 1) % n]` goes around. The check is one comparison without sign, the same for an index of any integer type. Your `at` and your `slice` get a negative index as written, and so do functions that take a position: `insert`, `remove`, `swap` and the `at` of a `ring` stop the program with it.
 
-The compiler leaves out the check of `a[i]` on an array when it cannot fail: a literal index inside the array, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
+A slice `s[a:b]` needs `a <= b <= len` after that, and its message has `a` and `b` as you wrote them. A slice can leave out its ends: `s[:b]` starts at 0, `s[a:]` ends at the length and `s[:]` is all of it. The length is `len` for text, lists, slices and arrays, and the field `len` of your own type, so `x[a:]` on a type without that field is an error: `this slice has no end, so it ends at the len of Grid, and it has no field len: write the end`. An end that the compiler writes, the length or a negative end counted from the end, adapts to the other end like a literal: when one of them is a signed integer, both go as an `i64`, so `s[i:]` works with any integer `i`, `s[u:-1]` with an `u8`, and `s[-3:]` keeps the last three. The slice of an array is a `&slice` of its elements, also when they are `u8`.
 
-A signed index pays for the negative case, three instructions more than an `usize`, unless the compiler knows it's not negative: the variable of a `for` over a range that starts at a literal that is not negative never goes below it, so `for i in 0..n` indexes like an `usize` whatever the type of `n`.
+The compiler leaves out the check of `a[i]` on an array when it cannot fail: a known index inside the array, also one counted from the end, or the variable of a `for` over a range of literals that fits in the array and that the body never assigns or passes to a function.
 
 ## Constants, file variables and contexts
 ### Constants
@@ -1169,6 +1171,8 @@ func drop(object: *Unknown):
 | `*T`, `cstr` | pointers |
 | `extern func(T) -> U` | a pointer to a function |
 | structs, arrays inside structs, untagged unions | the same struct or union by value |
+
+A `bool` that comes from C is 0 or 1 by its ABI, and one that C writes through a pointer has to be too (see [as](#as)).
 
 Tagged unions, fat pointers, the function values of Flag and `simd` can't cross to C, pass their parts or a pointer: `ptr(text.*)` and `text.len`. The signature of a C function is checked where you declare it, `&strview cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`. Be careful with `long`, it's 64 bits on Linux and macOS and 32 bits on Windows.
 

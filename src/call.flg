@@ -470,8 +470,6 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             hint = ", an element is x[i] and a pointer to it is ptr(x[i])"
         if name == "slice" and args.len == 3 and integer(args[1].type) and integer(args[2].type) and args[1].type != args[2].type:
             hint = ", the two ends of a slice need one type"
-            if args[1].neg or args[2].neg:
-                hint = hint + ", and a negative one counts from the end so both need a signed type"
         if name == "put" and args.len == 3 and try offers("at", ptr([args[0], args[1]]), at):
             hint = ", x[i] = v calls put(x, i, v) when at gives a copy: declare put for " + comp.types[args[0].type].name + ", or make at give a pointer"
         if name == "put" and args.len == 2:
@@ -1184,7 +1182,7 @@ func convert(v: Value, to: usize, dest: Arg, at: usize) -> Value|Fail:
             for i in 0..comp.types[to].count:
                 field := comp.items[comp.types[to].first + i]
                 if field.name == "len" or field.name == "cap":
-                    store(USIZE, Value{type = USIZE, at = int_arg(i64(count))}, offset(slot, field.n))
+                    store(field.type, Value{type = field.type, at = int_arg(i64(count))}, offset(slot, field.n))
         return Value{type = to, at = slot, mem = true}
     from := comp.types[v.type]
     target := comp.types[to]

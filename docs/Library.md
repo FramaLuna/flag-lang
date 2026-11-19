@@ -200,7 +200,7 @@ An arena is not shared between threads without a `Lock`: give each thread its ow
 
 ### Lists and slices
 A `&slice[$T]` is a view of elements, and a `&list[$T]` is a list that you own and that grows. Both start empty, and a list goes wherever a slice is asked.
-- `s[i]` the element `i`, you can also assign to it. A negative `i` counts from the end, and out of bounds stops the program
+- `s[i]` the element `i`, you can also assign to it. A negative `i` that the compiler knows, a literal or a constant, counts from the end: `s[-1]` is the last one. Out of bounds stops the program, also a negative `i` computed when the program runs (see [Runtime errors](Reference.md#runtime-errors))
 - `s[a:b]` the elements from `a` to `b - 1`, a view. `a` and `b` can be negative like an index, and the slice must be inside the elements, with `a` not after `b`, or the program stops. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for x in s`, `for i, x in s` and `for x in reverse s`
 - `==` compares element by element, and `print` writes `[1, 2, 3]`
@@ -210,7 +210,7 @@ On lists
 - `append(l: *&list[$T], items: &slice[$T])` adds all the elements at the end, also from the list itself
 - `reserve(l: *&list[$T], want: usize)` makes room for `want` elements, so the appends until then don't allocate
 - `try_reserve(l: *&list[$T], want: usize) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
-- `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`
+- `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`. Like every function that takes a position, it counts from the start, and a negative one stops the program
 - `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
 - `clear(l: *&list[$T])` removes every element and keeps the memory
@@ -224,7 +224,7 @@ On slices, so also on lists
 - `sort(s: &slice[$T])` sorts in place using `<`, in O(n log n). It's a merge sort, so equal elements keep their order, and it allocates room for half the slice while it sorts
 - `sort(s: &slice[$T], before: func($T, $T) -> bool)` sorts with your order, `before(a, b)` says if `a` goes before `b`
 - `flip(items: &slice[$T])` turns the elements around in place
-- `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements, the indexes can be negative like in `s[i]`
+- `swap(s: &slice[$T], i: $I, j: $I)` swaps two elements
 
 An array goes to these functions by its address: `sort(ptr(values))`.
 
@@ -242,7 +242,7 @@ These take a `simd` and belong to the language, like its operators (see [SIMD](R
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
-- `s[i] -> u8` the byte `i`, a negative `i` counts from the end
+- `s[i] -> u8` the byte `i`, a negative `i` that the compiler knows counts from the end
 - `s[a:b] -> &strview` the bytes from `a` to `b - 1`, a view. `s[a:]` goes to the end and `s[:b]` starts at 0
 - `for c in s` gives each UTF-8 character as a `&strview`, also with `reverse`. A byte that is not part of a valid character comes alone, so text that is not UTF-8 gives its wrong bytes one by one, also the bytes of an overlong form, a surrogate or a code above U+10FFFF. Both directions give the same pieces, and `count`, `valid` and `code` of `utf8` read the same ones
 - `==` and `<` compare the bytes
@@ -319,18 +319,16 @@ A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order 
 - `for e in m` gives the entries in the order they were put
 
 ### Indexes of your own types
-`x[i]` on your type calls your `at` (see [Indexing](Overview.md#indexing)). The library makes its own `at` with these two, so yours can take the same indexes and stop the program the same way
-- `natural(i: $I, len: usize) -> usize` the index counted from the start, so a negative `i` becomes `len + i`. When `i` goes before the start the result is past `len`, so checking `n >= len` catches both ends
+`x[i]` on your type calls your `at` (see [Indexing](Overview.md#indexing)) with the index as written, `g[-1]` too. The library stops the program with this one, so yours can do the same
 - `out_of_bounds(i: $I, len: usize)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: usize)` with `flag: slice 2:9 is out of bounds, length 3`
 ```flag
 type Grid:
     cells: array[i32, 9]
 
-func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is i32|usize:
-    n := natural(i, 9)
-    if n >= 9:
+func at(g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Integer:
+    if i < 0 or i >= 9:
         out_of_bounds(i, 9, place)
-    return ptr(g.cells[n])
+    return ptr(g.cells[i])
 ```
 
 ### C text
@@ -658,7 +656,7 @@ func main():
 - `append(r, v)` adds at the end, and `prepend(r, v)` at the start
 - `pop(r) -> $T|null` takes out the last element, and `take(r) -> $T|null` the first
 - `clear(r)` removes every element and keeps the memory
-- `r[i]` the element `i` from the start, a negative `i` counts from the end
+- `r[i]` the element `i` from the start, and a negative `i` stops the program
 - `for v in r` from the start, `print` writes `[1, 2]`, and `free(r)`
 
 ## raylib
