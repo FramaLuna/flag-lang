@@ -64,7 +64,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         test := comp.syms[k]
         f := test.node
         if testing and starts_with(test.name, "test_") and comp.nodes[f].kind == Func and body(f) != 0 and not test.library and params(f) == 0 and not generic(f) and try result(f) == VOID and try holds_where(f):
-            comp.insts[try instantiate(f, 0)].valued = true
+            comp.insts[try instantiate(f, 0)].taken_as = func_of([], VOID, false) # the run of a Test
             append(comp.tests, k)
     if testing and comp.tests.len == 0 and not check:
         eprint(comp.err, "these files have no test, a test is a func test_name() with no parameters and no result")
@@ -337,7 +337,7 @@ func gen_from(from: i64) -> i64|Fail:
             for t in inherited():
                 blit(offset(block, used), global("thread $ctx." + comp.types[t].name), t)
                 used += room(t)
-            store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at), offset(block, HEAD))
+            store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at, comp.binds[-1].type), offset(block, HEAD))
             append(args, Value{type = pointer(BYTES), at = block})
             append(args, truth(pointers(shape.ret) != 0))
             try invoke("finished", args, 0)
@@ -720,7 +720,7 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
             name += "op"
         name += "." + comp.insts.len
     library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, false})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, VOID})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
     put(comp.inst_ids, view(key), comp.insts.len - 1)
@@ -1141,8 +1141,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
                 id := try instantiate_for(f, order, typed, ptr(taken), tok.at)
                 if id == comp.entry:
                     return fail(ENTRY, tok.at)
-                comp.insts[id].valued = true
                 made := func_of(taken, comp.insts[id].ret, body(f) == 0 or comp.insts[id].export)
+                comp.insts[id].taken_as = made
                 if wanted != VOID and comp.types[made].foreign and not comp.types[wanted].foreign:
                     return fail(tok.text + " is a C function, so its value is " + comp.types[made].name + " and this place expects " + comp.types[wanted].name, tok.at)
                 if wanted != VOID and comp.types[wanted].foreign and not comp.types[made].foreign:
@@ -1909,7 +1909,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             return fail("parallel cannot run " + shape.name + ", it is called the way C calls: wrap the call in a func", tok.at)
         if threaded:
             return spawn(code, passes, callee.type, none, tok.at)
-        return emit(code, passes, shape.ret, shape.foreign, tok.at)
+        return emit(code, passes, shape.ret, shape.foreign, tok.at, callee.type)
     name := tok.text
     target := VOID
     values: &list[Value] = heap([])
