@@ -200,9 +200,17 @@ func declaration(module: &strview, kept: bool) -> Fail?:
                 return fail("an extern func cannot be inline, it has no body: its library holds it", here().at)
             if peek("noinline"):
                 return fail("an extern func cannot be noinline, it has no body: its library holds it", here().at)
-            if not peek("func"):
-                return fail("an extern block declares functions only", here().at)
-            try func_decl(true)
+            if here().kind == Name and comp.tokens[comp.pos + 1].text == ":": # the address of a variable of C
+                try new_name(true)
+                v := begin(Var, comp.pos)
+                comp.pos += 2
+                try type_expr()
+                try symbol()
+                finish(v)
+            elif peek("func"):
+                try func_decl(true)
+            else:
+                return fail("an extern block declares functions and the addresses of variables of C", here().at)
         finish(n)
     elif t.kind == Name and (after.text == "=" or after.text == ":"):
         try new_name(true)
@@ -488,22 +496,28 @@ func func_decl(external: bool) -> Fail?:
                 return fail(g.text + " is not bound here, a generic gets its type from a parameter: take it as kind: type " + g.text, g.at)
     if peek("=") and not external:
         return fail("only a func of an extern block names its C function with = \"symbol\"", here().at)
-    if peek("="):
-        comp.pos += 1
-        named := here().kind == Str and here().text.len > 2
-        if named:
-            for i, b in items(here().text[1:here().text.len - 1]):
-                named = named and (is_letter(b) or b == '.' or i > 0 and (is_digit(b) or b == '$'))
-        if not named:
-            return unexpected("= expects the symbol of the C function as text, a name of letters, digits, _, . and $: = \"objc_msgSend\"")
-        finish(begin(Literal, comp.pos))
-        comp.pos += 1
+    try symbol()
     try where_clause()
     if not external:
         try block()
     elif peek(":"):
         return fail("an extern func has no body, its library holds it", here().at)
     finish(n)
+    return null
+
+# = "name" after a declaration of an extern block, the symbol of C when it is not the name in Flag
+func symbol() -> Fail?:
+    if not peek("="):
+        return null
+    comp.pos += 1
+    named := here().kind == Str and here().text.len > 2
+    if named:
+        for i, b in items(here().text[1:here().text.len - 1]):
+            named = named and (is_letter(b) or b == '.' or i > 0 and (is_digit(b) or b == '$'))
+    if not named:
+        return unexpected("= expects the symbol of C as text, a name of letters, digits, _, . and $: = \"objc_msgSend\"")
+    finish(begin(Literal, comp.pos))
+    comp.pos += 1
     return null
 
 func where_clause() -> Fail?:

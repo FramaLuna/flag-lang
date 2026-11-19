@@ -634,11 +634,33 @@ func main() -> i32:
     append(link, "-o")
     append(link, output)
     append(link, source)
-    append(link, "-L" + comp.library)
+    folders: &list[&strview] = heap([]) # where the linker looks for a library, and flagc for a file that an extern names
+    append(folders, comp.library)
     for input in inputs:
-        append(link, "-L" + dir_of(input))
+        append(folders, dir_of(input))
+    for f in folders:
+        append(link, "-L" + f)
+    for k, r in rest:
+        if starts_with(r, "-L") and r.len > 2:
+            append(folders, r[2:])
+        elif r == "-L" and k + 1 < rest.len:
+            append(folders, rest[k + 1])
     for l in comp.libs:
-        append(link, "-l" + l)
+        if ends_with(l, ".framework"):
+            append(link, ptr(["-framework", l[:-10]]))
+        elif not (ends_with(l, ".so") or contains(l, ".so.") or ends_with(l, ".a") or ends_with(l, ".dylib") or ends_with(l, ".dll")):
+            append(link, "-l" + l)
+        elif comp.system == "linux":
+            append(link, "-l:" + l) # the linker looks in its own folders too, where the libraries of the system are
+        else:
+            path := ""
+            for f in folders:
+                if path.len == 0 and exists(join_path(f, l)):
+                    path = join_path(f, l)
+            if path.len == 0:
+                eprint(comp.err, "cannot find ", l, " in the folders of -L: ", join(folders, ", "))
+                return 1
+            append(link, path)
     if comp.shared:
         append(link, "-shared")
     if comp.shared and comp.system == "linux":

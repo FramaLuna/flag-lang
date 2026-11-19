@@ -78,11 +78,12 @@ error: no test has parse or lex in its name
 ### The C compiler
 The C compiler is `cc`, or the one in the `CC` variable. `CC` is split on spaces, so `CC="zig cc"` works. The link of a program is
 ```
-cc -o program program.s -L<library folder> -L<folder of each input> -l<each extern library> <what goes after -cc>
+cc -o program program.s -L<library folder> -L<folder of each input> <the library of each extern> <what goes after -cc>
 ```
+where the library of an `extern` is `-lname`, `-framework X` or a file (see [extern](#extern)).
 A library, with `-shared`, has `-shared` before what you give, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
 
-The `-L` of the folders of your files means that you can put a `libsomething.a` next to your code and use it with `extern "something"`.
+The `-L` of the folders of your files means that you can put a `libsomething.a` next to your code and use it with `extern "something"`, or with `extern "libsomething.a"`.
 
 If the C compiler cannot run you get
 ```
@@ -1303,10 +1304,16 @@ On Linux and macOS the time is an alarm, `SIGALRM`, that the handler of crashes 
 
 ## Calling C
 ### extern
-An `extern` block declares C functions and says which library they come from. `"c"` is the C library, and any other name is linked with `-lname`
+An `extern` block declares C functions and variables and says which library they come from. Its text says how the library is linked
+- `"c"` is the C library, which is always linked
+- `"Metal.framework"` is a framework of macOS, linked with `-framework Metal`. On another system it's an error, `Metal.framework is a framework of macOS, give its block a where @macos()`
+- a file name, one that ends with `.so`, `.so.6` and the like, `.a`, `.dylib` or `.dll`, is that file, so a library with a version needs no link without it. On Linux it goes as `-l:libfreetype.so.6`, and the linker looks for it in the folders of `-L` and in those of the system. On macOS and Windows flagc looks for it in the folders of `-L`, the library folder, the folders of your files and the `-L` after `-cc`, and links its path, or says `cannot find libfreetype.dylib in the folders of -L: lib/, ./`. The `:` of `-l:` is not written, `extern ":libm.so.6"` is `extern names the file without ':': extern "libm.so.6"`
+- any other name is linked with `-lname`
 ```flag
 extern "m":
     func cbrt(x: f64) -> f64
+
+extern "Cocoa.framework" where @macos():
 ```
 A block can have a `where`, that reads only the system and the processor like a `where` block at the root (see [where](#where)). Then its library is linked only when the condition holds, and its functions exist only there, so two systems can give one function two signatures, and a call to one of another system is `no function named GetLastError is visible here`. A block without functions just links its library, that's how a library says that it needs another one
 ```flag
@@ -1327,7 +1334,25 @@ extern "objc":
     func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
     func wait_child(status: *i32) -> i32 = "wait"
 ```
-The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't start with a digit or `$`, and goes after what the function returns, before its `where`. Only a function of an `extern` block takes one: `only a func of an extern block takes = "symbol", the C function it calls`.
+The symbol is text, a name of letters, digits, `_`, `.` and `$` that doesn't start with a digit or `$`, and goes after what the function returns, before its `where`. Only a function or a variable of an `extern` block takes one: `only a func of an extern block names its C function with = "symbol"`.
+
+A line `name: *T` declares a variable of C by its address: `name` is a constant, a `*T` that points to the variable, and the variable is read and written through it with `.*`. It takes the `where` of its block and a symbol after `=` like a function, and the type is a pointer, `optind is a variable of C, and an extern block declares it by its address: optind: *i32`. The address goes through a word of the data that the loader fills, so it works in a library built with `-shared` too
+```flag
+extern "c":
+    index: *i32 = "optind"
+    func fputs(text: cstr, file: *bytes) -> i32
+
+extern "c" where @linux():
+    c_stderr: **bytes = "stderr"
+
+extern "c" where @macos():
+    c_stderr: **bytes = "__stderrp"
+
+func main():
+    index.* = 1
+    fputs("to the stderr of C\n", c_stderr.*)
+```
+When the name of a variable of C is one of core, like `stderr`, which is a `File` of Flag, give it another name in Flag and its symbol after `=`. On Windows `stderr` is not a variable of C but a call, `__acrt_iob_func(2)`.
 
 `.c`, `.o` and `.a` files go to the C compiler after `-cc`: `flagc game.flg -cc vec.c`.
 

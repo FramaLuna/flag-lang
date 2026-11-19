@@ -676,7 +676,7 @@ func main():
 - `for v in r` from the start, `print` writes `[1, 2]`, and `free(r)`
 
 ## raylib
-Windows, drawing in 2D and 3D, input, textures and audio with [raylib](https://www.raylib.com). The library comes with raylib built for Linux on x86_64, for other systems put your own `libraylib.a` in the `lib` folder.
+Windows, drawing in 2D and 3D, input, textures and audio with [raylib](https://www.raylib.com). The library comes with raylib built for Linux on x86_64, for other systems put your own `libraylib.a` in the `lib` folder. The module links what raylib needs on each system, the frameworks of macOS and `opengl32`, `gdi32` and `winmm` on Windows.
 
 The functions keep the names and the parameters of raylib, so its [cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) explains them, and the text goes as `cstr`: a literal by itself, a `&str` with `c_text(label)`.
 - Window: `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot`

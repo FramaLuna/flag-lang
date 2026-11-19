@@ -1241,6 +1241,15 @@ extern "objc":
     func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
     func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
 ```
+A variable of C goes in by its address, a constant that points to it, and the text of the block can name a framework of macOS or a file
+```flag
+extern "c":
+    index: *i32 = "optind" # index.* = 1 writes optind
+
+extern "Metal.framework" where @macos():
+
+extern "libfreetype.so.6" where @linux():
+```
 `export func` makes a function that C can call, with the plain name and the C calling convention. Its name is a value of type `extern func(...)`, the function type of C, and that's how you pass callbacks to C
 ```flag
 extern "c":

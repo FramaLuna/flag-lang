@@ -17,6 +17,11 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
             lib := text(e)[1:text(e).len - 1]
+            at := comp.tokens[comp.nodes[e].tok].at
+            if starts_with(lib, ":"):
+                return fail("extern names the file without ':': extern \"" + lib[1:] + "\"", at)
+            if ends_with(lib, ".framework") and comp.system != "macos":
+                return fail(lib + " is a framework of macOS, give its block a where @macos()", at)
             if lib != "c" and not contains(comp.libs, lib):
                 append(comp.libs, lib)
     for k in 1..comp.syms.len:
@@ -87,6 +92,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 try instantiate(f, 0)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
+        if comp.nodes[d].kind == Var and comp.types[try resolve(d + 1)].kind != Ptr:
+            return fail(text(d) + " is a variable of C, and an extern block declares it by its address: " + text(d) + ": *" + code_of(d + 1), at_of(d))
         if comp.nodes[d].kind == Constant and kids(d) == 2: # checked like a local declaration, also when nothing reads it, and the code is dropped
             t := try resolve(d + 1)
             given := kid(d, 1)
@@ -858,6 +865,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
             s := try named(text(head), comp.nodes[head].module, at_of(head))
             if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
                 return fail(text(head) + " is a constant, it cannot be assigned: keep what changes in a context, or in a shared context for all the threads", at_of(head))
+            if s != 0 and comp.nodes[comp.syms[s].node].kind == Var:
+                return fail(text(head) + " is the address of a variable of C, it cannot be assigned: write the variable through it, " + text(head) + ".* = ...", at_of(head))
         if not spot.place:
             return fail("this cannot be assigned, only a variable, a field of one, an element or what a pointer points to can", at_of(left))
         try update(spot, n, first)
@@ -1172,17 +1181,28 @@ func gen(n: i64, want: i64) -> Value|Fail:
             if comp.tokens[node.tok + 1].text == "." and comp.tokens[node.tok + 3].text == "(":
                 return fail("no variable named " + tok.text + " is visible here, and " + tok.text + " is not a module this file uses", tok.at)
             return fail("no variable, constant or type named " + tok.text + " is visible here", tok.at)
+        d := comp.syms[s].node
         if noted(tok.at):
-            mark(comp.nodes[comp.syms[s].node].tok)
-        k := comp.nodes[comp.syms[s].node].kind
+            mark(comp.nodes[d].tok)
+        k := comp.nodes[d].kind
         if k == Constant:
             return constant(s, want, tok.at)
+        if k == Var: # the address of a variable of C, from a slot of data that the loader fills, which a library takes too
+            symbol := text(d)
+            if kids(d) == 2:
+                symbol = text(kid(d, 1))[1:text(kid(d, 1)).len - 1]
+            slot: &str = heap("$flag.c.")
+            slot += symbol
+            if comp.stored[view(slot)] is null:
+                put(comp.stored, view(slot), 0)
+                comp.data += read_only(true) + "data " + slot + " = { l $" + symbol + " }\n"
+            return Value{type = try resolve(d + 1), at = op1(L, "loadl", global(view(slot)))}
         if k == Void:
             return Value{type = try make_type(s, [], false, tok.at)}
         if k != Context:
             return fail(tok.text + " is a type that carries data, so its name alone is not a value", tok.at)
         t := try make_type(s, [], false, tok.at)
-        if declared(comp.syms[s].node) == "shared":
+        if declared(d) == "shared":
             return Value{type = t, at = global("$ctx." + comp.types[t].name), mem = true, place = true}
         return Value{type = t, at = global("thread $ctx." + comp.types[t].name), mem = true, place = true}
     case Literal:
@@ -4074,8 +4094,8 @@ func untaken(tok: i64) -> Fail?:
     while s != 0:
         d := comp.syms[s].node
         k := comp.nodes[d].kind
-        if visible(s, "", t.at) and (comp.syms[s].library or not library) and (k == Constant or k == Context):
-            if k == Constant:
+        if visible(s, "", t.at) and (comp.syms[s].library or not library) and (k == Constant or k == Context or k == Var):
+            if k != Context:
                 _ = fail(t.text + " is a constant, a variable cannot take its name", t.at)
             else:
                 _ = fail(t.text + " is a context, a variable cannot take its name", t.at)
