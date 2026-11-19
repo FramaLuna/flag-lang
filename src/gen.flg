@@ -1,7 +1,7 @@
 @trust
 use fs
 
-UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
+UNKNOWN = "a constant with a type holds a value the compiler knows, made of literals and constants, and this one is computed when the program runs: without the type it is computed where it is read"
 KNOWN = "a default value is one the compiler knows, made of literals and constants, or the empty heap([]), heap(\"\") or heap({})"
 ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
 VIEW = "&strview is a view that only reads: change the text through the &str that owns it"
@@ -23,7 +23,15 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         kind := comp.nodes[d].kind
         if (kind == Struct or kind == Fat or kind == Context or kind == Alias) and not generic(d):
             t := try make_type(k, none, kind == Fat, comp.tokens[comp.nodes[d].tok].at)
-            if kind == Context:
+            if kind == Context and declared(d) == "shared": # one for all the threads, in the data with what it starts with
+                held: &str
+                body := comp.body.len
+                slots := comp.slots.len
+                try image(t, 0, held)
+                drop(body, slots, 0)
+                zeros(held, room(t) - comp.types[t].size)
+                comp.data += "data $ctx." + comp.types[t].name + " = align " + data_align(t) + " { " + held + "}\n"
+            elif kind == Context:
                 comp.data += "thread data $ctx." + comp.types[t].name + " = align " + data_align(t) + " { z " + room(t) + " }\n"
                 comp.stamping = comp.stamping or comp.types[t].stamped
     s := first_sym("main")
@@ -71,54 +79,32 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 try instantiate(f, 0)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
-        if comp.nodes[d].kind == Var:
-            v := try shared(d)
-            t := v.type
-            if comp.types[t].kind == Bytes:
-                return fail("variable " + text(d) + " needs a size, bytes is a run of unknown length", comp.tokens[comp.nodes[d].tok].at)
+        if comp.nodes[d].kind == Constant and kids(d) == 2: # checked like a local declaration, also when nothing reads it, and the code is dropped
+            t := try resolve(d + 1)
+            given := kid(d, 1)
             held: &str
-            if kids(d) == 1:
-                zeros(held, comp.types[t].size)
-                comp.stamping = comp.stamping or comp.types[t].stamped
-            else:
-                given := node_end(d + 1)
-                body := comp.body.len
-                slots := comp.slots.len
-                try assign(alloc(t), t, try value(given, t), at_of(given)) # checked like a local, the code is dropped
-                unknown := try image(t, given, held)
-                if unknown != 0:
-                    return fail(UNKNOWN, at_of(unknown))
-                drop(body, slots, 0)
-            zeros(held, room(t) - comp.types[t].size)
-            comp.data += "data " + comp.globals[v.at.n] + " = align " + data_align(t) + " { " + held + "}\n"
+            body := comp.body.len
+            slots := comp.slots.len
+            try assign(alloc(t), t, try value(given, t), at_of(given))
+            unknown := try image(t, given, held)
+            if unknown != 0:
+                return fail(UNKNOWN, at_of(unknown))
+            drop(body, slots, 0)
     comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
     if comp.stamping:
         comp.data += "thread data $flag.entered = { w 0 }\n"
     comp.at = 0
     comp.live = true
-    stamper := open_proc("$flag.stamp", 0, 0, true)
-    variables := temp()
-    append(comp.passes, Pass{W, variables, true})
-    l_variables := label()
-    l_contexts := label()
-    branch(variables, l_variables, l_contexts)
-    open_block(l_variables)
+    stamper := open_proc("$flag.stamp", 0, 0, true) # what the contexts of a thread start with, when it enters
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
-        if comp.nodes[d].kind == Var and kids(d) == 1:
-            v := trust shared(d)
-            try stamp(v.type, v.at, 0)
-    jump(l_contexts)
-    open_block(l_contexts)
-    for k in 1..comp.syms.len:
-        d := comp.syms[k].node
-        if comp.nodes[d].kind == Context:
+        if comp.nodes[d].kind == Context and declared(d) != "shared":
             t := trust make_type(k, none, false, 0)
             try stamp(t, global("thread $ctx." + comp.types[t].name), 0)
     if comp.stamping:
         add(Ins{op = "storew", a = int_arg(1), b = global("thread $flag.entered")})
     terminate("ret", Arg{})
-    close_proc(stamper, 0, 1)
+    close_proc(stamper, 0, 0)
     done := try gen_from(0)
     reached := comp.types.len
     funcs := comp.procs.len
@@ -324,8 +310,7 @@ func gen_from(from: i64) -> i64|Fail:
             shape := comp.types[comp.binds[-1].type]
             block := temp()
             append(comp.passes, Pass{L, block, false})
-            append(comp.passes, Pass{W, int_arg(0), true})
-            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len - 1), count = 1})
+            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
             args: &list[Value]
             try invoke("guard_stack", args, 0)
             start := HEAD + align_up(comp.types[shape.ret].size, 8)
@@ -341,6 +326,9 @@ func gen_from(from: i64) -> i64|Fail:
                     x := load(Value{type = p, at = offset(block, used), mem = true}).at
                     append(passes, Pass{cls(p), x, is_number(x)})
                 used += room(p)
+            for t in inherited():
+                blit(offset(block, used), global("thread $ctx." + comp.types[t].name), t)
+                used += room(t)
             store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at), offset(block, HEAD))
             append(args, Value{type = pointer(BYTES), at = block})
             append(args, truth(pointers(shape.ret) != 0))
@@ -506,7 +494,7 @@ func gen_from(from: i64) -> i64|Fail:
                 add(Ins{op = "call", a = global("$exit"), first = u32(first + 3), count = 1})
                 terminate("hlt", Arg{})
                 open_block(l_new)
-            try enter()
+            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
             add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
             if comp.system == "windows":
                 for fd in 0..3:
@@ -519,7 +507,7 @@ func gen_from(from: i64) -> i64|Fail:
             l_body := label()
             branch(op1(W, "loadw", global("thread $flag.entered")), l_body, l_enter)
             open_block(l_enter)
-            try enter()
+            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
             jump(l_body)
             open_block(l_body)
         name := text(f)
@@ -661,7 +649,7 @@ func params(f: i64) -> i64:
         c = node_end(c)
     return count
 
-# the word before func or operator, like inline or noinline
+# the word before func, operator or context, like inline, noinline or shared
 func declared(f: i64) -> &strview:
     if f == 0:
         return ""
@@ -774,6 +762,13 @@ func gen(n: i64, want: i64) -> Value|Fail:
             spot = try gen(left, VOID)
         if not spot.place and local_of(left) != 0:
             return fail(text(left) + " counts this loop, so it cannot be assigned: copy it to a variable to change it", at_of(left))
+        head := left
+        while comp.nodes[head].kind == Field:
+            head += 1
+        if not spot.place and comp.nodes[head].kind == Name and local_of(head) == 0:
+            s := try named(text(head), comp.nodes[head].module, at_of(head))
+            if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
+                return fail(text(head) + " is a constant, it cannot be assigned: keep what changes in a context, or in a shared context for all the threads", at_of(head))
         if not spot.place:
             return fail("this cannot be assigned, only a variable, a field of one, an element or what a pointer points to can", at_of(left))
         try update(spot, n, first)
@@ -933,7 +928,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
                     joiner = " and "
         args: &list[Value]
         append(args, line)
-        try invoke("panic", args, tok.at)
+        append(args, try place_of(tok.at))
+        try runtime("panic", args, tok.at)
         open_block(l_ok)
         try narrow(cond, true)
         return none
@@ -1081,14 +1077,14 @@ func gen(n: i64, want: i64) -> Value|Fail:
         k := comp.nodes[comp.syms[s].node].kind
         if k == Constant:
             return constant(s, want, tok.at)
-        if k == Var:
-            return shared(comp.syms[s].node)
         args: &list[Item]
         if k == Void:
             return Value{type = try make_type(s, args, false, tok.at)}
         if k != Context:
             return fail(tok.text + " is a type that carries data, so its name alone is not a value", tok.at)
         t := try make_type(s, args, false, tok.at)
+        if declared(comp.syms[s].node) == "shared":
+            return Value{type = t, at = global("$ctx." + comp.types[t].name), mem = true, place = true}
         return Value{type = t, at = global("thread $ctx." + comp.types[t].name), mem = true, place = true}
     case Literal:
         if tok.kind == Int:
@@ -1763,11 +1759,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             callee = held(lookup(tok.text), tok.at)
     else:
         s := try named(tok.text, node.module, tok.at)
-        if s != 0 and comp.nodes[comp.syms[s].node].kind == Var:
-            v := try shared(comp.syms[s].node)
-            if func_in(v.type) != VOID:
-                callee = v
-        elif s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
+        if s != 0 and comp.nodes[comp.syms[s].node].kind == Constant:
             f := first_sym(tok.text)
             while f != 0 and not (comp.nodes[comp.syms[f].node].kind == Func and visible(f, node.module, tok.at)):
                 f = comp.syms[f].next
@@ -2706,7 +2698,8 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             bounds: &list[Value]
             append(bounds, Value{type = wide, at = raw})
             append(bounds, length)
-            try invoke("out_of_bounds", bounds, tok.at)
+            append(bounds, try place_of(tok.at))
+            try runtime("out_of_bounds", bounds, tok.at)
             open_block(l_in)
         scaled := times(i, comp.types[elem].size)
         count: u32 = 0
@@ -3239,12 +3232,19 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
     inner := false
     for r in comp.resolving:
         inner = inner or comp.nodes[r].kind == Constant
+    given := d + 1
+    t := want
+    if kids(d) == 2: # a constant with a type
+        t = try resolve(d + 1)
+        given = node_end(d + 1)
     first := comp.body.len
     slots := comp.slots.len
     held := comp.held.len
     append(comp.resolving, d)
     aside := set_aside(0) # the value sees the constants it names, not the variables where it is read
-    v := value(d + 1, want)
+    v := value(given, t)
+    if v is Value and kids(d) == 2:
+        v = convert(v, t, Arg{}, at_of(given))
     put_back(0, aside)
     comp.resolving.len -= 1
     if v is Fail:
@@ -3256,7 +3256,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
     end := comp.body.len
     data: &str = ""
     data += "align " + data_align(v.type) + " { "
-    if try image(v.type, d + 1, data) != 0:
+    if try image(v.type, given, data) != 0:
         comp.body.len = end
         return v
     zeros(data, room(v.type) - comp.types[v.type].size)
@@ -3287,15 +3287,13 @@ func empty_owner(n: i64) -> bool:
     given := comp.nodes[n + 1].kind
     return (given == Items or given == Pairs or given == Literal and text(n + 1) == "\"\"") and text(n) == "heap" and comp.nodes[n].module.len == 0
 
-func shared(d: i64) -> Value|Fail:
-    return Value{type = try resolve(d + 1), at = global("$var." + text(d) + "." + d), mem = true, place = true}
-
 func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is computed, or 0
     while n != 0 and comp.nodes[n].kind == Name:
         s := try named(text(n), comp.nodes[n].module, at_of(n))
-        if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
+        d := comp.syms[s].node
+        if s == 0 or comp.nodes[d].kind != Constant or kids(d) == 2 and try resolve(d + 1) != t: # a constant of another type is read as a value
             break
-        n = comp.syms[s].node + 1
+        n = kid(d, kids(d) - 1) # its value, after its type when it has one
     if n != 0 and empty_owner(n):
         n = 0
     ty := comp.types[t]
@@ -3500,11 +3498,6 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
         add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = slot})
         jump(l_head)
         open_block(l_done)
-    return null
-
-func enter() -> Fail?:
-    nothing: &list[Value]
-    try invoke("enter", nothing, 0)
     return null
 
 func packs(f: Item, at: i64) -> bool:
@@ -3713,11 +3706,9 @@ func untaken(tok: i64) -> Fail?:
     while s != 0:
         d := comp.syms[s].node
         k := comp.nodes[d].kind
-        if visible(s, "", t.at) and (comp.syms[s].library or not library) and (k == Constant or k == Var or k == Context):
+        if visible(s, "", t.at) and (comp.syms[s].library or not library) and (k == Constant or k == Context):
             if k == Constant:
                 _ = fail(t.text + " is a constant, a variable cannot take its name", t.at)
-            elif k == Var:
-                _ = fail(t.text + " is a file variable, a variable cannot take its name", t.at)
             else:
                 _ = fail(t.text + " is a context, a variable cannot take its name", t.at)
             note(t.text + " is declared here", comp.tokens[comp.nodes[d].tok].at)

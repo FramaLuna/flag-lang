@@ -103,16 +103,12 @@ MYSECONDCONST = 2 + 2 + NUM # this computes at comptime to 6
 ```
 Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro. A constant array or struct of literals, like `TABLE = [3, 1, 4, 1, 5]`, is kept once in the data of the program and every use reads it there (see [Constants](Reference.md#constants)).
 
-## File variables
-A variable at the root of a file is one value that every function sees. It starts at zero, or at a value the compiler knows: literals, constants, and structs and arrays of them
+A constant can have a type, written like a variable. Its value is one the compiler knows: literals, constants, and structs and arrays of them
 ```flag
-count: i32
+LIMIT: u8 = 10
 names: array[&strview, 3] = ["one", "two", "three"]
-
-func add():
-    count += 1
 ```
-It lives as long as the program, and all the threads share it (see [Threads](#threads)).
+It can't change, what changes goes in a [context](#contexts). Nothing runs before `main`, so all that's written outside a function is known when the program compiles.
 
 ## Operators
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers, and `+` and `-` move a `*bytes` (see [Pointers](#pointers))
@@ -918,7 +914,14 @@ context app:
 func deeper():
     app.depth += 1
 ```
-What all the threads share is a file variable (see [File variables](#file-variables)).
+A thread that `parallel` starts begins with its contexts at their start, or with a copy of the ones of the thread that starts it when they are `inherited`. What all the threads share is a `shared context`, one for the whole program, whose start the compiler writes into the program
+```flag
+inherited context log:
+    level: i32 = 1
+
+shared context stats:
+    visits: Lock[i64]
+```
 
 ## Threads
 `parallel f(x)` runs the call in a new thread and gives a `Thread[T]`, where `T` is what `f` returns. `wait(t)` waits for the thread to end and gives its result. A computation split in pieces
@@ -951,13 +954,14 @@ start(try wait(level))
 ```
 `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements, so the thread can use what `main` keeps. A thread you keep must be read, by `wait` or `done`, and `-memory` warns about one that is never waited. A function that can fail can't run alone, its error would be lost.
 
-Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock[T]` lets one thread at a time change the value it guards, its `value`, and `Lock[null]` guards code and no value
+Each thread has its own contexts and its own temporary memory, and a `shared context` is shared. A `Lock[T]` lets one thread at a time change the value it guards, its `value`, and `Lock[null]` guards code and no value
 ```flag
-visits: Lock[i64]
+shared context stats:
+    visits: Lock[i64]
 
 func visit():
-    with lock(visits):
-        visits.value += 1
+    with lock(stats.visits):
+        stats.visits.value += 1
 ```
 A `Channel[T, N]` passes values between threads, and waits when it's full or empty. It keeps the values inside itself, so it lives where you declare it
 ```flag
@@ -1051,6 +1055,8 @@ flag: index 5 is out of bounds, length 3
   in main, main.flg:31
 ```
 `assert` checks a condition and says what was there when it's false: `assert total == 4` stops with `flag: total == 4 is false, total is 3`, and `assert f is File` with `flag: f is FsError, not File: cannot open config.txt: No such file or directory`. A message after a comma replaces that, `assert total > 0, "the total cannot be empty"`.
+
+To log the failure or save something before the end, give `on_panic` a function: it gets the message and the place of every one of these errors, after they are printed (see [Runtime errors](Reference.md#runtime-errors)).
 
 A crash prints the same chain: a null pointer is `flag: invalid memory access at 0x0`, and a recursion without end is `flag: stack overflow`. An error in a [thread](#threads) shows the functions of that thread, and a small function that the compiler put inside its caller (see [Inline](#inline)) has no line of its own, unless it's `noinline`.
 

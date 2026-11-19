@@ -77,12 +77,6 @@ func dwarf() -> &str:
         if context(t):
             units[file_of(comp.tokens[comp.nodes[comp.types[t].decl].tok].at)] = true
             needs(t, needed)
-    for k in 1..comp.syms.len:
-        d := comp.syms[k].node
-        if comp.nodes[d].kind == Var:
-            v := trust shared(d)
-            units[file_of(comp.tokens[comp.nodes[d].tok].at)] = true
-            needs(v.type, needed)
     frame := 6 # the DWARF number of rbp, x29 and fp
     if comp.machine == "arm64":
         frame = 29
@@ -243,20 +237,14 @@ func dwarf() -> &str:
                 asciz(out, comp.types[t].name)
                 out += reference(local + "type" + t)
                 symbol := symbol_prefix() + "ctx." + comp.types[t].name
-                if comp.system == "linux" and comp.machine != "x86_64":
+                if declared(comp.types[t].decl) == "shared":
+                    out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol + "\n" # DW_OP_addr
+                elif comp.system == "linux" and comp.machine != "x86_64":
                     out += "\t.byte 0\n" # no relocation of arm64 or rv64 gives the place of thread data to the DWARF, gcc and clang leave it out too
                 elif comp.system == "linux":
                     out += "\t.byte 10\n\t.byte 0x0e\n\t.quad " + symbol + "@dtpoff\n\t.byte 0x9b\n" # DW_OP_const8u, DW_OP_form_tls_address
                 else:
                     out += "\t.byte 10\n\t.byte 0x0e\n\t.quad " + symbol + "\n\t.byte 0x9b\n"
-        for k in 1..comp.syms.len:
-            d := comp.syms[k].node
-            if comp.nodes[d].kind == Var and file_of(comp.tokens[comp.nodes[d].tok].at) == file:
-                v := trust shared(d)
-                uleb(out, GLOBAL_DIE)
-                asciz(out, text(d))
-                out += reference(local + "type" + v.type)
-                out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol_prefix() + comp.globals[v.at.n][1:] + "\n" # DW_OP_addr
         for f in procs:
             if f.file == file:
                 inst := comp.insts[f.inst]

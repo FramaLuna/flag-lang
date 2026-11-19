@@ -1,9 +1,10 @@
-counter: Lock[i64]
+shared context totals:
+    counter: Lock[i64]
 
 func add(times: i32, by: i64):
     for i in 0..times:
-        with lock(counter):
-            counter.value += by
+        with lock(totals.counter):
+            totals.counter.value += by
 
 func nested(c: *Lock[i64]):
     with lock(c):
@@ -17,7 +18,7 @@ func main():
         append(workers, parallel add(100000, 1))
     for w in workers:
         wait(w)
-    print(counter.value)
+    print(totals.counter.value)
     local: Lock[i64]
     nested(local)
     print(local.value)

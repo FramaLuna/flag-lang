@@ -310,7 +310,8 @@ func panic_if(bad: Arg, message: &strview, at: i64) -> Fail?:
     open_block(l_bad)
     args: &list[Value]
     append(args, Value{type = try fat_type("strview", VOID, at), at = text_data(message), mem = true})
-    try invoke("panic", args, at)
+    append(args, try place_of(at))
+    try runtime("panic", args, at)
     open_block(l_good)
     return null
 
@@ -612,6 +613,9 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, at: i64) -> Value|Fail:
     size := start + 8
     for k in 0..ty.count:
         size += room(comp.items[ty.first + k].type)
+    copied := inherited()
+    for t in copied:
+        size += room(t)
     args: &list[Value]
     append(args, literal(false, u64(size)))
     block := try runtime("spawn", args, at)
@@ -623,6 +627,9 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, at: i64) -> Value|Fail:
             blit(passes[k].arg, offset(block.at, used), t)
         else:
             store(t, Value{type = t, at = passes[k].arg}, offset(block.at, used))
+        used += room(t)
+    for t in copied:
+        blit(global("thread $ctx." + comp.types[t].name), offset(block.at, used), t)
         used += room(t)
     first := comp.body.len
     store(ty.ret, try emit(code, passes, ty.ret, false, at), offset(block.at, HEAD))
@@ -640,9 +647,22 @@ func spawn(code: Arg, passes: &list[Pass], shape: i64, at: i64) -> Value|Fail:
         result = NULL
     return Value{type = thread_of(result), at = block.at}
 
+# the contexts that a thread of parallel starts with a copy of, from the thread that starts it
+func inherited() -> &list[i64]:
+    out: &list[i64]
+    none: &list[Item]
+    for k in 1..comp.syms.len:
+        d := comp.syms[k].node
+        if comp.nodes[d].kind == Context and declared(d) == "inherited":
+            append(out, trust make_type(k, none, false, 0))
+    return out
+
+# a call as core sees it: the runtime is priv, and a check of the compiler calls the panic of core, not one of yours
 func runtime(name: &strview, args: &list[Value], at: i64) -> Value|Fail:
-    v := try invoke(name, args, 0) # as core sees it, the runtime is priv
-    comp.body[-1].pos = at
+    first := comp.body.len
+    v := try invoke(name, args, 0)
+    for k in first..comp.body.len:
+        comp.body[k].pos = at
     return v
 
 func place_of(at: i64) -> Value|Fail:

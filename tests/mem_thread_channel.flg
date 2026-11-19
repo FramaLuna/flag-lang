@@ -1,11 +1,12 @@
 use os
 
-counter: Lock[i64]
+shared context totals:
+    counter: Lock[i64]
 
 func add(times: i32):
     for i in 0..times:
-        with lock(counter):
-            counter.value += 1
+        with lock(totals.counter):
+            totals.counter.value += 1
 
 func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     for n in jobs:
@@ -19,7 +20,7 @@ func main():
         append(workers, parallel add(1000))
     for w in workers:
         wait(w)
-    print(counter.value) # 1000 for each core
+    print(totals.counter.value) # 1000 for each core
 
     jobs: Channel[i64, 8]
     results: Channel[i64, 8]

@@ -24,7 +24,8 @@ func band(first: i32, last: i32) -> &str:
         out += "\n"
     return out
 
-primes: Lock[i64]
+shared context tally:
+    primes: Lock[i64]
 
 func prime(n: i64) -> bool:
     if n < 2:
@@ -41,8 +42,8 @@ func count(numbers: *Channel[i64, 64]):
     for n in numbers:
         if prime(n):
             found += 1
-    with lock(primes):
-        primes.value += found
+    with lock(tally.primes):
+        tally.primes.value += found
 
 func main():
     bands: &list[Thread[&str]]
@@ -68,4 +69,4 @@ func main():
     close(numbers)
     for w in workers:
         wait(w)
-    print(primes.value, " primes below 100000")
+    print(tally.primes.value, " primes below 100000")

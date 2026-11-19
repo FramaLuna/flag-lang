@@ -125,7 +125,8 @@ priv type Startup:
     args: &list[&strview]
     values: &list[&strview] # what env gave on Windows, kept so it lives like the environment does
 
-priv startup: Lock[Startup]
+priv shared context startup:
+    given: Lock[Startup]
 
 func env(name: &strview) -> &strview|null where not @windows():
     with scratch():
@@ -135,38 +136,38 @@ func env(name: &strview) -> &strview|null where not @windows():
     return null
 
 func env(name: &strview) -> &strview|null where @windows():
-    with lock(startup):
+    with lock(startup.given):
         with scratch():
             found := _wgetenv(wstr(name))
             if found as u64 == 0:
                 return null
             value := tmp(found)
-            for kept in startup.value.values:
+            for kept in startup.given.value.values:
                 if kept == value:
                     return kept
             copy: &str = value
-            append(startup.value.values, view(copy))
+            append(startup.given.value.values, view(copy))
             return copy
 
 func args() -> &listview[&strview] where not @windows():
-    with lock(startup):
-        if startup.value.args.len == 0:
+    with lock(startup.given):
+        if startup.given.value.args.len == 0:
             for i in 0..@argc():
-                append(startup.value.args, view(((@argv() as *bytes + i * 8) as **u8).*))
-        return startup.value.args
+                append(startup.given.value.args, view(((@argv() as *bytes + i * 8) as **u8).*))
+        return startup.given.value.args
 
 func args() -> &listview[&strview] where @windows():
-    with lock(startup):
-        if startup.value.args.len == 0:
+    with lock(startup.given):
+        if startup.given.value.args.len == 0:
             count: i32 = 0
             given := CommandLineToArgvW(GetCommandLineW(), ptr(count))
             for i in 0..count:
                 kept: &str # lives all the program
                 with scratch():
                     kept = tmp(((given as *bytes + i * 8) as *wstr).*)
-                append(startup.value.args, view(kept))
+                append(startup.given.value.args, view(kept))
             LocalFree(given as *bytes)
-        return startup.value.args
+        return startup.given.value.args
 
 func run(command: &strview) -> i32|FsError:
     return finish(try spawn(command, -1, -1))

@@ -88,7 +88,15 @@ func declaration(module: &strview, kept: bool) -> Fail?:
         return fail("inline goes before a func or an operator declaration: inline func name():", here().at)
     if noinline and after.text != "func" and after.text != "operator":
         return fail("noinline goes before a func or an operator declaration: noinline func name():", here().at)
-    if sym.packed or sym.export or inline or noinline:
+    shared := peek("shared") and after.kind == Name # the word before a context, and not a constant named shared
+    inherited := peek("inherited") and after.kind == Name
+    if shared and after.text == "inherited" or inherited and after.text == "shared":
+        return fail("a context is one for each thread or one for all of them, so it is shared or inherited, not both", here().at)
+    if shared and after.text != "context":
+        return fail("shared goes before a context: shared context name:", here().at)
+    if inherited and after.text != "context":
+        return fail("inherited goes before a context: inherited context name:", here().at)
+    if sym.packed or sym.export or inline or noinline or shared or inherited:
         comp.pos += 1
     t = here()
     after = comp.tokens[comp.pos + 1]
@@ -196,14 +204,22 @@ func declaration(module: &strview, kept: bool) -> Fail?:
                 return fail("an extern block declares functions only", here().at)
             try func_decl(true)
         finish(n)
-    elif t.kind == Name and after.text == "=":
+    elif t.kind == Name and (after.text == "=" or after.text == ":"):
         try new_name(true)
         begin(Constant, comp.pos)
         comp.pos += 2
+        if after.text == ":":
+            try type_expr()
+            if not peek("="):
+                return fail(t.text + " has no value, and at the root a name with a type is a constant: give it its value, or keep what changes in a context, or in a shared context for all the threads", t.at)
+            comp.pos += 1
         try expr(1)
         finish(n)
-    elif t.kind == Name and after.text == ":":
-        try variable()
+    elif t.kind == Name and after.text == ":=" and comp.tokens[comp.pos + 2].kind != Line:
+        last := comp.pos + 2
+        while comp.tokens[last + 1].kind != Line:
+            last += 1
+        return fail(":= declares a variable, and at the root a name is a constant: " + t.text + " = " + excerpt(comp.pos + 2, last) + ", or keep what changes in a context, or in a shared context for all the threads", after.at)
     elif sym.priv:
         return unexpected("priv expects a declaration after it")
     else:
@@ -309,8 +325,6 @@ func declare(n: i64, sym: Sym) -> Fail?:
             elif kind == Func or other == Func:
                 if kind == Constant or other == Constant:
                     problem = " is declared as a constant and as a function, a name is one or the other"
-                if kind == Var or other == Var:
-                    problem = " is declared as a variable and as a function, a name is one or the other"
             elif other != Void or kind != Void:
                 problem = " is declared twice"
             elif old.error != sym.error:

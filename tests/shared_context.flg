@@ -1,0 +1,40 @@
+type enum Mode = Slow|Fast
+
+type Point:
+    x: i32
+    y: i32
+
+shared context stats:
+    count: Lock[i64]
+    mode: Mode = Fast
+    start: Mode
+    corner: Point = {y = 9}
+    limit: i64? = 100
+    name: &strview = "stats"
+    handler: func(i32) -> i32 = twice
+
+shared = 3 # the word is not reserved, a constant can take it
+
+func twice(x: i32) -> i32:
+    return x * 2
+
+func work(n: i64) -> Mode:
+    for i in 0..n:
+        with lock(stats.count):
+            stats.count.value += 1
+    return stats.mode
+
+func main():
+    print(stats.mode, " ", stats.start, " ", stats.corner, " ", stats.limit, " ", stats.name, " ", stats.handler(21), " ", shared)
+    stats.mode = Slow
+    threads: &list[Thread[Mode]]
+    defer free(threads)
+    for k in 0..4:
+        append(threads, parallel work(1000))
+    work(1000)
+    for t in threads:
+        print(wait(t))
+    print(stats.count.value)
+    p := ptr(stats.corner)
+    p.x = 5
+    print(stats.corner)

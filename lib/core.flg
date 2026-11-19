@@ -14,7 +14,6 @@ extern "c":
     func strtod(text: cstr, end: *bytes) -> f64
 
 priv extern "c":
-    func stamp(variables: bool) = "flag.stamp"
     func read(fd: i32, at: *bytes, size: i64) -> i32
     func write(fd: i32, at: *bytes, size: i64) -> i32
     func close(fd: i32) -> i32
@@ -132,7 +131,14 @@ func panic(message: &strview, place: &strview = @here()) -> never:
     report("\n")
     frame := flag_frame()
     trace(Crash{frame, 0, frame, 0, 0})
+    hook := failure.hook
+    if hook as u64 != 0:
+        hook(message, place)
     exit(134)
+
+# the function that runs when the program stops with 134, after the message and the chain of calls: a new one replaces the last
+func on_panic(hook: func(&strview, &strview)):
+    failure.hook = hook
 
 type cstr = *u8
 
@@ -1167,15 +1173,16 @@ priv func release(l: *Lock[null]) where not @windows():
 priv func release(l: *Lock[null]) where @windows():
     ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv signing: u32 # an os_unfair_lock, valid at zero
+priv shared context signing:
+    lock: u32 # an os_unfair_lock, valid at zero
 
 # at zero they are ready, but on macOS their initializer is a signature and zeros
 priv func sign(first: *u64, signature: u64) where @macos():
     if first.* == 0:
-        os_unfair_lock_lock(ptr(signing))
+        os_unfair_lock_lock(ptr(signing.lock))
         if first.* == 0:
             first.* = signature
-        os_unfair_lock_unlock(ptr(signing))
+        os_unfair_lock_unlock(ptr(signing.lock))
 
 priv func sign(first: *u64, signature: u64) where not @macos():
     return
@@ -1216,11 +1223,9 @@ priv type Started: # the start of the block of a thread, the result goes after i
 
 priv HEAD = 64 # where the compiler puts the result of a thread
 
-priv type Threads:
+priv shared context threads:
     running: Lock[i64] # it guards the done and alone of each thread too
     changed: Condition
-
-priv threads: Threads
 
 priv STACK = 8 << 20
 
@@ -1430,8 +1435,9 @@ priv type Streams:
     streams: &list[*Stream]
     last: i32
 
-# a stream is locked for reading before it is locked for writing, and nothing else is locked while io is
-priv io: Lock[Streams]
+# a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
+priv shared context io:
+    table: Lock[Streams]
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1445,8 +1451,8 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
         known := cached.standard[f.fd]
         if known is *Stream and known.open:
             return known
-    with lock(io):
-        streams := ptr(io.value.streams)
+    with lock(io.table):
+        streams := ptr(io.table.value.streams)
         if streams.len == 0:
             atexit(ptr(flag_exit))
         while streams.len <= f.fd:
@@ -1469,8 +1475,8 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
 func flush():
     with scratch():
         all: &listview[*Stream]
-        with lock(io):
-            all = tmp(io.value.streams)
+        with lock(io.table):
+            all = tmp(io.table.value.streams)
         for s in all:
             if s as u64 != 0 and try_lock(s.writing):
                 with Locked{ptr(s.writing) as *Lock[null]}:
@@ -1505,12 +1511,12 @@ func write(f: File, value: $T, place: &strview = @here()):
 
 func write(f: File, text: &strview, place: &strview = @here()):
     s := stream(f, place)
-    if (f.fd == 1 or f.fd == 2) and io.value.last != f.fd:
+    if (f.fd == 1 or f.fd == 2) and io.table.value.last != f.fd:
         other := stream(File{3 - f.fd})
         switched := false
-        with lock(io):
-            switched = io.value.last != f.fd
-            io.value.last = f.fd
+        with lock(io.table):
+            switched = io.table.value.last != f.fd
+            io.table.value.last = f.fd
         if switched:
             with lock(other.writing):
                 drain(other) # stdout and stderr keep the order of the calls
@@ -1694,9 +1700,9 @@ priv func milliseconds(seconds: f64) -> i32:
 # what a read gives without asking the system, and nothing when another thread is reading it now
 priv func buffered(f: File) -> bool:
     s := 0 as *Stream
-    with lock(io):
-        if f.fd < io.value.streams.len:
-            s = io.value.streams[f.fd]
+    with lock(io.table):
+        if f.fd < io.table.value.streams.len:
+            s = io.table.value.streams[f.fd]
     if s as u64 == 0 or not s.open or not try_lock(s.reading):
         return false
     with Locked{ptr(s.reading) as *Lock[null]}:
@@ -1718,7 +1724,7 @@ func close(f: File, place: &strview = @here()):
             inbox.given = 0
             if inbox.received.cap > 131072:
                 free(inbox.received) # after a long line the stream keeps only its usual room
-            with lock(io):
+            with lock(io.table):
                 s.open = false
             release(s) # last, a file that another thread opens can get the same number
 
@@ -2091,26 +2097,19 @@ priv type Chain:
 priv context failing:
     stack: *bytes # where the handler runs, each thread takes its own
 
-priv telling: Lock[null] # the first thread that fails takes it and keeps it, the others wait there for the end
+priv shared context failure:
+    telling: Lock[null] # the first thread that fails takes it and keeps it, the others wait there for the end
+    hook: func(&strview, &strview) # what on_panic gave, it runs before the program ends with 134
 
 # one thread tells how the program fails, and if it fails again while it tells, it ends at once
 priv func tell(code: i32):
-    if telling.owner == me():
+    if failure.telling.owner == me():
         _exit(code)
-    lock(telling)
+    lock(failure.telling)
 
 priv export func flag_start():
     catch_crashes()
     guard_stack()
-
-priv entering: Lock[null]
-priv stamped: bool
-
-# the first time a thread runs code of this program or library, stamp writes what its contexts start with, and the first time of all what the file variables start with
-priv func enter():
-    with lock(entering):
-        stamp(not stamped)
-        stamped = true
 
 priv func catch_crashes() where @linux():
     for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
@@ -2137,9 +2136,9 @@ priv type Test:
     name: cstr
     run: func()
 
-priv overtime: &str # what a test says when its time is up
-
-priv tested: u64 # the thread that runs the test, on Windows
+priv shared context testing:
+    overtime: &str # what a test says when its time is up
+    thread: u64 # the thread that runs the test, on Windows
 
 # the main of the program that flagc test builds: it runs the test it names, in the seconds it gives
 priv func run_test() -> i32:
@@ -2159,7 +2158,7 @@ priv func run_test() -> i32:
             if given.len > 2:
                 seconds := parse_int(view(given[2])) ifnull 0
                 if seconds > 0:
-                    overtime += "the test takes more than " + seconds + " s"
+                    testing.overtime += "the test takes more than " + seconds + " s"
                     limit(u32(seconds))
             t.run()
             return 0
@@ -2171,18 +2170,18 @@ priv func limit(seconds: u32) where not @windows():
     alarm(seconds)
 
 priv func limit(seconds: u32) where @windows():
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(tested), 0, 0, 2) # DUPLICATE_SAME_ACCESS
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(testing.thread), 0, 0, 2) # DUPLICATE_SAME_ACCESS
     timer: u64 = 0
     CreateTimerQueueTimer(ptr(timer), 0, ptr(flag_overtime), 0 as *bytes, seconds * 1000, 0, 8) # WT_EXECUTEONLYONCE
 
 priv export func flag_overtime(parameter: *bytes, fired: u8) where @windows():
-    SuspendThread(tested)
+    SuspendThread(testing.thread)
     room: array[u64, 160]
     context := (ptr(room) as u64 + 15) / 16 * 16 # a CONTEXT is aligned to 16
     ((context + 48) as *u32).* = 0x10_0003 # ContextFlags: CONTEXT_CONTROL and CONTEXT_INTEGER
-    GetThreadContext(tested, context as *bytes)
+    GetThreadContext(testing.thread, context as *bytes)
     record: array[u64, 6] # with no address in it
-    crashed(overtime, crash(ptr(record) as u64, context), 142)
+    crashed(testing.overtime, crash(ptr(record) as u64, context), 142)
 
 # each thread keeps room for the handler, so a stack overflow is reported too
 priv func guard_stack() where @linux():
@@ -2224,7 +2223,7 @@ priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
     elif signal == 8:
         what = "arithmetic error"
     elif signal == 14:
-        what = overtime
+        what = testing.overtime
     elif c.address + 65536 >= c.stack and c.address < c.stack + 1048576:
         what = "stack overflow"
     crashed(what, c, 128 + signal)
@@ -2283,8 +2282,8 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
 
 # what was written goes out, without memory and without waiting for a lock, and the locks it takes stay taken: the program ends
 priv func drain():
-    if try_lock(io):
-        for s in io.value.streams:
+    if try_lock(io.table):
+        for s in io.table.value.streams:
             if s as u64 != 0 and try_lock(s.writing):
                 drain(s)
 
