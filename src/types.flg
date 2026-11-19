@@ -182,10 +182,13 @@ func add_type(t: Type) -> i64:
             shape += "]"
         else:
             shape += t.name
-        t.tag = u32(32 + hash(view(shape)) % 0x7fff_ffe0)
+        t.tag = tag_of_shape(view(shape))
     append(comp.types, t)
     put(comp.type_ids, t.name, comp.types.len - 1)
     return comp.types.len - 1
+
+func tag_of_shape(shape: &strview) -> u32:
+    return u32(32 + hash(shape) % 0x7fff_ffe0)
 
 func enclosed(t: i64) -> &strview:
     ty := comp.types[t]
@@ -402,9 +405,9 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail("never is what a function that never returns gives, a value cannot be never", tok.at)
         if id is i64 and id >= NULL and id < NEVER:
             return id
-        if id is i64 and id >= BOOL8 and id <= BOOL64 and comp.nodes[n - 1].kind == TName and comp.nodes[n - 1].size > 1 and text(n - 1) == "simd": # the first argument of simd
-            return id
         if id is i64 and id >= BOOL8 and id <= BOOL64:
+            if comp.nodes[n - 1].kind == TName and comp.nodes[n - 1].size > 1 and text(n - 1) == "simd": # its first argument
+                return id
             return fail(tok.text + " is a lane of a mask, it goes only inside a simd: simd[" + tok.text + ", " + 16 / comp.types[id].size + "]", tok.at)
     if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
         if args.len != 1 or args[0].type == VOID:
@@ -674,7 +677,7 @@ func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
                     forms += " or "
                 forms += "simd[bool" + 8 * size / count + ", " + count + "]"
         if forms.len == 0:
-            forms += "simd[bool32, 4]"
+            forms += "bool8, bool16, bool32 or bool64"
         return fail(key + " cannot hold bool, a mask names the width of its lanes: " + forms, at)
     if not numeric(elem) and e.kind != Bool:
         return fail("the lanes of a simd hold numbers, or the bool8 to bool64 of a mask, and " + e.name + " is neither", at)

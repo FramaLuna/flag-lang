@@ -48,6 +48,7 @@ priv extern "c":
     func getrandom(into: *bytes, size: i64, flags: u32) -> i64
     func getentropy(into: *bytes, size: i64) -> i32
     func dlopen(path: cstr, flags: i32) -> *bytes
+    func flag_shapes() -> *u64
     func dlerror() -> cstr
     func _wgetenv(name: wstr) -> wstr
     func _wgetcwd(into: wstr, size: i32) -> wstr
@@ -642,12 +643,44 @@ type error LoadError:
 operator +=(s: *&str, e: LoadError):
     s.* += "cannot load " + e.path + ": " + e.reason
 
+# a type that a program or a library made, in the table that each one carries sorted by tag, which flagc writes
+priv type Shape:
+    tag: u32
+    variants: u32 # an alias or an enum, that holds the tag of its union
+    hash: u64
+    name: cstr
+
+# the library, unless a type that it and the program both made has other fields or variants in each
+priv func checked(handle: *bytes, path: &strview) -> Library|LoadError:
+    found := dlsym(handle, "flag_shapes")
+    if found as u64 == 0:
+        return Library{handle} # a library of C
+    head := (found as extern func() -> *u64)()
+    theirs: &listview[Shape]
+    theirs = head as *bytes + 8
+    theirs.len = i64(head.*)
+    head = flag_shapes()
+    ours: &listview[Shape]
+    ours = head as *bytes + 8
+    ours.len = i64(head.*)
+    i := 0
+    for t in theirs:
+        while i < ours.len and ours[i].tag < t.tag:
+            i += 1
+        if i < ours.len and ours[i].tag == t.tag and ours[i].hash != t.hash:
+            name := view(ours[i].name) # the one of the program, the one of the library goes with it
+            dlclose(handle)
+            if ours[i].variants != 0:
+                return LoadError{path, "its " + name + " has other variants than the " + name + " of this program"}
+            return LoadError{path, "its " + name + " has other fields than the " + name + " of this program"}
+    return Library{handle}
+
 func load_library(path: &strview) -> Library|LoadError where not @windows():
     handle := 0 as *bytes
     with scratch():
         handle = dlopen(cstr(path), 2 if @linux() else 6) # RTLD_NOW and RTLD_LOCAL, that is 0 on Linux
     if handle as u64 != 0:
-        return Library{handle}
+        return checked(handle, path)
     reason := view(dlerror())
     if starts_with(reason, path) and starts_with(reason[path.len:], ": "):
         reason = reason[path.len + 2:] # glibc says the path first
@@ -660,7 +693,7 @@ func load_library(path: &strview) -> Library|LoadError where @windows():
         handle = LoadLibraryW(wstr(path))
         code = GetLastError()
     if handle as u64 != 0:
-        return Library{handle}
+        return checked(handle, path)
     text: array[u16, 512]
     FormatMessageW(0x1200, 0 as *bytes, code, 0, ptr(text) as wstr, 512, 0 as *bytes)
     return LoadError{path, trim_end(tmp(ptr(text) as wstr))}

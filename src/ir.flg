@@ -216,9 +216,12 @@ func listing() -> &str:
         append(live, p.export or comp.insts[p.inst].taken_as != VOID)
         if live[f]:
             append(work, f)
+    shaped := comp.shared
+    asked := comp.global_ids["$flag_shapes"] ifnull -1 # what load calls for the table of the program
     while work.len > 0:
         p := comp.procs[trust pop(work)]
         for i in comp.code[p.code:p.end]:
+            shaped = shaped or i.a.n == asked and i.a.kind == Global and i.op == "call"
             g := callee(i, ids)
             if g < comp.procs.len and not live[g]:
                 live[g] = true
@@ -240,6 +243,41 @@ func listing() -> &str:
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
     out += comp.data
+    if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
+        privs: &map[i64, bool] = heap({}) # the declarations that are priv
+        for sym in comp.syms:
+            if sym.priv:
+                privs[sym.node] = true
+        rows: &list[&strview] = heap([])
+        tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
+        for t in 0..comp.types.len:
+            ty := comp.types[t]
+            k := comp.nodes[ty.decl].kind
+            if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
+                shape: &str = heap("")
+                shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
+                for f in comp.items[ty.first:ty.first + ty.count]:
+                    shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
+                append(tags, u64(ty.tag) << 32 or u64(rows.len))
+                append(rows, "w " + ty.tag + ", w 0, l " + hash(view(shape)) as i64 + ", l $flag.shape." + rows.len)
+                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + ty.name + "\", b 0 }\n"
+        for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
+            sym := comp.syms[a]
+            if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
+                name: &str = heap("")
+                if sym.module.len > 0:
+                    name += sym.module + "."
+                name += sym.name
+                tag := tag_of_shape(view(name))
+                target := comp.types[trust make_type(a, [], false, 0)]
+                append(tags, u64(tag) << 32 or u64(rows.len))
+                append(rows, "w " + tag + ", w " + i64(target.kind == Union) + ", l " + i64(target.tag) + ", l $flag.shape." + rows.len)
+                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + name + "\", b 0 }\n"
+        sort(tags)
+        shapes: &str = heap("")
+        for t in tags:
+            shapes += ", " + rows[i64(t and 0xffff_ffff)]
+        out += read_only(true) + "data $flag.shapes = { l " + rows.len + shapes + " }\nexport function l $flag_shapes() {\n@start\n\tret $flag.shapes\n}\n"
     out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
     places: &str = heap("")
     place := 16 + 16 * comp.procs.len

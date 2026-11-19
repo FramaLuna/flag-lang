@@ -252,7 +252,7 @@ These take a `simd` and belong to the language, like its operators (see [SIMD](R
 - `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of [Numbers](#numbers), and the `sqrt` of `math`, give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
 
 And this one is of core
-- `operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n] where $T != bool` makes a `simd` from as many elements, so `v: simd[f32, 4] = values[i:i + 4]` and `simd[f32, 8](values[0:8])` load the lanes. A slice of another length stops the program with `flag: a simd of 4 lanes takes a slice of 4, this one has 5`. The way back is the language's, `values[i:i + 4] = v` (see [SIMD](Reference.md#simd))
+- `operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n] where $T != bool` makes a `simd` from as many elements, so `v: simd[f32, 4] = values[i:i + 4]` and `simd[f32, 8](values[0:8])` load the lanes. A slice of another length stops the program with `flag: a simd of 4 lanes expects a slice of 4, this one has 5`. The way back is the language's, `values[i:i + 4] = v` (see [SIMD](Reference.md#simd))
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
@@ -453,7 +453,7 @@ What you write to `p.input` waits in the file like any other, and it goes out wi
 - `random_bytes(into: &listview[u8])` fills the bytes with random ones from the system, good for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. They come from `getrandom` on Linux, `getentropy` on macOS and `BCryptGenRandom` on Windows. When the system gives none the program stops with `flag: cannot read random bytes: ...`, a key that comes out weak is worse. The random numbers of `math` are not for secrets
 
 ### Libraries
-A library that the program loads while it runs, like one that `flagc -shared` builds (see [Libraries](Reference.md#libraries)), is a `Library`. One that cannot load is a `LoadError`, with the words of the system: `cannot load ./game.so: cannot open shared object file: No such file or directory`
+A library that the program loads while it runs, like one that `flagc -shared` builds (see [Libraries](Reference.md#libraries)), is a `Library`. One that cannot load is a `LoadError`, with the words of the system: `cannot load ./game.so: cannot open shared object file: No such file or directory`, or with the type that it made with another shape than the program: `cannot load ./game.so: its State has other fields than the State of this program` (see [Libraries](Reference.md#libraries))
 ```flag
 type Library:
     handle: *bytes

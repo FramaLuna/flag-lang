@@ -1588,7 +1588,7 @@ func untagged_member(t: i64, m: i64) -> bool:
     return false
 
 # a pointer to t, which takes a variable of t by its address, and not a text of C
-func points_to(p: i64, t: i64) -> bool:
+inline func points_to(p: i64, t: i64) -> bool:
     return comp.types[p].kind == Ptr and comp.types[p].elem == t and p != CSTR and p != WSTR
 
 # how a text of C goes to or from a text of Flag or a pointer, or nothing when v goes there by itself or they are no such pair
@@ -1599,7 +1599,7 @@ func text_of_c(v: Value, to: i64) -> &strview:
     if (v.type == CSTR or v.type == WSTR) and points_to(to, comp.types[v.type].elem):
         return from + " goes to " + comp.types[to].name + " only with as " + comp.types[to].name
     if points_to(to, U8) and textual(v.type):
-        return "*u8 takes no text, the text of C is cstr"
+        return "a text does not go to *u8, the text of C is cstr"
     if to == CSTR and from == "&str":
         return "a &str goes to C with cstr(s), a temporary copy, or c_text(s), which writes a 0 after its text"
     if to == CSTR and textual(v.type) and not v.lit:
@@ -1784,7 +1784,7 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
 
 # held says that addr holds a value already, so an owner there copies a view into its memory, and a new one has none
 func assign(addr: Arg, t: i64, v: Value, at: i64, held: bool = false) -> Fail?:
-    if comp.types[t].kind == Fat and (points_to(v.type, BYTES) or points_to(v.type, element(t))):
+    if comp.types[t].kind == Fat and comp.types[v.type].kind == Ptr and (points_to(v.type, BYTES) or points_to(v.type, element(t))):
         store(v.type, v, addr)
         return null
     dest := addr
