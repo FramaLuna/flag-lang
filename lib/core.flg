@@ -1106,15 +1106,20 @@ operator +=(s: *&str, p: Padded[$T]):
     for k in count..-p.width:
         add_byte(s, ' ')
 
-type Lock:
+type Lock[$T]:
     room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
     owner: *bytes
     depth: i64
+    value: $T # what it guards, null when it guards code
 
 type Locked:
-    lock: *Lock
+    lock: *Lock[null]
 
-func lock(l: *Lock) -> Locked:
+# every Lock starts as a Lock[null], and its value goes after, so one code takes them all
+func lock(l: *Lock[$T]) -> Locked where $T != null:
+    return lock(l as *Lock[null])
+
+func lock(l: *Lock[null]) -> Locked:
     if l.owner != me():
         acquire(l)
         l.owner = me()
@@ -1129,7 +1134,10 @@ operator with(held: Locked):
         release(l)
 
 # takes the lock only when no thread holds it, this one neither, so a thread that must not wait never does
-priv func try_lock(l: *Lock) -> bool:
+priv func try_lock(l: *Lock[$T]) -> bool where $T != null:
+    return try_lock(l as *Lock[null])
+
+priv func try_lock(l: *Lock[null]) -> bool:
     if not seized(l):
         return false
     l.owner = me()
@@ -1139,24 +1147,24 @@ priv func try_lock(l: *Lock) -> bool:
 priv func me() -> *bytes:
     return ptr(scratch_space) as *bytes # each thread has its own
 
-priv func acquire(l: *Lock) where not @windows():
+priv func acquire(l: *Lock[null]) where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     pthread_mutex_lock(ptr(l.room) as *bytes)
 
-priv func acquire(l: *Lock) where @windows():
+priv func acquire(l: *Lock[null]) where @windows():
     AcquireSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv func seized(l: *Lock) -> bool where not @windows():
+priv func seized(l: *Lock[null]) -> bool where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     return pthread_mutex_trylock(ptr(l.room) as *bytes) == 0
 
-priv func seized(l: *Lock) -> bool where @windows():
+priv func seized(l: *Lock[null]) -> bool where @windows():
     return TryAcquireSRWLockExclusive(ptr(l.room) as *bytes) != 0
 
-priv func release(l: *Lock) where not @windows():
+priv func release(l: *Lock[null]) where not @windows():
     pthread_mutex_unlock(ptr(l.room) as *bytes)
 
-priv func release(l: *Lock) where @windows():
+priv func release(l: *Lock[null]) where @windows():
     ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
 
 priv signing: u32 # an os_unfair_lock, valid at zero
@@ -1175,7 +1183,10 @@ priv func sign(first: *u64, signature: u64) where not @macos():
 priv type Condition:
     room: array[u64, 6] # a pthread_cond_t or a CONDITION_VARIABLE
 
-priv func pause(c: *Condition, l: *Lock):
+priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
+    pause(c, l as *Lock[null])
+
+priv func pause(c: *Condition, l: *Lock[null]):
     depth := l.depth
     l.owner = 0 as *bytes
     l.depth = 0
@@ -1183,11 +1194,11 @@ priv func pause(c: *Condition, l: *Lock):
     l.owner = me()
     l.depth = depth
 
-priv func rest(c: *Condition, l: *Lock) where not @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where not @windows():
     sign(ptr(c.room[0]), 0x3cb0_b1bb)
     pthread_cond_wait(ptr(c.room) as *bytes, ptr(l.room) as *bytes)
 
-priv func rest(c: *Condition, l: *Lock) where @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where @windows():
     SleepConditionVariableSRW(ptr(c.room) as *bytes, ptr(l.room) as *bytes, 0xffff_ffff, 0)
 
 priv func wake(c: *Condition) where not @windows():
@@ -1206,9 +1217,8 @@ priv type Started: # the start of the block of a thread, the result goes after i
 priv HEAD = 64 # where the compiler puts the result of a thread
 
 priv type Threads:
-    lock: Lock
+    running: Lock[i64] # it guards the done and alone of each thread too
     changed: Condition
-    running: i64
 
 priv threads: Threads
 
@@ -1221,8 +1231,8 @@ priv func spawn(size: i64) -> *bytes:
     return block
 
 priv func launch(block: *bytes, run: *bytes, place: &strview):
-    with lock(threads.lock):
-        threads.running += 1
+    with lock(threads.running):
+        threads.running.value += 1
     if not started(block as *Started, run):
         panic("cannot start a thread, the system refuses one more", place)
 
@@ -1243,12 +1253,12 @@ priv func finished(block: *bytes, pointing: bool):
     drop_stack()
     t := block as *Started
     alone := false
-    with lock(threads.lock):
+    with lock(threads.running):
         alone = t.alone
         if pointing and not alone:
             t.left = scratch_space.arena
         t.done = true
-        threads.running -= 1
+        threads.running.value -= 1
         wake(threads.changed)
     if alone or not pointing:
         free(scratch_space.arena)
@@ -1285,7 +1295,7 @@ priv func detach(block: *bytes):
     t := block as *Started
     let_go(t.handle)
     done := false
-    with lock(threads.lock):
+    with lock(threads.running):
         done = t.done
         t.alone = true
     if done:
@@ -1299,9 +1309,9 @@ priv func let_go(handle: u64) where @windows():
     CloseHandle(handle)
 
 priv func settle():
-    with lock(threads.lock):
-        while threads.running > 0:
-            pause(threads.changed, threads.lock)
+    with lock(threads.running):
+        while threads.running.value > 0:
+            pause(threads.changed, threads.running)
 
 func wait(t: Thread[$T], place: &strview = @here()) -> $T:
     reap(t as *bytes, place)
@@ -1311,13 +1321,15 @@ func wait(t: Thread[$T], place: &strview = @here()) -> $T:
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
     if t as u64 == 0:
         panic("done of a thread that was never started", place)
-    with lock(threads.lock):
+    with lock(threads.running):
         return (t as *Started).done
 
 type Channel[$T, $$size]:
-    lock: Lock
+    queue: Lock[Queue[$T, $$size]]
     filled: Condition
     emptied: Condition
+
+priv type Queue[$T, $$size]:
     first: i64
     len: i64
     closed: bool
@@ -1327,13 +1339,14 @@ func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$siz
     @compile_error("a channel holds at least one value, its size cannot be 0")
 
 func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$size > 0:
-    with lock(c.lock):
-        while c.len == $$size and not c.closed:
-            pause(c.emptied, c.lock)
-        if c.closed:
+    with lock(c.queue):
+        q := ptr(c.queue.value)
+        while q.len == $$size and not q.closed:
+            pause(c.emptied, c.queue)
+        if q.closed:
             panic("send on a closed channel", place)
-        c.items[(c.first + c.len) % $$size] = v
-        c.len += 1
+        q.items[(q.first + q.len) % $$size] = v
+        q.len += 1
         wake(c.filled)
 
 func receive(c: *Channel[$T, $$size]) -> $T|null:
@@ -1342,8 +1355,8 @@ func receive(c: *Channel[$T, $$size]) -> $T|null:
     return null
 
 func close(c: *Channel[$T, $$size]):
-    with lock(c.lock):
-        c.closed = true
+    with lock(c.queue):
+        c.queue.value.closed = true
         wake(c.filled)
         wake(c.emptied)
 
@@ -1361,14 +1374,15 @@ operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
 
 operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
     c := r.channel
-    with lock(c.lock):
-        while c.len == 0 and not c.closed:
-            pause(c.filled, c.lock)
-        if c.len == 0:
+    with lock(c.queue):
+        q := ptr(c.queue.value)
+        while q.len == 0 and not q.closed:
+            pause(c.filled, c.queue)
+        if q.len == 0:
             return IterationEnd
-        v := c.items[c.first]
-        c.first = (c.first + 1) % $$size
-        c.len -= 1
+        v := q.items[q.first]
+        q.first = (q.first + 1) % $$size
+        q.len -= 1
         wake(c.emptied)
         return v
 
@@ -1396,25 +1410,28 @@ operator +=(s: *&str, e: FsError):
         s.* += ": " + reason(e.code)
 
 priv type Stream:
-    writing: Lock
-    reading: Lock
+    writing: Lock[Outbox]
+    reading: Lock[Inbox]
     fd: i32
     open: bool
     socket: bool
     by_lines: bool
-    failed: i32
     path: &str
+
+priv type Outbox:
     unsent: &str
+    failed: i32 # the code of the first write that failed
+
+priv type Inbox:
     received: &str
-    given: i64
+    given: i64 # how much of it read and read_line gave
 
 priv type Streams:
-    lock: Lock
     streams: &list[*Stream]
     last: i32
 
-# a stream is locked for reading before it is locked for writing, and nothing else is locked while io.lock is held
-priv io: Streams
+# a stream is locked for reading before it is locked for writing, and nothing else is locked while io is
+priv io: Lock[Streams]
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1428,14 +1445,15 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
         known := cached.standard[f.fd]
         if known is *Stream and known.open:
             return known
-    with lock(io.lock):
-        if io.streams.len == 0:
+    with lock(io):
+        streams := ptr(io.value.streams)
+        if streams.len == 0:
             atexit(ptr(flag_exit))
-        while io.streams.len <= f.fd:
-            append(io.streams, 0 as *Stream)
-        if io.streams[f.fd] as u64 == 0:
-            io.streams[f.fd] = heap(Stream{fd = f.fd})
-        s := io.streams[f.fd]
+        while streams.len <= f.fd:
+            append(streams, 0 as *Stream)
+        if streams[f.fd] as u64 == 0:
+            streams[f.fd] = heap(Stream{fd = f.fd})
+        s := streams[f.fd]
         if not s.open:
             s.open = true
             s.fd = f.fd
@@ -1451,18 +1469,18 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
 func flush():
     with scratch():
         all: &listview[*Stream]
-        with lock(io.lock):
-            all = tmp(io.streams)
+        with lock(io):
+            all = tmp(io.value.streams)
         for s in all:
             if s as u64 != 0 and try_lock(s.writing):
-                with Locked{ptr(s.writing)}:
+                with Locked{ptr(s.writing) as *Lock[null]}:
                     drain(s)
 
 priv export func flag_exit():
     flush()
-    out := stream(stdout)
-    if try_lock(out.writing) and out.failed != 0: # never let go, the program ends
-        eprint("flag: ", FsError{out.failed, "write", out.path})
+    s := stream(stdout)
+    if try_lock(s.writing) and s.writing.value.failed != 0: # never let go, the program ends
+        eprint("flag: ", FsError{s.writing.value.failed, "write", s.path})
         _exit(1)
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
@@ -1487,84 +1505,89 @@ func write(f: File, value: $T, place: &strview = @here()):
 
 func write(f: File, text: &strview, place: &strview = @here()):
     s := stream(f, place)
-    if (f.fd == 1 or f.fd == 2) and io.last != f.fd:
+    if (f.fd == 1 or f.fd == 2) and io.value.last != f.fd:
         other := stream(File{3 - f.fd})
         switched := false
-        with lock(io.lock):
-            switched = io.last != f.fd
-            io.last = f.fd
+        with lock(io):
+            switched = io.value.last != f.fd
+            io.value.last = f.fd
         if switched:
             with lock(other.writing):
                 drain(other) # stdout and stderr keep the order of the calls
     with lock(s.writing):
-        s.unsent += text
-        if s.unsent.len >= 65536 or s.by_lines and contains(text, "\n"):
+        outbox := ptr(s.writing.value)
+        outbox.unsent += text
+        if outbox.unsent.len >= 65536 or s.by_lines and contains(text, "\n"):
             drain(s)
-            if s.unsent.cap > 131072:
-                free(s.unsent) # after a big text the stream keeps only its usual room
+            if outbox.unsent.cap > 131072:
+                free(outbox.unsent) # after a big text the stream keeps only its usual room
 
 func flush(f: File, place: &strview = @here()) -> FsError?:
     s := stream(f, place)
     with lock(s.writing):
         drain(s)
-        if s.failed == 0:
+        outbox := ptr(s.writing.value)
+        if outbox.failed == 0:
             return null
-        failed := FsError{s.failed, "write", tmp(s.path)}
-        s.failed = 0
+        failed := FsError{outbox.failed, "write", tmp(s.path)}
+        outbox.failed = 0
         return failed
 
 priv func drain(s: *Stream):
+    outbox := ptr(s.writing.value)
     sent := 0
-    while sent < s.unsent.len:
-        n := transfer(s, ptr(s.unsent.*) + sent, s.unsent.len - sent, true)
+    while sent < outbox.unsent.len:
+        n := transfer(s, ptr(outbox.unsent.*) + sent, outbox.unsent.len - sent, true)
         if n is FsError:
-            if s.failed == 0:
-                s.failed = n.code
+            if outbox.failed == 0:
+                outbox.failed = n.code
             break
         sent += n
-    s.unsent.len = 0
+    outbox.unsent.len = 0
 
 func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsError:
     s := stream(f, place)
     with lock(s.reading):
-        if s.given == s.received.len:
-            s.given = 0
-            s.received.len = 0
+        inbox := ptr(s.reading.value)
+        if inbox.given == inbox.received.len:
+            inbox.given = 0
+            inbox.received.len = 0
             if size >= 65536:
                 return receive(s, into, size) # straight into yours, without a copy
-            try receive(s, s.received, 65536)
-        taken := s.received.len - s.given
+            try receive(s, inbox.received, 65536)
+        taken := inbox.received.len - inbox.given
         if taken > size:
             taken = size
-        into.* += s.received[s.given:s.given + taken]
-        s.given += taken
+        into.* += inbox.received[inbox.given:inbox.given + taken]
+        inbox.given += taken
         return taken
 
 func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
     s := stream(f, place)
     with lock(s.reading):
+        inbox := ptr(s.reading.value)
         checked := 0
         while true:
             line: &strview
-            line = ptr(s.received.*) + s.given
-            line.len = s.received.len - s.given
+            line = ptr(inbox.received.*) + inbox.given
+            line.len = inbox.received.len - inbox.given
             end := memchr(ptr(line.*) + checked, '\n', line.len - checked)
             if end as u64 != 0:
                 line.len = end - ptr(line.*)
-                s.given += line.len + 1
+                inbox.given += line.len + 1
                 if line.len > 0 and line[-1] == '\r':
                     line.len -= 1
                 return tmp(line)
             checked = line.len
-            if s.given > 0:
-                memmove(ptr(s.received.*), ptr(line.*), line.len)
-                s.received.len = line.len
-                s.given = 0
-            if try receive(s, s.received, 65536) == 0:
-                s.given = s.received.len
-                if s.received.len == 0:
+            if inbox.given > 0:
+                memmove(ptr(inbox.received.*), ptr(line.*), line.len)
+                inbox.received.len = line.len
+                inbox.given = 0
+            if try receive(s, inbox.received, 65536) == 0:
+                inbox.given = inbox.received.len
+                if inbox.received.len == 0:
                     return null
-                return tmp(view(s.received))
+                return tmp(view(inbox.received))
 
 priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError:
     flush() # what you wrote goes out before the program waits for an answer
@@ -1671,13 +1694,13 @@ priv func milliseconds(seconds: f64) -> i32:
 # what a read gives without asking the system, and nothing when another thread is reading it now
 priv func buffered(f: File) -> bool:
     s := 0 as *Stream
-    with lock(io.lock):
-        if f.fd < io.streams.len:
-            s = io.streams[f.fd]
+    with lock(io):
+        if f.fd < io.value.streams.len:
+            s = io.value.streams[f.fd]
     if s as u64 == 0 or not s.open or not try_lock(s.reading):
         return false
-    with Locked{ptr(s.reading)}:
-        return s.given < s.received.len
+    with Locked{ptr(s.reading) as *Lock[null]}:
+        return s.reading.value.given < s.reading.value.received.len
 
 priv func valid(f: File, place: &strview):
     if f.fd < 0:
@@ -1688,13 +1711,14 @@ func close(f: File, place: &strview = @here()):
     with lock(s.reading):
         with lock(s.writing):
             drain(s)
-            s.failed = 0
+            s.writing.value.failed = 0
             s.path.len = 0
-            s.received.len = 0
-            s.given = 0
-            if s.received.cap > 131072:
-                free(s.received) # after a long line the stream keeps only its usual room
-            with lock(io.lock):
+            inbox := ptr(s.reading.value)
+            inbox.received.len = 0
+            inbox.given = 0
+            if inbox.received.cap > 131072:
+                free(inbox.received) # after a long line the stream keeps only its usual room
+            with lock(io):
                 s.open = false
             release(s) # last, a file that another thread opens can get the same number
 
@@ -2067,7 +2091,7 @@ priv type Chain:
 priv context failing:
     stack: *bytes # where the handler runs, each thread takes its own
 
-priv telling: Lock # the first thread that fails takes it and keeps it, the others wait there for the end
+priv telling: Lock[null] # the first thread that fails takes it and keeps it, the others wait there for the end
 
 # one thread tells how the program fails, and if it fails again while it tells, it ends at once
 priv func tell(code: i32):
@@ -2079,10 +2103,10 @@ priv export func flag_start():
     catch_crashes()
     guard_stack()
 
-priv entering: Lock
+priv entering: Lock[null]
 priv stamped: bool
 
-# the first time a thread runs code of this program or library, stamp writes the tags its contexts start with, and the first time of all those of the file variables
+# the first time a thread runs code of this program or library, stamp writes what its contexts start with, and the first time of all what the file variables start with
 priv func enter():
     with lock(entering):
         stamp(not stamped)
@@ -2259,8 +2283,8 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
 
 # what was written goes out, without memory and without waiting for a lock, and the locks it takes stay taken: the program ends
 priv func drain():
-    if try_lock(io.lock):
-        for s in io.streams:
+    if try_lock(io):
+        for s in io.value.streams:
             if s as u64 != 0 and try_lock(s.writing):
                 drain(s)
 

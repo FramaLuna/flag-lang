@@ -2,10 +2,13 @@
 use fs
 
 UNKNOWN = "a file variable starts with a value the compiler knows, made of literals and constants, and this one is computed when the program runs"
+KNOWN = "a default value is one the compiler knows, made of literals and constants, or the empty heap([]), heap(\"\") or heap({})"
 ENTRY = "main is where the program starts, the main of C, so nothing in the program can call it or take it as a value"
 VIEW = "&strview is a view that only reads: change the text through the &str that owns it"
 
 func gen_program(check: bool, testing: bool) -> Fail?:
+    comp.entry = NONE # a type checks its defaults when it is made, and they can call functions before main is found
+    comp.settler = NONE
     none: &list[Item]
     for k in 1..comp.syms.len:
         if comp.nodes[comp.syms[k].node].kind == Void:
@@ -22,7 +25,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             t := try make_type(k, none, kind == Fat, comp.tokens[comp.nodes[d].tok].at)
             if kind == Context:
                 comp.data += "thread data $ctx." + comp.types[t].name + " = align " + data_align(t) + " { z " + room(t) + " }\n"
-                comp.stamping = comp.stamping or tagged(t)
+                comp.stamping = comp.stamping or comp.types[t].stamped
     s := first_sym("main")
     while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0 or comp.shared):
         s = comp.syms[s].next
@@ -33,8 +36,6 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     if s == 0 and not check and not comp.shared:
         eprint(comp.err, "this program has no func main() to start from")
         return Fail
-    comp.entry = NONE
-    comp.settler = NONE
     if s != 0:
         comp.entry = try instantiate(comp.syms[s].node, 0)
         comp.insts[comp.entry].name = "$main"
@@ -78,7 +79,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             held: &str
             if kids(d) == 1:
                 zeros(held, comp.types[t].size)
-                comp.stamping = comp.stamping or tagged(t)
+                comp.stamping = comp.stamping or comp.types[t].stamped
             else:
                 given := node_end(d + 1)
                 body := comp.body.len
@@ -87,9 +88,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 unknown := try image(t, given, held)
                 if unknown != 0:
                     return fail(UNKNOWN, at_of(unknown))
-                comp.body.len = body
-                comp.slots.len = slots
-                comp.held.len = 0
+                drop(body, slots, 0)
             zeros(held, room(t) - comp.types[t].size)
             comp.data += "data " + comp.globals[v.at.n] + " = align " + data_align(t) + " { " + held + "}\n"
     comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
@@ -108,14 +107,14 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Var and kids(d) == 1:
             v := trust shared(d)
-            stamp(v.type, v.at, 0)
+            try stamp(v.type, v.at, 0)
     jump(l_contexts)
     open_block(l_contexts)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Context:
             t := trust make_type(k, none, false, 0)
-            stamp(t, global("thread $ctx." + comp.types[t].name), 0)
+            try stamp(t, global("thread $ctx." + comp.types[t].name), 0)
     if comp.stamping:
         add(Ins{op = "storew", a = int_arg(1), b = global("thread $flag.entered")})
     terminate("ret", Arg{})
@@ -163,16 +162,14 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                     try hand(try gen(given, t), t, false, at_of(given))
                 append(comp.vars, Local{text(c), t, alloc(t), 0, comp.nodes[c].tok, 0, false, false})
             put_back(0, aside)
-            comp.body.len = body
-            comp.slots.len = slots
-            comp.held.len = 0
+            drop(body, slots, 0)
         name := text(f)
         if comp.nodes[f].kind == Func and params(f) > 0 and (name == "[]" or name == "for" or name == "reverse" or name == "wait"):
             saved := open_frame()
             for i in kid(f, 0)..kid(f, params(f)):
                 t := comp.tokens[comp.nodes[i].tok]
                 if t.kind == Generic and bound(t.text) == 0:
-                    placeholder := Item{t.text, U8, 1, false}
+                    placeholder := Item{name = t.text, type = U8, n = 1}
                     if starts_with(t.text, "$$"):
                         placeholder.type = VOID
                     append(comp.binds, placeholder)
@@ -754,7 +751,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         slot := alloc(t, true)
         mention(tok.text, slot, t, node.tok)
         if c == node_end(n) or v.type != t:
-            zero(t, slot)
+            try zero(t, slot)
         if c < node_end(n):
             try assign(slot, t, v, at_of(c))
         append(comp.vars, Local{tok.text, t, slot, comp.loops.len, node.tok, 0, false, must_read(t)})
@@ -901,7 +898,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         open_block(l_fail)
         line := Value{type = try fat_type("str", VOID, tok.at), mem = true, place = true}
         line.at = alloc(line.type)
-        zero(line.type, line.at)
+        try zero(line.type, line.at)
         if kids(n) == 2:
             try put_text(line, try value(node_end(cond), VOID), at_of(node_end(cond)))
         elif o == "is":
@@ -1118,7 +1115,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         if ty.kind != Struct and ty.kind != Array and (c < node_end(n) or ty.kind == Bytes):
             return fail(ty.name + "{...} builds a struct or an array, " + ty.name + " is neither", tok.at)
         slot := alloc(t)
-        zero(t, slot)
+        try zero(t, slot)
         named := c < node_end(n) and comp.nodes[c].kind == Named
         if named and ty.kind == Array:
             return fail(ty.name + " fills its elements in order, they have no names", at_of(c))
@@ -1344,7 +1341,7 @@ func collection(n: i64, want: i64, arena: i64) -> Value|Fail:
 
 func placed(t: i64, arena: Value, at: i64) -> Value|Fail:
     made := Value{type = t, at = alloc(t), mem = true}
-    zero(t, made.at)
+    try zero(t, made.at)
     if arena.type == VOID:
         return made
     for i in 0..comp.types[t].count:
@@ -1877,7 +1874,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             if target == BOOL and given.type != BOOL:
                 return fail("bool() does not convert, a number becomes a bool with a comparison: x != 0", tok.at)
             slot := alloc(target)
-            zero(target, slot)
+            try zero(target, slot)
             try assign(slot, target, given, at_of(first))
             return Value{type = target, at = slot, mem = true}
         if name == "print" or name == "eprint":
@@ -1981,6 +1978,12 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
+    if empty_owner(n):
+        if threaded:
+            return fail("parallel runs a function in a new thread, and heap of an empty literal is not one: wrap it in a func", tok.at)
+        if comp.nodes[n + 1].kind == Literal:
+            return placed(try fat_type("str", VOID, tok.at), Value{}, tok.at)
+        return value(n + 1, want)
     if name == "arena" and node.module.len == 0 and kids(n) == 2 and (comp.nodes[kid(n, 1)].kind == Items or comp.nodes[kid(n, 1)].kind == Pairs):
         if threaded:
             return fail("parallel runs a function in a new thread, and arena of a literal is not one: wrap it in a func", tok.at)
@@ -2209,7 +2212,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 return none
             result := try either(Value{type = kept}, other, at)
             slot := alloc(result)
-            zero(result, slot)
+            try zero(result, slot)
             try assign(slot, result, other, at_of(right))
             jump(l_done)
             open_block(l_good)
@@ -2350,7 +2353,7 @@ func choice(n: i64, want: i64) -> Value|Fail:
     for k, side in [n + 1, node_end(cond)]:
         if sides[k].type != NEVER:
             open_block(l_ends[k])
-            zero(result, slot)
+            try zero(result, slot)
             try assign(slot, result, sides[k], at_of(side))
             jump(l_done)
     open_block(l_done)
@@ -2775,7 +2778,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             elif placing:
                 return fail(comp.types[t].name + " gives a copy of its element and has no operator []=(x, i) that gives its place, so assigning a field of it would only change the copy: change a copy of the element and put it back", tok.at)
             else:
-                spot = filled(try invoke("[]", args, tok.at), kept)
+                spot = try filled(try invoke("[]", args, tok.at), kept)
                 try update(spot, assignment, first)
                 append(args, spot)
                 return invoke("[]=", args, tok.at)
@@ -2815,9 +2818,9 @@ func present(t: i64, at: i64) -> i64|Fail:
             append(rest, m)
     return union_of(rest, Union, at)
 
-func filled(v: Value, kept: i64) -> Value:
+func filled(v: Value, kept: i64) -> Value|Fail:
     spot := Value{type = kept, at = alloc(kept), mem = true, place = true}
-    zero(kept, spot.at)
+    try zero(kept, spot.at)
     if not contains(members(v.type), NULL):
         store(kept, v, spot.at)
         return spot
@@ -2842,7 +2845,7 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
     if o == "+=" and comp.types[spot.type].name == "&strview":
         line := Value{type = try fat_type("str", VOID, sign), mem = true, place = true}
         line.at = alloc(line.type)
-        zero(line.type, line.at)
+        try zero(line.type, line.at)
         try put_text(line, load(spot), sign)
         try concat(right, line, first)
         args: &list[Value]
@@ -2979,7 +2982,7 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
                 try put_text(place, Value{type = f.type, at = offset(v.at, f.n), mem = true}, at)
         return put_words(place, "}", at)
     index := alloc(I64)
-    zero(I64, index)
+    try zero(I64, index)
     l_head := label()
     l_body := label()
     l_comma := label()
@@ -3045,7 +3048,7 @@ func concat(n: i64, into: Value, first: i64) -> Value|Fail:
     if joined:
         line = Value{type = try fat_type("str", VOID, at), mem = true, place = true}
         line.at = alloc(line.type)
-        zero(line.type, line.at)
+        try zero(line.type, line.at)
         if head.type != VOID:
             try put_text(line, head, at)
         try put_text(line, v, at)
@@ -3258,12 +3261,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
         return v
     zeros(data, room(v.type) - comp.types[v.type].size)
     data += "}"
-    for k in comp.held[held:]:
-        if k < slots:
-            append(comp.spare, k)
-    comp.held.len = held
-    comp.slots.len = slots
-    comp.body.len = first
+    drop(first, slots, held)
     id := comp.stored[view(data)] ifnull i64(comp.globals.len)
     if id == i64(comp.globals.len):
         name: &str = "$flag.const."
@@ -3272,6 +3270,22 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
         put(comp.stored, view(data), id)
         comp.data += read_only(true) + "data " + name + " = " + data + "\n"
     return Value{type = v.type, at = Arg{Global, id}, mem = true, lit = true}
+
+# drops the code made since body, slots and held had these lengths, and a spare slot it took is spare again
+func drop(body: i64, slots: i64, held: i64):
+    for k in comp.held[held:]:
+        if k < slots:
+            append(comp.spare, k)
+    comp.held.len = held
+    comp.slots.len = slots
+    comp.body.len = body
+
+# heap([]), heap({}) or heap(""): an owner that has no memory yet, which is the one at zero
+func empty_owner(n: i64) -> bool:
+    if comp.nodes[n].kind != Call or comp.nodes[n].size != 2:
+        return false
+    given := comp.nodes[n + 1].kind
+    return (given == Items or given == Pairs or given == Literal and text(n + 1) == "\"\"") and text(n) == "heap" and comp.nodes[n].module.len == 0
 
 func shared(d: i64) -> Value|Fail:
     return Value{type = try resolve(d + 1), at = global("$var." + text(d) + "." + d), mem = true, place = true}
@@ -3282,8 +3296,10 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
             break
         n = comp.syms[s].node + 1
+    if n != 0 and empty_owner(n):
+        n = 0
     ty := comp.types[t]
-    if n == 0 and not tagged(t):
+    if n == 0 and not ty.stamped:
         zeros(out, ty.size)
         return 0
     kind: NodeKind = Var # no node, the value is zero
@@ -3313,7 +3329,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                 return unknown
             zeros(out, ty.size - past_tag(member) - comp.types[member].size)
         return 0
-    if ty.kind == Struct and (n == 0 or kind == Brace or kind == Fill):
+    if (ty.kind == Struct or ty.kind == Fat) and (n == 0 or kind == Brace or kind == Fill):
         given: &list[i64]
         defer free(given)
         for i in 0..ty.count:
@@ -3344,7 +3360,15 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                         filler = j
                 inner := comp.items[ty.first + filler].type
                 zeros(out, field.n - offset)
-                unknown := try image(inner, given[filler], out)
+                unknown := 0
+                if given[filler] == 0 and field.default != 0:
+                    saved := frame_of(t) # the default reads what the declaration of t sees, not the variables where t is born
+                    aside := set_aside(0)
+                    unknown = try image(inner, field.default, out)
+                    put_back(0, aside)
+                    close_frame(saved)
+                else:
+                    unknown = try image(inner, given[filler], out)
                 if unknown != 0:
                     return unknown
                 zeros(out, comp.types[field.type].size - comp.types[inner].size)
@@ -3438,24 +3462,30 @@ func tag(v: Value) -> Arg:
 func tag_of(member: i64) -> Arg:
     return int_arg(i64(comp.types[member].tag))
 
-func tagged(t: i64) -> bool:
+# writes what t starts with after its zeros
+func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
     ty := comp.types[t]
-    found := ty.kind == Union and ty.start != NULL or ty.kind == Array and tagged(ty.elem)
-    if ty.kind == Struct or ty.kind == Fat:
-        for i in 0..ty.count:
-            found = found or not comp.items[ty.first + i].shared and tagged(comp.items[ty.first + i].type)
-    return found
-
-func stamp(t: i64, addr: Arg, at: i64):
-    ty := comp.types[t]
-    if ty.kind == Union and ty.start != NULL:
+    if not ty.stamped:
+        return null
+    if ty.kind == Union:
         set_tag(t, ty.start, offset(addr, at))
-        stamp(ty.start, addr, at + past_tag(ty.start))
-    elif ty.kind == Struct or ty.kind == Fat:
-        for i in 0..ty.count:
-            if not comp.items[ty.first + i].shared:
-                stamp(comp.items[ty.first + i].type, addr, at + comp.items[ty.first + i].n)
-    elif ty.kind == Array and tagged(ty.elem):
+        return stamp(ty.start, addr, at + past_tag(ty.start))
+    if ty.kind == Struct or ty.kind == Fat:
+        for field in comp.items[ty.first:ty.first + ty.count]:
+            if field.default != 0:
+                if contains(comp.resolving, field.default):
+                    return fail("the default of " + field.name + " cannot make " + ty.name + ", which starts with that default", at_of(field.default))
+                saved := frame_of(t) # the default reads what the declaration of t sees, not the variables where t is born
+                aside := set_aside(0)
+                append(comp.resolving, field.default)
+                v := try value(field.default, field.type)
+                comp.resolving.len -= 1
+                put_back(0, aside)
+                close_frame(saved)
+                try assign(offset(addr, at + field.n), field.type, v, at_of(field.default))
+            elif not field.shared:
+                try stamp(field.type, addr, at + field.n)
+    elif ty.kind == Array:
         slot := alloc(I64)
         l_head := label()
         l_body := label()
@@ -3466,10 +3496,11 @@ func stamp(t: i64, addr: Arg, at: i64):
         i := op1(L, "loadl", slot)
         branch(op(W, "cultl", i, int_arg(i64(ty.count))), l_body, l_done)
         open_block(l_body)
-        stamp(ty.elem, op(L, "add", offset(addr, at), op(L, "mul", i, int_arg(i64(comp.types[ty.elem].size)))), 0)
+        try stamp(ty.elem, op(L, "add", offset(addr, at), op(L, "mul", i, int_arg(i64(comp.types[ty.elem].size)))), 0)
         add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = slot})
         jump(l_head)
         open_block(l_done)
+    return null
 
 func enter() -> Fail?:
     nothing: &list[Value]
@@ -3871,10 +3902,10 @@ func words(mask: u64, shift: i64) -> u64:
         return (mask << u64(shift)) or (u64(1) << 63)
     return mask << u64(shift)
 
-func zero(t: i64, addr: Arg):
+func zero(t: i64, addr: Arg) -> Fail?:
     if comp.types[t].kind == Simd and vectors():
         add(Ins{op = "storev", a = splat(I32, int_arg(0)), b = addr})
-        return
+        return null
     size := room(t)
     if size > 64:
         first := comp.passes.len
@@ -3885,7 +3916,7 @@ func zero(t: i64, addr: Arg):
     else:
         for at in 0..size / 8:
             add(Ins{op = "storel", a = int_arg(0), b = offset(addr, at * 8)})
-    stamp(t, addr, 0)
+    return stamp(t, addr, 0)
 
 func address(v: Value) -> Value:
     at := v.at

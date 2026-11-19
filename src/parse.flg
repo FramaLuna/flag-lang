@@ -237,8 +237,16 @@ func fields(outer: i64) -> Fail?:
         else:
             try type_expr()
             if here().kind == Builtin:
+                other := here().text[1:]
                 finish(begin(Name, comp.pos))
                 comp.pos += 1
+                if peek("="):
+                    return fail(text(f) + " cannot have a default value, it shares the storage of " + other + " and starts as " + other + " does", here().at)
+            if peek("="):
+                comp.pos += 1
+                if here().kind == Builtin and comp.tokens[comp.pos + 1].text != "(":
+                    return fail("the default of " + text(f) + " cannot read the field " + here().text[1:] + ", " + KNOWN, here().at)
+                try expr(1)
             try end_line()
         finish(f)
     return null

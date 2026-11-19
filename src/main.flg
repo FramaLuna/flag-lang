@@ -73,12 +73,14 @@ type Type:
     error: bool
     packed: bool
     foreign: bool
+    stamped: bool # it starts at something other than zero: the tag of a union without null, or the default value of a field
 
 type Item:
     name: &strview
     type: i64
     n: i64
     shared: bool
+    default: i64 # the node of the default value of a field, 0 when it has none
 
 type Inst:
     node: i64
@@ -244,7 +246,7 @@ context comp:
     entry: i64 # main, the main of C
     tests: &list[i64]
     settler: i64 # main, when the program starts threads
-    stamping: bool # a context or a file variable holds a union without null, that gets its tag when a thread enters
+    stamping: bool # a context or a file variable starts at something other than zero, which stamp writes when a thread enters
     asked: i64
     defined: &list[i64]
     hover: &str
@@ -254,9 +256,9 @@ context comp:
     choosing: bool
     debug: bool
     shared: bool
-    err: &strview # error:, note: and warning:, in color when the errors go to a terminal
-    note: &strview
-    warn: &strview
+    err: &strview = "error: " # in color when the errors go to a terminal
+    note: &strview = "note: "
+    warn: &strview = "warning: "
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
@@ -270,9 +272,6 @@ extern "c":
     func isatty(fd: i32) -> i32
 
 func main() -> i32:
-    comp.err = "error: "
-    comp.note = "note: "
-    comp.warn = "warning: "
     plain := env("NO_COLOR") ifnull ""
     if isatty(2) != 0 and plain.len == 0:
         comp.err = "\e[1;31merror:\e[0m "

@@ -115,9 +115,9 @@ A negative `code` is an error that has no errno, like an error of Windows that e
 `parallel f(x)` and `Thread[T]` are the language (see [Threads](Reference.md#threads)), these are the library
 - `wait(t: Thread[$T]) -> $T` waits for the thread to end and gives what its function returned, `null` for a `Thread[null]`. It frees the block of the thread, so a thread is waited once, and the temporaries of the thread go to the scratch of the one that waits. A `wait` of yours for a `Thread` is an error, `wait of Thread belongs to the language, it cannot be declared again`, and for any other type it's an overload like any other. Of a `Thread` that never got a thread it stops the program: `flag: wait of a thread that was never started`
 - `done(t: Thread[$T]) -> bool` true when the thread ended, without waiting for it. `wait(t)` after it gives the result at once. Of a `Thread` that never got a thread it stops the program like `wait`: `flag: done of a thread that was never started`
-- `Lock` lets one thread at a time into a part of the code. It works at zero, so declare it next to what it guards, and take it with `with lock(x.lock):`. The thread that holds it can take it again, inside, without waiting for itself. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
-  - `lock(l: *Lock) -> Locked` waits until no other thread holds the lock, and takes it
-  - its `operator with` lets it go when the `with` ends
+- `Lock[$T]` lets one thread at a time change the value it guards, its field `value`. `Lock[null]` guards a part of the code and no value. It works at zero, so it needs no setup, and `with lock(x):` takes it: `count: Lock[i64]`, then `with lock(count): count.value += 1`. `Lock` alone is an error, `Lock expects the type it guards: Lock[i64], or Lock[null] when it guards code and no value`. The thread that holds it can take it again, inside, without waiting for itself, so a function that changes `x.value` takes the lock itself, also when the one that calls it holds it. A copy is another lock, so pass a pointer to it: `-memory` warns about a copy of one that was taken
+  - `lock(l: *Lock[$T]) -> Locked` waits until no other thread holds the lock, and takes it
+  - the `operator with` of `Locked` lets it go when the `with` ends
 - `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes
   - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
   - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty. It gives `null` when the channel is closed and empty
@@ -129,16 +129,12 @@ The files of core, `print` included, work from any thread.
 ```flag
 use os
 
-type Counter:
-    lock: Lock
-    count: i64
-
-counter: Counter
+counter: Lock[i64]
 
 func add(times: i32):
     for i in 0..times:
-        with lock(counter.lock):
-            counter.count += 1
+        with lock(counter):
+            counter.value += 1
 
 func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     for n in jobs:
@@ -152,7 +148,7 @@ func main():
         append(workers, parallel add(1000))
     for w in workers:
         wait(w)
-    print(counter.count) # 1000 for each core
+    print(counter.value) # 1000 for each core
 
     jobs: Channel[i64, 8]
     results: Channel[i64, 8]

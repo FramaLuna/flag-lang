@@ -1,15 +1,11 @@
-type Start:
-    lock: Lock
-    ready: i32
-
-start: Start
+ready: Lock[i32]
 
 func work(p: *i64) -> i64:
-    with lock(start.lock):
-        start.ready += 1
+    with lock(ready):
+        ready.value += 1
     while true: # the 16 threads fail at once
-        with lock(start.lock):
-            if start.ready == 16:
+        with lock(ready):
+            if ready.value == 16:
                 break
     return p.*
 

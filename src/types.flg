@@ -248,7 +248,7 @@ func union_of(parts: &list[i64], kind: TypeKind, at: i64) -> i64|Fail:
     first := comp.items.len
     for m in flat:
         append(comp.items, Item{name = "", type = m})
-    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0]})
+    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0], stamped = kind == Union and flat[0] != NULL})
     try lay_out(made, at)
     return made
 
@@ -480,6 +480,8 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     c := kid(decl, generics)
     if kind == Void and generics > 0:
         return fail("void type " + sym.name + " cannot have parameters, it carries no data to shape", at)
+    if generics != args.len and args.len == 0 and sym.name == "Lock" and sym.library and sym.module.len == 0:
+        return fail("Lock expects the type it guards: Lock[i64], or Lock[null] when it guards code and no value", at)
     if generics != args.len:
         return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + " but got " + args.len, at)
     for a in args:
@@ -488,7 +490,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
         return add_type(Type{kind = Void, name = view(key), align = 1, decl = decl, error = sym.error})
     saved := open_frame()
     for i in 0..generics:
-        append(comp.binds, Item{text(kid(decl, i)), args[i].type, args[i].n, false})
+        append(comp.binds, Item{name = text(kid(decl, i)), type = args[i].type, n = args[i].n})
     if kind == Alias:
         through := false
         seen := false
@@ -524,6 +526,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     made := add_type(Type{kind = shape, name = view(key), args = arg_start, decl = decl, error = sym.error, packed = sym.packed})
     append(comp.resolving, decl)
     fields: &list[Item]
+    stamped := false
     while c < node_end(decl):
         name := text(c)
         field_at := comp.tokens[comp.nodes[c].tok].at
@@ -536,8 +539,11 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
         for g in fields:
             if g.name == name:
                 return fail("type " + key + " declares the field " + name + " twice", field_at)
-        if kids(c) == 2:
-            other := text(kid(c, 1))
+        given := kid(c, 1) # its default value, or the @other whose storage it shares
+        if given == node_end(c):
+            given = 0
+        if given != 0 and comp.nodes[given].kind == Name and comp.tokens[comp.nodes[given].tok].kind == Builtin:
+            other := text(given)
             other = other[1:]
             owner := 0
             while owner < fields.len and fields[owner].name != other:
@@ -548,11 +554,12 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
                 return fail(name + " cannot share the storage of " + other + ", only of a field declared above it", field_at)
             if f.size > comp.types[fields[owner].type].size:
                 return fail(name + " cannot share the storage of " + other + ", it is " + f.size + " bytes and " + other + " holds " + comp.types[fields[owner].type].size + ": declare the larger field first", field_at)
-            append(fields, Item{name, ft, fields[owner].n, true})
+            append(fields, Item{name = name, type = ft, n = fields[owner].n, shared = true})
         else:
             if not sym.packed:
                 offset = align_up(offset, f.align)
-            append(fields, Item{name, ft, offset, false})
+            append(fields, Item{name = name, type = ft, n = offset, default = given})
+            stamped = stamped or given != 0 or f.stamped
             offset += f.size
             if offset > HUGE:
                 return too_large(key, field_at)
@@ -563,6 +570,7 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     close_frame(saved)
     comp.types[made].first = comp.items.len
     comp.types[made].count = fields.len
+    comp.types[made].stamped = stamped
     for f in fields:
         append(comp.items, f)
     comp.types[made].size = align_up(offset, align)
@@ -570,6 +578,32 @@ func make_type(s: i64, args: &list[Item], fat: bool, at: i64) -> i64|Fail:
     for t in made..comp.types.len:
         if (comp.types[t].kind == Union or comp.types[t].kind == Untagged) and comp.types[t].align == 0:
             try lay_out(t, at)
+    defaulted := false
+    for f in fields:
+        if f.default != 0:
+            defaulted = true
+            for i in f.default..node_end(f.default):
+                for g in fields:
+                    if comp.nodes[i].kind == Name and text(i) == g.name and first_sym(g.name) == 0:
+                        return fail("the default of " + f.name + " cannot read the field " + g.name + ", " + KNOWN, at_of(i))
+    if not defaulted:
+        return made
+    body := comp.body.len # a value of it is born here to check the defaults, and the code is dropped
+    slots := comp.slots.len
+    held := comp.held.len
+    born := zero(made, alloc(made))
+    known: &str
+    defer free(known)
+    unknown := 0
+    if born is null:
+        unknown = try image(made, 0, known)
+    if unknown != 0:
+        born = fail(KNOWN + ", and this one is computed when the program runs", at_of(unknown))
+    if born is Fail and generics > 0:
+        note(key + " is made here", at)
+    if born is Fail:
+        return Fail
+    drop(body, slots, held)
     return made
 
 func arg_name(a: Item) -> &strview:
@@ -586,7 +620,7 @@ func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
         return id
     if e.size > 0 and count > HUGE / e.size:
         return too_large(view(key), at)
-    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
+    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count, stamped = e.stamped})
 
 func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
@@ -651,6 +685,15 @@ func func_of(taken: &list[i64], ret: i64, foreign: bool) -> i64:
     for t in taken:
         append(comp.items, Item{name = "", type = t})
     return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
+
+# the frame where the declaration of t reads its type parameters, as the default value of a field does
+func frame_of(t: i64) -> i64:
+    saved := open_frame()
+    decl := comp.types[t].decl
+    for i in 0..type_params(decl):
+        arg := comp.items[comp.types[t].args + i]
+        append(comp.binds, Item{name = text(kid(decl, i)), type = arg.type, n = arg.n})
+    return saved
 
 func type_params(decl: i64) -> i64:
     count := 0

@@ -1,8 +1,4 @@
-type Counter:
-    lock: Lock
-    count: i64
-
-counter: Counter
+counter: Lock[i64]
 limit: i32 = 7
 names: array[&strview, 2] = ["a", "b"]
 
@@ -20,8 +16,8 @@ func work(level: *Arena, n: i32) -> i64:
     total: i64 = 0
     for v in values:
         total += v
-    with lock(counter.lock):
-        counter.count += total
+    with lock(counter):
+        counter.value += total
     return total + i64(text.len) + i64(trust receive(jobs))
 
 func main():
@@ -31,4 +27,4 @@ func main():
     other: Arena
     defer free(other)
     u := parallel work(other, 20)
-    print(wait(t), " ", wait(u), " ", counter.count, " ", limit, " ", names)
+    print(wait(t), " ", wait(u), " ", counter.value, " ", limit, " ", names)

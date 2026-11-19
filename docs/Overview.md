@@ -163,6 +163,17 @@ You can build them with the fields in order, or naming them. The fields you don'
 a := User{"ana", 30}
 b := User{age = 30}
 ```
+or at their default value, when they have one. It's written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
+```flag
+type Window:
+    title: &strview = "untitled"
+    width: i32 = 640
+    height: i32 = 480
+    tabs: &list[&strview] = heap([])
+
+w: Window # untitled, 640 by 480
+big := Window{width = 1920, height = 1080} # untitled too
+```
 When the place already says the type, like a variable with its type, a return, a field or an element of an array, you can leave the name out
 ```flag
 c: User = {"bo", 25}
@@ -897,10 +908,11 @@ while running:
 The scratch memory of the temporaries is an arena too, the one `with scratch():` marks, and each thread has its own. An arena you make is not shared between [threads](#threads) without a `Lock`. The rules are in [Arenas](Reference.md#arenas).
 
 ## Contexts
-A context is global state of each thread: the fields start at zero, every function can use them, and each thread has its own
+A context is global state of each thread: the fields start at zero or at their default value, every function can use them, and each thread has its own
 ```flag
 context app:
     depth: u32
+    level: i32 = 3
     names: &list[&strview]
 
 func deeper():
@@ -939,17 +951,13 @@ start(try wait(level))
 ```
 `parallel f(x)` alone on its line lets the thread run on its own, and `main` waits for it when it ends, before its deferred statements, so the thread can use what `main` keeps. A thread you keep must be read, by `wait` or `done`, and `-memory` warns about one that is never waited. A function that can fail can't run alone, its error would be lost.
 
-Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock` lets one thread at a time change them
+Each thread has its own contexts and its own temporary memory, and the file variables are shared. A `Lock[T]` lets one thread at a time change the value it guards, its `value`, and `Lock[null]` guards code and no value
 ```flag
-type Visits:
-    lock: Lock
-    count: i64
-
-visits: Visits
+visits: Lock[i64]
 
 func visit():
-    with lock(visits.lock):
-        visits.count += 1
+    with lock(visits):
+        visits.value += 1
 ```
 A `Channel[T, N]` passes values between threads, and waits when it's full or empty. It keeps the values inside itself, so it lives where you declare it
 ```flag

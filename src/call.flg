@@ -533,7 +533,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                     return fail(VIEW, at)
                 append(back, comp.elements[given.element - 2])
                 append(back, comp.elements[given.element - 1])
-                given = filled(given, comp.types[taken[k]].elem)
+                given = try filled(given, comp.types[taken[k]].elem)
                 append(back, given)
             append(passes, try hand(given, taken[k], foreign, at))
         else:
@@ -658,7 +658,7 @@ func written(label: &strview, t: i64, ret: i64, at: i64) -> i64:
     name: &str = "$"
     name += label + "." + comp.insts.len
     append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0, false})
-    append(comp.inst_binds, Item{"$T", t, 0, false})
+    append(comp.inst_binds, Item{name = "$T", type = t})
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
 
@@ -971,7 +971,7 @@ func match(n: i64, v: Value) -> i64|Fail:
             return -1
         b := bound(text(n + 1))
         if b == 0:
-            append(comp.binds, Item{text(n + 1), given, 0, false})
+            append(comp.binds, Item{name = text(n + 1), type = given})
             return 0
         if comp.binds[b - 1].type == given:
             return 0
@@ -981,7 +981,7 @@ func match(n: i64, v: Value) -> i64|Fail:
     if node.kind == TName and tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:
-            append(comp.binds, Item{tok.text, v.type, 0, false})
+            append(comp.binds, Item{name = tok.text, type = v.type})
             return 0
         if comp.binds[b - 1].type == v.type:
             return 0
@@ -1149,7 +1149,7 @@ func arg_fits(n: i64, t: i64, value: i64) -> bool|Fail:
     tok := comp.tokens[comp.nodes[n].tok]
     if tok.kind != Generic or bound(tok.text) != 0:
         return false
-    append(comp.binds, Item{tok.text, VOID, value, false})
+    append(comp.binds, Item{name = tok.text, type = VOID, n = value})
     return true
 
 func generic(n: i64) -> bool:
@@ -1218,7 +1218,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         slot := dest
         if slot.kind == Empty:
             slot = alloc(to)
-        zero(to, slot)
+        try zero(to, slot)
         if comp.types[v.type].kind == Ptr:
             store(v.type, v, slot)
             count := 0
@@ -1266,7 +1266,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             return convert(try convert(v, found, Arg{}, at), to, dest, at)
     if target.kind == Untagged and untagged_member(to, v.type):
         slot := alloc(to)
-        zero(to, slot)
+        try zero(to, slot)
         store(v.type, v, slot)
         return Value{type = to, at = slot, mem = true}
     if from.kind == Untagged and untagged_member(v.type, to):
@@ -1292,7 +1292,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
     if try offers("=", args, at):
         if dest.kind == Empty:
             args[0].at = alloc(to)
-            zero(to, args[0].at)
+            try zero(to, args[0].at)
         return invoke("=", args, at)
     if from.kind == Union:
         current := tag(v)
@@ -1508,7 +1508,7 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
         if target.kind == Int:
             name = "dtosi"
         slot := alloc(to)
-        zero(to, slot)
+        try zero(to, slot)
         l_number := label()
         l_high := label()
         l_low := label()

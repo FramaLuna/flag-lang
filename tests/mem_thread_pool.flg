@@ -1,8 +1,10 @@
+type Served:
+    count: i32
+    log: &list[&str]
+
 type Pool:
     jobs: Channel[&str, 16]
-    lock: Lock
-    served: i32
-    log: &list[&str]
+    served: Lock[Served]
 
 func worker(p: *Pool, n: i32) -> i32:
     mine: i32 = 0
@@ -10,9 +12,9 @@ func worker(p: *Pool, n: i32) -> i32:
         line: &str = "worker "
         line += n
         line += " served " + path
-        with lock(p.lock):
-            p.served += 1
-            append(p.log, line)
+        with lock(p.served):
+            p.served.value.count += 1
+            append(p.served.value.log, line)
         free(path)
         mine += 1
     return mine
@@ -31,7 +33,7 @@ func main():
     total := 0
     for w in workers:
         total += wait(w)
-    print(total, " ", pool.served, " ", pool.log.len)
-    for l in pool.log:
+    print(total, " ", pool.served.value.count, " ", pool.served.value.log.len)
+    for l in pool.served.value.log:
         free(l)
-    free(pool.log)
+    free(pool.served.value.log)
