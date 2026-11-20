@@ -572,12 +572,43 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 if args.len < params(f) and free_type == 0:
                     free_type = unbound(last + 1)
             g = comp.syms[g].next
+        named := false # an argument with a name, before the view after ..
+        for label in names:
+            named = named or label.len > 0 and label != ".."
         if free_type != 0:
             hint = ", " + name + " gets " + text(free_type) + " from its extra arguments, and this call gives none"
         elif names.len > 0 and names[-1] == ".." and not gathered:
             hint = ", " + name + " has no ..items: T for the view after .. to fill"
+        elif names.len > 0 and names[-1] == ".." and gathered and named:
+            hint = ", a call that gives the extra arguments with .. names none of the others"
         elif names.len > 0 and names[-1] == ".." and sequence(args[-1].type):
             hint = ", the elements of the view after .. are " + comp.types[element(args[-1].type)].name + ", and they go to ..items: T without converting"
+        counts := true # no overload takes as many arguments as this call gives
+        least := 0
+        most := 0
+        positional := 0
+        while positional < names.len and names[positional].len == 0:
+            positional += 1
+        twice: &strview = ""
+        h := first_sym(name)
+        while h != 0:
+            f := comp.syms[h].node
+            if callable(h, module, args, at):
+                need := 0
+                for k in 0..params(f):
+                    if kids(kid(f, k)) == 1 and text(kid(f, k)) != "..":
+                        need += 1
+                    for label in names[positional:]:
+                        if k < positional and text(kid(f, k)) == label:
+                            twice = label
+                counts = counts and (args.len < need or args.len > params(f)) and (params(f) == 0 or not gathers(kid(f, params(f) - 1)))
+                least = need
+                most = params(f)
+            h = comp.syms[h].next
+        if hint.len == 0 and twice.len > 0:
+            hint = ", " + twice + " is given twice, by its place and by its name"
+        elif hint.len == 0 and counts and least == most:
+            hint = ", " + name + " expects " + counted(least, "argument", "arguments")
         if name == "put" and args.len == 2:
             holder := args[0].type
             if comp.types[holder].kind == Ptr:
@@ -723,6 +754,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
 func through_copy(given: Value, to: i64, back: *&list[Value], at: i64) -> Value|Fail:
     if comp.types[to].kind != Ptr:
         return given
+    if given.element < 0:
+        return fail("this is a field of the copy that x[i] gives, so a call that takes a pointer to it would only change the copy: take the element to a variable, change it there and put it back", at)
     if comp.types[comp.elements[given.element - 2].type].name == "&strview":
         return fail(VIEW, at)
     append(back, comp.elements[given.element - 2])
@@ -1235,7 +1268,9 @@ func match(n: i64, v: Value) -> i64|Fail:
                 if comp.tokens[comp.nodes[i].tok].kind == Generic and bound(text(i)) == 0:
                     return -1
             return STEP
-        inner := try match(binder, Value{type = try union_of(rest, Union, tok.at), at = v.at})
+        rested := v # a literal stays one, so it adapts to the $T it meets
+        rested.type = try union_of(rest, Union, tok.at)
+        inner := try match(binder, rested)
         if inner < 0 or accepts(try resolve(n), v) < 0:
             return -1
         return inner + STEP

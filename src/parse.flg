@@ -702,7 +702,7 @@ func stmt() -> Fail?:
         while comp.tokens[first - 1].kind != Line:
             first -= 1
         comp.pos += 1
-        if here().kind != Line and unclosed(first, comp.pos) > 0: # inside brackets, after ifnull, a comma goes on
+        if here().kind != Line and unclosed(first, comp.pos - 1) > 0: # inside brackets, after ifnull, a comma goes on
             try expr(1)
         elif here().kind != Line:
             try several()
@@ -930,6 +930,8 @@ func unary() -> Fail?:
         return null
     if t.text == "&" or t.text == "*" or t.text == "func" and comp.tokens[comp.pos + 1].text == "(" or t.text == "extern" and comp.tokens[comp.pos + 1].text == "func":
         return type_expr() # only a type starts so, as in make(&list[i32])
+    if t.text == "return" or t.text == "break" or t.text == "continue":
+        return fail(t.text + " goes at the start of a statement, or last after ifnull or iferror, not inside a value", t.at)
     start := comp.nodes.len
     first := comp.pos
     name := first
@@ -941,6 +943,7 @@ func unary() -> Fail?:
     brace := after == "{"
     converts := typed and after == "("
     listed := false
+    valued := false # a number or a text inside, which no type has
     if t.kind == Name and after == "[" or t.text == "(": # Pair[i32, f64] and (i32, bool) are types, an index and a group have no comma
         depth := 0
         i := name
@@ -953,8 +956,12 @@ func unary() -> Fail?:
                 if depth == 0:
                     brace = comp.tokens[i + 1].text == "{"
                     converts = listed and comp.tokens[i + 1].text == "(" # an index has no comma, simd[f32, 4](x) names a type
+                    if listed and t.text == "(" and valued:
+                        inside := excerpt(name + 1, i - 1)
+                        return fail("(" + inside + ") is not a value, parentheses with a comma are the type of a tuple: a tuple value is written with braces, {" + inside + "}", t.at)
                     break
             listed = listed or word == "," and depth == 1
+            valued = valued or comp.tokens[i].kind == Int or comp.tokens[i].kind == Float or comp.tokens[i].kind == Str
             i += 1
     if t.kind == Name and not brace:
         j := name

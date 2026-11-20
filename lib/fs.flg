@@ -69,10 +69,10 @@ func read_file(path: &strview) -> &str|FsError:
     return out
 
 func write_file(path: &strview, text: &strview) -> FsError?:
-    return put_file(path, text, "wb")
+    return put_file(path, text, "wbe" if @linux() else "wb") # e: a program that another thread runs doesn't get the file
 
 func append_file(path: &strview, text: &strview) -> FsError?:
-    return put_file(path, text, "ab")
+    return put_file(path, text, "abe" if @linux() else "ab")
 
 priv func put_file(path: &strview, text: &strview, mode: &strview) -> FsError?:
     file := 0 as *bytes
@@ -123,7 +123,7 @@ func rename_file(from: &strview, to: &strview) -> FsError? where not @windows():
     with scratch():
         failed = rename(cstr(from), cstr(to)) != 0
     if failed:
-        return FsError{errno(), "rename", from}
+        return FsError{errno(), "rename", from + " to " + to}
     return null
 
 func rename_file(from: &strview, to: &strview) -> FsError? where @windows():
@@ -131,7 +131,7 @@ func rename_file(from: &strview, to: &strview) -> FsError? where @windows():
     with scratch():
         failed = MoveFileExW(wstr(from), wstr(to), 3) == 0 # MOVEFILE_REPLACE_EXISTING and MOVEFILE_COPY_ALLOWED
     if failed:
-        return FsError{failure(), "rename", from}
+        return FsError{failure(), "rename", from + " to " + to}
     return null
 
 func make_dir(path: &strview) -> FsError?:

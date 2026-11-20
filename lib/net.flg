@@ -16,6 +16,7 @@ priv extern "c":
     func inet_ntop(family: i32, address: *bytes, into: *u8, size: i64) -> cstr
     func fcntl(fd: i64, command: i32, ...) -> i32
     func close(fd: i64) -> i32
+    func shutdown(fd: i64, how: i32) -> i32
     func SetHandleInformation(handle: i64, mask: u32, flags: u32) -> i32
 
 priv extern "ws2_32" where @windows():
@@ -139,16 +140,16 @@ func address(host: &strview, port: u16) -> Address|NetError:
 
 # a struct sockaddr_in or sockaddr_in6, where macOS puts its length before the family
 priv func address(raw: *bytes) -> Address:
-    bytes := (raw as *array[u8, 24]).*
-    out := Address{port = u16(bytes[2]) << 8 or u16(bytes[3])}
-    if bytes[1 if @macos() else 0] == 2: # AF_INET
+    bytes := raw as *array[u8, 24] # read in place, a sockaddr_in has only 16
+    out := Address{port = u16(bytes.*[2]) << 8 or u16(bytes.*[3])}
+    if bytes.*[1 if @macos() else 0] == 2: # AF_INET
         out.ip[10] = 255
         out.ip[11] = 255
         for i in 0..4:
-            out.ip[12 + i] = bytes[4 + i]
+            out.ip[12 + i] = bytes.*[4 + i]
     else:
         for i in 0..16:
-            out.ip[i] = bytes[8 + i]
+            out.ip[i] = bytes.*[8 + i]
     return out
 
 func send(u: Udp, to: Address, data: &strview) -> NetError?:
@@ -220,6 +221,8 @@ func flush(s: Socket, place: &strview = @here()) -> NetError?:
     return null
 
 func close(s: Socket, place: &strview = @here()):
+    _ = flush(s)
+    shutdown(i64(s.fd), 2) # both ways: a read that another thread waits in ends, and lets close take the socket
     close(file(s), place)
 
 operator with(s: Socket, place: &strview = @here()):
@@ -296,12 +299,16 @@ priv func dispose(fd: i64) where @windows():
 
 priv func open_udp() -> i64 where @linux():
     fd := i64(socket(10, 0x80002, 0)) # AF_INET6, and SOCK_DGRAM with SOCK_CLOEXEC
+    if fd < 0:
+        return fd # with its errno
     no: i32 = 0
     setsockopt(fd, 41, 26, ptr(no) as *bytes, 4) # IPV6_V6ONLY off, so it takes IPv4 too
     return fd
 
 priv func open_udp() -> i64 where @macos():
     fd := i64(socket(30, 2, 0))
+    if fd < 0:
+        return fd
     no: i32 = 0
     fcntl(fd, 2, 1)
     setsockopt(fd, 41, 27, ptr(no) as *bytes, 4)
@@ -309,6 +316,8 @@ priv func open_udp() -> i64 where @macos():
 
 priv func open_udp() -> i64 where @windows():
     fd := i64(socket(23, 2, 0))
+    if fd < 0:
+        return fd
     no: i32 = 0
     got: u32 = 0
     SetHandleInformation(fd, 1, 0)

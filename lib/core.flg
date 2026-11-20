@@ -1123,7 +1123,10 @@ operator +=(s: *&str, f: Fixed):
     halves := value
     for k in 0..=places:
         halves *= 2.0
-    tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 # 2^53
+    scaled := value
+    for k in 0..places:
+        scaled *= 10.0
+    tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 and scaled > -4503599627370496.0 and scaled < 4503599627370496.0 # 2^53 and 2^52: past them one step of the float jumps over a digit, and printf rounds an exact tie to even
     bits := ptr(value) as *u64
     bits.* -= u64(tie)
     with scratch():

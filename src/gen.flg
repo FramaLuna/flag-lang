@@ -555,7 +555,7 @@ func gen_from(from: i64) -> i64|Fail:
             if name == "=" and inst.ret != target:
                 return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
             if name == "+=" and comp.types[first].name != "*&str":
-                return fail("operator += appends to text only, its first parameter is *&str: for another type declare operator +, a += b is a = a + b", comp.at)
+                return fail("operator += appends to text only, its first parameter is *&str: for another type declare operator +, which a += b uses", comp.at)
             if (name == "==" or name == "<") and inst.ret != BOOL:
                 return fail("operator " + name + " answers a comparison, so it returns bool, this one returns " + comp.types[inst.ret].name, comp.at)
             if name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
@@ -764,7 +764,11 @@ func gen(n: i64, want: i64) -> Value|Fail:
         ty := comp.types[v.type]
         if t == VOID and (v.type == EMPTYARRAY or v.type == EMPTYMAP or ty.kind == Fat and type_params(ty.decl) > 0 and comp.items[ty.args].type == NEVER): # heap([]) is a &list[never]
             example: &strview = ": &list[i32]"
-            if v.type == EMPTYMAP or ty.kind == Fat and text(ty.decl) == "map":
+            if v.type == EMPTYARRAY: # a bare [] holds no memory, and a list that grows takes it from heap
+                example = ": &list[i32] = heap([])"
+            if v.type == EMPTYMAP:
+                example = ": &map[&strview, i32] = heap({})"
+            elif ty.kind == Fat and text(ty.decl) == "map":
                 example = ": &map[&strview, i32]"
             return fail(tok.text + " cannot take its type from an empty literal, write the type: " + tok.text + example, tok.at)
         if t == VOID:
@@ -793,7 +797,17 @@ func gen(n: i64, want: i64) -> Value|Fail:
                 turns := comp.turns.len
                 c := source + 1
                 while c < node_end(source):
-                    try read_in_turn(values, c, VOID)
+                    steady := true # it calls nothing and reads nothing the places change, so it is made at its place with the type of the place
+                    for i in c..node_end(c):
+                        k := comp.nodes[i].kind
+                        steady = steady and k != Call and k != Index and not (k == Unary and text(i) == ".*")
+                        if k == Name and lookup(text(i)) != 0:
+                            for j in left..source:
+                                steady = steady and (comp.nodes[j].kind != Name or text(j) != text(i))
+                    if steady:
+                        append(values, Value{lit = true})
+                    else:
+                        try read_in_turn(values, c, VOID)
                     c = node_end(c)
                 in_turn(values, turns)
             else:
@@ -1336,17 +1350,20 @@ func gen(n: i64, want: i64) -> Value|Fail:
         base := try value(n + 1, VOID)
         t := base.type
         addr := base.at
+        copy: i64 = 0
         if comp.types[t].kind == Ptr:
             addr = load(base).at
             t = comp.types[t].elem
             base.place = true
+        elif base.element != 0:
+            copy = -1 # a field of a copy, which a call cannot put back
         if comp.types[t].kind == Struct or comp.types[t].kind == Fat:
             for i in 0..comp.types[t].count:
                 f := comp.items[comp.types[t].first + i]
                 if f.name == tok.text:
                     if noted(tok.at) and not tuple(t):
                         mark(comp.nodes[field_node(t, f.name)].tok, described(f.name, f.type))
-                    return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place, lit = base.lit and aggregate(f.type)}
+                    return Value{type = f.type, at = offset(addr, f.n), mem = true, place = base.place, lit = base.lit and aggregate(f.type), element = copy}
         if comp.types[t].kind == Array and tok.text == "len":
             return literal(false, u64(comp.types[t].count))
         if comp.tokens[node.tok + 1].text == "(":
@@ -1938,6 +1955,8 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
     callee := none
     first := n + 1
     typed := node.size > 1 and comp.nodes[n + 1].kind == TName and comp.nodes[n + 1].tok == node.tok # simd[f32, 4](x), not make(T)
+    if tok.text == "(" and comp.nodes[n + 1].kind == Index and comp.nodes[n + 2].kind == Name and lookup(text(n + 2)) == 0: # Box[i64](x), where no comma says that Box[i64] is a type
+        typed = try find_type(text(n + 2), comp.nodes[n + 2].module, tok.at) != 0
     if typed:
         first = node_end(n + 1)
     elif tok.text == "(":
@@ -2007,7 +2026,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             types_given = types_given or takes_types(comp.syms[f].node)
         f = comp.syms[f].next
     if typed:
-        target = try resolve(n + 1)
+        target = try spelled_type(n + 1)
     else:
         if node.module.len == 0:
             id := comp.type_ids[name]
@@ -3061,6 +3080,8 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                 append(comp.elements, args[0])
                 append(comp.elements, key)
                 p.element = comp.elements.len # a call that takes it by pointer puts it back in x[i]
+            elif comp.types[p.type].kind != Ptr:
+                p.element = -1 # a field of it is of a copy that a call cannot put back
             if comp.types[p.type].kind != Ptr:
                 return p
             spot = Value{type = comp.types[p.type].elem, at = load(p).at, mem = true, place = true}
@@ -3253,7 +3274,7 @@ func spelled_type(n: i64) -> i64|Fail:
     comp.pos = first
     start := comp.nodes.len
     try type_expr()
-    if not peek(",") and not peek(")"):
+    if not peek(",") and not peek(")") and not peek("("): # an argument of a builtin, or the type of T(x)
         try unexpected("',' or ')' goes here")
     comp.pos = saved
     t := try resolve(start)
@@ -3490,13 +3511,13 @@ func narrow(cond: i64, matching: bool) -> Fail?:
         c := trust pop(parts)
         o := text(c)
         subject := c + 1
-        other := node_end(subject)
         if comp.nodes[c].kind == Binary and (o == "and" and matching or o == "or" and not matching):
-            append(parts, other)
+            append(parts, node_end(subject))
             append(parts, subject)
         elif comp.nodes[c].kind == Unary and o == "not":
             try narrow(subject, not matching)
         elif comp.nodes[c].kind == Binary and (o == "is" or o == "==" or o == "!="):
+            other := node_end(subject)
             at := comp.tokens[comp.nodes[c].tok].at
             if local_of(subject) == 0: # null == x
                 other = subject
@@ -3554,13 +3575,16 @@ func func_in(t: i64) -> i64:
     return found
 
 func struct_in(t: i64) -> i64:
-    found := t
-    for m in members(t):
-        if comp.types[m].kind == Struct and found != t:
-            return t
-        if comp.types[m].kind == Struct:
-            found = m
-    return found
+    for errors in [false, true]: # an error is written with its name, so the other struct comes first
+        found := t
+        for m in members(t):
+            if comp.types[m].kind == Struct and comp.types[m].error == errors and found != t:
+                return t
+            if comp.types[m].kind == Struct and comp.types[m].error == errors:
+                found = m
+        if found != t:
+            return found
+    return t
 
 func must_read(t: i64) -> bool:
     return fails(t) or comp.types[t].kind == Thread

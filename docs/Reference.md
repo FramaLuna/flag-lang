@@ -203,7 +203,7 @@ A tuple is a struct without names, written with the types of its elements in par
 
 It's made with a literal without a name, `{0, n}`, that takes the type of where it goes like any struct literal, or with its type before it like any struct, `(i32, bool){0, true}`. Alone, where nothing gives it a type, its values make a tuple of their own types, in order: `{1, "a"}` is a `(i64, &strview)`. A `{...}` alone with one value, or with names, has no struct to take: `a {...} of one value needs a place that gives it a type, a tuple holds two or more: w: Wrapper = {1}`, and `a {...} that names its fields needs a place that gives it a type: p: Point = {x = 1, y = 2}`. A function returns several values with `return a, b` (see [Returns](#returns)), and they come apart with `lo, hi := split(text)` (see [Assignments](#assignments)). In parentheses it's the type and never a value: where a type goes, like the argument of a `type $T`, it's the tuple, `make((i32, bool))`, and where a value goes it's an error that writes the literal, `(a, b) is the type of a tuple, and a tuple value is written with braces: {a, b}`.
 
-An error doesn't go inside a tuple, it goes beside it in a union, `-> (i32, bool)|FsError`, so there is one way to return an error: `(i32, FsError)` is `a tuple cannot hold an error, a function returns its error beside the values: -> (i32, bool)|FsError`. `try`, `iferror`, `ifnull` and `trust` give the tuple, which comes apart after: `lo, hi := try split(text)`.
+An error doesn't go inside a tuple, it goes beside it in a union, `-> (i32, bool)|FsError`, so there is one way to return an error: `(i32, bool, FsError)` is `a tuple cannot hold an error, a function returns its error beside the values: -> (i32, bool)|FsError`. `try`, `iferror`, `ifnull` and `trust` give the tuple, which comes apart after: `lo, hi := try split(text)`.
 
 ### Arrays
 `array[T, N]` is N elements one after the other, with the alignment of T. Arrays are values, assigning one copies all of it. `a.len` is N, an integer literal like `@sizeof` that takes the type of where you use it. N is an `i64`, so a bigger count is an error: `array[u8, 0x8000_0000_0000_0000]` gives `9223372036854775808 does not fit in i64, the largest i64 is 9223372036854775807`.
@@ -213,7 +213,7 @@ An array of fat pointers, or of structs that need a value, is given whole: `name
 ### Fixed maps
 `fixmap[K, V, N]` is a struct with `len` and room for N entries, each one the key and the value, in the order they were put. Looking for a key goes through the entries, so they are for small maps. `@sizeof(fixmap[i32, i32, 2])` is 24.
 
-A literal of pairs is one, and it asks for no memory. With a `fixmap` where it goes it takes that type, `colors: fixmap[Color, u32, 4] = {Red: 0xff0000}`, and alone it holds just its pairs, with the types of the literal: `{1: 2}` is a `fixmap[i64, i64, 1]` and `ages := {"bo": 25}` a `fixmap[&strview, i64, 1]` that is full, so `ages["ana"] = 30` doesn't compile, `operator []=` gives `MapFull?`. `{}` is the empty one, an `emptyfixmap`, like `[]` is an `emptyarray`: alone neither has a type, `x := {}` is `x cannot take its type from an empty literal, write the type: x: &map[&strview, i32]`. A `&map` is made from one with `heap` or `arena` (see [Who owns what](#who-owns-what)).
+A literal of pairs is one, and it asks for no memory. With a `fixmap` where it goes it takes that type, `colors: fixmap[Color, u32, 4] = {Red: 0xff0000}`, and alone it holds just its pairs, with the types of the literal: `{1: 2}` is a `fixmap[i64, i64, 1]` and `ages := {"bo": 25}` a `fixmap[&strview, i64, 1]` that is full, so `ages["ana"] = 30` doesn't compile, `operator []=` gives `MapFull?`. `{}` is the empty one, an `emptyfixmap`, like `[]` is an `emptyarray`: alone neither has a type, `x := {}` is `x cannot take its type from an empty literal, write the type: x: &map[&strview, i32] = heap({})`. A `&map` is made from one with `heap` or `arena` (see [Who owns what](#who-owns-what)).
 
 ### Unions
 A tagged union is a 4 byte tag at the start and the value at byte 8, so `i32?` takes 16 bytes and `&strview?` takes 24. A `simd` goes at byte 16, where its alignment puts it, so `simd[f32, 4]?` takes 32. A union of void types is only the tag, 4 bytes, that's why enums are small.
@@ -315,7 +315,7 @@ When you pass an argument, the value is converted only if it's
 - an integer that grows: to a bigger type of the same sign, or from unsigned to a bigger signed (`u32` to `i64`)
 - a `&str` going to a `&strview`, or a `&list[T]` going to a `&listview[T]`
 - a `*array[T, N]` going to a view of `T` (a `&listview[T]`, or a `&strview` if T is `u8`), it keeps the address and sets `len` to N. An owner gets its memory from `heap` or `arena`, so a `&list` doesn't take one (see [Fat pointers](#fat-pointers))
-- `[]` going to a view, the empty one. Alone `[]` and `{}` have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from emptyarray, an empty literal has no type of its own`
+- `[]` going to a view, the empty one, and to an array of any size, all zeros: `a: array[i64, 3] = []` is `[0, 0, 0]`. Alone `[]` and `{}` have no type, `x := []` is an error. A generic can take one as its `$T`, but then no type can be made from that `$T` except a pointer: a generic that returns `array[$T, 2]` or `Box[$T]` for it is an error, `no type can be made from emptyarray, an empty literal has no type of its own`
 - an owner of `never`, `&list[never]` or `&map[never, never]`, going to any list or map: it's what `heap([])`, `heap({})`, `arena(a, [])` and `arena(a, {})` give, an empty owner that holds nothing, so the place says what it holds. Alone it has no type either, `x := heap([])` is `x cannot take its type from an empty literal, write the type: x: &list[i32]`, and it doesn't give a `$T` its type
 - a literal that fits the type
 - a text literal going to a `cstr` (see [Text](#text))
@@ -362,7 +362,7 @@ print(text) # hola
 ## Unions and narrowing
 `is` checks the tag. It needs a tagged union on its left, and a check that is always true or always false is an error, so you know when a type changed and the check is useless.
 
-Narrowing only works on local variables and parameters, not on fields, and reading a field of a member through the union says so: `Card|null has no field rank, and is and case narrow only variables: copy it to one first`. Copy the field to a variable first
+Narrowing only works on local variables and parameters, not on fields, and reading a field of a member through the union says so: `null|Card has no field rank, and is and case narrow only variables: copy it to one first`. Copy the field to a variable first
 ```flag
 found := user.best
 if found is Card:
@@ -484,7 +484,7 @@ func main():
 - when nothing says the type, like in `f := show` or in an argument, the name must have one function and it cannot be generic: `show names several functions and nothing here says which: give it to a variable that says its function type first`
 - the parameters must be exactly those, defaults included, and there is no conversion between function types. Overloads are chosen by their parameters, never by what they return
 - a call is `(` after any value: `f(x)`, `button.on_click(x)`, `steps[i](x)`, `pick(true)(x)`. `name(...)` calls the variable `name` only when it holds a function, any other variable leaves the functions of that name reachable. A constant that holds a function is called by its name too, when no function has that name
-- the arguments convert like in any call (an `i32` doesn't go to an `i64` parameter here either), but a function value has no parameter names and no defaults
+- the arguments convert like in any call, an `i32` grows into an `i64` parameter here too, but a function value has no parameter names and no defaults
 - a function value that got no value is empty, and calling it stops the program with `flag: call of an empty function value`. Passing it to a function stops the program at that call, with `flag: an argument is an empty function value`, so `sort(l, before)` with an empty `before` points at your line and not at the library
 - `==` and `!=` compare two values of the same function type. Printing one shows its address
 - a parameter like `less: func($T, $T) -> bool` takes a function with that shape and `$T` gets its type from it
@@ -706,7 +706,7 @@ Over an array, a list, a listview or text the compiler writes the loop itself: i
 
 Its type follows the rule of `ifnull` (see [Errors](#errors)). Where the place gives a type, like `x: i64 = 1 if c else 2` or a `return`, both sides convert to it. Anywhere else a literal side takes the type of the other side, like it takes the type of the other side of `+`, then it's the type of `a` when `b` fits it, the wider of two integers in either order, and if not the union of both: with `small: u8` and `big: i64`, `0 if c else small` is a `u8`, `small if c else big` an `i64`, `1 if c else 2` an `i64`, and `1 if c else "one"` an `i64|&strview`. A side can be a call that never returns, and then the result has the type of the other side: `n := given if given is i64 else panic("no number")`. A side that gives nothing is an error, `a function that returns nothing is a statement, not a value`.
 
-When the compiler knows `c`, the expression is the side it chose, and the other side is read but not checked or generated, like a `where` block that doesn't hold. It knows a literal and a constant that is one, the platform builtins like `@linux()`, `@can_assign`, a comparison of numbers it knows like `@sizeof($T) == 8` or `$$n > 4`, and `not`, `and` and `or` of those. So `19 if @linux() else 8` is the literal `19` on Linux and `8` elsewhere, which goes to an `i32` parameter and can be the size of an array, and `windows_name() if @windows() else "elsewhere"` calls a function that only Windows has. The type is the one of that side, so `1 if @linux() else 2.5` is an `i64` on Linux and an `f64` elsewhere. `and` and `or` whose left side it knows are the same: `@windows() and f()` is `false` on Linux, and `f()` is not checked there.
+When the compiler knows `c`, the expression is the side it chose, and the other side is read but not checked or generated, like a `where` block that doesn't hold. It knows a literal and a constant that is one, the platform builtins like `@linux()`, `@can_assign`, a comparison of numbers it knows like `@sizeof($T) == 8` or `$$n > 4`, and `not`, `and` and `or` of those. So `19 if @linux() else 8` is the literal `19` on Linux and `8` elsewhere, which goes to an `i32` parameter and, through a constant like `N = 19 if @linux() else 8`, can be the size of an array, and `windows_name() if @windows() else "elsewhere"` calls a function that only Windows has. The type is the one of that side, so `1 if @linux() else 2.5` is an `i64` on Linux and an `f64` elsewhere. `and` and `or` whose left side it knows are the same: `@windows() and f()` is `false` on Linux, and `f()` is not checked there.
 
 ### switch
 Only the first case that matches runs, there is no fallthrough. `case:` is the default and goes last. The subject runs once, before the cases, and the cases run in order until one matches: the values after it don't run, also those in the same `case a, b`.
@@ -726,7 +726,7 @@ func area(s: Circle|Square|null) -> f64:
 ```
 - every type a case names is a member still there: `i32|f64 can never be null, so this case never runs`
 - each member goes in one case: `this switch already handles null above, each type goes in one case`
-- every member is handled or there is a default: `this switch never handles i32|null and has no default case`, naming every member left, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
+- every member is handled or there is a default: `this switch never handles null|i32 and has no default case`, naming every member left, and a default with nothing left is an error: `this default case never runs, the cases above handle every type of Red|Green|Blue`
 - a value is not a case over a union: `a case over null|i32 names one of its types, and this is a value: name the type and compare the value inside its case`. A variable says so: `fav is a variable, and a case over Red|Green|Blue names one of its types: compare the values with == in an if`
 - a type is not a case over anything else: `a case names a type only in a switch over a tagged union, and i32 is not one`
 
@@ -1182,7 +1182,7 @@ and so are `for i in 0..names.len: free(names[i])`, `for e in m: free(e.value)`,
 An element freed at an index it knows, `free(names[0])`, may be any of them, so reading any element through the list after it warns, `names points to memory that may be freed already`, and the others count as never freed. An element taken with `pop` or `remove` and freed counts as all of them freed, with no warning for reading the others: what `pop` and `remove` give is not in the list any more. An element stored in another list, array, map or context counts as all of them stored there.
 
 ### Races
-Two threads race when they use the same memory at once, one of them changes it, and nothing of [Threads](#threads) orders the two. The checker knows which threads may run at each point: one that `parallel` starts runs until `wait` frees its block, also when its `Thread` goes to the caller, to a list or to a function that waits it, and one that runs alone runs until `main` ends. It sees what each thread reads and changes, and what the thread that starts it does meanwhile, also inside the functions they call, and it warns when one changes memory that another one may use then, a variable given by pointer, a field of a `shared context`, an element of a list both reach, or frees it. Two that hold the same lock, each in its `with lock(x):`, never race, and neither do the operations on an atomic. A lock that a function holds counts for the functions it calls
+Two threads race when they use the same memory at once, one of them changes it, and nothing of [Threads](#threads) orders the two. The checker knows which threads may run at each point: one that `parallel` starts runs until `wait` frees its block, also when its `Thread` goes to the caller, to a list walked with `wait` in the same function, or to a function that waits it, and one that runs alone runs until `main` ends. It sees what each thread reads and changes, and what the thread that starts it does meanwhile, also inside the functions they call, and it warns when one changes memory that another one may use then, a variable given by pointer, a field of a `shared context`, an element of a list both reach, or frees it. Two that hold the same lock, each in its `with lock(x):`, never race, and neither do the operations on an atomic. A lock that a function holds counts for the functions it calls
 ```flag
 func add(count: *i64):
     for i in 0..1000:
@@ -1250,6 +1250,13 @@ Where it cannot be sure it warns, and these warnings come from right programs. `
 - past three pointers from its parameters a block of a function stands for all the memory it reaches, so what the function frees or reads deeper than four pointers, like `free(p.a.b.c.d.e)`, is for the caller any of that memory: all of it may be freed, and a read warns when any of it may be freed. What it moves, allocates or points to there, like `append(p.a.b.c.names, x)`, it doesn't follow, and each call says so: `-memory gives up on grow, it changes memory more than three pointers away from its parameters, so this call is not checked`. After the call the memory the caller reaches that far is no longer followed. The contexts of core keep their own memory, so `print` and the files give no such warning
 - data that an atomic hands over, written before `set(ready, 1)` and read after `get(ready)` gives 1, and data that a message of a `Channel` orders without giving it with `send`: it doesn't see that order, so the write and the read race for it
 - a lock that may be one of several, like `with lock(locks[i])` with an `i` it doesn't know, guards nothing for it
+- threads kept in a list and waited by a function that walks the list, or taken one by one with `pop` and waited: for it they may still run after, so what they changed races with what follows
+- threads that each get their own part of a list, `fill(values[0:4], 1)` and `fill(values[4:8], 2)`: for it they change the same memory, a slice of a list stands for all of it
+- an owner that lives in the heap on one path and in a local arena on another: `free` of the arena warns that it is not on the heap
+- a function that gives an element of a list or map its memory and then grows it, like `items[k] = heap([])` and `append(items.*[k], v)`: the caller doesn't see the memory the function gave, so it warns that the function may have no memory to grow in
+- a tree freed by a recursive function that walks the children first: `release may free memory that it also reads`
+- a value taken with `pop` or `remove` on one path and a new block on another, joined in one variable, `a := remove(l, 0) if l.len > 0 else heap("")`, or a variable put in a list on one path and then given a new block: freeing it counts as freeing the elements of the list too
+- an owner element freed in a walk and grown again in a later walk: freeing in place leaves the element empty, but for it the elements may be freed
 - threads that each change a different element, chosen when they run, like `results[j]` with a `j` that each one receives from a `Channel`: for it they change the same memory. A walk is what gives each thread an element of its own
 - memory that a thread changes holding a lock and another one reads holding a different one, when something else orders the two, like what is set up once before the threads start to use it
 
@@ -1258,7 +1265,11 @@ These mistakes give no warning yet, so keep them in mind where they can happen
 - two elements of a list that hold the same block, freed in a walk, are freed twice: each round's element is its own
 - an element freed at an index it doesn't know, outside a walk, counts as all of them freed, so reading another one through the list after it says nothing
 - a pointer to the element of a walk kept after its round, `p = ptr(x)`
-- a block that a function leaves in a context, replaced without a `free` by the next call of that function: for the caller, what a function keeps in a context is one block for each line that allocates it, and what a context holds is not lost
+- a block that a function leaves in a context, replaced without a `free` by the next call of that function, or the elements that a function adds to a list of a context, lost when the list is freed: for the caller, what a function keeps in a context is one block for each line that allocates it, and what a context holds is not lost
+- what goes through a `Channel`: what `receive` and `for v in c` give is not followed, so a leak, a double free or a use after it was freed of what was sent says nothing, and neither does a race on memory a pointer that was sent reaches
+- an owner element of a list or a map that leaves it without a `free`: replaced with `l[i] = v` or `m[k] = v`, dropped by `clear`, or taken with `remove` and dropped. A later walk that frees the elements counts it as freed
+- a view of a key of a `&map[&str, V]` kept in a list after the map frees its keys
+- a pointer that may point to either of two variables of a block that ended, given in an `if` and an `else`: one variable it follows, two it takes as any place of the stack
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked
@@ -1414,8 +1425,8 @@ func drop(object: *Unknown):
 ```
 - it crosses to C: as a parameter, as a field of a struct that goes to C by value, and among the extra arguments of a variadic function
 - one at zero is the `NULL` of C. A C function may take it as no callback, so passing it is fine, and calling it stops the program like an empty function value: `flag: call of an empty function value`
-- `==` and printing work like for function values. `parallel` doesn't run one, `parallel cannot run an extern func(f64) -> f64, it is called the way C calls: wrap the call in a func`
-- a function of Flag doesn't go there: `double is a function of Flag, and the extern func(i32) -> i32 this place takes holds a C function: declare it export func`
+- `==` and printing work like for function values. `parallel` doesn't run one, `parallel cannot run extern func(f64) -> f64, it is called the way C calls: wrap the call in a func`
+- a function of Flag doesn't go there: `double is a function of Flag, and this place expects extern func(i32) -> i32, which holds a C function: declare it export func`
 - a variadic C function has no value, a type cannot say its extra arguments
 - its parameters and what it returns are types that cross to C, checked where the type is written: `extern func(&str) -> i32` is `&str cannot cross the C ABI, only integers, floats, bool, pointers, structs and untagged unions of them do`
 

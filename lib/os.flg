@@ -108,6 +108,9 @@ priv extern "shell32" where @windows():
 priv extern "bcrypt" where @windows():
     func BCryptGenRandom(algorithm: *bytes, into: *bytes, size: u32, flags: u32) -> i32
 
+priv extern "ntdll" where @windows():
+    func RtlNtStatusToDosError(status: i32) -> u32
+
 priv type StartupInfo: # STARTUPINFOEXW
     size: u32
     texts: array[u64, 3]
@@ -281,7 +284,7 @@ func random_bytes(into: &listview[u8]) where @windows():
             part = part[:most]
         failed := BCryptGenRandom(0 as *bytes, ptr(part.*), u32(part.len), 2) # BCRYPT_USE_SYSTEM_PREFERRED_RNG
         if failed != 0:
-            no_random(failed)
+            no_random(windows_errno(RtlNtStatusToDosError(failed))) # an NTSTATUS, not an error of GetLastError
 
 # a key that comes out weak is worse than a program that stops
 priv func no_random(code: i32):
@@ -365,7 +368,7 @@ priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], fo
     for k in 0..3:
         if given[k] >= 0 and given[k] != i32(k):
             posix_spawn_file_actions_adddup2(ptr(actions), given[k], i32(k))
-        else:
+        elif fcntl(i32(k), 1) != -1: # F_GETFD: a closed one stays closed, inheriting it is EBADF on macOS
             posix_spawn_file_actions_addinherit_np(ptr(actions), i32(k))
     if folder.len > 0:
         with scratch():

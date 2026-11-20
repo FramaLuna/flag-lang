@@ -53,7 +53,7 @@ The functions
 - `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
-- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you, its `operator with` calls `close`. It doesn't tell about a failed write, `flush` does
+- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you, its `operator with` calls `close`. It doesn't tell about a failed write, `flush` does. A read that another thread waits in on the same file goes first, so `close` waits for it to end; a `Socket` ends that read, which gets the end of the input
 - `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
 - `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`

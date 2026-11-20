@@ -177,6 +177,20 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- An `assert` of a plain `bool` as the last statement of the program made the compiler stop with an index out of bounds
+- `return a, b` in a function that returns a tuple beside an error with fields, `-> (i64, i64)|Bad`, was `return expects one value`: a literal without a name goes to the struct that is not an error. And a `return` whose first value starts with a bracket, `return (lo + hi) / 2, n`, read only that value
+- A field of the copy that `x[i]` gives, passed where a pointer goes, `bump(t[1].a)`, changed the copy in silence: it is an error now, as assigning it is
+- A literal goes to a `$T?` or a `$T|U` after `$T` is fixed, `pick(m, 5)` with `m: i32`, where it was `no overload of pick matches (i32, i64)`
+- Several places that take their values at once give each value the type of its place when the value reads nothing that the places change, `p, n = {3, 4}, 5`, `x, y = 1 if c else 2, 3` with `u8` places and `f, n = show, 1`, which were errors
+- `Box[i64](b)` converts like `Pair[i64, i64](p)`, where a type of one parameter was read as an index
+- Clearer messages: `(1, 2) is not a value, ... a tuple value is written with braces, {1, 2}`, `return goes at the start of a statement, or last after ifnull or iferror, not inside a value`, `f expects 2 arguments`, `a is given twice, by its place and by its name`, a named argument next to `..`, the suggestion of `a tuple cannot hold an error` made of the types of the tuple, `x := []` that suggests `x: &list[i32] = heap([])`, and the `operator +=` of a type other than text, which no longer says that `a += b` is `a = a + b`
+- `-memory` warns about `free` of a pointer inside a heap block that goes through a function, like `free(ptr(h.b))` with the `free` of core, where it said nothing and the program aborted
+- `-memory` no longer says that memory freed before a walk may never be freed when the walk reads elements that point to it, names the context a thread starts with as the program writes it, `app.log`, where it said `thread $ctx.app`, and says `release may free memory that it also reads` without `through another argument` when the two come from one parameter
+- `fixed` of a value too big for its places to round by the float, like `fixed(70368744177664.875, 2)`, gave a wrong last digit: an exact tie is left to `printf`, which rounds it to even
+- On Linux `write_file` and `append_file` gave their file to the programs that another thread ran at that moment, which the Library says doesn't happen
+- `udp` gave `Bad file descriptor` when the system refused a socket, the error of a call after it; `rename_file` names both paths when it fails; the address of a socket was read 8 bytes past a `sockaddr_in`
+- `close` of a `Socket` waited forever while another thread waited in a read of it: the read ends now, and gets the end of the input
+- On macOS `run`, `output` and `start` failed with `Bad file descriptor` when the program had a closed standard input, output or error; on Windows a failed `random_bytes` named another error; `use raylib` on a glibc older than 2.34 links `dl`
 - The `peer` of a `Socket` that `connect` gives was read after `freeaddrinfo` freed it, and on macOS it was not the address it reached
 - `-memory` follows a list rebuilt in a loop from another one, `fresh` filled walking `names` and then `names = fresh`, where it said that `names` and the elements of the walk may be freed already and that `fresh` may never be freed: a block named after the place that holds it leaves that name when the place takes another value. So does a function that rebuilds a list of a context and is called in a loop, where it said that the list may never be freed
 - A field of a context whose type holds an owner through a type parameter, like `runs: Lock[&list[i64]]`, is an error when it has no default, `app.runs.value starts without memory, and a context gets only the defaults of its fields: runs: Lock[&list[i64]] = {value = heap([])}`, where the program stopped when it grew, with no warning of `-memory`

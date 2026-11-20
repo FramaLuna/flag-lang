@@ -1188,7 +1188,9 @@ func visit(block: i64):
             if not o.atomic:
                 access(address, true, o.size)
             if o.code == Store and mem.fn.names[o.a.temp].len == 0 and mem.fn.variables[o.b.temp] and (comp.types[mem.fn.places[o.b.temp]].kind == Ptr or comp.types[mem.fn.places[o.b.temp]].kind == Thread):
-                christen(target_of(o.a), o.b.temp)
+                christen(target_of(o.a), mem.fn.names[o.b.temp])
+            elif o.code == Store and mem.fn.names[o.a.temp].len == 0 and sole(address) != NONE and address.off != ANY and address.stride == 0: # a field, like c.last = heap(...)
+                christen(target_of(o.a), spelled(sole(address), address.off, 8).name)
             if o.code == Store:
                 stash(address, target_of(o.a))
             else:
@@ -1205,7 +1207,7 @@ func visit(block: i64):
             if not mem.fn.variables[o.b.temp]:
                 mem.fn.names[o.b.temp] = mem.fn.names[o.a.temp]
             elif mem.fn.names[o.a.temp].len == 0 and comp.types[mem.fn.places[o.b.temp]].kind == Fat:
-                christen(fetch(from), o.b.temp)
+                christen(fetch(from), mem.fn.names[o.b.temp])
             transfer(to, from, i64(o.size), o.shape)
         case Offset:
             x := target_of(o.a)
@@ -1397,6 +1399,8 @@ func visit(block: i64):
                         if ob.root > 0 and ob.root <= o.count:
                             name = named(mem.args[i64(o.first) + ob.root - 1].temp, g, ob.root - 1)
                         why := refusal(b, ob.loose)
+                        if why.len == 0 and marks.freed[x] and ob.depth == 0 and b.off != ANY and b.off != 0 and b.stride == 0 and not empty(freeable(b.live)): # what the call frees is where its argument points
+                            why = ", it points inside a heap block, not at its start"
                         homeless: &strview = "" # why it cannot grow: its arena is 0 on every path, or on some path in a word followed path by path
                         if marks.killed[x] and ob.home != 0:
                             arena := obj_of(g, i64(ob.home) - 1)
@@ -1430,7 +1434,9 @@ func visit(block: i64):
                                 shared := not empty((b.live and c.live) - mem.pinned - mem.fn.far) or b.slot != 0 and c.slot != 0 and (b.slot == c.slot or b.slot == ALL or c.slot == ALL)
                                 if y != x and not sibling and (ob.root > 0 or oy.root > 0) and (marks.used[y] or marks.killed[y]) and shared:
                                     said: &str = heap("")
-                                    said += who + " may free memory that it also reads through another argument"
+                                    said += who + " may free memory that it also reads"
+                                    if ob.root != oy.root:
+                                        said += " through another argument"
                                     warn(view(said), o.pos, "", 0, mem.fns[g].strict)
                                     break
                 for x in relevant and outer:
@@ -1757,7 +1763,10 @@ func visit(block: i64):
                     h := mem.fn.objs[v].parent
                     freed := mem.marks.freed[v]
                     all := o.size != 0 and freed and not mem.marks.live[v] # a walk without break freed the element of every round on every path
+                    gone := empty(kin(h) and mem.marks.live) # freed before the walk, the rounds don't bring it back
                     absorb(v, kin(h), true)
+                    if gone:
+                        mem.marks.live = mem.marks.live - kin(h)
                     if all:
                         for k in kin(h):
                             condemn(k, true, true)
@@ -2010,7 +2019,7 @@ func spelled(owner: i64, off: i32, size: u32) -> Item:
             out = Item{name = mem.fn.names[t], type = mem.fn.places[t]}
     else:
         x := mem.fn.objs[owner]
-        if x.kind == Shared:
+        if x.kind == Shared or (mem.fn.keys[owner] and 0xff) == COPY: # a context, or the copy a thread starts with
             given := x.name
             if starts_with(given, "thread "):
                 given = given["thread ".len:]
@@ -2037,8 +2046,8 @@ func spelled(owner: i64, off: i32, size: u32) -> Item:
         if ty.kind == Array and comp.types[ty.elem].size > 0:
             out.type = ty.elem
             off = off % i32(comp.types[ty.elem].size)
-        for item in comp.items[ty.first:ty.first + ty.count]:
-            if ty.kind == Struct and not item.shared and item.n <= off and i64(off) + i64(size) <= item.n + comp.types[item.type].size:
+        for item in comp.items[ty.first:ty.first + ty.count] if ty.kind == Struct else comp.items[0:0]: # an array counts elements, not fields
+            if not item.shared and item.n <= off and i64(off) + i64(size) <= item.n + comp.types[item.type].size:
                 path: &str = heap("")
                 path += out.name + "." + item.name
                 out = Item{name = view(path), type = item.type}
@@ -2307,10 +2316,10 @@ func define(t: u32, v: Target):
         append(mem.active, t)
 
 # memory that a call gives takes the name of the first variable that holds it
-func christen(v: Target, t: u32):
+func christen(v: Target, name: &strview):
     for h in objects(v.live) and mem.fn.heaps:
         if mem.fn.objs[h].name.len == 0:
-            mem.fn.objs[h].name = mem.fn.names[t]
+            mem.fn.objs[h].name = name
 
 func pointing(v: Target) -> bool:
     return not empty(objects(v.live)) or not empty(v.dead) or v.slot != 0
