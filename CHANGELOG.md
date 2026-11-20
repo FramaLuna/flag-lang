@@ -284,6 +284,8 @@ Fixed
 - A text literal as a `cstr` constant or default, `TITLE: cstr = "window"` or a field `name: cstr = "app"`, was `... and this one is computed when the program runs`: it is the address of its bytes, which the compiler knows
 - A lane of a `simd` chosen with a constant with a type, `v[LANE]` and `v[LANE] = 9.0` with `LANE: i64 = 2`, was `a lane of a simd is chosen with a constant, ...`: any number the compiler knows chooses it
 - `assert total == LIMIT` with `LIMIT: i64 = 4` wrote `and LIMIT is 4`: a side the compiler knows is not written, like a literal
+- A thread that held a `Lock` and took it again in a `-shared` library, or in the program from a library, waited for itself forever, and so did a `Channel` they share: each core took the thread for another. A `Lock` keeps the thread that holds it by its number of the system, `pthread_self` or `GetCurrentThreadId`, which the program and every library agree on
+- A thread that core didn't start, one of C that calls an `export func` or one of the program that calls a library, kept the blocks of its scratch and the line of `print` after it ended: 3000 short threads that called an export left 200 MB. The first time each one takes memory the thread asks the system to free it when it ends, through a key of `pthread` on Linux, `_tlv_atexit` on macOS and one of FLS on Windows, and the threads of `parallel` do the same. The thread that closes a library frees what the library gave it at `close`
 
 Faster
 - Checking the compiler takes 1 % fewer instructions, and so does `-memory`: a copy carries its type, and `-memory` reads which words hold a pointer from a table made once for each type

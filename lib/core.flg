@@ -33,6 +33,7 @@ priv extern "c":
     func pthread_create(thread: *u64, attributes: *bytes, run: *bytes, argument: *bytes) -> i32
     func pthread_join(thread: u64, result: *bytes) -> i32
     func pthread_detach(thread: u64) -> i32
+    func pthread_self() -> u64
     func pthread_attr_init(attributes: *bytes) -> i32
     func pthread_attr_setstacksize(attributes: *bytes, size: i64) -> i32
     func pthread_attr_destroy(attributes: *bytes) -> i32
@@ -44,6 +45,7 @@ priv extern "c":
     func os_unfair_lock_lock(lock: *u32)
     func os_unfair_lock_unlock(lock: *u32)
     func CreateThread(attributes: *bytes, stack: i64, run: *bytes, argument: *bytes, flags: u32, id: *u32) -> u64
+    func GetCurrentThreadId() -> u32
     func WaitForSingleObject(handle: u64, milliseconds: u32) -> u32
     func CloseHandle(handle: u64) -> i32
     func AcquireSRWLockExclusive(lock: *bytes)
@@ -74,6 +76,19 @@ priv extern "c":
     func Sleep(milliseconds: u32)
 
 extern "pthread" where @linux():
+
+priv extern "c" where @linux():
+    func pthread_key_create(key: *u32, destructor: *bytes) -> i32
+    func set_key(key: u32, value: *bytes) -> i32 = "pthread_setspecific"
+    func drop_key(key: u32) -> i32 = "pthread_key_delete"
+
+priv extern "c" where @windows():
+    func FlsAlloc(callback: *bytes) -> u32
+    func set_key(index: u32, value: *bytes) -> i32 = "FlsSetValue"
+    func drop_key(index: u32) -> i32 = "FlsFree"
+
+priv extern "c" where @macos():
+    func _tlv_atexit(callback: *bytes, argument: *bytes)
 
 priv extern "ws2_32" where @windows():
     func WSAGetLastError() -> i32
@@ -717,6 +732,8 @@ operator with(s: Scratch):
     scratch_space.arena.used = s.used
 
 func tmp(size: i64) -> *bytes:
+    if scratch_space.arena.blocks.cap == 0:
+        free_at_end()
     at := take(scratch_space.arena, size)
     if at as u64 == 0:
         out_of_memory()
@@ -1224,7 +1241,7 @@ operator +=(s: *&str, p: Padded[$T]):
 
 type Lock[$T]:
     room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
-    owner: atomic[*bytes] # the thread that holds it, which the others read too
+    owner: atomic[u64] # the thread that holds it, which the others read too
     depth: i64
     value: $T # what it guards, null when it guards code
 
@@ -1246,7 +1263,7 @@ operator with(held: Locked):
     l := held.lock
     l.depth -= 1
     if l.depth == 0:
-        set(l.owner, 0 as *bytes)
+        set(l.owner, 0)
         release(l)
 
 # takes the lock only when no thread holds it, this one neither, so a thread that must not wait never does
@@ -1260,8 +1277,12 @@ priv func try_lock(l: *Lock[null]) -> bool:
     l.depth = 1
     return true
 
-priv func me() -> *bytes:
-    return ptr(scratch_space) as *bytes # each thread has its own
+# the same for the program and for each library, which have contexts of their own
+priv func me() -> u64 where not @windows():
+    return pthread_self()
+
+priv func me() -> u64 where @windows():
+    return u64(GetCurrentThreadId())
 
 priv func acquire(l: *Lock[null]) where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
@@ -1306,7 +1327,7 @@ priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
 priv func pause(c: *Condition, l: *Lock[null]):
     if l.depth > 1:
         panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", place = "") # no place, the chain shows the with
-    set(l.owner, 0 as *bytes)
+    set(l.owner, 0)
     l.depth = 0
     rest(c, l)
     set(l.owner, me())
@@ -1337,6 +1358,7 @@ priv HEAD = 64 # where the compiler puts the result of a thread
 priv shared context threads:
     running: Lock[i64] # it guards the done and alone of each thread too
     changed: Condition
+    key: Lock[i64] = {value = -1} # of pthread or of FLS, whose callback is flag_ended: -1 until a thread asks, and -2 once flag_exit forgot it, so the ending asks for no other
 
 priv STACK = 8 << 20
 
@@ -1365,7 +1387,6 @@ priv func started(t: *Started, run: *bytes) -> bool where @windows():
     return t.handle != 0
 
 priv func finished(block: *bytes, pointing: bool):
-    free(printing.line)
     drop_stack()
     t := block as *Started
     alone := false
@@ -1373,13 +1394,34 @@ priv func finished(block: *bytes, pointing: bool):
         alone = t.alone
         if pointing and not alone:
             t.left = scratch_space.arena
+            scratch_space.arena = Arena{} # its blocks are of the thread that waits now, not of flag_ended
         t.done = true
         threads.running.value -= 1
         wake(threads.changed)
-    if alone or not pointing:
-        free(scratch_space.arena)
     if alone:
         free(block)
+
+# what core gives a thread, its scratch and the line of print, goes when the thread ends: the first time each one takes memory, the thread asks the system to call flag_ended then
+priv func free_at_end():
+    where @macos():
+        _tlv_atexit(ptr(flag_ended), 0 as *bytes) # macOS never unloads a library with thread data, so this needs no key that a close forgets
+    where not @macos():
+        with lock(threads.key):
+            if threads.key.value == -1:
+                where @linux():
+                    key: u32 = 0
+                    if pthread_key_create(ptr(key), ptr(flag_ended)) == 0:
+                        threads.key.value = i64(key)
+                where @windows():
+                    threads.key.value = i64(i32(FlsAlloc(ptr(flag_ended)))) # FLS_OUT_OF_INDEXES is -1
+                if threads.key.value >= 0:
+                    atexit(ptr(flag_exit)) # it forgets the key, before the library and flag_ended go
+            if threads.key.value >= 0:
+                set_key(u32(threads.key.value), 1 as *bytes)
+
+priv export func flag_ended(unused: *bytes):
+    free(printing.line)
+    free(scratch_space.arena)
 
 # the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
 priv func reap(block: *bytes, place: &strview):
@@ -1607,6 +1649,12 @@ func flush():
 priv export func flag_exit():
     if io.table.value.streams.len > 0 and said() and get(io.ended) == 1: # a library that never wrote has nothing to say at its close, and a thread wrote after the end
         _exit(1)
+    flag_ended(0 as *bytes) # the thread that closes the library, or ends the program, is done with it
+    where not @macos():
+        with lock(threads.key):
+            if threads.key.value >= 0:
+                drop_key(u32(threads.key.value))
+            threads.key.value = -2
 
 # if the standard output failed, after what waits goes out, said once
 priv func said() -> bool:
@@ -1642,6 +1690,8 @@ priv context printing:
     line: &str = heap("")
 
 priv func line() -> *&str:
+    if printing.line.cap == 0:
+        free_at_end()
     return ptr(printing.line)
 
 priv func print_line(f: File, from: i64):

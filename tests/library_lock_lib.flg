@@ -1,0 +1,15 @@
+type Shared:
+    count: Lock[i64]
+    queue: Channel[i64, 2]
+
+export func bump(s: *Shared):
+    with lock(s.count):
+        s.count.value += 1
+
+export func bump_back(s: *Shared, back: extern func(*Shared)):
+    with lock(s.count):
+        s.count.value += 1
+        back(s)
+
+export func put(s: *Shared, n: i64):
+    send(s.queue, n)
