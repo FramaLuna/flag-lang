@@ -1,0 +1,14 @@
+shared context box:
+    ready: atomic[i32]
+    data: i64
+
+func write():
+    box.data = 42
+    set(box.ready, 1)
+
+func main():
+    t := parallel write()
+    while get(box.ready) == 0:
+        pass
+    print(box.data)
+    wait(t)

@@ -1377,6 +1377,12 @@ func gen(n: i64, want: i64) -> Value|Fail:
             return fail("'&' is not an operator, write: ptr(" + text(n + 1) + ")", tok.at)
         if tok.text == "*" and lookup(text(n + 1)) != 0:
             return fail("'*' does not go before a value, write: " + text(n + 1) + ".*", tok.at)
+        if node.kind == TTuple:
+            close := node.tok
+            while unclosed(node.tok, close) > 0:
+                close += 1
+            inside := excerpt(node.tok + 1, close - 1)
+            return fail("(" + inside + ") is the type of a tuple, and a tuple value is written with braces: {" + inside + "}", tok.at)
         return fail(comp.types[try resolve(n)].name + " is a type, not a value", at_of(n))
     case:
         return collection(n, want)
@@ -3998,6 +4004,7 @@ func statements(n: i64) -> Fail?:
 func open_scope():
     append(comp.scopes, comp.scope)
     comp.scope = comp.scopes.len
+    append(comp.spare, -1) # the spare slots of the outer blocks wait past it: a block takes only the slots it made, so its end is theirs
     if comp.debug:
         append(comp.body, Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope))})
 
@@ -4009,6 +4016,10 @@ func close_scope(first: i64):
     if outer != 0 and first < comp.slots.len:
         inside(ended(first))
     comp.scope = outer
+    for i in reverse 0..comp.spare.len:
+        if comp.spare[i] < 0:
+            remove(comp.spare, i)
+            break
 
 # i at the end of the block, before the jump that left it when one did
 func inside(i: Ins):
@@ -4344,8 +4355,10 @@ func alloc(t: i64, variable: bool = false) -> Arg:
     size := i64(room(t))
     name := alloc_op(t)
     if size > 8 and comp.types[t].kind != Union and not variable: # small slots live in registers, unions are copied whole, a variable names its slot
-        for i in 0..comp.spare.len:
+        for i in reverse 0..comp.spare.len:
             s := comp.spare[i]
+            if s < 0:
+                break
             if comp.slots[s].a.n == size and comp.slots[s].op == name:
                 remove(comp.spare, i)
                 append(comp.held, s)

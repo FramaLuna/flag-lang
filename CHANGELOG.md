@@ -174,6 +174,10 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- Inside a function with a `type $T`, `$T(x)` converts and `$T{1, 2}` is a literal, where `return $B(x)` was `unexpected '(', the statement already ended`. A tuple type is an argument, `make((i32, bool))`, where it was read as a value, and `(a, b)` where a value goes says `(a, b) is the type of a tuple, and a tuple value is written with braces: {a, b}`
+- `send` and `receive` that wait inside a `with lock(c.queue)` let the lock go in the middle of that `with`, and another thread changed the channel there: now they stop the program, `flag: a channel waits inside a with lock of its queue, where no other thread can take the lock to change it`
+- `-memory` lost a temporary of a block that took a slot of the stack of an outer block: `append(keep, ptr(["a", "b"]))` inside an `if` and `keep[0][0]` after it said nothing. A block takes only the slots of the stack that it made, so its end is theirs
+- `-memory` didn't count as a read what a function returns by value, nor an element of a walk passed by value to a call: `print(first(keep[0]))`, `print(keep)` and two nested `for` over a temporary whose block had ended said nothing, and a struct returned from a context that another thread changes was not a race
 - The warnings of `-memory` about memory that `m[k] += v` allocates in a map point at that line, where they had no place
 - `l: &list[i32] = ptr([1, 2])` and `append(l, 3)` stopped with `realloc(): invalid pointer`, the list owned the array on the stack: a list doesn't take a `*array` any more, it copies one with `heap` or `arena`
 - `-memory` follows the temporaries of a thread through a function that waits for it: `s = finish(t)` inside a `with scratch():`, with a `finish` of yours that returns `wait(t)`, and `print(s)` after the `with` warns `s points to memory that may be freed already`, like a `wait` in place did

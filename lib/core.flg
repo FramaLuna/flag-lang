@@ -1267,12 +1267,13 @@ priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
     pause(c, l as *Lock[null])
 
 priv func pause(c: *Condition, l: *Lock[null]):
-    depth := l.depth
+    if l.depth > 1:
+        panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", "") # no place, the chain shows the with
     set(l.owner, 0 as *bytes)
     l.depth = 0
     rest(c, l)
     set(l.owner, me())
-    l.depth = depth
+    l.depth = 1
 
 priv func rest(c: *Condition, l: *Lock[null]) where not @windows():
     sign(ptr(c.room[0]), 0x3cb0_b1bb)

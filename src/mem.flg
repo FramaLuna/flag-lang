@@ -1427,7 +1427,7 @@ func visit(block: i64):
                     if marks.gone[x]:
                         vanish(freeable(b.must))
                     if marks.used[x]:
-                        mem.marks.used = mem.marks.used or passed
+                        use(b.live)
                     if marks.made[x]:
                         mem.marks.made = mem.marks.made or passed
                         if ob.home != 0:
@@ -1763,6 +1763,8 @@ func visit(block: i64):
                 drop(i64(wipe) - 1)
                 wipe = mem.fn.cells[wipe - 1].next
             if mem.fn.blob:
+                touch(given, mem.fn.names[o.a.temp])
+                access(given, false, o.size)
                 transfer(Target{live = bit(RETURNED), must = bit(RETURNED)}, given, i64(o.size), o.mask)
                 given = number(0)
             if mem.final:
@@ -2922,15 +2924,18 @@ func kill(v: Target, condemned: Set, strong: Set) -> Target:
     return v
 
 func touch(a: Target, name: &strview):
-    mem.marks.used = mem.marks.used or (a.live or a.dead) and mem.fn.outer
+    use(a.live or a.dead)
+    stale(a, name, false)
+
+func use(x: Set):
+    mem.marks.used = mem.marks.used or x and mem.fn.outer
     if mem.fn.walks:
-        focus := (a.live or a.dead) and mem.fn.focus
+        focus := x and mem.fn.focus
         mem.marks.used = mem.marks.used or focus
         for r in focus: # the element in place is in the memory of its list
             p := mem.fn.objs[r].parent
             if (mem.fn.keys[r] and 0xff) == ROUND and p >= 0 and p < SLOTS:
-                mem.marks.used = mem.marks.used or kin(p) and mem.fn.outer
-    stale(a, name, false)
+                use(kin(p))
 
 func stale(a: Target, name: &strview, strict: bool):
     if mem.speak and not empty(a.dead):
