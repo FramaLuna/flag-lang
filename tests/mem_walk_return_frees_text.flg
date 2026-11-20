@@ -1,0 +1,28 @@
+func deferred(text: &strview) -> i64:
+    copy: &str = heap(text)
+    defer free(copy)
+    for line in split(copy, "\n"):
+        if line == "b":
+            return 1
+    return 0
+
+func explicit(text: &strview) -> i64:
+    copy: &str = heap(text)
+    for line in split(copy, "\n"):
+        if line == "b":
+            free(copy)
+            return 1
+    free(copy)
+    return 0
+
+func before(text: &strview) -> i64:
+    copy: &str = heap(text)
+    lines := split(copy, "\n")
+    free(copy)
+    for line in lines:
+        if lines.len > 1:
+            return 1
+    return 0
+
+func main():
+    print(deferred("a\nb"), explicit("a\nc"), before("a"))

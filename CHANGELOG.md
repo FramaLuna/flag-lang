@@ -291,6 +291,7 @@ Fixed
 - `-memory` said `free cannot release x, it may be freed already` of a walk that frees the elements of a list or an array after a walk that grew them, when they were swapped before, `l[0], l[1] = l[1], l[0]`, or given one by one, `a: array[&str, 2] = [heap("a"), heap("b")]`, and `b points to memory that may be freed already` of nested arrays of owners grown in nested walks, `for row in grid: for b in row: append(b, 1)`: a walk keeps up to date the lists and arrays it walks
 - `-memory` said `the memory that heap allocates here may never be freed` of an optional owner field freed in a walk, `n := e.nick` and `if n is &str: free(n)` in `for e in es`
 - A tree freed by a recursive function, whose nodes hold a `&str`, made `-memory` say `release cannot release root, it is not on the heap` next to `release may free memory that it also reads`
+- `-memory` said `the memory allocated here for text may never be freed` of a `return` inside a walk over views of `text` that frees it, `defer free(text)` with `for line in split(text, "\n"): if line == "b": return 1`, or of one after `free(text)` before the walk: a return, like the end of the walk, doesn't bring back what was freed
 
 Faster
 - Checking the compiler takes 1 % fewer instructions, and so does `-memory`: a copy carries its type, and `-memory` reads which words hold a pointer from a table made once for each type

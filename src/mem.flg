@@ -386,6 +386,8 @@ func check_memory():
                 o.to = i.to + 1 - func.temps
                 o.blob = i.cls >= AGG
             name := i.op
+            if name == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag.stamp" and func.export and func.inst != comp.entry: # a thread new to an export turns the zeros of its contexts into their defaults, and neither holds memory
+                continue
             if name == "call":
                 o.code = Call
                 o.first = u32(mem.args.len)
@@ -762,6 +764,9 @@ func check_memory():
         for t in comp.trusted:
             if t.check and t.from <= mem.fns[g].at and mem.fns[g].at < t.to:
                 mem.fns[g].strict = true
+    stamper := mem.ids["$flag.stamp"]
+    if stamper is i64: # what the contexts of a thread start with, also in a library, where only exports would call it
+        connect(stamper)
     for g in 0..mem.fns.len:
         node := mem.fns[g].node
         start := comp.tokens[comp.nodes[node].tok].at
@@ -1814,14 +1819,11 @@ func visit(block: i64):
                     freed := mem.marks.freed[v]
                     born := mem.fn.objs[h].born > i64(o.from) and mem.fn.objs[h].born < i64(i) # in the walk, so maybe after the elements it visits
                     all := o.size != 0 and freed and not mem.marks.live[v] and not born # a walk without break freed the element of every round on every path
-                    gone := empty(kin(h) and mem.marks.live) # freed before the walk, the rounds don't bring it back
                     if mem.marks.killed[v] and not all: # some may be freed or moved, and which the lists do not say, so a view from before the walk may point to them
                         for k in kin(h):
                             condemn(k, false, false)
                         sweep()
-                    absorb(v, kin(h), true)
-                    if gone:
-                        mem.marks.live = mem.marks.live - kin(h)
+                    back(v)
                     if all:
                         for k in kin(h):
                             condemn(k, true, true)
@@ -1846,7 +1848,7 @@ func visit(block: i64):
             while n > 0 and mem.fn.walks: # a return inside a walk: its elements go back to what they stand for, the inner walks first
                 n -= 1
                 if focus[n] and (mem.marks.live[n] or mem.marks.killed[n]) and (mem.fn.keys[n] and 0xff) != ROUND:
-                    absorb(n, kin(mem.fn.objs[n].parent), true)
+                    back(n)
             given := target_of(o.a)
             wipe(RETURNED)
             if mem.fn.blob:
@@ -2862,6 +2864,14 @@ func visited(walk: u64):
                     stash(plus(element, c.off, 0, 0), back)
                 drop(i64(k) - 1)
                 k = c.next
+
+# the element r of a walk goes back to the blocks of its line, which stay freed when they were, before the walk or in it
+func back(r: i64):
+    blocks := kin(mem.fn.objs[r].parent)
+    gone := empty(blocks and mem.marks.live)
+    absorb(r, blocks, true)
+    if gone:
+        mem.marks.live = mem.marks.live - blocks
 
 # what stands for the blocks of the line of line that a walk visited
 func visits(walk: u64, line: i64) -> i64:
