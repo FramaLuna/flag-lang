@@ -30,12 +30,18 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         if (kind == Struct or kind == Fat or kind == Context or kind == Alias) and not generic(d):
             t := try make_type(k, [], kind == Fat, comp.tokens[comp.nodes[d].tok].at)
             ty := comp.types[t]
-            if kind == Context and ty.hollow: # nothing runs when a thread starts, so a field that starts without a value never gets one
+            if kind == Context: # nothing runs when a thread starts, so a field that starts without a value never gets one
                 for f in comp.items[ty.first:ty.first + ty.count]:
                     if bare(t, f) and emptied(f.type).len > 0:
                         return fail(text(d) + "." + f.name + " starts without a value, and a context gets only the defaults of its fields: " + f.name + ": " + comp.types[f.type].name + " = " + emptied(f.type), at_of(field_node(t, f.name)))
                     if bare(t, f):
                         return fail(text(d) + "." + f.name + " starts without a value, and a context gets only the defaults of its fields", at_of(field_node(t, f.name)))
+                    inside := unfed(f.type)
+                    if f.default == 0 and inside.name.len > 0:
+                        given: &str = heap("")
+                        if not contains(inside.name, "."):
+                            given += ": " + f.name + ": " + comp.types[f.type].name + " = {" + inside.name + " = " + emptied(inside.type) + "}"
+                        return fail(text(d) + "." + f.name + "." + inside.name + " starts without memory, and a context gets only the defaults of its fields" + given, at_of(field_node(t, f.name)))
             if kind == Context and declared(d) == "shared": # one for all the threads, in the data with what it starts with
                 held: &str = heap("")
                 body := comp.body.len
@@ -3591,6 +3597,20 @@ func regive(since: i64, before: i64, given: bool):
             comp.vars[k].given = given
 
 # the empty value of t for a message, heap([]) for a list or "" for a text view, or nothing when it has none
+# an owner inside the struct t that starts without memory, by its path, as a field of a type parameter does
+func unfed(t: i64) -> Item:
+    ty := comp.types[t]
+    if ty.kind == Struct:
+        for f in comp.items[ty.first:ty.first + ty.count]:
+            if f.default == 0 and not f.shared and starts_with(emptied(f.type), "heap("):
+                return f
+            inside := unfed(f.type)
+            if f.default == 0 and not f.shared and inside.name.len > 0:
+                path: &str = heap("")
+                path += f.name + "." + inside.name
+                return Item{name = view(path), type = inside.type}
+    return Item{}
+
 func emptied(t: i64) -> &strview:
     name := comp.types[t].name
     if name == "&str":

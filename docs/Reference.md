@@ -924,7 +924,7 @@ Like any constant it cannot change: `limit += 1` is `limit is a constant, it can
 A constant and a function of the same module cannot have the same name: `limit is declared as a constant and as a function, a name is one or the other`. A constant is not a type, `x: limit` is `limit is a constant, not a type`.
 
 ### Contexts
-A context is a value with fields that every function sees, and a type: you can print it or take `ptr(app.depth)`, and a nested block makes a type like `app.inner`. Its fields start at zero or at their default values (see [Structs](#structs)). Nothing runs to give a field a value when a thread starts, so a fat pointer, or what holds one, has a default: `names: &list[&strview] = heap([])`, and without one it's `app.names starts without a value, and a context gets only the defaults of its fields: names: &list[&strview] = heap([])`. Who can see it follows the module rules, like a type, and a local variable or a parameter cannot take its name, `app is a context, a variable cannot take its name`. There are three kinds, and the word goes before `context`, after `priv`
+A context is a value with fields that every function sees, and a type: you can print it or take `ptr(app.depth)`, and a nested block makes a type like `app.inner`. Its fields start at zero or at their default values (see [Structs](#structs)). Nothing runs to give a field a value when a thread starts, so a fat pointer, or what holds one, has a default: `names: &list[&strview] = heap([])`, and without one it's `app.names starts without a value, and a context gets only the defaults of its fields: names: &list[&strview] = heap([])`. So is an owner that a field of a type parameter holds, which starts without memory: `runs: Lock[&list[i64]]` is `app.runs.value starts without memory, and a context gets only the defaults of its fields: runs: Lock[&list[i64]] = {value = heap([])}`. Who can see it follows the module rules, like a type, and a local variable or a parameter cannot take its name, `app is a context, a variable cannot take its name`. There are three kinds, and the word goes before `context`, after `priv`
 ```flag
 context app:             # one for each thread, at its start in each new thread
     depth: i32
@@ -1258,6 +1258,7 @@ These mistakes give no warning yet, so keep them in mind where they can happen
 - two elements of a list that hold the same block, freed in a walk, are freed twice: each round's element is its own
 - an element freed at an index it doesn't know, outside a walk, counts as all of them freed, so reading another one through the list after it says nothing
 - a pointer to the element of a walk kept after its round, `p = ptr(x)`
+- a block that a function leaves in a context, replaced without a `free` by the next call of that function: for the caller, what a function keeps in a context is one block for each line that allocates it, and what a context holds is not lost
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked

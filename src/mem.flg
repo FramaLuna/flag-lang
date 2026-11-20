@@ -1494,7 +1494,7 @@ func visit(block: i64):
                         if t.slot != 0 and t.slot != ALL:
                             append(mem.writes, Write{v, cell_at(SLOTS + i64(t.slot) - 1, p.off, p.stride, p.count, c.member), one and exact})
                         if t.live[OUTSIDE]:
-                            if x != OUTSIDE and mem.speak and mem.fn.stuck.len == 0 and followable(v):
+                            if x != OUTSIDE and mem.speak and mem.fn.stuck.len == 0 and stuck == 0 and followable(v): # a call already said to be not checked says no more
                                 warn(UNFOLLOWED, o.pos, "", 0, mem.fns[g].strict)
                             append(mem.writes, Write{v, cell_at(OUTSIDE, ANY, 0, 0, 0), false})
                 mem.order.len = 0
@@ -2506,6 +2506,9 @@ func settle(id: i64, given: Target, exact: bool):
         v = number(0)
         v.writer = given.writer
     if exact and c.off != ANY and c.stride == 0:
+        held := mem.index[(child(i64(c.owner), c.off, 0) xor FIELD) or PLACE]
+        if held is u32 and mem.marks.live[i64(held)] and not v.live[i64(held)]: # the block named after this place leaves it, and the name is for the next one
+            age(i64(held))
         place(id, v)
     else:
         old := current(id)
@@ -2664,6 +2667,12 @@ func object(key: u64, x: Obj) -> i64:
 
 func reborn(was: Target, blocks: Set, out: *Target, arena: Target, key: u64, given: Obj) -> i64:
     unset := was.live[NOWHERE] or blank(was)
+    own := mem.index[key]
+    if unset and own is u32 and was.live[i64(own)]: # empty or holding the block named after it, the place holds that one again
+        mem.marks.live[i64(own)] = true
+        out.live[i64(own)] = true
+        out.must[i64(own)] = true
+        return i64(own)
     if unset and single(blocks) and not empty(blocks and mem.fn.heaps and was.must):
         mem.marks.live = mem.marks.live or blocks
     elif unset:
@@ -2678,13 +2687,17 @@ func birth(key: u64, given: Obj) -> i64:
     if r == OUTSIDE:
         return r
     if mem.marks.live[r] or mem.marks.freed[r] or mem.marks.killed[r]:
-        x := mem.fn.objs[r]
-        x.many = true
-        t := object(mem.fn.keys[r] or AGED, x)
-        if t != r:
-            absorb(r, bit(t), false)
+        age(r)
     revive(r)
     return r
+
+# r joins the older blocks of its line, so it stands for a block made later
+func age(r: i64):
+    x := mem.fn.objs[r]
+    x.many = true
+    t := object(mem.fn.keys[r] or AGED, x)
+    if t != r:
+        absorb(r, bit(t), false)
 
 # r holds a block made now
 func revive(r: i64):
