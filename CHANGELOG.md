@@ -3,6 +3,7 @@
 ## 0.6.0 (not released yet)
 
 Changed
+- `x[i] = v` writes through the pointer that `operator []=(x, i)` gives when the type has one, like `x[i] += v` already did, and calls `operator []=(x, i, v)` only when it has none, so a type with only the form of two parameters can be assigned. A map has only that form now, and a type of yours with both uses the pointer for `=` too
 - What goes to the C compiler goes after `-cc`, until the `--` of `run` or `test`: `flagc game.flg -cc vec.c -lm`. An argument that flagc doesn't know is an error that gives the command line it expected, `run has to be the first argument: flagc run -memory hi.flg`, where before it went to the C compiler and `flagc -memory run hi.flg` ended in `ld: cannot find run`
 - A test is a `func test_name()` with no parameters and no result. A function whose name starts with `test_` and that has parameters or a result is a helper, where before it was an error
 - `error:`, `warning:` and `note:` are in color only when the errors go to a terminal, and never with `NO_COLOR`
@@ -174,6 +175,9 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- `l = l[1:]`, `s = s[1:]` and `t += t` don't warn `this call may free memory that it also reads through another argument`: the `+=` of text, `append` of a view and the `=` of a view to an owner copy the view first when it is of the same memory, which `-memory` knows now
+- A thread that grows a list of its own context, whose default is `heap([])`, made `-memory` warn `work cannot grow this memory, it may have no memory to grow in`: a context starts in a new thread with what its defaults write
+- An `operator []=(x, i)` of two parameters that doesn't return a pointer is an error, `operator []= with two parameters gives the place of x[i], so it returns a pointer, this one returns i32`, where it was left unused
 - Two functions of `extern` with one name and different parameters that call the same symbol are an error, `labs is declared twice, and the function labs of C has one signature: give the other one a name of its own and = "labs"`, where `labs(-3.0)` passed a float to the `labs` of C and gave garbage
 - When the C library aborts the program, like on a memory freed twice, what the program printed goes out and then `flag: aborted`, with exit code 134, where it was lost, also in a terminal
 - `(i32, bool){1, true}` is a literal of that tuple, like `Point{1, 2}`, where it was `unexpected '{', the statement already ended`

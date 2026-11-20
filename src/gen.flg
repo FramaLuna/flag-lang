@@ -543,6 +543,8 @@ func gen_from(from: i64) -> i64|Fail:
             target = comp.types[first].elem
         if name == "hash" and inst.ret != U64:
             return fail("operator hash gives the hash that a map uses, so it returns u64, this one returns " + comp.types[inst.ret].name, comp.at)
+        if name == "[]=" and params(f) == 2 and comp.types[inst.ret].kind != Ptr:
+            return fail("operator []= with two parameters gives the place of x[i], so it returns a pointer, this one returns " + comp.types[inst.ret].name, comp.at)
         if params(f) > 1 and (comp.tokens[comp.nodes[f].tok].kind == Symbol and name[:1] != "[" or name == "and" or name == "or" or name == "xor"):
             if name == "=" and inst.ret != target:
                 return fail("operator = returns the " + comp.types[target].name + " it makes, this one returns " + comp.types[inst.ret].name, comp.at)
@@ -3020,12 +3022,17 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         if placing and comp.nodes[comp.target - 1].kind != Assign and read != VOID: # ptr(x[i]) points at the element when operator []=(x, i) gives its place, and else at a copy
             placing = comp.types[try returned("[]=", args, tok.at)].kind == Ptr
         if (assignment != 0 or placing) and read != VOID and comp.types[read].kind != Ptr:
-            if assignment != 0 and text(assignment) == "=":
-                middle := comp.body.len
-                append(args, ahead(try value(node_end(n), read), first, middle))
-                return invoke("[]=", args, tok.at)
             kept := try present(read, tok.at)
             place := try returned("[]=", args, tok.at)
+            if assignment != 0 and text(assignment) == "=": # the value first, then the place that operator []=(x, i) gives, or operator []=(x, i, v)
+                middle := comp.body.len
+                if points_to(place, kept) or points_to(place, read):
+                    target := comp.types[place].elem
+                    v := ahead(try value(node_end(n), target), first, middle)
+                    try assign(load(try invoke("[]=", args, tok.at)).at, target, v, at_of(node_end(n)))
+                    return none
+                append(args, ahead(try value(node_end(n), read), first, middle))
+                return invoke("[]=", args, tok.at)
             if points_to(place, kept):
                 spot = Value{type = kept, at = load(try invoke("[]=", args, tok.at)).at, mem = true, place = true}
             elif placing:
@@ -3033,6 +3040,9 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             else:
                 spot = try filled(try invoke("[]", args, tok.at), kept)
                 try update(spot, assignment, first)
+                if points_to(place, read): # a place that holds what x[i] gives, null too, takes the new value
+                    try assign(load(try invoke("[]=", args, tok.at)).at, read, spot, tok.at)
+                    return none
                 append(args, spot)
                 return invoke("[]=", args, tok.at)
         else:

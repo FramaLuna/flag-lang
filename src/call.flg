@@ -540,7 +540,9 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         if name == "[:]" and args.len == 3 and integer(args[1].type) and integer(args[2].type) and args[1].type != args[2].type:
             hint = ", the two ends of a slice need one type"
         if name == "[]=" and args.len == 3 and try offers("[]", ptr([args[0], args[1]]), at):
-            hint = ", x[i] = v calls operator []=(x, i, v) when operator [] gives a copy: declare operator []= for " + comp.types[args[0].type].name + ", or make operator [] give a pointer"
+            hint = ", x[i] = v writes through the pointer that operator []=(x, i) gives, or else calls operator []=(x, i, v): declare one for " + comp.types[args[0].type].name + ", or make operator [] give a pointer"
+            if try offers("[]=", ptr([args[0], args[1]]), at):
+                hint = ", and the operator []=(x, i) of " + comp.types[args[0].type].name + " gives no pointer to the element to write through"
         if name == "[]" and try offers("at", args, at):
             hint = ", x[i] calls operator [] where it called at before 0.6: declare operator [] in place of func at"
         if name == "[]=" and try offers("put", args, at):
@@ -703,6 +705,12 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         three: &list[Value] = heap([])
         append(three, element)
         back.len -= 3
+        copy := three[2]
+        three.len = 2
+        if points_to(try returned("[]=", three, at), copy.type): # the place of x[i] takes the copy back
+            try assign(load(try invoke("[]=", three, at)).at, copy.type, copy, at)
+            continue
+        append(three, copy)
         if not try offers("[]=", three, at):
             return fail(comp.types[element[0].type].name + " gives a copy of its element and has no operator []=(x, i, v) to put it back, so " + name + " would only change the copy: change a copy of the element and put it back", at)
         gives := try returned("[]=", three, at)

@@ -245,6 +245,7 @@ type Fn:
     dirty: bool
     done: bool
     deep: bool # it changes memory past HOPS pointers, which its callers don't follow
+    guarded: bool # of core, it copies a view of the memory it grows before it reads it, as the += of text does
     stuck: &strview = ""
     stuck_in: i64
     runs: i64
@@ -599,6 +600,10 @@ func check_memory():
             if not aggregate(m.type) and not contains(mem.fns[g].slots, t):
                 places[t] = pointee(m.type)
         mem.fns[g].places = places
+        decl := mem.fns[g].node
+        if decl != 0 and file_of(comp.tokens[comp.nodes[decl].tok].at) == 0 and (text(decl) == "+=" or text(decl) == "=" or text(decl) == "append") and params(decl) > 1:
+            view := kid(decl, 1) + 1 # the type of the second parameter, a &strview or a &listview
+            mem.fns[g].guarded = comp.nodes[view].kind == TUnary and text(view) == "&" and (text(view + 1) == "strview" or text(view + 1) == "listview")
         for k in spans[0].first..spans[-1].end:
             if mem.ops[k].code == Call:
                 name := mem.callees[mem.ops[k].callee]
@@ -1417,7 +1422,7 @@ func visit(block: i64):
                             immovable(who, name, homeless, mem.fns[g].strict)
                         elif marks.used[x]:
                             stale(b, name, mem.fns[g].strict)
-                        if marks.killed[x]:
+                        if marks.killed[x] and not mem.fns[g].guarded:
                             for y in relevant and outer:
                                 oy := obj_of(g, y)
                                 c := mem.binds[y]
@@ -3224,8 +3229,15 @@ func binding(x: i64) -> Target:
             while h != 0:
                 drop(i64(h) - 1)
                 h = mem.fn.cells[h - 1].next
+            stamper := mem.ids["$flag.stamp"]
             if declared(comp.types[t].decl) == "inherited":
                 transfer(Target{live = bit(c), must = bit(c)}, out, comp.types[t].size, layout(t, false))
+            elif stamper is i64: # the others start with what $flag.stamp writes when the thread enters
+                sum := mem.fns[stamper].sum
+                for k in 0..sum.ids.len:
+                    cell := mem.fns[stamper].cells[sum.ids[k]]
+                    if mem.fns[stamper].objs[cell.owner].key == ob.key:
+                        place(cell_at(c, cell.off, cell.stride, cell.count, cell.member), sum.aims[k])
             out = Target{live = bit(c), must = bit(c)}
     elif ob.kind == Entry and ob.depth == 0:
         out = number(0)
