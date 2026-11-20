@@ -204,6 +204,7 @@ type Fn:
     shown: &strview = ""
     params: &list[u32] = heap([])
     copies: &list[bool] = heap([])
+    values: &list[i64] = heap([]) # what each parameter takes by value, also a big struct that QBE gets by its address
     spans: &list[Span] = heap([])
     names: &list[&strview] = heap([])
     variables: &list[bool] = heap([]) # a temp that is a variable keeps its name, a slot of temporaries takes the name of what it holds
@@ -360,6 +361,7 @@ func check_memory():
                 t = 0
             append(f.params, t)
             append(f.copies, p.cls >= AGG)
+            append(f.values, p.value)
         for k in func.mentions..func.mentioned:
             f.names[comp.mentions[k].temp + 1 - func.temps] = comp.mentions[k].name
             f.variables[comp.mentions[k].temp + 1 - func.temps] = true
@@ -1379,9 +1381,9 @@ func visit(block: i64):
                     node := mem.fns[g].node
                     mine := o.named and node != 0 and file_of(comp.tokens[comp.nodes[node].tok].at) != 0
                     for k in 0..i64(o.count):
-                        if k < mem.fns[g].copies.len and mem.fns[g].copies[k]:
+                        if k < mem.fns[g].values.len and mem.fns[g].values[k] != VOID:
                             given := mem.args[o.first + k]
-                            t := mem.fns[g].places[mem.fns[g].params[k]]
+                            t := mem.fns[g].values[k]
                             found := lockable(Target{}, t, true)
                             if mine and found.type != VOID:
                                 text: &str = heap("")
@@ -3333,21 +3335,26 @@ func translate(v: Target) -> Target:
 
 # a pointer into the stack that this function returns, or gives to a thread that may outlive it
 func escape(v: Target, pos: i64, returned: bool):
-    if v.slot == 0:
+    name: &strview = ""
+    if v.slot != 0 and v.slot != ALL:
+        name = mem.fn.names[mem.fn.slots[v.slot - 1]]
+    copy := false # the copy of an argument that the function takes by value, on its stack too
+    for h in v.live:
+        o := mem.fn.objs[h]
+        if o.kind == Entry and o.depth == 0 and o.root > 0 and mem.fn.copies[o.root - 1]:
+            copy = true
+            name = mem.fn.names[mem.fn.params[o.root - 1]]
+    if v.slot == 0 and not copy:
         return
     if returned:
         warn(STACK, pos, "", 0, false)
         return
     shown := mem.fn.shown
     text: &str = heap("")
-    if v.slot == ALL:
-        text += "a pointer into the stack of " + shown + " cannot leave " + shown
+    if name.len > 0:
+        text += "a pointer to " + name + " cannot leave " + shown + ", " + name + " lives on its stack"
     else:
-        name := mem.fn.names[mem.fn.slots[v.slot - 1]]
-        if name.len > 0:
-            text += "a pointer to " + name + " cannot leave " + shown + ", " + name + " lives on its stack"
-        else:
-            text += "a pointer into the stack of " + shown + " cannot leave " + shown
+        text += "a pointer into the stack of " + shown + " cannot leave " + shown
     warn(view(text), pos, "", 0, false)
 
 # temporaries that a thread may still use after this releases them

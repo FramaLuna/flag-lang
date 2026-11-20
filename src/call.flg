@@ -478,8 +478,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             return fail(comp.types[t].name + " declares == but not hash, and equal values need equal hashes: declare operator hash for " + comp.types[t].name + " too", at)
         if name == "hash" and args.len == 1 and k == Simd:
             return fail(comp.types[t].name + " has no hash, its == answers each lane: use an array, array[" + comp.types[lane_value(t)].name + ", " + comp.types[t].count + "](v)", at)
-        if name == "hash" and args.len == 1 and k == Atomic:
-            return fail(comp.types[t].name + ATOMIC + ", so it has no hash: declare operator hash for the type that holds it", at)
+        if (name == "hash" and args.len == 1 or name == "==" and args.len == 2) and k == Atomic:
+            return fail(comp.types[t].name + ATOMIC + ", so it has no " + name + ": declare operator " + name + " for the type that holds it", at)
         if name == "hash" and args.len == 1 and not (k == Bool or k == Ptr or k == Func or k == Struct or k == Union or k == Array or k == Void):
             return fail(comp.types[t].name + " has no hash, declare one for it: operator hash(x: " + comp.types[t].name + ") -> u64", at)
         if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:
@@ -495,7 +495,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 how := cls(t)
                 if aggregate(t):
                     how = L
-                append(passes, Pass{how, x, is_number(x)})
+                append(passes, Pass{how, x, is_number(x), VOID})
             return emit(global(comp.insts[id].name), passes, ret, false, at)
     if best == 0:
         seen := first_sym(name)
@@ -561,6 +561,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 if callable(s, module, args, at) and k < params(f) and text(kid(f, k)) != ".." and not generic(kid(f, k)):
                     p := try resolve(kid(f, k) + 1)
                     crossing = text_of_c(a, p)
+                    if a.lit and integer(a.type) and integer(p) and not fits(a, p):
+                        crossing = spelled_number(a) + " does not fit in " + comp.types[p].name
                     if comp.types[a.type].name == "&strview" and comp.types[p].name == "&str":
                         crossing = "a text in quotes is a &strview: a parameter that only reads text takes &strview, and a &str goes there too"
                     if comp.types[a.type].kind == Func and not comp.types[a.type].foreign and comp.types[p].kind == Func and comp.types[p].foreign:
@@ -570,6 +572,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             hint = ", " + crossing
         spread := names.len > 0 and names[-1] == ".." and sequence(args[-1].type)
         gathered := false
+        mixed := false # extra arguments given one by one and with .. too
         fits := false # a ..items: T that takes the elements of the view after .. as they are
         free_type := 0 # the $T that ..items leaves without a type when no extra argument gives it one
         g := first_sym(name)
@@ -579,6 +582,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if callable(g, module, args, at) and params(f) > 0 and gathers(last):
                 gathered = true
                 fits = fits or spread and (generic(last) or try resolve(last + 1) == element(args[-1].type))
+                mixed = mixed or spread and args.len > params(f)
                 if args.len < params(f) and free_type == 0:
                     free_type = unbound(last + 1)
             g = comp.syms[g].next
@@ -591,6 +595,10 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             hint = ", " + name + " has no ..items: T for the view after .. to fill"
         elif names.len > 0 and names[-1] == ".." and gathered and named:
             hint = ", a call that gives the extra arguments with .. names none of the others"
+        elif names.len > 0 and names[-1] == ".." and gathered and not spread:
+            hint = ", what goes after .. is a view, and of an array a slice gives one: ..a[:]"
+        elif mixed:
+            hint = ", the view after .. gives every extra argument of " + name + ", so none goes before it"
         elif spread and not fits:
             hint = ", the elements of the view after .. are " + comp.types[element(args[-1].type)].name + ", and they go to ..items: T without converting"
         counts := true # no overload takes as many arguments as this call gives, and they all take the same
@@ -600,12 +608,15 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
         while positional < names.len and names[positional].len == 0:
             positional += 1
         twice: &strview = ""
+        put: &strview = "" # a place parameter that a value given in order would fill
         h := first_sym(name)
         while h != 0:
             f := comp.syms[h].node
             if callable(h, module, args, at):
                 need := 0
                 for k in 0..params(f):
+                    if k < positional and placed(f, k):
+                        put = text(kid(f, k))
                     if kids(kid(f, k)) == 1 and text(kid(f, k)) != "..":
                         need += 1
                     for label in names[positional:]:
@@ -617,6 +628,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             h = comp.syms[h].next
         if hint.len == 0 and twice.len > 0:
             hint = ", " + twice + " is given twice, by its place and by its name"
+        elif hint.len == 0 and put.len > 0:
+            hint = ", " + put + " is the place of the call, and a value goes there only by its name: " + put + " = ..."
         elif hint.len == 0 and counts and least == most and most >= 0:
             hint = ", " + name + " expects " + counted(least, "argument", "arguments")
         if name == "put" and args.len == 2:
@@ -698,7 +711,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                         slot := alloc(p.type)
                         store(p.type, p, slot)
                         p.at = slot
-                    append(comp.vars, Local{text(i), p.type, p.at, comp.loops.len, comp.nodes[kid(f, j)].tok, 0, "", false, true, false})
+                    append(comp.vars, Local{text(i), p.type, p.at, comp.loops.len, comp.nodes[kid(f, j)].tok, 0, "", 0, true, false})
             site := comp.site
             comp.site = at
             saved := open_frame() # it sees the $T of its function, not those of the caller
@@ -724,9 +737,9 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                 return fail(name + " expects integers, floats, bool and pointers after its declared parameters but got " + t.name, at)
             x := load(v).at
             if v.type == F32:
-                append(passes, Pass{D, op1(D, "exts", x), false})
+                append(passes, Pass{D, op1(D, "exts", x), false, VOID})
             else:
-                append(passes, Pass{cls(v.type), x, is_number(x)})
+                append(passes, Pass{cls(v.type), x, is_number(x), VOID})
     if threaded and foreign:
         return fail("parallel cannot run " + name + ", it is called the way C calls: wrap it in a func that calls it", at)
     if threaded and back.len > 0:
@@ -1000,7 +1013,7 @@ func hand(given: Value, to: i64, foreign: bool, at: i64) -> Pass|Fail:
     x := load(v).at
     if comp.types[to].kind == Func and not comp.types[to].foreign and x.kind != Global:
         try panic_if(op(W, "ceql", x, int_arg(0)), "an argument is an empty function value", at)
-    return Pass{how, x, is_number(x)}
+    return Pass{how, x, is_number(x), VOID}
 
 # a call through a function value keeps its type in c, -memory follows it into each function taken as that type
 func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64, shape: i64 = VOID, into: Arg = Arg{}) -> Value|Fail:
@@ -1011,7 +1024,7 @@ func emit(callee: Arg, passes: &list[Pass], ret: i64, foreign: bool, at: i64, sh
     if big(ret) and not foreign:
         if into.kind == Empty:
             result = alloc(ret)
-        append(comp.passes, Pass{L, result, false})
+        append(comp.passes, Pass{L, result, false, VOID})
     elif ret != VOID and ret != NEVER:
         i.cls = try passing(ret, foreign, at)
         result = temp()
@@ -1138,6 +1151,8 @@ func arrange(f: i64, count: i64, names: &list[&strview]) -> &list[i64]?:
             for k in 0..fixed:
                 if text(kid(f, k)) == names[i]:
                     slot = k
+        elif i < names.len and next < fixed and placed(f, next): # a call you write gives the place by its name, the compiler gives its own in order
+            return null
         else:
             next += 1
         if named and (slot == fixed or extra) or slot >= fixed and not extra:
@@ -1152,6 +1167,22 @@ func arrange(f: i64, count: i64, names: &list[&strview]) -> &list[i64]?:
     if gathered:
         append(order, view)
     return order
+
+# an integer that the compiler knows, as it was written
+func spelled_number(v: Value) -> &strview:
+    shown: &str = heap("")
+    if v.flipped:
+        shown += "not " + (v.n - 1)
+    elif v.neg:
+        shown += "-" + v.n
+    else:
+        shown += v.n
+    return view(shown)
+
+# the parameter k of f takes the place of the call, its default is @here()
+func placed(f: i64, k: i64) -> bool:
+    d := node_end(kid(f, k) + 1)
+    return kids(kid(f, k)) == 2 and comp.nodes[d].kind == Call and text(d) == "@here"
 
 func passing(t: i64, foreign: bool, at: i64) -> u32|Fail:
     ty := comp.types[t]
@@ -1522,13 +1553,7 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             return Value{type = to, at = int_arg(i64(largest(to) - v.n + 1))}
         if fits(v, to):
             return Value{type = to, at = v.at}
-        shown: &str = heap("")
-        if v.flipped:
-            shown += "not " + (v.n - 1)
-        elif v.neg:
-            shown += "-" + v.n
-        else:
-            shown += v.n
+        shown := spelled_number(v)
         if v.neg and target.kind == Uint and not v.flipped:
             return fail(shown + " does not fit in " + target.name + ", the smallest " + target.name + " is 0", at)
         return fail(shown + " does not fit in " + target.name + ", the largest " + target.name + " is " + largest(to), at)
@@ -1579,10 +1604,17 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             try zero(to, args[0].at)
         return invoke("=", args, at)
     if from.kind == Union:
+        missed := VOID # the null or the error that keeps the union from the place, when the other members go there
+        fits := true
         for m in members(v.type):
-            if (m == NULL or comp.types[m].error) and accepts(to, Value{type = m}) < 0:
-                handled: &strview = "the null first with ifnull" if m == NULL else "the error first with try, iferror"
-                return fail("cannot assign " + from.name + " to " + target.name + ", it may be " + comp.types[m].name + ": handle " + handled + " or trust", at)
+            args[1] = Value{type = m}
+            if accepts(to, args[1]) < 0 and not try offers("=", args, at) and (m == NULL or comp.types[m].error):
+                missed = m
+            elif accepts(to, args[1]) < 0 and not try offers("=", args, at):
+                fits = false
+        if fits and missed != VOID:
+            handled: &strview = "the null first with ifnull" if missed == NULL else "the error first with try, iferror"
+            return fail("cannot assign " + from.name + " to " + target.name + ", it may be " + comp.types[missed].name + ": handle " + handled + " or trust", at)
         current := tag(v)
         slot := alloc(to)
         l_done := label()
@@ -1591,7 +1623,11 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             l_next := label()
             branch(op(W, "ceqw", current, tag_of(m)), l_arm, l_next)
             open_block(l_arm)
-            store(to, try convert(Value{type = m, at = payload(v.at, m), mem = true}, to, dest, at), slot)
+            member := convert(Value{type = m, at = payload(v.at, m), mem = true}, to, dest, at)
+            if member is Fail:
+                note("this is " + from.name + ", which may hold " + comp.types[m].name + " here: narrow it first with is", at)
+                return Fail
+            store(to, member, slot)
             jump(l_done)
             open_block(l_next)
         terminate("hlt", Arg{})
@@ -1599,6 +1635,8 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         return Value{type = to, at = slot, mem = true}
     if integer(v.type) and integer(to):
         return fail("cannot assign " + from.name + " to " + target.name + ", an integer only grows by itself: convert it with " + target.name + "(...)", at)
+    if v.type == NULL and (target.kind == Ptr or target.kind == Fat):
+        return fail("cannot assign null to " + target.name + ", which is never null: the one that may be is " + target.name + "?", at)
     if numeric(v.type) and numeric(to):
         return fail("cannot assign " + from.name + " to " + target.name + ", a number changes its type only when you say so: convert it with " + target.name + "(...)", at)
     if from.kind == Fat and target.kind == Fat and text(from.decl) == "list" and text(target.decl) == "list" and numeric(comp.items[from.args].type) and numeric(comp.items[target.args].type):

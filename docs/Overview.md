@@ -119,7 +119,7 @@ It can't change, what changes goes in a [context](#contexts). Nothing runs befor
 - Arithmetic: `+`, `-`, `*`, `/`, and `%` for integers, and `+` and `-` move a `*bytes` (see [Pointers](#pointers))
 - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`. They don't chain, `a < b < c` is an error that tells you to write `a < b and b < c`
 - Logic: `and`, `or` and `not` on `bool`. `and` and `or` don't run the right side when the left side already decides
-- Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them. They are looser than the comparisons, so a test of bits goes in parentheses: `(flags and MASK) != 0`
+- Bits: `and`, `or`, `xor` and `not` on integers work on the bits, and `<<` and `>>` shift them. `and`, `or` and `xor` are looser than the comparisons, so a test of bits goes in parentheses: `(flags and MASK) != 0`, and the shifts are tighter
 - Choosing: `a if c else b` is `a` when `c` is true and `b` when it's not, and only the side it chose runs
 - Assignments: `=`, and `+=`, `-=`, `*=`, `/=`, `%=`
 ```flag
@@ -161,7 +161,7 @@ type User:
     name: &str
     age: u32
 ```
-You can build them with the fields in order, or naming them. The fields you don't name start at zero
+You can build them with all the fields in order, or naming them. The fields you don't name start at zero
 ```flag
 a := User{heap("ana"), 30} # a &str field owns its text, so heap gives it one
 b := User{age = 30, name = heap("bo")}
@@ -957,7 +957,7 @@ func main():
     counts := arena(level, {"orc": 2}) # a &map[&strview, i64] in level
     print(boss.hp, " ", enemies.len, " ", name, " ", counts)
 ```
-A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it does nothing, the arena releases it. Everything else stays the same: `heap` uses the heap, like always.
+A list, a text or a map that lives in an arena remembers it and grows there, and `free` of it leaves it empty and releases nothing, the arena releases its memory. Everything else stays the same: `heap` uses the heap, like always.
 
 `clear(a)` releases everything and keeps the blocks to use them again, which is what the memory of one frame of a game wants
 ```flag
@@ -1361,7 +1361,7 @@ FAIL test_gcd, src/math.flg:3, exit code 134
 flag: gcd(12, 18) == 6 is false, gcd(12, 18) is 4
   --> src/math.flg:4:5
   in test_gcd, src/math.flg:3
-2 passed, 1 failed
+0 passed, 1 failed
 ```
 
 The C compiler is `cc`, if yours has another name put it in the `CC` variable

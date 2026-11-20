@@ -945,7 +945,7 @@ func unary() -> Fail?:
     brace := after == "{"
     converts := typed and after == "("
     listed := false
-    valued := false # a number, a text, an operator or a call, which no type has
+    valued := false # a number, a text, an operator, a keyword or a call, which no type has
     if t.kind == Name and after == "[" or t.text == "(": # Pair[i32, f64] and (i32, bool) are types, an index and a group have no comma
         depth := 0
         i := name
@@ -960,12 +960,12 @@ func unary() -> Fail?:
                     converts = listed and comp.tokens[i + 1].text == "(" # an index has no comma, simd[f32, 4](x) names a type
                     if listed and t.text == "(" and valued:
                         inside := excerpt(name + 1, i - 1)
-                        return fail("(" + inside + ") is not a value, parentheses with a comma are the type of a tuple: a tuple value is written with braces, {" + inside + "}", t.at)
+                        return fail("(" + inside + ") is the type of a tuple, and a tuple value is written with braces: {" + inside + "}", t.at)
                     break
             elif depth == 1:
                 k := comp.tokens[i].kind
                 listed = listed or word == ","
-                valued = valued or k == Int or k == Float or k == Str or k == Symbol and word != "," and word != "." and word != "*" and word != "&" and word != "?" and word != "|" and word != "->" or k == Name and word != "func" and comp.tokens[i + 1].text == "("
+                valued = valued or k == Int or k == Float or k == Str or k == Symbol and word != "," and word != "." and word != "*" and word != "&" and word != "?" and word != "|" and word != "||" and word != "->" or k == Name and (reserved(word) and word != "null" or word != "func" and comp.tokens[i + 1].text == "(")
             i += 1
     if t.kind == Name and not brace:
         j := name

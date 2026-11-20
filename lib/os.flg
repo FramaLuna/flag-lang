@@ -232,25 +232,25 @@ func start(program: &listview[&strview], folder: &strview = "") -> Process|FsErr
 
 func done(p: Process, place: &strview = @here()) -> bool:
     if p.id == 0:
-        gone("done", place)
+        gone("done", place = place)
     flush()
     return ended(p.id)
 
 func wait(p: *Process, place: &strview = @here()) -> i32:
     if p.id == 0:
-        gone("wait", place)
+        gone("wait", place = place)
     flush()
-    code := finish(p.id, place)
+    code := finish(p.id, place = place)
     p.id = 0
     return code
 
 func kill(p: Process, place: &strview = @here()):
     if p.id == 0:
-        gone("kill", place)
+        gone("kill", place = place)
     end(p.id)
 
 priv func gone(what: &strview, place: &strview) -> never:
-    panic(what + " of a process that is not running: it was never started, or it was waited already", place)
+    panic(what + " of a process that is not running: it was never started, or it was waited already", place = place)
 
 # what the errors of run name: the program, and the folder it runs in
 priv func named(launched: &listview[&strview]|&strview, folder: &strview) -> &strview:
@@ -494,13 +494,13 @@ priv func finish(pid: i64, place: &strview = @here()) -> i32 where not @windows(
     status: i32 = 0
     while waitpid(i32(pid), ptr(status), 0) < 0:
         if errno() != 4: # EINTR
-            gone("wait", place)
+            gone("wait", place = place)
     return exit_code(status)
 
 priv func finish(process: i64, place: &strview = @here()) -> i32 where @windows():
     code: u32 = 0
     if WaitForSingleObject(u64(process), 0xffff_ffff) != 0:
-        gone("wait", place)
+        gone("wait", place = place)
     GetExitCodeProcess(u64(process), ptr(code))
     CloseHandle(u64(process))
     return i32(code)

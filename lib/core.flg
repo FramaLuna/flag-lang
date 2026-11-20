@@ -101,7 +101,7 @@ func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
 # the lanes of a simd from as many elements, v: simd[f32, 4] = values[i:i + 4]
 operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n]:
     if src.len != $$n:
-        panic("a simd of " + $$n + " lanes expects a slice of " + $$n + ", this one has " + src.len, place)
+        panic("a simd of " + $$n + " lanes expects a slice of " + $$n + ", this one has " + src.len, place = place)
     return (ptr(src[0]) as *simd[$T, $$n]).*
 
 func abs(x: $T) -> $T where $T is i8|i16|i32|i64:
@@ -190,8 +190,8 @@ func tmp(w: wstr) -> &strview:
 
 func windows_errno(code: u32) -> i32:
     switch code:
-    case 2, 3, 15, 18, 53, 67, 161, 206:
-        return 2 # ENOENT
+    case 2, 3, 15, 18, 53, 67, 161, 206, 267:
+        return 2 # ENOENT, and 267 is the folder that CreateProcessW cannot find
     case 5, 16, 19..=36, 65, 82, 83, 108, 132, 158, 167:
         return 13 # EACCES
     case 1, 12, 13, 87, 124, 131:
@@ -234,10 +234,10 @@ func out_of_memory() -> never:
     _exit(9)
 
 func out_of_bounds(i: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
-    panic("index " + i + " is out of bounds, length " + len, place)
+    panic("index " + i + " is out of bounds, length " + len, place = place)
 
 func out_of_bounds(from: $I, to: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
-    panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
+    panic("slice " + from + ":" + to + " is out of bounds, length " + len, place = place)
 
 type fatptr listview[$T]:
     len: i64
@@ -246,7 +246,7 @@ operator [:](s: &listview[$T], from: $I, to: $I, place: &strview = @here()) -> &
     first := u64(from) # a negative is past every length
     last := u64(to)
     if first > last or last > u64(s.len):
-        out_of_bounds(from, to, s.len, place)
+        out_of_bounds(from, to, s.len, place = place)
     out: &listview[$T]
     out = ptr(s.*) + first * @sizeof($T)
     out.len = i64(last - first)
@@ -348,7 +348,7 @@ func pop(l: *&list[$T]) -> $T|null:
 func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
     n := i64(at)
     if u64(n) > u64(l.len): # a negative is past every length
-        out_of_bounds(at, l.len, place)
+        out_of_bounds(at, l.len, place = place)
     append(l, v)
     first := ptr(l.*.*) + n * @sizeof($T)
     memmove(first + @sizeof($T), first, (l.len - 1 - n) * @sizeof($T))
@@ -357,7 +357,7 @@ func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is
 func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
     n := i64(at)
     if u64(n) >= u64(l.len): # a negative is past every length
-        out_of_bounds(at, l.len, place)
+        out_of_bounds(at, l.len, place = place)
     kept := l[n]
     first := ptr(l.*.*) + n * @sizeof($T)
     memmove(first, first + @sizeof($T), (l.len - 1 - n) * @sizeof($T))
@@ -461,9 +461,9 @@ priv func merge_sort(s: &listview[$T], spare: &listview[$T], before: func($T, $T
 
 func swap(s: &listview[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
     if u64(i) >= u64(s.len): # a negative is past every length
-        out_of_bounds(i, s.len, place)
+        out_of_bounds(i, s.len, place = place)
     if u64(j) >= u64(s.len):
-        out_of_bounds(j, s.len, place)
+        out_of_bounds(j, s.len, place = place)
     kept := s[i]
     s[i] = s[j]
     s[j] = kept
@@ -493,7 +493,8 @@ operator +=(s: *&str, c: cstr):
     s.* += view(c)
 
 operator +=(s: *&str, w: wstr):
-    s.* += tmp(w)
+    with scratch():
+        s.* += tmp(w)
 
 func view(bytes: &listview[u8]) -> &strview:
     out: &strview
@@ -511,7 +512,7 @@ operator [:](v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strvi
     first := u64(from) # a negative is past every length
     last := u64(to)
     if first > last or last > u64(v.len):
-        out_of_bounds(from, to, v.len, place)
+        out_of_bounds(from, to, v.len, place = place)
     out: &strview
     out = ptr(v.*) + first
     out.len = i64(last - first)
@@ -670,7 +671,7 @@ priv func resize(a: *Arena, at: *bytes, size: i64, wanted: i64, no_memory: &strv
     if a as u64 == HEAP:
         return realloc(at, wanted)
     if a as u64 == 0:
-        panic(no_memory, "") # no place, it would be here: the chain shows the function that grew it
+        panic(no_memory, place = "") # no place, it would be here: the chain shows the function that grew it
     held := (size + 15) / 16 * 16
     last := a.count > 0 and at + held == ptr(a.blocks[a.count - 1].*) + a.used
     if last:
@@ -780,7 +781,9 @@ func add_byte(s: *&str, b: u8):
     s.len += 1
 
 func add_char(s: *&str, code: u32):
-    if code < 0x80:
+    if code >= 0xD800 and code < 0xE000 or code > 0x10FFFF: # a surrogate, or past the last code, which UTF-8 doesn't hold
+        add_char(s, 0xFFFD)
+    elif code < 0x80:
         add_byte(s, u8(code))
     elif code < 0x800:
         add_byte(s, u8(0xC0 or code >> 6))
@@ -1055,13 +1058,26 @@ priv func float_text(s: *&str, f: f64, single: bool):
     out: &strview
     out = ptr(buf) as *bytes
     out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
+    lead := i64(buf[0] == '-')
     while digits < most:
         back := strtod(at as cstr, 0 as *bytes)
         if back == f or single and f32(back) == f32(f):
             break
+        if (f as u64 and 0xf_ffff_ffff_ffff) == 0: # a power of two has half the gap below it, so the digits one step above may read back where the nearest don't
+            up := buf
+            k := (trust find(items(out), 'e')) - 1
+            while k >= lead and (up[k] == '9' or up[k] == '.'):
+                if up[k] == '9':
+                    up[k] = '0'
+                k -= 1
+            if k >= lead:
+                up[k] += 1
+                back = strtod(ptr(up) as cstr, 0 as *bytes)
+            if k >= lead and (back == f or single and f32(back) == f32(f)):
+                buf = up
+                break
         digits += 1
         out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
-    lead := i64(buf[0] == '-')
     mark := lead + digits + 1
     exponent: i32 = 0
     for i in mark + 2..out.len:
@@ -1126,9 +1142,7 @@ operator +=(s: *&str, f: Fixed):
     if value - value != 0.0:
         s.* += value
         return
-    places := f.places
-    if places < 0:
-        places = 0
+    places := min(max(f.places, 0), 1100) # a double has at most 1074 decimals, the others are zeros
     halves := value
     for k in 0..=places:
         halves *= 2.0
@@ -1149,6 +1163,8 @@ operator +=(s: *&str, f: Fixed):
         if out[0] == '-' and strtod(ptr(out.*) as cstr, 0 as *bytes) == 0.0:
             out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
+    for k in places..f.places:
+        add_byte(s, '0')
 
 type Hex:
     value: u64
@@ -1187,16 +1203,17 @@ func pad(value: $T, width: i32) -> Padded[$T]:
     return Padded[$T]{value, width}
 
 operator +=(s: *&str, p: Padded[$T]):
-    text := "" + p.value
-    count: i32 = 0
-    for c in text:
-        count += 1
-    if p.width > 0:
-        for k in count..p.width:
+    with scratch():
+        text := "" + p.value
+        count: i32 = 0
+        for c in text:
+            count += 1
+        if p.width > 0:
+            for k in count..p.width:
+                add_byte(s, ' ')
+        s.* += text
+        for k in count..-p.width:
             add_byte(s, ' ')
-    s.* += text
-    for k in count..-p.width:
-        add_byte(s, ' ')
 
 type Lock[$T]:
     room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
@@ -1281,7 +1298,7 @@ priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
 
 priv func pause(c: *Condition, l: *Lock[null]):
     if l.depth > 1:
-        panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", "") # no place, the chain shows the with
+        panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", place = "") # no place, the chain shows the with
     set(l.owner, 0 as *bytes)
     l.depth = 0
     rest(c, l)
@@ -1326,7 +1343,7 @@ priv func launch(block: *bytes, run: *bytes, place: &strview):
     with lock(threads.running):
         threads.running.value += 1
     if not started(block as *Started, run):
-        panic("cannot start a thread, the system refuses one more", place)
+        panic("cannot start a thread, the system refuses one more", place = place)
 
 priv func started(t: *Started, run: *bytes) -> bool where not @windows():
     attributes: array[u64, 8]
@@ -1360,7 +1377,7 @@ priv func finished(block: *bytes, pointing: bool):
 # the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
 priv func reap(block: *bytes, place: &strview):
     if block as u64 == 0:
-        panic("wait of a thread that was never started", place)
+        panic("wait of a thread that was never started", place = place)
     t := block as *Started
     flush() # what you wrote goes out before the thread waits for another
     wait_for(t.handle)
@@ -1408,13 +1425,13 @@ priv func settle():
             pause(threads.changed, threads.running)
 
 func wait(t: Thread[$T], place: &strview = @here()) -> $T:
-    reap(t as *bytes, place)
+    reap(t as *bytes, place = place)
     defer free(t as *bytes)
     return ((t as *bytes + HEAD) as *$T).*
 
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
     if t as u64 == 0:
-        panic("done of a thread that was never started", place)
+        panic("done of a thread that was never started", place = place)
     with lock(threads.running):
         return (t as *Started).done
 
@@ -1438,7 +1455,7 @@ func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$siz
         while q.len == $$size and not q.closed:
             pause(c.emptied, c.queue)
         if q.closed:
-            panic("send on a closed channel", place)
+            panic("send on a closed channel", place = place)
         q.items[(q.first + q.len) % $$size] = v
         q.len += 1
         wake(c.filled)
@@ -1533,7 +1550,7 @@ priv type Streams:
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
 priv shared context io:
     table: Lock[Streams]
-    code: i32 # what exit ends with, which a failed standard output turns from 0 to 1
+    code: atomic[i32] # what the program ends with, which a failed standard output turns from 0 to 1
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1542,7 +1559,7 @@ priv context cached:
     standard: array[*Stream?, 3]
 
 priv func stream(f: File, place: &strview = @here()) -> *Stream:
-    valid(f, place)
+    valid(f, place = place)
     if f.fd < 3:
         known := cached.standard[f.fd]
         if known is *Stream and known.open:
@@ -1583,16 +1600,20 @@ priv export func flag_exit():
     s := stream(stdout)
     if try_lock(s.writing) and s.writing.value.failed != 0: # never let go, the program ends
         eprint("flag: ", FsError{s.writing.value.failed, "write", s.path})
-        if io.code == 0:
+        if get(io.code) == 0:
             _exit(1)
 
 func exit(code: i32) -> never:
-    io.code = code
+    ending(code)
     quit(code)
+
+# the return of main gives its code here too
+priv func ending(code: i32):
+    set(io.code, code)
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
     f := File{fd}
-    stream(f, place).path = path
+    stream(f, place = place).path = path
     return f
 
 # print formats its line here, and a print inside the += of a value adds its own after it
@@ -1608,10 +1629,10 @@ priv func print_line(f: File, from: i64):
 
 func write(f: File, value: $T, place: &strview = @here()):
     with scratch():
-        write(f, "" + value, place) # formatted before the lock, its += may print
+        write(f, "" + value, place = place) # formatted before the lock, its += may print
 
 func write(f: File, text: &strview, place: &strview = @here()):
-    s := stream(f, place)
+    s := stream(f, place = place)
     if (f.fd == 1 or f.fd == 2) and io.table.value.last != f.fd:
         other := stream(File{3 - f.fd})
         switched := false
@@ -1630,7 +1651,7 @@ func write(f: File, text: &strview, place: &strview = @here()):
                 free(outbox.unsent) # after a big text the stream keeps only its usual room
 
 func flush(f: File, place: &strview = @here()) -> FsError?:
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.writing):
         drain(s)
         outbox := ptr(s.writing.value)
@@ -1654,10 +1675,10 @@ priv func drain(s: *Stream):
 
 func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsError:
     if size < 0:
-        panic("read takes a size of 0 or more, and this one is " + size, place)
+        panic("read takes a size of 0 or more, and this one is " + size, place = place)
     if size == 0:
         return 0
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.reading):
         inbox := ptr(s.reading.value)
         if inbox.given == inbox.received.len:
@@ -1674,7 +1695,7 @@ func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsE
         return taken
 
 func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.reading):
         inbox := ptr(s.reading.value)
         checked := 0
@@ -1702,8 +1723,9 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
 
 priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError:
     flush() # what you wrote goes out before the program waits for an answer
-    reserve(into, into.len + size)
-    got := try transfer(s, ptr(into.*.*) + into.len, size, false)
+    part := min(size, 1 << 20) # a read gives what is there, so the memory is asked for a part at a time
+    reserve(into, into.len + part)
+    got := try transfer(s, ptr(into.*.*) + into.len, part, false)
     into.len += got
     return got
 
@@ -1723,7 +1745,7 @@ priv func transfer(s: *Stream, at: *bytes, size: i64, writing: bool) -> i64|FsEr
 
 func ready(f: File, seconds: f64 = 0.0, place: &strview = @here()) -> bool:
     with scratch():
-        return ready(ptr([f]), seconds, place).len > 0
+        return ready(ptr([f]), seconds, place = place).len > 0
 
 func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where not @windows():
     flush() # what you wrote goes out before the program waits for an answer
@@ -1731,7 +1753,7 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
     defer free(polled)
     limit := milliseconds(seconds)
     for f in files:
-        valid(f, place)
+        valid(f, place = place)
         append(polled, [f.fd, 1])
         if buffered(f):
             limit = 0
@@ -1756,7 +1778,7 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
     while true:
         clear(sockets)
         for f in files:
-            valid(f, place)
+            valid(f, place = place)
             if f.fd >= 8192:
                 append(sockets, Polled{u64(f.fd - 8192), 0x100, 0}) # POLLRDNORM
         if sockets.len > 0:
@@ -1774,7 +1796,7 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
         left := limit - i32(GetTickCount64() - began)
         if found.len > 0 or limit >= 0 and left <= 0:
             return tmp(found)
-        if sockets.len == files.len:
+        if sockets.len > 0 and sockets.len == files.len:
             WSAPoll(ptr(sockets.*), u32(sockets.len), left) # then the next round tells which
         elif sockets.len > 0:
             WSAPoll(ptr(sockets.*), u32(sockets.len), 1)
@@ -1815,10 +1837,10 @@ priv func buffered(f: File) -> bool:
 
 priv func valid(f: File, place: &strview):
     if f.fd < 0:
-        panic("File{" + f.fd + "} is not an open file", place)
+        panic("File{" + f.fd + "} is not an open file", place = place)
 
 func close(f: File, place: &strview = @here()):
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.reading):
         with lock(s.writing):
             drain(s)
@@ -1834,7 +1856,7 @@ func close(f: File, place: &strview = @here()):
             release(s) # last, a file that another thread opens can get the same number
 
 operator with(f: File, place: &strview = @here()):
-    close(f, place)
+    close(f, place = place)
 
 func errno() -> i32 where @linux():
     return __errno_location().*

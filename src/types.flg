@@ -464,6 +464,8 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail(NO_USIZE, tok.at)
         if node.module.len == 0 and tok.text == "slice":
             return fail("&slice is called &listview now", tok.at)
+        if node.module.len == 0 and lookup(tok.text) != 0:
+            return fail(tok.text + " is a variable, not a type, and a count in a type is one the compiler knows: a literal or a constant", tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
@@ -800,7 +802,9 @@ func tuple_of(parts: &listview[i64], at: i64) -> i64|Fail:
                     values += comp.types[try union_of(kept, Union, at)].name
             if contains(view(values), ","):
                 values = "(" + values + ")"
-            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + "|" + comp.types[try union_of(errors, Union, at)].name, at)
+            if values.len > 0:
+                values += "|"
+            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + comp.types[try union_of(errors, Union, at)].name, at)
         if t.kind == Bytes:
             return fail("a tuple needs elements with a size, bytes is a run of unknown length", at)
         if t.align == 0:

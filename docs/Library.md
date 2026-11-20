@@ -25,13 +25,13 @@ What a function gives you is
 
 A function that can fail gives its errors in a union, and each module says which error types it has.
 
-A function that stops the program for a wrong argument, like an index out of bounds, a `File` that is not open or a thread that was never started, also has a last parameter `place: &strview = @here()` that is left out here: it's how the error points at your call.
+A function that stops the program for a wrong argument, like an index out of bounds, a `File` that is not open or a thread that was never started, also has a last parameter `place: &strview = @here()` that is left out here: it's how the error points at your call. A value for it goes only by its name, `place = p`.
 
 ## core
 ### The program
 - `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix. Its values mix types, so it belongs to the language: a function of yours gathers extra arguments of one type, `..items: T` (see [Extra arguments](Reference.md#extra-arguments))
 - `eprint(values...)` the same to the error output
-- `panic(message: &strview, place: &strview = @here()) -> never` writes `flag: <message>`, the place and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors)). A function of yours with a `place` of its own passes it on, so the error points at its caller, and `panic(message, "")` writes only the chain
+- `panic(message: &strview, place: &strview = @here()) -> never` writes `flag: <message>`, the place and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors)). A function of yours with a `place` of its own passes it on, `panic(message, place = place)`, so the error points at its caller, and `panic(message, place = "")` writes only the chain
 - `on_panic(hook: func(&strview, &strview))` gives `panic` a function that runs after the message and the chain, before the program ends: it gets the message and the place, for every error that ends with 134, also those of the checks the compiler writes. A new one replaces the last, and it can end the program with `exit`. A library built with `-shared` has its own core, so the `on_panic` of the program doesn't run for a runtime error inside the library
 - `exit(code: i32) -> never` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
@@ -61,7 +61,7 @@ The functions
 
 `ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
 
-The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1 in place of 0, while `exit` and a stop keep their code. A write to a pipe whose reader is gone, like `program | head` once `head` has its lines, ends the program at once and in silence on Linux and macOS, with the signal `SIGPIPE`, as in C (see [Runtime errors](Reference.md#runtime-errors)); the sockets of `net` and the pipes to the programs you run give the error instead. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
+The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1 in place of 0, also of `exit(0)`, while another code of `exit`, of `main` or of a stop stays. A write to a pipe whose reader is gone, like `program | head` once `head` has its lines, ends the program at once and in silence on Linux and macOS, with the signal `SIGPIPE`, as in C (see [Runtime errors](Reference.md#runtime-errors)); the sockets of `net` and the pipes to the programs you run give the error instead. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
 
 ```flag
 use fs
@@ -267,7 +267,7 @@ Building a `&str`
 - `s += x` appends anything that can be printed
 - `s = text` with a `&strview` copies the text into `s`, reusing its memory. Between two `&str` it doesn't copy, both share the text, so write `s = view(other)`, and a new text is `heap(text)`
 - `add_byte(s: *&str, b: u8)` appends one byte
-- `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8
+- `add_char(s: *&str, code: u32)` appends the character with that code, as UTF-8, and `U+FFFD` for a code that is no character: a surrogate or one past `0x10FFFF`
 - `reserve(s: *&str, want: i64)` makes room for `want` bytes, so the appends until then don't allocate
 - `try_reserve(s: *&str, want: i64) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory
 - `view(s: &str) -> &strview` a view of the text
@@ -343,13 +343,13 @@ type Grid:
 
 operator [](g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Integer:
     if i < 0 or i >= 9:
-        out_of_bounds(i, 9, place)
+        out_of_bounds(i, 9, place = place)
     return ptr(g.cells[i])
 ```
 
 ### C text
 - `cstr` is a type of the language, the text of C, a pointer to bytes that end with a zero (see [Text](Reference.md#text)). A text literal goes to one by itself
-- `cstr(text: &strview) -> cstr` a copy with the zero, temporary
+- `cstr(text: &strview) -> cstr` a copy with the zero, temporary. C reads it up to its first zero byte, so a text with one inside is cut there: a path or an argument of a program that holds a zero names a shorter one
 - `c_text(s: &str) -> cstr` writes a zero after the text of `s` and gives its address, without copying, so it's valid until `s` changes. When `s` has no room for the zero it's a temporary copy
 - `view(c: cstr) -> &strview` a view of a C text, empty for a null pointer
 - `operator +=(s: *&str, c: cstr)` appends the text, so `print(c)` shows it, and nothing for a null pointer
