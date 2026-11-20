@@ -77,8 +77,9 @@ priv func opened(host: &strview, port: u16, listening: bool) -> Socket|NetError:
         if fd >= 0:
             prepare(fd)
         if fd >= 0 and (bind(fd, raw, size) == 0 and listen(fd, 64) == 0 if listening else connect(fd, raw, size) == 0):
+            made := Socket{i32(fd), address(raw)} # before freeaddrinfo, which frees what raw points to
             freeaddrinfo(found)
-            return Socket{i32(fd), address(raw)}
+            return made
         failed = NetError{failure(), action, host + ":" + port}
         if fd >= 0:
             dispose(fd)

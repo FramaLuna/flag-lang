@@ -177,6 +177,7 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- The `peer` of a `Socket` that `connect` gives was read after `freeaddrinfo` freed it, and on macOS it was not the address it reached
 - `-memory` follows a list rebuilt in a loop from another one, `fresh` filled walking `names` and then `names = fresh`, where it said that `names` and the elements of the walk may be freed already and that `fresh` may never be freed: a block named after the place that holds it leaves that name when the place takes another value. So does a function that rebuilds a list of a context and is called in a loop, where it said that the list may never be freed
 - A field of a context whose type holds an owner through a type parameter, like `runs: Lock[&list[i64]]`, is an error when it has no default, `app.runs.value starts without memory, and a context gets only the defaults of its fields: runs: Lock[&list[i64]] = {value = heap([])}`, where the program stopped when it grew, with no warning of `-memory`
 - A call to a function that `-memory` gives up on says only that, where it could also say `-memory cannot follow a pointer once it is stored in memory that C gave`
