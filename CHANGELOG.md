@@ -175,6 +175,7 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- `-memory` names a field of a context in its warnings, `the memory allocated here for app.names is never freed`, where it said `the memory that append allocates here`
 - `l = l[1:]`, `s = s[1:]` and `t += t` don't warn `this call may free memory that it also reads through another argument`: the `+=` of text, `append` of a view and the `=` of a view to an owner copy the view first when it is of the same memory, which `-memory` knows now
 - A thread that grows a list of its own context, whose default is `heap([])`, made `-memory` warn `work cannot grow this memory, it may have no memory to grow in`: a context starts in a new thread with what its defaults write
 - An `operator []=(x, i)` of two parameters that doesn't return a pointer is an error, `operator []= with two parameters gives the place of x[i], so it returns a pointer, this one returns i32`, where it was left unused
