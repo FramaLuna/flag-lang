@@ -95,7 +95,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             for held in comp.syms:
                 if held.library and held.node != f and comp.nodes[held.node].kind == Func and (body(held.node) == 0 or held.export) and linked(held.node) == comp.syms[k].name:
                     return fail(comp.syms[k].name + " is a symbol of C that the library uses already, an export function needs a name of its own", at)
-            if others != 0:
+            if others != 0 and not comp.syms[k].library: # one of yours with the name of an export of core gives way
                 return fail("an export function cannot be overloaded, its name is the symbol other languages call", at)
             if try holds_where(f):
                 try instantiate(f, 0)
@@ -137,7 +137,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 given := node_end(c + 1)
                 for i in given..node_end(given):
                     for j in p..params(f):
-                        if comp.nodes[i].kind == Name and text(i) == text(kid(f, j)): # a later parameter, also with the name of a function
+                        if comp.nodes[i].kind == Name and comp.nodes[i].module.len == 0 and text(i) == text(kid(f, j)): # a later parameter, also with the name of a function
                             return fail("the default of " + text(c) + " cannot read " + text(i) + ", a default value reads only the parameters before it", at_of(i))
     done := try gen_from(0)
     reached := comp.types.len
@@ -538,7 +538,7 @@ func gen_from(from: i64) -> i64|Fail:
                     append(comp.passes, Pass{W, int_arg(i64(fd)), true, VOID})
                     append(comp.passes, Pass{W, int_arg(32768), true, VOID})
                     add(Ins{op = "call", a = global("$_setmode"), first = u32(modes), count = 2})
-        elif inst.export and (not inst.library or comp.shared) and comp.stamping: # C may call it from a thread that never ran code of this program or library, also core of a library at its close
+        elif inst.export and comp.stamping: # C may call it from a thread that never ran code of this program or library, also core at the exit of such a thread
             l_enter := label()
             l_body := label()
             branch(op1(W, "loadw", global("thread $flag.entered")), l_body, l_enter)
@@ -715,8 +715,8 @@ func result(f: i64) -> i64|Fail:
 func instantiate(f: i64, at: i64) -> i64|Fail:
     key: &str = heap("")
     key += f
-    for i in comp.frame..comp.binds.len:
-        key += "|" + arg_name(comp.binds[i])
+    for i in comp.frame..comp.binds.len: # with its name, the calls may bind them in another order
+        key += "|" + comp.binds[i].name + "=" + arg_name(comp.binds[i])
     id := comp.inst_ids[view(key)]
     if id is i64:
         return id
@@ -2193,8 +2193,13 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             a := n + 1
             found := first_sym(text(a))
             if comp.nodes[a].kind == Name and lookup(text(a)) == 0 and try named(text(a), comp.nodes[a].module, tok.at) == 0:
+                exported := found # the export of that name, beside functions of yours that give way
+                while exported != 0 and not (comp.nodes[comp.syms[exported].node].kind == Func and visible(exported, comp.nodes[a].module, tok.at) and comp.syms[exported].export):
+                    exported = comp.syms[exported].next
                 while found != 0 and not (comp.nodes[comp.syms[found].node].kind == Func and visible(found, comp.nodes[a].module, tok.at)):
                     found = comp.syms[found].next
+                if exported != 0:
+                    found = exported
                 if found != 0 and not comp.syms[found].export:
                     return fail("ptr of a function needs an export func, the address is for C: in Flag the name alone is the value, f := " + text(a), tok.at)
                 if found != 0:
@@ -3306,7 +3311,13 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
         return put_text(place, try invoke("get", one, at), at)
     if t.name == "&str": # text goes as text, a += of a union that holds &str would take it back
         return put_text(place, try convert(v, try fat_type("strview", VOID, at), Arg{}, at), at)
-    if t.kind == Untagged:
+    declared := false # an operator += of yours that writes it
+    s := first_sym("+=")
+    while t.kind == Untagged and s != 0:
+        f := comp.syms[s].node
+        declared = declared or callable(s, "", [], at) and params(f) == 2 and not generic(kid(f, 1)) and try resolve(kid(f, 1) + 1) == v.type
+        s = comp.syms[s].next
+    if t.kind == Untagged and not declared:
         return fail(t.name + " has no tag that says which member it holds, so it cannot be written: convert it to the member you mean, like " + comp.types[comp.items[t.first].type].name + "(...)", at)
     if v.type == EMPTYARRAY or v.type == EMPTYMAP: # an empty literal, as it is written
         return put_words(place, "[]" if v.type == EMPTYARRAY else "{}", at)
@@ -4032,6 +4043,7 @@ func ending(code: Value, at: i64) -> Arg|Fail:
     return load(try convert_number(try runtime("ending", given, at), code.type, at)).at
 
 func unwind(from: i64, staying: i64) -> Fail?:
+    at := comp.at # what follows the defers is of the statement that leaves
     if staying == 0:
         try settle()
     kept := comp.vars.len
@@ -4041,6 +4053,7 @@ func unwind(from: i64, staying: i64) -> Fail?:
     comp.leaving = 0
     comp.staying = 0
     comp.vars.len = kept
+    comp.at = at
     return null
 
 # main waits for the threads that run alone before its deferred statements, so they can use all it keeps

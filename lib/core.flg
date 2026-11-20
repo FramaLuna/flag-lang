@@ -116,9 +116,14 @@ func abs(x: $T) -> $T where $T is f64:
     return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
 
 func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
+    if t == 0.0:
+        return a
     if t == 1.0:
         return b
-    return a + (b - a) * t # a at 0, and when b is a
+    d := b - a
+    if d - d != 0.0: # the distance is too far for the float
+        return a * (1.0 - t) + b * t
+    return a + d * t # a when b is a
 
 func heap(v: $T) -> *$T:
     p := malloc(@sizeof($T)) as *$T
@@ -1553,6 +1558,8 @@ priv type Streams:
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
 priv shared context io:
     table: Lock[Streams]
+    ended: atomic[i32] # 1 when main or exit ended the program with 0, which a failure of the standard output after it turns into 1
+    told: atomic[i32] # 1 once the failure of the standard output was said
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1598,10 +1605,10 @@ func flush():
                     drain(s)
 
 priv export func flag_exit():
-    if io.table.value.streams.len > 0: # a library that never wrote has nothing to say at its close
-        _ = said()
+    if io.table.value.streams.len > 0 and said() and get(io.ended) == 1: # a library that never wrote has nothing to say at its close, and a thread wrote after the end
+        _exit(1)
 
-# what the standard output could not write goes out and is said, once
+# if the standard output failed, after what waits goes out, said once
 priv func said() -> bool:
     flush()
     s := stream(stdout)
@@ -1609,8 +1616,7 @@ priv func said() -> bool:
     if try_lock(s.writing):
         with Locked{ptr(s.writing) as *Lock[null]}:
             failed = s.writing.value.failed
-            s.writing.value.failed = 0
-    if failed != 0:
+    if failed != 0 and compare_swap(io.told, 0, 1):
         eprint("flag: ", FsError{failed, "write", s.path})
     return failed != 0
 
@@ -1619,8 +1625,11 @@ func exit(code: i32) -> never:
 
 # what main and exit end the program with: a failed standard output turns an end with 0 into 1
 priv func ending(code: i32) -> i32:
-    if said() and (code and 255) == 0:
+    zero := code == 0 if @windows() else (code and 255) == 0 # what the shell gets, the low byte on Linux and macOS
+    if said() and zero:
         return 1
+    if zero:
+        set(io.ended, 1)
     return code
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:

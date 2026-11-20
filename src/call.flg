@@ -530,16 +530,30 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if not declared:
                 return fail(name + " has no parameter named " + label, at)
         hint: &strview
-        for a in args:
+        for k, a in args:
             if comp.types[a.type].kind == Union and comp.types[a.type].size > 4 and not is_letter(items(name)[0]):
                 hint = ", a union is narrowed with is before its value is used"
-            elif comp.types[a.type].kind == Union and contains(members(a.type), NULL):
-                hint = ", " + comp.types[a.type].name + " may be null: handle the null first with ifnull or trust"
-            elif comp.types[a.type].kind == Union and fails(a.type):
-                hint = ", " + comp.types[a.type].name + " may be an error: handle it first with try, iferror or trust"
+            elif comp.types[a.type].kind == Union and (contains(members(a.type), NULL) or fails(a.type)):
+                kept: &list[i64] = heap([])
+                for m in members(a.type):
+                    if m != NULL and not comp.types[m].error:
+                        append(kept, m)
+                handled := false # an overload takes it once the null or the error is handled
+                s := first_sym(name)
+                while s != 0 and kept.len > 0:
+                    f := comp.syms[s].node
+                    if callable(s, module, args, at) and params(f) == args.len and not generic(kid(f, k)):
+                        handled = handled or accepts(try resolve(kid(f, k) + 1), Value{type = try union_of(kept, Union, at)}) >= 0
+                    s = comp.syms[s].next
+                if handled and contains(members(a.type), NULL):
+                    hint = ", " + comp.types[a.type].name + " may be null: handle the null first with ifnull or trust"
+                elif handled:
+                    hint = ", " + comp.types[a.type].name + " may be an error: handle it first with try, iferror or trust"
         compares := name == "==" or name == "!=" or name == "<" or name == "<=" or name == ">" or name == ">="
         if args.len == 2 and comp.types[args[0].type].kind == Array and comp.types[args[1].type].kind == Array and native(name, Int).len > 0 and not compares:
             hint = ", an array only holds its elements: a simd computes on its lanes"
+        elif args.len == 2 and compares and (args[0].type == U8 and textual(args[1].type) or textual(args[0].type) and args[1].type == U8):
+            hint = ", a byte and a text never compare: a character in single quotes is a byte, 'a'"
         elif args.len == 2 and compares and (numeric(args[0].type) and textual(args[1].type) or textual(args[0].type) and numeric(args[1].type)):
             hint = ", a number and a text never compare: write the number as text, \"\" + n, or read the text as a number, parse_int(s)"
         elif args.len == 2 and (name == "==" or name == "!=") and comp.types[args[0].type].kind == Array and comp.types[args[1].type].kind == Array:
@@ -571,8 +585,11 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             s := first_sym(name)
             while s != 0 and crossing.len == 0:
                 f := comp.syms[s].node
-                whole := comp.types[a.type].kind == Array or comp.types[a.type].kind == Ptr and comp.types[comp.types[a.type].elem].kind == Array
-                if whole and is_letter(items(name)[0]) and callable(s, module, args, at) and k < params(f) and starts_with(code_of(kid(f, k) + 1), "&listview"):
+                held := a.type
+                if comp.types[held].kind == Ptr:
+                    held = comp.types[held].elem
+                whole := comp.types[held].kind == Array
+                if whole and is_letter(items(name)[0]) and callable(s, module, args, at) and k < params(f) and starts_with(code_of(kid(f, k) + 1), "&listview") and (generic(kid(f, k)) or element(try resolve(kid(f, k) + 1)) == comp.types[held].elem):
                     crossing = "an array goes to a &listview as a slice of it: a[:]"
                 if crossing.len == 0 and callable(s, module, args, at) and k < params(f) and text(kid(f, k)) != ".." and not generic(kid(f, k)):
                     p := try resolve(kid(f, k) + 1)
@@ -642,7 +659,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             if callable(h, module, args, at):
                 need := 0
                 for k in 0..params(f):
-                    if k < positional and placed(f, k):
+                    if k < positional and placed(f, k) and not gathers(kid(f, params(f) - 1)): # with ..items the values go past it
                         put = text(kid(f, k))
                     if kids(kid(f, k)) == 1 and text(kid(f, k)) != "..":
                         need += 1

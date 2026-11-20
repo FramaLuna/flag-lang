@@ -265,7 +265,7 @@ context mem:
     layouts: &list[&list[u64]] = heap([]) # a bit for each word that holds a pointer
     shaped: &map[i64, u32] = heap({}) # the layout of a type, and of the owners in it
     threaded: bool # the program starts threads
-    arena: u32 # the size of an Arena of core, what its operations touch
+    arena: u32 # the size of an Arena of core, whose words its operations touch
     footprints: &list[Footprint] = heap([]) # of the threads this function starts, and of those that its calls leave running
     starting: &list[Touch] = heap([]) # what the thread that the next launch starts touches
     passed: &list[Touch] = heap([])
@@ -327,7 +327,7 @@ func check_memory():
     mem.pinned = bit(NOWHERE) or bit(OUTSIDE) or bit(STATIC)
     for t in comp.types:
         if t.kind == Struct and t.decl != 0 and file_of(comp.tokens[comp.nodes[t.decl].tok].at) == 0 and text(t.decl) == "Arena":
-            mem.arena = 8 # its first word, which every operation of it changes or reads
+            mem.arena = u32(t.size)
     append(mem.layouts, heap([]))
     append(mem.layouts, heap([FULL]))
     labels: &map[u32, u32] = heap({})
@@ -1553,13 +1553,13 @@ func visit(block: i64):
             sweep()
         case Take:
             touch_args(o)
-            access(target_of(mem.args[o.first]), true, mem.arena) # the counts and the blocks of the arena
+            worded(target_of(mem.args[o.first])) # the counts and the blocks of the arena
             k := chunk(target_of(mem.args[o.first]), named(mem.args[o.first].temp, i64(o.callee) - 1, 0), (u64(i) << 16) or SITE, Obj{kind = Heap, site = i64(i), born = i64(i), pos = o.pos, from = "arena"})
             define(o.to, Target{live = bit(k), must = bit(k)})
         case Reclaim:
             touch_args(o)
             arena := target_of(mem.args[o.first])
-            access(arena, true, mem.arena)
+            worded(arena)
             held := fetch(arena)
             blocks := objects(held.live)
             chunks := objects(fetch(Target{live = blocks, off = ANY}).live) and (mem.fn.arenas or mem.fn.outer - mem.fn.roots)
@@ -1580,7 +1580,7 @@ func visit(block: i64):
             arena := number(0)
             if o.code == Resize:
                 arena = target_of(mem.args[o.first])
-                access(arena, true, mem.arena)
+                worded(arena)
             given := mem.args[o.first + u32(o.code == Resize)]
             first := target_of(given)
             access(plus(first, ANY, 0, 0), true, 0) # it may move all of it
@@ -1885,6 +1885,11 @@ func access(at: Target, wrote: bool, size: u32):
             touched(moved(t, SLOTS + k, at), pos, running, Set{})
     elif at.slot != 0:
         touched(moved(t, SLOTS + i64(at.slot) - 1, at), pos, running, Set{})
+
+# an operation of an Arena changes it, one word at a time, as a thread of each round changes its own element
+func worded(arena: Target):
+    for k in 0..i64(mem.arena) / 8:
+        access(plus(arena, i32(k * 8), 0, 0), true, 8)
 
 # t at the place at in owner
 func moved(t: Touch, owner: i64, at: Target) -> Touch:
