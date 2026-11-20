@@ -53,6 +53,7 @@ priv extern "c":
     func WakeAllConditionVariable(condition: *bytes)
     func sigaction(signal: i32, action: *bytes, old: *bytes) -> i32
     func sigaltstack(stack: *bytes, old: *bytes) -> i32
+    func signal(number: i32, handler: *bytes) -> *bytes
     func AddVectoredExceptionHandler(first: u32, handler: *bytes) -> *bytes
     func SetThreadStackGuarantee(size: *u32) -> i32
     func flag_frame() -> u64
@@ -2214,11 +2215,11 @@ priv export func flag_start():
     guard_stack()
 
 priv func catch_crashes() where @linux():
-    for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
+    for signal in [4, 6, 7, 8, 11]: # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV
         catch(i32(signal))
 
 priv func catch_crashes() where @macos():
-    for signal in [4, 8, 10, 11]: # SIGILL, SIGFPE, SIGBUS, SIGSEGV
+    for signal in [4, 6, 8, 10, 11]: # SIGILL, SIGABRT, SIGFPE, SIGBUS, SIGSEGV
         catch(i32(signal))
 
 priv func catch(signal: i32) where @linux():
@@ -2233,6 +2234,11 @@ priv func catch(signal: i32) where @macos():
 
 priv func catch_crashes() where @windows():
     AddVectoredExceptionHandler(1, ptr(flag_exception))
+    signal(22, ptr(flag_abort)) # SIGABRT, that abort raises before the C runtime ends the program
+
+priv export func flag_abort(number: i32):
+    frame := flag_frame()
+    crashed("aborted", Crash{frame, 0, frame, 0, 0}, 134)
 
 priv type Test:
     name: cstr
@@ -2322,6 +2328,8 @@ priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
     what: &strview = "invalid memory access"
     if signal == 4:
         what = "illegal instruction"
+    elif signal == 6:
+        what = "aborted"
     elif signal == 8:
         what = "arithmetic error"
     elif signal == 14:

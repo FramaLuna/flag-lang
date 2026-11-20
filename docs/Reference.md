@@ -837,6 +837,7 @@ These stop the program, and write the message to the error output
 | `flag: stack overflow` | 139 |
 | `flag: illegal instruction` | 132 |
 | `flag: arithmetic error` | 136 |
+| `flag: aborted`, when the C library ends the program with `abort`, like on a memory freed twice, after its own message and without a place | 134 |
 | `flag: the test takes more than 10 s`, in `flagc test` | 142 |
 | `flag: this program needs an x86-64-v2 processor (SSE4.2)`, at the start of a program with `simd` | 132 |
 
@@ -1348,7 +1349,7 @@ extern "ws2_32" where @windows():
 
 extern "m":
 ```
-The functions of `extern` are functions like the others: two with the same parameters in one module are an error, `labs is declared twice with the same parameters`, also when they return different types or call different symbols, and two with different parameters are overloads.
+The functions of `extern` are functions like the others: two with the same parameters in one module are an error, `labs is declared twice with the same parameters`, also when they return different types or call different symbols. Two with different parameters are overloads when they call different symbols, and an error when they call the same one, because a function of C has one signature: `labs is declared twice, and the function labs of C has one signature: give the other one a name of its own and = "labs"`.
 
 A function takes the name of C you give it after `=`, so a C function can have another name in Flag, or one for each signature it's called with, like `objc_msgSend`, which takes the arguments of the method it sends to
 ```flag

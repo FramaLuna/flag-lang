@@ -174,6 +174,8 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- Two functions of `extern` with one name and different parameters that call the same symbol are an error, `labs is declared twice, and the function labs of C has one signature: give the other one a name of its own and = "labs"`, where `labs(-3.0)` passed a float to the `labs` of C and gave garbage
+- When the C library aborts the program, like on a memory freed twice, what the program printed goes out and then `flag: aborted`, with exit code 134, where it was lost, also in a terminal
 - `(i32, bool){1, true}` is a literal of that tuple, like `Point{1, 2}`, where it was `unexpected '{', the statement already ended`
 - `-memory` knows which words of a struct of any size hold a pointer, where past the first 504 bytes it took every word for one: the `name` of a struct of 64 numbers, freed through the elements of a list, was `the memory allocated here for b.name is never freed`, and a function that copied a struct that big was near `it has more than 512 blocks of memory to follow`
 - `-memory` says when it doesn't follow a call, `-memory gives up on grow, it changes memory more than three pointers away from its parameters, so this call is not checked`, for a function that moves, allocates or stores a pointer that far, like `append(p.a.b.c.names, x)`: four pointers away it said nothing, and five away it gave false warnings like `free cannot release l.names, it is not on the heap`. A free that far no longer says that the variable of the caller is not on the heap
