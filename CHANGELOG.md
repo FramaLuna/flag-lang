@@ -174,6 +174,11 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- `x + 1.5` with `x: i32` says `+ expects two numbers of one type but got i32 and f64, convert one side with i32(...) or f64(...)`, as with a float variable, where the literal tried to become an `i32`: `cannot assign f64 to i32, and no operator = makes i32 from it`
+- `add(hits, 1)` with `hits: *atomic[i64]` says `add of an atomic takes the atomic itself, and this is *atomic[i64]: reach it with .*`, where it was `no function named add is visible here`, and `get(hits)` sent you to `use json`
+- A byte that a message cannot show is written with its escape when it has one, `'\t'` and `invalid character '\e'`, where it was `\x09` and `\x1b`
+- An `@embed` that doesn't find its file shows the path as you would write it from where you compile, `assets/logo.png`, where a program in the current folder showed `./assets/logo.png`
+- `-memory` names the variable of a thread that is never waited, `the memory allocated here for t is never freed`
 - Inside a function with a `type $T`, `$T(x)` converts and `$T{1, 2}` is a literal, where `return $B(x)` was `unexpected '(', the statement already ended`. A tuple type is an argument, `make((i32, bool))`, where it was read as a value, and `(a, b)` where a value goes says `(a, b) is the type of a tuple, and a tuple value is written with braces: {a, b}`
 - `send` and `receive` that wait inside a `with lock(c.queue)` let the lock go in the middle of that `with`, and another thread changed the channel there: now they stop the program, `flag: a channel waits inside a with lock of its queue, where no other thread can take the lock to change it`
 - `-memory` lost a temporary of a block that took a slot of the stack of an outer block: `append(keep, ptr(["a", "b"]))` inside an `if` and `keep[0][0]` after it said nothing. A block takes only the slots of the stack that it made, so its end is theirs
@@ -200,6 +205,7 @@ Fixed
 - `-memory` keeps apart what a member of a union holds also where the other member writes nothing, like a `&str|null`: `if got is &str: free(got)` on what a function gave was `the memory that build allocates here may never be freed`
 
 Faster
+- Checking a chain of `elif` takes time in proportion to its length: 40000 `elif` check in 1.9 s, where they took 12 s, because each `elif` looked through the rest of the chain for its place
 - Checking the compiler takes 4 % fewer instructions, 918 M where it took 958 M: a call to a function without `$T` makes its instance without matching its arguments again, which choosing the overload already did
 - A division or a remainder of a signed integer by a power of two that the compiler knows is shifts, like one without sign: `len / 2` and `i % 8` on `i64`, which lengths are now. A loop of `i / 2 + i % 8 + i / 64` over 100 million `i64` takes 0.58 G cycles where it took 7.8 G, with one change more to QBE
 

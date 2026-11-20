@@ -897,7 +897,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         while part < node_end(n) and comp.nodes[part].kind == If:
             cond := part + 1
             yes := node_end(cond)
-            comp.at = at_of(part)
+            comp.at = comp.tokens[comp.nodes[part].tok].at # its if or elif, at_of would walk the rest of the chain
             c := try condition(cond)
             l_yes := label()
             l_no := label()
@@ -2107,7 +2107,8 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         if name == "@embed":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
                 return fail("@embed expects the path of the file as text, from the folder of this file: @embed(\"shader.spv\")", tok.at)
-            path := join_path(dir_of(view(comp.files[file_of(tok.at)].path)), unquoted(text(n + 1)))
+            file := view(comp.files[file_of(tok.at)].path)
+            path := join_path(file[:file.len - base_name(file).len], unquoted(text(n + 1)))
             key: &str = heap("@")
             key += path
             id := comp.stored[view(key)] ifnull i64(comp.globals.len)
