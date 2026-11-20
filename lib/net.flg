@@ -314,6 +314,9 @@ priv func open_udp() -> i64 where @macos():
     no: i32 = 0
     fcntl(fd, 2, 1)
     setsockopt(fd, 41, 27, ptr(no) as *bytes, 4)
+    room: i32 = 262144 # the 9216 bytes that macOS gives to send and its 42 KB to receive hold no datagram of 65507
+    setsockopt(fd, 65535, 0x1001, ptr(room) as *bytes, 4) # SO_SNDBUF
+    setsockopt(fd, 65535, 0x1002, ptr(room) as *bytes, 4) # SO_RCVBUF
     return fd
 
 priv func open_udp() -> i64 where @windows():

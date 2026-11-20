@@ -75,7 +75,7 @@ d := u8(a)
 - Characters: `'a'` is the number of that character (97), an integer literal, so it works with `u8`
 - Text: `"hello\n"`, a text literal is a `&strview`. The escapes are `\n \t \r \0 \\ \" \' \e`, and `\x41` is the byte with that hexadecimal number. A text can cross lines, and its line breaks and the spaces at the start of its lines are part of it
 - `true`, `false` and `null`
-- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is the empty one, an `emptyarray`, that becomes an empty array or listview, so the place must say which: `x := []` alone has no type
+- Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is the empty one, an `emptyarray`, that becomes an array of zeros or an empty listview, so the place must say which: `x := []` alone has no type
 - Maps: `{"ana": 30, "bo": 25}` is a `fixmap[&strview, i64, 2]` that holds just those, and `{}` is the empty one, an `emptyfixmap` (see [Maps](#maps))
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types)). Where nothing expects one, `{1, "a"}` is a tuple of its values, a `(i64, &strview)` (see [Several values](#several-values))
 

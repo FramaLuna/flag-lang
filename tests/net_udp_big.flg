@@ -1,0 +1,28 @@
+use net
+
+func main() -> i32:
+    server := udp(0)
+    client := udp(0)
+    if server is NetError or client is NetError:
+        print("cannot open a UDP port")
+        return 1
+    to := address("127.0.0.1", port(server))
+    if to is NetError:
+        print(to)
+        return 1
+    data: &str = heap("")
+    defer free(data)
+    for i in 0..60000:
+        add_byte(data, u8('a' + i % 26))
+    print(send(client, to, data))
+    print(ready(server, 30.0))
+    got: &str = heap("")
+    defer free(got)
+    from := receive(server, got)
+    if from is NetError:
+        print(from)
+        return 1
+    print(got.len, " ", got == data)
+    close(server)
+    close(client)
+    return 0
