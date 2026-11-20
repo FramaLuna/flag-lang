@@ -368,7 +368,7 @@ priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], fo
     for k in 0..3:
         if given[k] >= 0 and given[k] != i32(k):
             posix_spawn_file_actions_adddup2(ptr(actions), given[k], i32(k))
-        elif fcntl(i32(k), 1) != -1: # F_GETFD: a closed one stays closed, inheriting it is EBADF on macOS
+        elif given[k] == i32(k) or fcntl(i32(k), 1) == 0: # F_GETFD: a closed one stays closed, and one of the library at its number is close-on-exec
             posix_spawn_file_actions_addinherit_np(ptr(actions), i32(k))
     if folder.len > 0:
         with scratch():
@@ -541,10 +541,13 @@ func executable() -> &strview where @linux():
 func executable() -> &strview where @macos():
     buf: array[u8, 4096]
     size: u32 = 4096
-    full: array[u8, 4096]
-    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0 or realpath(ptr(buf) as cstr, ptr(full) as *u8) as u64 == 0:
+    if _NSGetExecutablePath(ptr(buf) as *u8, ptr(size)) != 0:
         return ""
-    return tmp(view(ptr(full) as cstr))
+    full := realpath(ptr(buf) as cstr, 0 as *u8)
+    defer free(full as *bytes)
+    if full as u64 == 0:
+        return ""
+    return tmp(view(full))
 
 func executable() -> &strview where @windows():
     buf: array[u16, 4096]

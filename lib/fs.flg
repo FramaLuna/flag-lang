@@ -135,17 +135,18 @@ func rename_file(from: &strview, to: &strview) -> FsError? where @windows():
     return null
 
 func make_dir(path: &strview) -> FsError?:
+    above: FsError? = null # the first folder above that could not be made, which is why the next ones cannot
     with scratch():
         for i in 1..path.len:
-            if slash(path[i]):
-                make_one(path[:i])
+            if slash(path[i]) and make_one(path[:i]) != 0 and errno() != 17 and above is null: # EEXIST
+                above = FsError{errno(), "make", path[:i]}
     if is_dir(path):
         return null
     failed := false
     with scratch():
         failed = make_one(path) != 0
     if failed:
-        return FsError{errno(), "make", path}
+        return above ifnull FsError{errno(), "make", path}
     return null
 
 func list_dir(path: &strview) -> &listview[&strview]|FsError where not @windows():

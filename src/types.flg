@@ -786,14 +786,21 @@ func tuple_of(parts: &listview[i64], at: i64) -> i64|Fail:
         t := comp.types[try concrete(p, at)]
         if fails(p):
             values: &str = heap("")
+            errors: &list[i64] = heap([])
             for q in parts:
-                if not fails(q):
-                    if values.len > 0:
-                        values += ", "
-                    values += comp.types[q].name
+                kept: &list[i64] = heap([])
+                for m in members(q):
+                    if comp.types[m].error:
+                        append(errors, m)
+                    else:
+                        append(kept, m)
+                if kept.len > 0 and values.len > 0:
+                    values += ", "
+                if kept.len > 0:
+                    values += comp.types[try union_of(kept, Union, at)].name
             if contains(view(values), ","):
                 values = "(" + values + ")"
-            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + "|" + comp.types[p].name, at)
+            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + "|" + comp.types[try union_of(errors, Union, at)].name, at)
         if t.kind == Bytes:
             return fail("a tuple needs elements with a size, bytes is a run of unknown length", at)
         if t.align == 0:

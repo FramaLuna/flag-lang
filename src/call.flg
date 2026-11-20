@@ -478,6 +478,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             return fail(comp.types[t].name + " declares == but not hash, and equal values need equal hashes: declare operator hash for " + comp.types[t].name + " too", at)
         if name == "hash" and args.len == 1 and k == Simd:
             return fail(comp.types[t].name + " has no hash, its == answers each lane: use an array, array[" + comp.types[lane_value(t)].name + ", " + comp.types[t].count + "](v)", at)
+        if name == "hash" and args.len == 1 and k == Atomic:
+            return fail(comp.types[t].name + ATOMIC + ", so it has no hash: declare operator hash for the type that holds it", at)
         if name == "hash" and args.len == 1 and not (k == Bool or k == Ptr or k == Func or k == Struct or k == Union or k == Array or k == Void):
             return fail(comp.types[t].name + " has no hash, declare one for it: operator hash(x: " + comp.types[t].name + ") -> u64", at)
         if name == "==" and args.len == 2 and args[1].type == t and (k == Struct or k == Union) or name == "hash" and args.len == 1:
@@ -557,11 +559,18 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             while s != 0 and crossing.len == 0:
                 f := comp.syms[s].node
                 if callable(s, module, args, at) and k < params(f) and text(kid(f, k)) != ".." and not generic(kid(f, k)):
-                    crossing = text_of_c(a, try resolve(kid(f, k) + 1))
+                    p := try resolve(kid(f, k) + 1)
+                    crossing = text_of_c(a, p)
+                    if comp.types[a.type].name == "&strview" and comp.types[p].name == "&str":
+                        crossing = "a text in quotes is a &strview: a parameter that only reads text takes &strview, and a &str goes there too"
+                    if comp.types[a.type].kind == Func and not comp.types[a.type].foreign and comp.types[p].kind == Func and comp.types[p].foreign:
+                        crossing = "a function of Flag goes to " + comp.types[p].name + ", which holds a C function, only when it is an export func"
                 s = comp.syms[s].next
         if crossing.len > 0:
             hint = ", " + crossing
+        spread := names.len > 0 and names[-1] == ".." and sequence(args[-1].type)
         gathered := false
+        fits := false # a ..items: T that takes the elements of the view after .. as they are
         free_type := 0 # the $T that ..items leaves without a type when no extra argument gives it one
         g := first_sym(name)
         while g != 0:
@@ -569,6 +578,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             last := kid(f, params(f) - 1)
             if callable(g, module, args, at) and params(f) > 0 and gathers(last):
                 gathered = true
+                fits = fits or spread and (generic(last) or try resolve(last + 1) == element(args[-1].type))
                 if args.len < params(f) and free_type == 0:
                     free_type = unbound(last + 1)
             g = comp.syms[g].next
@@ -581,11 +591,11 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             hint = ", " + name + " has no ..items: T for the view after .. to fill"
         elif names.len > 0 and names[-1] == ".." and gathered and named:
             hint = ", a call that gives the extra arguments with .. names none of the others"
-        elif names.len > 0 and names[-1] == ".." and sequence(args[-1].type):
+        elif spread and not fits:
             hint = ", the elements of the view after .. are " + comp.types[element(args[-1].type)].name + ", and they go to ..items: T without converting"
-        counts := true # no overload takes as many arguments as this call gives
-        least := 0
-        most := 0
+        counts := true # no overload takes as many arguments as this call gives, and they all take the same
+        least := -1
+        most := -1
         positional := 0
         while positional < names.len and names[positional].len == 0:
             positional += 1
@@ -601,13 +611,13 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
                     for label in names[positional:]:
                         if k < positional and text(kid(f, k)) == label:
                             twice = label
-                counts = counts and (args.len < need or args.len > params(f)) and (params(f) == 0 or not gathers(kid(f, params(f) - 1)))
+                counts = counts and (args.len < need or args.len > params(f)) and (params(f) == 0 or not gathers(kid(f, params(f) - 1))) and (most < 0 or least == need and most == params(f))
                 least = need
                 most = params(f)
             h = comp.syms[h].next
         if hint.len == 0 and twice.len > 0:
             hint = ", " + twice + " is given twice, by its place and by its name"
-        elif hint.len == 0 and counts and least == most:
+        elif hint.len == 0 and counts and least == most and most >= 0:
             hint = ", " + name + " expects " + counted(least, "argument", "arguments")
         if name == "put" and args.len == 2:
             holder := args[0].type
@@ -752,7 +762,7 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
 
 # a pointer argument to x[i] where operator [] gives a copy: the call gets a pointer to the copy, and back keeps x, i and the copy to put it back after
 func through_copy(given: Value, to: i64, back: *&list[Value], at: i64) -> Value|Fail:
-    if comp.types[to].kind != Ptr:
+    if comp.types[to].kind != Ptr or given.type == to:
         return given
     if given.element < 0:
         return fail("this is a field of the copy that x[i] gives, so a call that takes a pointer to it would only change the copy: take the element to a variable, change it there and put it back", at)
@@ -1569,6 +1579,10 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
             try zero(to, args[0].at)
         return invoke("=", args, at)
     if from.kind == Union:
+        for m in members(v.type):
+            if (m == NULL or comp.types[m].error) and accepts(to, Value{type = m}) < 0:
+                handled: &strview = "the null first with ifnull" if m == NULL else "the error first with try, iferror"
+                return fail("cannot assign " + from.name + " to " + target.name + ", it may be " + comp.types[m].name + ": handle " + handled + " or trust", at)
         current := tag(v)
         slot := alloc(to)
         l_done := label()
@@ -1585,6 +1599,10 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         return Value{type = to, at = slot, mem = true}
     if integer(v.type) and integer(to):
         return fail("cannot assign " + from.name + " to " + target.name + ", an integer only grows by itself: convert it with " + target.name + "(...)", at)
+    if numeric(v.type) and numeric(to):
+        return fail("cannot assign " + from.name + " to " + target.name + ", a number changes its type only when you say so: convert it with " + target.name + "(...)", at)
+    if from.kind == Fat and target.kind == Fat and text(from.decl) == "list" and text(target.decl) == "list" and numeric(comp.items[from.args].type) and numeric(comp.items[target.args].type):
+        return fail("cannot assign " + from.name + " to " + target.name + ", the elements keep their type, also those of a literal: heap([" + comp.types[comp.items[target.args].type].name + "(1), 2]) is a " + target.name, at)
     crossing := text_of_c(v, to)
     if crossing.len > 0:
         return fail(crossing, at)

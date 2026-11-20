@@ -39,7 +39,7 @@ func get(d: Document, at: i64|null, path: &strview) -> i64|null:
     found := at
     rest := path
     with scratch():
-        while found is i64 and d.nodes[found].kind == Object:
+        while found is i64 and node(d, found).kind == Object:
             cut := find(items(rest), '.') ifnull rest.len
             name := rest[:cut]
             object := found
@@ -65,9 +65,9 @@ priv type Children:
     object: bool
 
 func children(d: Document, at: i64|null) -> Children:
-    if at is null or d.nodes[at].kind != Array and d.nodes[at].kind != Object:
-        return Children{d, 0, 0, false}
-    return Children{d, at + 1, at + d.nodes[at].size, d.nodes[at].kind == Object}
+    if at is i64 and (node(d, at).kind == Array or node(d, at).kind == Object):
+        return Children{d, at + 1, at + d.nodes[at].size, d.nodes[at].kind == Object}
+    return Children{d, 0, 0, false}
 
 operator for(c: Children) -> Children:
     return c
@@ -94,44 +94,48 @@ func item(d: Document, at: i64|null, index: i64) -> i64|null:
     return null
 
 func key(d: Document, at: i64|null) -> &strview:
-    if at is null or at == 0 or d.nodes[at - 1].kind != Text:
+    if at is null or at <= 0 or at >= d.nodes.len or d.nodes[at - 1].kind != Text:
         return ""
     b := items(d.text)
     if b[skip(b, d.nodes[at - 1].to)] != ':':
         return ""
     return trust text(d, at - 1)
 
+# an index that is no node of d is nothing, like null
+priv func node(d: Document, at: i64|null) -> Node:
+    if at is i64 and at >= 0 and at < d.nodes.len:
+        return d.nodes[at]
+    return Node{}
+
 func kind(d: Document, at: i64|null) -> Kind:
-    if at is null:
-        return Nothing
-    return d.nodes[at].kind
+    return node(d, at).kind
 
 func raw(d: Document, at: i64|null) -> &strview:
-    if at is null:
-        return ""
-    return d.text[d.nodes[at].from:d.nodes[at].to]
+    n := node(d, at)
+    return d.text[n.from:n.to]
 
 func number(d: Document, at: i64|null) -> f64|null:
-    if at is null or d.nodes[at].kind != Number:
+    if kind(d, at) != Number:
         return null
     return parse_float(raw(d, at))
 
 func integer(d: Document, at: i64|null) -> i64|null:
-    if at is null or d.nodes[at].kind != Number:
+    if kind(d, at) != Number:
         return null
     return parse_int(raw(d, at))
 
 func boolean(d: Document, at: i64|null) -> bool|null:
-    if at is null or d.nodes[at].kind != Boolean:
+    if kind(d, at) != Boolean:
         return null
     return raw(d, at) == "true"
 
 func text(d: Document, at: i64|null) -> &strview|null:
-    if at is null or d.nodes[at].kind != Text:
+    n := node(d, at)
+    if n.kind != Text:
         return null
-    from := d.nodes[at].from + 1
-    to := d.nodes[at].to - 1
-    if not d.nodes[at].escaped:
+    from := n.from + 1
+    to := n.to - 1
+    if not n.escaped:
         return tmp(d.text[from:to])
     b := items(d.text)
     out: &str = heap("")

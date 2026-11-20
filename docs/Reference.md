@@ -793,7 +793,7 @@ n := parse_int(text) ifnull return null # passes the null up
 for text in texts:
     total += parse_int(text) ifnull continue
 ```
-`return` takes the rest of the expression as its value, like the statement. The condition of a `while` runs every round, so there `break` and `continue` work on that `while`, and the header of a `for` runs once before its loop, so there they work on the loop around it. In any other place of an expression they are statements and not values: `'return' is a keyword of the language, it is not a value`.
+`return` takes the rest of the expression as its value, like the statement. The condition of a `while` runs every round, so there `break` and `continue` work on that `while`, and the header of a `for` runs once before its loop, so there they work on the loop around it. In any other place of an expression they are statements and not values: `return goes at the start of a statement, or last after ifnull or iferror, not inside a value`.
 
 When `a ifnull b` or `a iferror b` is a whole statement, its last link can also be an assignment, that runs when `a` failed: `parse_int(text) ifnull bad += 1`. Anywhere else the right side gives the value, so an assignment there is an error: `an assignment on the right of ifnull is a statement of its own, n would be left without a value`.
 
@@ -801,7 +801,7 @@ When `a ifnull b` or `a iferror b` is a whole statement, its last link can also 
 `assert c` stops the program when `c` is false, with exit code 134, the place and the chain of calls, like `panic`. Its message says what was false and what was there, written as `print` writes it
 - a comparison gives each side that is computed when the program runs, not a literal or a constant: `flag: total == 4 is false, total is 3`, `flag: first(l) == last is false, first(l) is 1 and last is 2`
 - `x is T` gives what `x` holds, and its value when it has one: `flag: f is FsError, not File: cannot open config.txt: No such file or directory`, `flag: last is null, not i32`
-- any other condition gives itself: `flag: ready is false`
+- any other condition gives itself: `flag: ready is false`, and `assert false` says `flag: assertion failed`
 
 `assert c, message` writes the message instead, any value `print` writes, computed only when `c` is false: `assert total > 0, "the total cannot be empty"`. After it `c` holds, so it narrows like `if not c: panic(...)` (see [Unions and narrowing](#unions-and-narrowing))
 ```flag
@@ -833,6 +833,7 @@ These stop the program, and write the message to the error output
 | `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`, and the same for `&str` and `&map` (see [Fat pointers](#fat-pointers)) | 134 |
 | `flag: out of memory` | 9 |
 | `flag: cannot write the standard output: No space left on device`, at the end | 1 |
+| nothing, on Linux and macOS, when the program writes to a pipe whose reader is gone, `program \| head` once `head` ends: the signal `SIGPIPE` ends it as it ends a program of C, and the shell says 141. A socket and the pipes to the programs you run give an error instead | 141 |
 | `flag: invalid memory access at 0x0` | 139 |
 | `flag: stack overflow` | 139 |
 | `flag: illegal instruction` | 132 |
@@ -1063,10 +1064,10 @@ Flag doesn't have a garbage collector, you free what you allocate.
 ### Who owns what
 - `&str`, `&list` and `&map` own their memory, you free them with `free`
 - `&strview` and `&listview` are views, they don't own anything. A literal asks for no memory either: `"..."` is a `&strview` of read-only data, `[1, 2]` an array, `[]` an `emptyarray`, `{k: v}` a `fixmap` and `{}` an `emptyfixmap`
-- `heap` makes an owner in the heap from what it holds: `heap("text")`, or of any text, a `&str`, `heap([1, 2])`, or of a list or a listview, a `&list`, and `heap({"a": 1})`, or of a `fixmap`, a `&map`, each with a copy. The literal keeps its own types, the place doesn't give them: `heap([1, 2])` is a `&list[i64]`, so a `&list[u8]` is `heap([u8(1), 2])`. They are functions of core
+- `heap` makes an owner in the heap from what it holds: `heap("text")`, or of any text, a `&str`, `heap([1, 2])`, or of a list or a listview, a `&list`, and `heap({"a": 1})`, or of a `fixmap` or a `&map`, a `&map`, each with a copy. The literal keeps its own types, the place doesn't give them: `heap([1, 2])` is a `&list[i64]`, so a `&list[u8]` is `heap([u8(1), 2])`. They are functions of core
 - `heap([])`, `heap("")` and `heap({})` are an empty owner, a list, a text or a map in the heap that has no block until it grows, only the mark of the heap in its `arena`: `names: &list[&strview] = heap([])` asks for nothing. The list and the map are a `&list[never]` and a `&map[never, never]`, which go to any list or map, and where the place says the type they are made of that type. The compiler knows them and writes them without the call, so they go where a value has to be known, like the default value of a field
 - an owner declared without a value has no memory, it gets one from `heap` or `arena` before it grows (see [Fat pointers](#fat-pointers))
-- `heap(value)` of anything else copies it to the heap and gives you a pointer, you free it with `free(p)`. `free` of a pointer to a `&str`, `&list`, `&map` or `Arena` is their own `free`, which releases what they hold, so a block that holds one, like `heap(m)` of a map, is freed with `free(p as *bytes)`
+- `heap(value)` of anything else copies it to the heap and gives you a pointer, you free it with `free(p)`. `free` of a pointer to a `&str`, `&list`, `&map` or `Arena` is their own `free`, which releases what they hold, so a block that holds one is freed with `free(p as *bytes)`
 - `arena(a, ...)` does the same in the arena `a`, and `free(a)` releases it with everything else in `a`
 - a list of `&str` owns each text, freeing the list doesn't free them, free them first
 - a `&map` with `&str` keys owns its keys: putting a new key copies the text, also from a `&strview` (`m["host"] = 1`, `counts[word] += 1`), and `remove`, `clear` and `free` free the keys it holds, so don't free them yourself. Its values are like the elements of a list, `free` doesn't free them
@@ -1133,7 +1134,7 @@ Where it cannot be sure that a program is right it warns, so a right program can
 - a pointer to the stack that a function returns, through a variable or a struct, which the compiler doesn't see in one expression: `cannot return a pointer to the stack as it will be cleared at return`, the text of the error of `return ptr(x)`. One that it leaves in a context or in memory it was given, like its `..items` kept in a field, leaves without a return: `a pointer into the stack of fill cannot leave fill`
 - the element of a `for` that `is` narrowed, read after the body changed the list it is in, with `u[i] = v` or a call that changes `u`: `v may not be i32 now, the list it is in changed it after it was narrowed: test it again with is`. If the change grew the list, the element is in freed memory: `v points to memory that may be freed already`
 - a view read in its turn before a call that frees its memory, `show(l, grow(ptr(l)))` with a `show` that reads its view: `l points to memory that may be freed already`, with a note at `grow` (see [Order](#order))
-- a function that frees one argument and reads another that may be the same memory, like one of yours that appends to a list a view of it: `this call may free memory that it also reads through another argument`. The `+=` of text, `append` of a view and the `=` of a view to an owner copy the view first when it is of the same memory, so `t += t` and `l = l[1:]` are fine
+- a function that frees one argument and reads another that may be the same memory, like one of yours that appends to a list a view of it: `add_view may free memory that it also reads through another argument`, or `this call may free...` when the call doesn't name it, through a function value or an operator. The `+=` of text, `append` of a view and the `=` of a view to an owner copy the view first when it is of the same memory, so `t += t` and `l = l[1:]` are fine
 - threads: `parallel f(x)` is checked as the call `f(x)` there, so what `f` frees counts at that point. A `Thread` that is never waited is memory that is never freed, waiting it twice frees it twice, `wait cannot release t, it may be freed already`, and `done(t)` after `wait(t)` reads freed memory. A pointer to a local variable that goes to a thread whose `Thread` the function returns is `cannot return a pointer to the stack as it will be cleared at return`, and one that goes with a thread that runs alone, or to a `Channel` that is not a local variable of the function, is `a pointer to x cannot leave start, x lives on its stack`. `main` waits for the threads that run alone before its variables end, so there they are clean. A thread starts with its own contexts, from their defaults or a copy of an `inherited context`, so a `&list` of an inherited context that the thread grows, or one that the thread puts in its context from a context it got, `app = given`, has two owners, and the next use in the thread that started it is `this uses memory that may be freed already`, with a note at the `parallel`. A library has no `main`, so there a thread that runs alone is a warning of its own: `this thread runs alone, and in a library nothing waits for it: the program may close the library while it runs, and then it runs code that is gone. Keep the thread and wait for it in an export func that the program calls before close`
 - `send` of a `Channel` gives what the value owns to the thread that receives it: the memory of a `&str`, `&list` or `&map`, the heap block that a pointer points to the start of, and a `Thread`. It's not yours to free any more, and using it after is using memory that may be freed already. A view, the arena of a text and a pointer inside a block stay yours
 - a temporary that a thread may still use when its `with scratch():` releases it, given to `parallel f(x)` or sent with `send`: `a thread may still use this temporary when its with scratch() releases it: wait for the thread inside it, or give it a &str`, with a note at the `with`. A thread waited inside the same `with scratch():` is clean. A thread that runs alone, in a function that is not `main`, can outlive any scratch: `a thread may still use this temporary when the with scratch() of a caller releases it: give the thread a &str`. What a thread gives back lives in the scratch of the thread that waits, until the `with scratch():` around the `wait`, and that follows a `wait` inside a function into its callers
@@ -1263,13 +1264,16 @@ Where it cannot be sure it warns, and these warnings come from right programs. `
 ### What it misses
 These mistakes give no warning yet, so keep them in mind where they can happen
 - two elements of a list that hold the same block, freed in a walk, are freed twice: each round's element is its own
-- an element freed at an index it doesn't know, outside a walk, counts as all of them freed, so reading another one through the list after it says nothing
+- an element freed at an index it doesn't know, outside a walk, like a value of a map, counts as all of them freed, so reading another one through the list after it says nothing, and neither does freeing it again in a walk
+- a pointer into the elements of a list, or to memory of an arena, kept in a list or a map at an index it doesn't know: it stays live there after the list grows and moves, or after the arena is cleared or freed
+- a walk that moves some of the elements to another list, in an `if` or before a `break`, and then the list is freed: the elements it didn't move are lost
+- the deeper nodes of a tree that a recursive function builds, when only the first level is freed: it sees what that line allocates as two blocks
 - a pointer to the element of a walk kept after its round, `p = ptr(x)`
 - a block that a function leaves in a context, replaced without a `free` by the next call of that function, or the elements that a function adds to a list of a context, lost when the list is freed: for the caller, what a function keeps in a context is one block for each line that allocates it, and what a context holds is not lost
 - what goes through a `Channel`: what `receive` and `for v in c` give is not followed, so a leak, a double free or a use after it was freed of what was sent says nothing, and neither does a race on memory a pointer that was sent reaches
 - an owner element of a list or a map that leaves it without a `free`: replaced with `l[i] = v` or `m[k] = v`, dropped by `clear`, or taken with `remove` and dropped. A later walk that frees the elements counts it as freed
 - a view of a key of a `&map[&str, V]` kept in a list after the map frees its keys
-- a pointer that may point to either of two variables of a block that ended, given in an `if` and an `else`: one variable it follows, two it takes as any place of the stack
+- a pointer that may point to either of two variables, given in an `if` and an `else` or kept as the best so far, when one of them is of a block that ended: one variable it follows, two it takes as any place of the stack
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked
@@ -1325,7 +1329,7 @@ A test reads an empty standard input, and what it writes to the standard output 
 ```
 FAIL mathx.test_gcd_of_zero, tests/gcd_test.flg:7, exit code 134
 checking gcd(7, 0)
-flag: gcd(7, 0) is 7
+flag: gcd(7, 0) == 0 is false, gcd(7, 0) is 7
   --> tests/gcd_test.flg:9:5
   in test_gcd_of_zero, tests/gcd_test.flg:7
 3 passed, 1 failed

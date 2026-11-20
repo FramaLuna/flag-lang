@@ -1,0 +1,21 @@
+type Job:
+    id: i64
+    out: i64
+
+func run(j: *Job):
+    j.out = j.id * 2
+
+func main():
+    ts: &list[Thread[null]] = heap([])
+    jobs: &list[*Job] = heap([])
+    for i in 0..4:
+        j := heap(Job{i, 0})
+        append(jobs, j)
+        append(ts, parallel run(j))
+    for t in ts:
+        wait(t)
+    for j in jobs:
+        print(j.out)
+        free(j)
+    free(jobs)
+    free(ts)

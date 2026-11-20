@@ -243,14 +243,16 @@ func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @macos():
 
 func timeout(s: $T, seconds: f64) where $T is Socket|Udp and @windows():
     limit: u32 = 0
-    if seconds > 0.0:
+    if seconds > 0.0 and seconds < FOREVER:
         limit = u32(seconds * 1000.0) + 1 # in milliseconds, rounded up so it is never 0, forever
     setsockopt(i64(s.fd), 65535, 0x1006, ptr(limit) as *bytes, 4)
     setsockopt(i64(s.fd), 65535, 0x1005, ptr(limit) as *bytes, 4)
 
+priv FOREVER = 1000000.0 # seconds, the time from which a timeout waits forever
+
 priv func timeval(seconds: f64) -> array[i64, 2]:
     micros := 0
-    if seconds > 0.0:
+    if seconds > 0.0 and seconds < FOREVER:
         micros = i64(seconds * 1000000.0) + 1 # rounded up so it is never 0, forever
     return [micros / 1000000, micros % 1000000]
 

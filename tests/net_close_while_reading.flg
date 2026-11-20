@@ -1,0 +1,21 @@
+use net
+use os
+
+func reader(s: Socket) -> i64:
+    n := 0
+    while read_line(s) is &strview:
+        n += 1
+    return n
+
+func main():
+    server := trust listen(0, "127.0.0.1")
+    c := trust connect("127.0.0.1", port(server))
+    peer := trust accept(server)
+    t := parallel reader(c)
+    write(peer, "one\ntwo\n")
+    _ = flush(peer)
+    sleep(0.5)
+    close(c)
+    print("the reader got ", wait(t))
+    close(peer)
+    close(server)

@@ -50,10 +50,10 @@ What you write waits in the file and goes to the system in big pieces, so many s
 The functions
 - `write(f: File, value: $T)` writes the value like `print` does, without the new line: `write(stdout, "name? ")`. Bytes go as text, `write(f, view(bytes))`. The value is formatted first, in the temporary memory of the thread, and the file takes it whole, so two threads that write to one file never mix their values
 - `read_line(f: File) -> &strview|null|FsError` the next line without the `\n` or `\r\n`, temporary, `null` at the end of the file. Any other byte stays in the line, a zero byte too. Every line is a new temporary, so a loop that reads many lines goes inside `with scratch():`, like the example below
-- `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file
+- `read(f: File, into: *&str, size: i64) -> i64|FsError` appends up to `size` bytes to `into` and gives how many, 0 at the end of the file, and 0 at once for a `size` of 0. A negative `size` stops the program
 - `flush(f: File) -> FsError?` writes now what is waiting, and gives the first write that failed since the last `flush`. A failed write doesn't stop the next ones, a write that the system cannot take yet waits until it can, so when you need to know that everything got there, end with `try flush(out)` or check what it gives
 - `flush()` writes now what waits in every file that no other thread is writing at that moment
-- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you, its `operator with` calls `close`. It doesn't tell about a failed write, `flush` does. A read that another thread waits in on the same file goes first, so `close` waits for it to end; a `Socket` ends that read, which gets the end of the input
+- `close(f: File)` writes what is waiting and closes the file, and `with file:` closes it for you, its `operator with` calls `close`. It doesn't tell about a failed write, `flush` does. A read that another thread waits in on the same file goes first, so `close` waits for it to end; a `Socket` ends that read, which gets the end of the input. A `File` is the number of its descriptor, as in C, so after `close` the system gives that number to the next file that opens, and the old `File` then reads and writes that one: let it go with the `close`
 - `ready(f: File, seconds: f64 = 0.0) -> bool` if a read of `f` gives something now, bytes or the end of the file, without waiting. It waits up to `seconds` for that: 0 only asks, and a negative `seconds` waits as long as it takes. What you wrote goes out first, like before a read
 - `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]` the same for several files at once: it waits until one of them is ready, and gives the indexes of the ready ones, temporary, or none when the time ran out
 - `File{fd}` is the file of a descriptor that you got from C. A negative one stops the program like an index out of bounds: `flag: File{-1} is not an open file`
@@ -61,7 +61,7 @@ The functions
 
 `ready` is how a game reads the output of a program it started, or the standard input, without stopping a frame: `if ready(p.output): read(p.output, log, 65536)`. A read after `ready` doesn't wait, but `read_line` still waits for the end of its line. On Windows `ready` looks at a pipe or a console again every millisecond, since only sockets can be waited for there, and a console is ready when any key was pressed.
 
-The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
+The standard output is checked for you: when what you printed could not be written and no `flush` told you, the program ends with `flag: cannot write the standard output: No space left on device` and the exit code 1 in place of 0, while `exit` and a stop keep their code. A write to a pipe whose reader is gone, like `program | head` once `head` has its lines, ends the program at once and in silence on Linux and macOS, with the signal `SIGPIPE`, as in C (see [Runtime errors](Reference.md#runtime-errors)); the sockets of `net` and the pipes to the programs you run give the error instead. The standard input reads ahead, so a program that you run after reading it doesn't get what the file already read. The files that the library opens are not passed to the programs you run, also when another thread runs one at the moment a file opens.
 
 ```flag
 use fs
@@ -167,7 +167,7 @@ func main():
 
 ### Memory
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
-- `heap(text: &strview) -> &str`, `heap(items: &listview[$T]) -> &list[$T]`, `heap(items: array[$T, $$n]) -> &list[$T]` and `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]` make an owner in the heap with a copy, also of a literal: `heap("text")`, `heap([1, 2])`, `heap({"a": 1})`. A literal keeps its own types, so `heap([u8(1), 2])` is a `&list[u8]`
+- `heap(text: &strview) -> &str`, `heap(items: &listview[$T]) -> &list[$T]`, `heap(items: array[$T, $$n]) -> &list[$T]`, `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]` and `heap(pairs: &map[$K, $V]) -> &map[$K, $V]` make an owner in the heap with a copy, also of a literal: `heap("text")`, `heap([1, 2])`, `heap({"a": 1})`. A literal keeps its own types, so `heap([u8(1), 2])` is a `&list[u8]`
 - `heap(items: emptyarray) -> &list[never]`, `heap(pairs: emptyfixmap) -> &map[never, never]` and `heap("")` are the empty owners, which ask for nothing until they grow: `names: &list[&strview] = heap([])`. A `&list[never]` goes to any list and a `&map[never, never]` to any map
 - `free(p: *$T)` releases what `heap(v: $T)` gave. Of a pointer to a text, a list, a map or an `Arena`, like the one `heap(Arena{})` gives, it's the `free` of what it points to, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`, and `free(ptr(x))` of a variable is an error, `free cannot release x, it is not on the heap`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c)), and `@sizeof(T)` the size of a type in bytes, as an integer literal. They belong to the language, not to core (see [Builtins](Reference.md#builtins))
@@ -194,7 +194,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 An `Arena` gives out pieces of big blocks and releases them all at once. It starts empty, and takes from the heap blocks of 64 KiB, or of the size of a request that doesn't fit in one. A `&str`, `&list` or `&map` made in an arena grows there, and its `free` leaves it empty without releasing anything.
 - `arena(a: *Arena, v: $T) -> *$T` a copy of the value, like `heap`, in the arena
 - `arena(a: *Arena, text: &strview) -> &str` a copy of the text, in the arena
-- `arena(a: *Arena, items: &listview[$T]) -> &list[$T]`, `arena(a, items: array[$T, $$n])`, `arena(a, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`, and the empty `arena(a, items: emptyarray) -> &list[never]` and `arena(a, pairs: emptyfixmap) -> &map[never, never]`, like `heap`, in the arena: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
+- `arena(a: *Arena, items: &listview[$T]) -> &list[$T]`, `arena(a, items: array[$T, $$n])`, `arena(a, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`, `arena(a, pairs: &map[$K, $V])`, and the empty `arena(a, items: emptyarray) -> &list[never]` and `arena(a, pairs: emptyfixmap) -> &map[never, never]`, like `heap`, in the arena: `enemies: &list[Enemy] = arena(level, [])` (see [Arenas](Reference.md#arenas))
 - `clear(a: *Arena)` releases everything in the arena and keeps its blocks to use them again
 - `free(a: *Arena)` releases everything and returns the blocks, the arena is empty and ready to use again
 - `reserve(a: *Arena, size: i64)` makes room for `size` bytes, so the pieces until then don't ask the heap for a block, and `try_reserve(a: *Arena, size: i64) -> NoMemory?` the same with `NoMemory` when the system gives no more memory. Each piece takes its size rounded up to the alignment of the arena
@@ -377,7 +377,7 @@ The files are read and written in binary, the bytes are the same on every system
 - `modified_time(path: &strview) -> f64|FsError` when the file or the folder last changed, in seconds since 1970 like `now()` of `os`, with the fraction the system keeps: nanoseconds on Linux and macOS, 100 ns on Windows. It's how a program loads an asset again when it changes, `if modified_time(path) iferror 0.0 != loaded_at:`
 - `list_dir(path: &strview) -> &listview[&strview]|FsError` the names inside the folder, sorted and without `.` and `..`, temporary
 - `walk_dir(folder: &strview) -> &listview[&strview]|FsError` the paths of every file inside the folder and the folders inside it, sorted, temporary. A link to a folder is one more path, `walk_dir` doesn't go into it, and on Windows a junction neither. Only a `folder` that cannot be listed is an error, the folders inside it that cannot are skipped
-- `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error
+- `make_dir(path: &strview) -> FsError?` makes the folder and the ones above it, and a folder that already exists is not an error. The error names the first folder that could not be made
 - `remove_file(path: &strview) -> FsError?` removes a file or an empty folder, and of a link the link
 - `rename_file(from: &strview, to: &strview) -> FsError?` renames or moves, and replaces `to` when it's a file, on every system
 - `join_path(first: &strview, second: &strview) -> &strview` the two paths with one `/` between them, temporary: `join_path("a/", "/b")` is `a/b`. An empty `first` gives `second`
@@ -505,7 +505,7 @@ func main():
         print(text(d, tag))
     print(integer(d, get(d, 0, "user.age")) ifnull 0) # 0, there is no age
 ```
-`parse_json` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `i64|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end.
+`parse_json` doesn't copy the text, a `Document` is a list of nodes over it, so the text must live while you use the document. A node is its index in that list, the first value of the text is the node 0, and the functions take the node as `i64|null`. A missing node is `null`, and for it the functions give `null` or empty, so you can chain them and check only at the end. A number that is no node of the document is missing too.
 - `parse_json(text: &strview) -> Document|NotJson` takes exactly the JSON of RFC 8259, anything else is `NotJson`: a number like `01` or `1.`, an escape that JSON doesn't have, a line end inside a string, a `\ud83d` without its pair, a comma before a `]`. A value inside more than 512 arrays and objects is `NotJson` too. The bytes of a string are not checked to be UTF-8, `valid_utf8` of `utf8` does that
 - `free(d: *Document)` releases the nodes, not the text, and leaves the document empty
 - `get(d: Document, at: i64|null, path: &strview) -> i64|null` the value of a key of the object `at`, and `.` goes into the objects inside it: `"user.name"`. The keys are compared with their escapes decoded. A key that has a `.` inside cannot be reached this way
@@ -548,7 +548,7 @@ TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them
 - `s.peer` the [Address](#udp) of the other side of a connection: the one `connect` reached, or the one `accept` took a connection from, `print(client.peer)` writes `127.0.0.1:52144`
 - `port(s: Server) -> u16` the port the server listens on
 - `close(s: Server)` stops listening, and so does the end of `with server:`
-- `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
+- `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection, and so do `inf` and any time of a million seconds or more
 - `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: i64) -> i64|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
 
 ```flag

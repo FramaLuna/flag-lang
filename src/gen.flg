@@ -85,13 +85,15 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         if comp.syms[k].export:
             f := comp.syms[k].node
             at := comp.tokens[comp.nodes[f].tok].at
-            others := first_sym(comp.syms[k].name)
-            while others != 0 and (others == k or comp.nodes[comp.syms[others].node].kind != Func):
+            others := first_sym(comp.syms[k].name) # a function of the library gives way, but not its symbol of C
+            while others != 0 and (others == k or comp.nodes[comp.syms[others].node].kind != Func or comp.syms[others].library and body(comp.syms[others].node) != 0 and not comp.syms[others].export):
                 others = comp.syms[others].next
             if comp.syms[k].name == "main":
                 return fail("main is the entry point of the program, it cannot be exported", at)
             if generic(f):
                 return fail("an export function cannot be generic, other languages need one fixed signature", at)
+            if others != 0 and comp.syms[others].library:
+                return fail(comp.syms[k].name + " is a symbol of C that the library uses already, an export function needs a name of its own", at)
             if others != 0:
                 return fail("an export function cannot be overloaded, its name is the symbol other languages call", at)
             if try holds_where(f):
@@ -709,7 +711,7 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
     if id is i64:
         return id
     depth := 0
-    if comp.binds.len > comp.frame:
+    if comp.binds.len > comp.frame and comp.insts.len > 0: # a default of a type is made before any function
         depth = comp.insts[comp.inst].depth + 1
     comp.spelled += key.len
     if comp.insts.len > 100000 or depth > DEEP or comp.spelled > LONG:
@@ -796,19 +798,24 @@ func gen(n: i64, want: i64) -> Value|Fail:
             if commas:
                 turns := comp.turns.len
                 c := source + 1
+                p := left
                 while c < node_end(source):
-                    steady := true # it calls nothing and reads nothing the places change, so it is made at its place with the type of the place
+                    steady := p < source and (comp.nodes[p].kind != Name or text(p) != "_") # literals, functions, and variables that no place can change, so it is made at its place with the type of the place
                     for i in c..node_end(c):
                         k := comp.nodes[i].kind
-                        steady = steady and k != Call and k != Index and not (k == Unary and text(i) == ".*")
+                        steady = steady and k != Call and k != Index and k != Field and k != Binary and k != Unary
                         if k == Name and lookup(text(i)) != 0:
-                            for j in left..source:
-                                steady = steady and (comp.nodes[j].kind != Name or text(j) != text(i))
+                            for j in left..source: # a place that is not a plain variable may be any memory
+                                steady = steady and comp.nodes[j].kind == Name and text(j) != text(i)
+                        elif k == Name:
+                            s := first_sym(text(i))
+                            steady = steady and s != 0 and comp.nodes[comp.syms[s].node].kind == Func # a constant may run a call where it is read
                     if steady:
                         append(values, Value{lit = true})
                     else:
                         try read_in_turn(values, c, VOID)
                     c = node_end(c)
+                    p = node_end(p)
                 in_turn(values, turns)
             else:
                 whole := try value(source, VOID)
@@ -2123,8 +2130,11 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         if name == "@compile_error":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
                 return fail("@compile_error expects its message as text: @compile_error(\"this size is not supported\")", tok.at)
-            if comp.insts[comp.inst].at != 0:
-                return fail(unquoted(text(n + 1)), comp.insts[comp.inst].at)
+            i := comp.insts[comp.inst]
+            if i.at != 0:
+                return fail(unquoted(text(n + 1)), i.at)
+            if i.export or i.taken_as != VOID: # main, an export or a test, which no call of Flag makes
+                return fail(unquoted(text(n + 1)), tok.at)
             return none
         if name == "@embed":
             if kids(n) != 1 or comp.tokens[comp.nodes[n + 1].tok].kind != Str:
@@ -2272,7 +2282,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
         if o == "parallel":
             return called(n + 1, VOID, true)
         if o == "..":
-            return fail(".. goes before the last argument of a call, a view that gives the extra arguments of a func with ..items: T", tok.at)
+            return fail(".. goes before the last argument of a call to a func with ..items: T, where it gives the elements of a view as the extra arguments", tok.at)
         v := try value(n + 1, VOID)
         t := comp.types[v.type]
         if o == ".*":
@@ -3291,6 +3301,8 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
         return put_text(place, try invoke("get", one, at), at)
     if t.name == "&str": # text goes as text, a += of a union that holds &str would take it back
         return put_text(place, try convert(v, try fat_type("strview", VOID, at), Arg{}, at), at)
+    if v.type == EMPTYARRAY or v.type == EMPTYMAP: # an empty literal, as it is written
+        return put_words(place, "[]" if v.type == EMPTYARRAY else "{}", at)
     if t.kind == Simd:
         try put_words(place, "[", at)
         for i in 0..t.count:
@@ -3400,9 +3412,11 @@ func put_words(place: Value, words: &strview, at: i64) -> Fail?:
 
 func concat(n: i64, into: Value, first: i64) -> Value|Fail:
     parts: &list[i64] = heap([])
+    signs: &list[i64] = heap([]) # the place of the + before each part after the first
     c := n
     while comp.nodes[c].kind == Binary and text(c) == "+":
         insert(parts, 0, node_end(c + 1))
+        insert(signs, 0, comp.tokens[comp.nodes[c].tok].at)
         c += 1
     insert(parts, 0, c)
     at := comp.tokens[comp.nodes[n].tok].at
@@ -3421,7 +3435,7 @@ func concat(n: i64, into: Value, first: i64) -> Value|Fail:
             head = v
             v = w
         else:
-            v = try binary("+", v, w, at)
+            v = try binary("+", v, w, signs[k - 2])
     if not textual(v.type) and into.type == VOID:
         return v
     line := v
@@ -4137,7 +4151,7 @@ func declaration(name: &strview) -> i64:
 
 func held(found: i64, at: i64) -> Value:
     local := comp.vars[found - 1]
-    if noted(at):
+    if noted(at) and comp.tokens[local.tok].kind == Name: # the value of a, b := f() waits in a local named :=
         mark(local.tok, described(local.name, local.type))
     return Value{type = local.type, at = local.addr, mem = true, place = local.fixed.len == 0}
 

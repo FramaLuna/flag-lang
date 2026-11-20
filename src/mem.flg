@@ -1023,6 +1023,8 @@ func analyze(f: i64) -> bool:
             visit(b)
     if mem.speak and mem.fn.stuck.len > 0:
         at := 0
+        if mem.fn.node != 0:
+            at = comp.tokens[comp.nodes[mem.fn.node].tok].at
         for k in spans[0].first..spans[-1].end:
             if at == 0:
                 at = mem.ops[k].pos
@@ -1640,6 +1642,7 @@ func visit(block: i64):
         case Give:
             touch_args(o)
             channel := target_of(mem.args[o.first])
+            stash(channel, Target{live = bit(STATIC), must = bit(STATIC)}) # in use, like a Lock that was taken
             given := target_of(mem.args[o.first + 1])
             outlives := mem.speak and not mem.fn.settles and (channel.slot == 0 or not empty(objects(channel.live)))
             blocks: Set
@@ -2707,6 +2710,9 @@ func age(r: i64):
     t := object(mem.fn.keys[r] or AGED, x)
     if t != r:
         absorb(r, bit(t), false)
+        for k in 0..mem.footprints.len: # what the threads touched of it is of the older blocks now
+            if mem.footprints[k].touch.owner == u32(r):
+                mem.footprints[k].touch.owner = u32(t)
 
 # r holds a block made now
 func revive(r: i64):

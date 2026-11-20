@@ -9,7 +9,6 @@ extern "c":
     func memcmp(a: *bytes, b: *bytes, size: i64) -> i32
     func memchr(at: *bytes, byte: i32, size: i64) -> *bytes
     func strlen(s: cstr) -> i64
-    func exit(code: i32) -> never
     func snprintf(into: *u8, size: i64, format: cstr, ...) -> i32
     func strtod(text: cstr, end: *bytes) -> f64
 
@@ -23,6 +22,7 @@ priv extern "c":
     func recv(fd: i64, at: *bytes, size: i64, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func atexit(callback: *bytes) -> i32
+    func quit(code: i32) -> never = "exit"
     func _exit(code: i32) -> never
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
@@ -608,6 +608,15 @@ func heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
     return arena(HEAP as *Arena, pairs)
 
 func arena(a: *Arena, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
+    out := Owner{arena = a} as &map[$K, $V]
+    for e in pairs:
+        out[e.key] = e.value
+    return out
+
+func heap(pairs: &map[$K, $V]) -> &map[$K, $V]:
+    return arena(HEAP as *Arena, pairs)
+
+func arena(a: *Arena, pairs: &map[$K, $V]) -> &map[$K, $V]:
     out := Owner{arena = a} as &map[$K, $V]
     for e in pairs:
         out[e.key] = e.value
@@ -1524,6 +1533,7 @@ priv type Streams:
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
 priv shared context io:
     table: Lock[Streams]
+    code: i32 # what exit ends with, which a failed standard output turns from 0 to 1
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1573,7 +1583,12 @@ priv export func flag_exit():
     s := stream(stdout)
     if try_lock(s.writing) and s.writing.value.failed != 0: # never let go, the program ends
         eprint("flag: ", FsError{s.writing.value.failed, "write", s.path})
-        _exit(1)
+        if io.code == 0:
+            _exit(1)
+
+func exit(code: i32) -> never:
+    io.code = code
+    quit(code)
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
     f := File{fd}
@@ -1638,6 +1653,10 @@ priv func drain(s: *Stream):
     outbox.unsent.len = 0
 
 func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsError:
+    if size < 0:
+        panic("read takes a size of 0 or more, and this one is " + size, place)
+    if size == 0:
+        return 0
     s := stream(f, place)
     with lock(s.reading):
         inbox := ptr(s.reading.value)

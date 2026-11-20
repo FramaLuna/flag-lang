@@ -899,6 +899,8 @@ func expr(min: i64) -> Fail?:
     try deeper(here().at)
     wrap(start, Choice, comp.pos)
     comp.pos += 1
+    if peek("else"):
+        return unexpected("an if inside an expression takes its condition before else: a if c else b")
     try expr(2)
     if not peek("else"):
         return unexpected("an if inside an expression expects its else: a if c else b")
@@ -943,7 +945,7 @@ func unary() -> Fail?:
     brace := after == "{"
     converts := typed and after == "("
     listed := false
-    valued := false # a number or a text inside, which no type has
+    valued := false # a number, a text, an operator or a call, which no type has
     if t.kind == Name and after == "[" or t.text == "(": # Pair[i32, f64] and (i32, bool) are types, an index and a group have no comma
         depth := 0
         i := name
@@ -960,8 +962,10 @@ func unary() -> Fail?:
                         inside := excerpt(name + 1, i - 1)
                         return fail("(" + inside + ") is not a value, parentheses with a comma are the type of a tuple: a tuple value is written with braces, {" + inside + "}", t.at)
                     break
-            listed = listed or word == "," and depth == 1
-            valued = valued or comp.tokens[i].kind == Int or comp.tokens[i].kind == Float or comp.tokens[i].kind == Str
+            elif depth == 1:
+                k := comp.tokens[i].kind
+                listed = listed or word == ","
+                valued = valued or k == Int or k == Float or k == Str or k == Symbol and word != "," and word != "." and word != "*" and word != "&" and word != "?" and word != "|" and word != "->" or k == Name and word != "func" and comp.tokens[i + 1].text == "("
             i += 1
     if t.kind == Name and not brace:
         j := name
