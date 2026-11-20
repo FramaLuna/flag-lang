@@ -25,14 +25,14 @@ What a function gives you is
 
 A function that can fail gives its errors in a union, and each module says which error types it has.
 
-The functions that take an index or a `File` also have a last parameter `place: &strview = @here()` that is left out here, it's how an index error or a wrong `File` points at your call.
+A function that stops the program for a wrong argument, like an index out of bounds, a `File` that is not open or a thread that was never started, also has a last parameter `place: &strview = @here()` that is left out here: it's how the error points at your call.
 
 ## core
 ### The program
 - `print(values...)` writes the values one after the other to the standard output, and then a new line. It computes all the values first, like the arguments of a call, formats them into one line, and writes that line with `write(stdout, line)`, so the lines of two threads never mix. Its values mix types, so it belongs to the language: a function of yours gathers extra arguments of one type, `..items: T` (see [Extra arguments](Reference.md#extra-arguments))
 - `eprint(values...)` the same to the error output
-- `panic(message: &strview) -> never` writes `flag: <message>`, the place of the call and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors))
-- `on_panic(f: func(&strview, &strview))` gives `panic` a function that runs after the message and the chain, before the program ends: it gets the message and the place, for every error that ends with 134, also those of the checks the compiler writes. A new one replaces the last, and it can end the program with `exit`
+- `panic(message: &strview, place: &strview = @here()) -> never` writes `flag: <message>`, the place and the chain of calls that led there to the error output, and ends the program with exit code 134 (see [Runtime errors](Reference.md#runtime-errors)). A function of yours with a `place` of its own passes it on, so the error points at its caller, and `panic(message, "")` writes only the chain
+- `on_panic(hook: func(&strview, &strview))` gives `panic` a function that runs after the message and the chain, before the program ends: it gets the message and the place, for every error that ends with 134, also those of the checks the compiler writes. A new one replaces the last, and it can end the program with `exit`. A library built with `-shared` has its own core, so the `on_panic` of the program doesn't run for a runtime error inside the library
 - `exit(code: i32) -> never` ends the program with that exit code. The deferred statements don't run, what waits in the files is written
 
 The arguments of the program are `args()` of [os](#os).
@@ -122,7 +122,7 @@ A negative `code` is an error that has no errno, like an error of Windows that e
   - the `operator with` of `Locked` lets it go when the `with` ends
 - `Channel[$T, $$size]` a queue of up to `size` values between threads, at least one: using a channel of 0 is `a channel holds at least one value, its size cannot be 0`. It keeps them inside itself, like a fixed map, so it doesn't allocate and works at zero: declare it where it lives and pass it where a `*Channel` goes. Its lock is its field `queue`, and a thread that holds it, `with lock(c.queue):`, and then has to wait in `send` or `receive` stops the program, because no other thread could take the lock to change the channel: `flag: a channel waits inside a with lock of its queue, where no other thread can take the lock to change it`
   - `send(c: *Channel[$T, $$size], v: $T)` puts the value at the end, and waits while the channel is full. Sending on a closed channel stops the program: `flag: send on a closed channel`
-  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty, after what you wrote goes out. It gives `null` when the channel is closed and empty
+  - `receive(c: *Channel[$T, $$size]) -> $T|null` takes the first value, and waits while the channel is empty, after what you wrote goes out. It gives `null` when the channel is closed and empty, so on a channel of `T?` a `null` that was sent looks the same: walk it with `for v in c`
   - `close(c: *Channel[$T, $$size])` closes it: what it holds can still be received, and after that `receive` gives `null`. `with c:` closes it when the block ends
   - `for v in c` receives until the channel is closed and empty
 - `atomic[T]` holds an `i32`, `u32`, `i64`, `u64` or a pointer that threads change at once without a lock. It's a type of the language and its operations belong to it, like those of a `simd` (see [Atomics](Reference.md#atomics)): `get(a)` reads it, `set(a, v)` writes it, `add(a, n)` adds and gives what it held, `swap(a, v)` writes and gives what it held, and `compare_swap(a, old, new)` writes `new` only when it holds `old` and says if it did
@@ -169,7 +169,7 @@ func main():
 - `heap(v: $T) -> *$T` copies the value to the heap, yours
 - `heap(text: &strview) -> &str`, `heap(items: &listview[$T]) -> &list[$T]`, `heap(items: array[$T, $$n]) -> &list[$T]` and `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]` make an owner in the heap with a copy, also of a literal: `heap("text")`, `heap([1, 2])`, `heap({"a": 1})`. A literal keeps its own types, so `heap([u8(1), 2])` is a `&list[u8]`
 - `heap(items: emptyarray) -> &list[never]`, `heap(pairs: emptyfixmap) -> &map[never, never]` and `heap("")` are the empty owners, which ask for nothing until they grow: `names: &list[&strview] = heap([])`. A `&list[never]` goes to any list and a `&map[never, never]` to any map
-- `free(p: *$T)` releases what `heap(v: $T)` gave. A pointer to a text, a list, a map or an `Arena`, like `heap(Arena{})`, frees what it points to, like the other functions of lists, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`, and `free(ptr(x))` of a variable is an error, `free cannot release x, it is not on the heap`
+- `free(p: *$T)` releases what `heap(v: $T)` gave. Of a pointer to a text, a list, a map or an `Arena`, like the one `heap(Arena{})` gives, it's the `free` of what it points to, so write `free(p as *bytes)` for the pointer itself. What `arena` gave is released by its arena, not by `free(p)`, and `free(ptr(x))` of a variable is an error, `free cannot release x, it is not on the heap`
 - `ptr(x)` the address of a variable, a field or an element, and of an `export func` (see [Calling C](Overview.md#calling-c)), and `@sizeof(T)` the size of a type in bytes, as an integer literal. They belong to the language, not to core (see [Builtins](Reference.md#builtins))
 - `malloc`, `calloc`, `realloc`, `free(at: *bytes)`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strlen`, `snprintf` and `strtod` are the C functions, with `*bytes` for `void *` and `cstr` for `char *`. A `*bytes` moves by bytes with `+` and `-`, so `memcpy(to + 8, from, n)` writes 8 bytes past `to` (see [Arithmetic](Reference.md#arithmetic))
 - `out_of_memory()` sends out what the program printed, writes `flag: out of memory` to the error output and ends the program at once with exit code 9, like a crash, without asking for memory. The library calls it when the system gives no more memory, and you can call it after your own `malloc`
@@ -215,7 +215,7 @@ On lists
 - `reserve(l: *&list[$T], want: i64)` makes room for `want` elements, so the appends until then don't allocate
 - `try_reserve(l: *&list[$T], want: i64) -> NoMemory?` the same, and `NoMemory` when the system gives no more memory, with the list as it was (see [Memory](#memory))
 - `insert(l: *&list[$T], at: $I, v: $T)` puts `v` at the index `at` and moves the rest one place forward, `at` can be `l.len`. Like every function that takes a position, it counts from the start, and a negative one stops the program
-- `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty
+- `pop(l: *&list[$T]) -> $T|null` takes out the last element, `null` when the list is empty. A `null` in a list of `T?` comes out the same, so look at `l.len` first
 - `remove(l: *&list[$T], at: $I) -> $T` takes out the element at `at` and moves the rest one place back
 - `clear(l: *&list[$T])` removes every element and keeps the memory
 - `free(l: *&list[$T])` releases the list and leaves it empty, and in an arena it only leaves it empty. The elements are not released, free them first when they own memory
@@ -250,10 +250,10 @@ These take a `simd` and belong to the language, like its operators (see [SIMD](R
 - `select(m, a, b)` takes the lane of `a` where the mask `m` is `true`, and the lane of `b` where it's `false`. `a` or `b` can be a number, the same in every lane
 - `any(m) -> bool` and `all(m) -> bool` say if some lane of the mask `m` is `true`, or all of them
 - `sum(v)` adds the lanes in a fixed order, the upper half onto the lower half until one is left: `(v[0] + v[2]) + (v[1] + v[3])` for 4 lanes
-- `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of [Numbers](#numbers), and the `sqrt` of `math`, give for each number. `min` is `b < a ? b : a` and `max` is `a < b ? b : a`, so with a NaN they give `a`
+- `min(a, b)`, `max(a, b)`, `abs(v)` and `sqrt(v)` work on each lane and give what the ones of [Numbers](#numbers), and the `sqrt` of `math`, give for each number. `min` is `b if b < a else a` and `max` is `b if a < b else a`, so with a NaN they give `a`
 
 And this one is of core
-- `operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n] where $T != bool` makes a `simd` from as many elements, so `v: simd[f32, 4] = values[i:i + 4]` and `simd[f32, 8](values[0:8])` load the lanes. A slice of another length stops the program with `flag: a simd of 4 lanes expects a slice of 4, this one has 5`. The way back is the language's, `values[i:i + 4] = v` (see [SIMD](Reference.md#simd))
+- `operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n]` makes a `simd` from as many elements, so `v: simd[f32, 4] = values[i:i + 4]` and `simd[f32, 8](values[0:8])` load the lanes. A slice of another length stops the program with `flag: a simd of 4 lanes expects a slice of 4, this one has 5`. The way back is the language's, `values[i:i + 4] = v` (see [SIMD](Reference.md#simd))
 
 ### Text
 A `&strview` is a view of text and a `&str` is text that you own and that grows. A text literal is a `&strview`, and a `&str` goes wherever a `&strview` is asked. Text is bytes, and the library reads it as UTF-8.
@@ -310,7 +310,7 @@ The compiler prints the rest: structs as `Point{x = 1, y = 2}`, tuples as `(1, 2
 
 ### Maps
 A `&map[$K, $V]` is a hash map that you own. It gets its memory from `heap` or `arena`: `heap({})` is an empty one in the heap, and `heap({"a": 1})` makes one with the pairs of a literal.
-- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and `m[k] = v` is `put`. `m[k]` calls `operator [](m: &map[$K, $V], key: $K) -> $V|null`
+- `m[k] -> $V|null` the value of the key, `null` when it isn't there, and on a map of `T?` also when its value is `null`: `contains` tells them apart. `m[k] = v` is `put`. `m[k]` calls `operator [](m: &map[$K, $V], key: $K) -> $V|null`
 - `put(m: *&map[$K, $V], key: $K, value: $V)` adds the key, or changes its value
 - `m[k] += v`, `m[k].field = v` and `m[k][j] = v` change the value inside the map and find the key once, and a key that wasn't there is added with a zero value: `counts[word] += 1`, `players[name].score += 10`. The zero of a `&str`, a `&list` or a `&map` has no memory, so a new key gets it before it grows: `groups[k] = heap([])`, then `pairs[a][b] += 1` or `append(groups[k], v)`. `m[k]` passed where a pointer goes is copied, zero when the key is missing, and put back after the call: `append(groups[k], v)` adds to a list kept in a map
 - `contains(m: &map[$K, $V], key: $K) -> bool`
@@ -336,7 +336,7 @@ A `fixmap[$K, $V, $$max]` keeps up to `max` entries inside itself, in the order 
 
 ### Indexes of your own types
 `x[i]` on your type calls your `operator []` (see [Indexing](Overview.md#indexing)) with the index as written, `g[-1]` too. The library stops the program with this one, so yours can do the same
-- `out_of_bounds(i: $I, len: i64)` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: i64)` with `flag: slice 2:9 is out of bounds, length 3`
+- `out_of_bounds(i: $I, len: i64) -> never` stops the program with `flag: index 5 is out of bounds, length 3`, and `out_of_bounds(from: $I, to: $I, len: i64) -> never` with `flag: slice 2:9 is out of bounds, length 3`
 ```flag
 type Grid:
     cells: array[i32, 9]
@@ -546,8 +546,8 @@ TCP connections and UDP. A `Socket` is one connection, a `Server` waits for them
 - `listen(port: u16, host: &strview = "0.0.0.0") -> Server|NetError` a server on that port of an address of the machine: `0.0.0.0` is every IPv4 address, `127.0.0.1` the machine alone, which nothing outside it reaches, and `::` every IPv6 address. A name listens on its first address. With the port 0 the system chooses a free one, and `port` tells you which
 - `accept(server: Server) -> Socket|NetError` waits for the next connection, after what you wrote goes out
 - `s.peer` the [Address](#udp) of the other side of a connection: the one `connect` reached, or the one `accept` took a connection from, `print(client.peer)` writes `127.0.0.1:52144`
-- `port(server: Server) -> u16` the port the server listens on
-- `close(server: Server)` stops listening, and so does the end of `with server:`
+- `port(s: Server) -> u16` the port the server listens on
+- `close(s: Server)` stops listening, and so does the end of `with server:`
 - `timeout(s: Socket, seconds: f64)` makes a read or a write that waits longer than that give a `NetError` with the code `TIMED_OUT`. 0 waits forever, like a new connection
 - `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: i64) -> i64|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?` and `close(s: Socket)` work like the ones of a [file](#files)
 
@@ -580,7 +580,7 @@ An `Udp` is a port that sends and receives datagrams, each one whole or not at a
 - `address(host: &strview, port: u16) -> Address|NetError` the address of a name or of a number like `127.0.0.1` or `::1`, the first one the name has
 - `send(u: Udp, to: Address, data: &strview) -> NetError?` sends the data as one datagram, at most 65507 bytes
 - `receive(u: Udp, into: *&str) -> Address|NetError` waits for the next datagram, appends it to `into` and gives who sent it
-- `port(u: Udp) -> u16`, `timeout(u: Udp, seconds: f64)` and `close(u: Udp)` like the ones of a connection
+- `port(s: Udp) -> u16`, `timeout(s: Udp, seconds: f64)` and `close(s: Udp)` like the ones of a connection
 
 An `Address` has `ip: array[u8, 16]`, an IPv4 address in it is `::ffff:a.b.c.d`, and `port: u16`. It compares with `==`, it can be the key of a map, and it prints as `127.0.0.1:5000` or `[::1]:5000`.
 ```flag

@@ -30,14 +30,14 @@ a := 3 # this too
 ```
 
 ## Variables and Assignments
-Variables are valid in the scope where they are declared, so they must be declared inside some scope (a function, an if, a loop...)
+Variables are declared inside a function and live in the block where they are declared, an `if`, a loop or the function itself. At the root of a file a name is a [constant](#constants)
 ```flag
 a: i32 # declares 'a' to be of type 'i32', variables start at zero
 b: u32 = 3 # declares 'b' to be of type 'u32' and sets it to 3
 if true:
     a: u32 # error, 'a' is already declared in this scope
 ```
-You can't declare a name that is already visible, not even inside an inner scope. That goes for parameters and the variables of a `for` too, and for the constants that a function sees, yours, core's like `stdout` and those of a module you `use`
+You can't declare a name that is already visible, not even inside an inner scope. That goes for parameters and the variables of a `for` too, and for the constants and contexts that a function sees, yours, core's like `stdout` and those of a module you `use` without an alias
 ```flag
 N = 3
 
@@ -46,7 +46,7 @@ func main():
 ```
 A function or a type can share its name with a variable: `twice := 4` leaves `twice(3)` to the function.
 
-The type of a variable can also be inferred with ':='
+The type of a variable can also be inferred with `:=`
 ```flag
 a := 3 # declares 'a' to be of type 'i64' and sets it to 3
 b := 2.5 # 'b' is 'f64'
@@ -77,9 +77,9 @@ d := u8(a)
 - `true`, `false` and `null`
 - Arrays: `[1, 2]` is an `array[i64, 2]`, and if the elements have different types the array holds their union, so `[1, "hola"]` is an `array[i64|&strview, 2]`. `[]` is the empty one, an `emptyarray`, that becomes an empty array or listview, so the place must say which: `x := []` alone has no type
 - Maps: `{"ana": 30, "bo": 25}` is a `fixmap[&strview, i64, 2]` that holds just those, and `{}` is the empty one, an `emptyfixmap` (see [Maps](#maps))
-
-No literal asks for memory: a list, a text or a map that grows is made from one with `heap` or `arena`, `heap([1, 2])`, `heap("hello")` or `heap({"ana": 30})`
 - Structs: `{1, 2}` or `{x = 1}` build the struct that the place expects (see [Structured Types](#structured-types)). Where nothing expects one, `{1, "a"}` is a tuple of its values, a `(i64, &strview)` (see [Several values](#several-values))
+
+No literal asks for memory: a list, a text or a map that grows is made from one with `heap` or `arena`, `heap([1, 2])`, `heap("hello")` or `heap({"ana": 30})`.
 
 When you give the type, the literal takes it
 ```flag
@@ -89,7 +89,9 @@ ages: fixmap[&strview, u8, 4] = {"ana": 30}
 `ptr` passes the type on to what it points to, so an array literal or a constant can be a listview of another integer type
 ```flag
 SHADER = [0x0723_0203, 0x0001_0000, 0x0008_000b]
-words: &listview[u32] = ptr(SHADER)
+
+func main():
+    words: &listview[u32] = ptr(SHADER)
 ```
 A text that crosses lines keeps them as they are
 ```flag
@@ -98,11 +100,11 @@ USAGE = "usage: flagc file.flg
 ```
 
 ## Constants
-A constant is a symbol that the compiler will replace at compilation. They must be declared at the root of the file so they cannot be inside scopes
+A constant is a name for a value, declared at the root of a file, outside the functions
 ```flag
 MYCONST = "hello"
 NUM = 2
-MYSECONDCONST = 2 + 2 + NUM # this computes at comptime to 6
+MYSECONDCONST = 2 + 2 + NUM # the compiler computes 6
 ```
 Arithmetic between literals is computed by the compiler, any other expression is written again where you use the constant, like a macro. A constant array or struct of literals, like `TABLE = [3, 1, 4, 1, 5]`, is kept once in the data of the program and every use reads it there (see [Constants](Reference.md#constants)).
 
@@ -172,8 +174,9 @@ type Window:
     height: i32 = 480
     tabs: &list[&strview] = heap([])
 
-w: Window # untitled, 640 by 480
-big := Window{width = 1920, height = 1080} # untitled too
+func main():
+    w: Window # untitled, 640 by 480
+    big := Window{width = 1920, height = 1080} # untitled too
 ```
 When the place already says the type, like a variable with its type, a return, a field or an element of an array, you can leave the name out
 ```flag
@@ -193,7 +196,7 @@ func main():
     other: Car = {"fiat", {hp = 90}} # the inner {} is a Car.motor
     car.motor.hp += 10
 ```
-A field can share its memory with a field declared above it with '@'
+A field can share its memory with a field declared above it with `@`
 ```flag
 type Record:
     code: u32
@@ -216,7 +219,7 @@ func main():
     n: u32 = user
 ```
 ### Union Types
-Union types are tagged unions and are separated by '|', you give them a name with an alias
+Union types are tagged unions and are separated by `|`, you give them a name with an alias
 ```flag
 type Num = i32|f32
 ```
@@ -230,7 +233,7 @@ n: Num = 3
 if n is i32:
     print("an integer ", n)
 ```
-There are also untagged unions with '||' (but they are not recommended, they have no tag to check and are read with `as`)
+There are also untagged unions with `||` (but they are not recommended, they have no tag to check and are read with `as`)
 #### Enums
 In flag an enum is a union type, there are 2 ways to declare an enum
 1. Union like
@@ -272,15 +275,16 @@ type Size:
     w: u32
     h: u32
 
-raw := f32(1.5) as u32 # the bits of the float
-key := Size{640, 480} as u64 # the 8 bytes of a Size as one number
-back := key as Size # and the Size again
-one := 0x3f800000 as f32 # a literal is the integer of that size, so this is 1.0
+func main():
+    raw := f32(1.5) as u32 # the bits of the float
+    key := Size{640, 480} as u64 # the 8 bytes of a Size as one number
+    back := key as Size # and the Size again
+    one := 0x3f800000 as f32 # a literal is the integer of that size, so this is 1.0
 ```
-It can also take a type out of a union, but it does not check the tag, so check it with `is` first.
+It can also take a type out of a union, without checking the tag: when the union holds another type it reads those bytes as the one you asked for, so check it with `is` first.
 
 ## Pointers
-A pointer is written with '*' before the type. `ptr(x)` gives you the address of `x` and `.*` reads or writes what the pointer points to
+A pointer is written with `*` before the type. `ptr(x)` gives you the address of `x` and `.*` reads or writes what the pointer points to
 ```flag
 x := 5
 p := ptr(x) # 'p' is '*i64'
@@ -314,8 +318,8 @@ print((second as *i64).*) # 20
 ```
 
 ## Fat pointers
-A fat pointer is a pointer with extra data, in flag we indicate it with '&' before the type.
-For example '&list[i32]' is a pointer to the elements of a list with the fields 'len: i64' and 'cap: i64'
+A fat pointer is a pointer with extra data, in flag we indicate it with `&` before the type.
+For example `&list[i32]` is a pointer to the elements of a list with the fields `len: i64`, `cap: i64` and `arena`, where its memory comes from
 ```flag
 a: &list[i32]
 ```
@@ -332,13 +336,14 @@ a: &list[i32] = heap([])
 append(a, 1)
 ```
 Using one that no path gave a value is an error, `a is used before it gets a value, and &list[i32] starts without one: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`. `-memory` warns about it before: `append cannot grow a, it may have no memory to grow in: give it heap([])`.
-The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`.
+The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`. A call doesn't copy, so a view doesn't go to a `&str` or a `&list` parameter.
 
-You can declare your own fat pointers with `type fatptr`
+You can declare your own fat pointers with `type fatptr`, like the `&ring` of the module `ring`
 ```flag
 type fatptr ring[$T]:
     len: i64
-    start: i64
+    cap: i64
+    first: i64
 ```
 ### Passing them to functions
 When you pass a fat pointer to a function, the function gets a copy of it. The elements are shared, but if the function makes the copy grow, the original does not see it.
@@ -351,6 +356,7 @@ func add_two(l: *&list[i32]):
 
 func main():
     nums: &list[i32] = heap([])
+    defer free(nums)
     append(nums, 1)
     add_two(nums) # the same as add_two(ptr(nums))
     print(nums) # [2, 2]
@@ -375,8 +381,6 @@ else:
 ```
 You can also use the if statement to narrow unions
 ```flag
-type enum Color = Red|Green|Blue
-
 color: Color = Red
 if color is Red:
     pass # the type of color is Red here
@@ -425,7 +429,7 @@ for element in iterable:
 for index, element in iterable:
     print(index, " ", element)
 ```
-To iterate over a range you can do (`..` leaves the end out and `..=` takes it). The `i` counts the loop, so you can read it but not assign it
+To iterate over a range you can do (`..` leaves the end out and `..=` takes it). The `i` counts the loop, like the `index` above, so you can read it but not assign it
 ```flag
 for i in 0..10: # from 0 to 9
     print(i)
@@ -446,7 +450,7 @@ for element in reverse iterable:
 for i in reverse 0..10: # from 9 to 0
     print(i)
 ```
-With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and listviews know that place, so over text or a type of yours `reverse` with an index is an error. The index and the variable of a range count the loop, so they cannot be assigned.
+With `for index, element in reverse list` the index is the place of the element in the list, so it goes down: 2, 1, 0 for a list of three. Only arrays, lists and listviews know that place, so over text or a type of yours `reverse` with an index is an error.
 
 Over an array, a list or a listview the element is the one in the list, not a copy, so assigning it or a field of it changes the list
 ```flag
@@ -494,19 +498,23 @@ case:
 It also works with text. Over a union the cases name its types, and inside each case the variable has those types, like after an `is`. A switch over a union must handle every type or have a default, and the default gets the types that are left
 ```flag
 type enum Color = Red|Green|Blue
+type Square
+type Circle:
+    r: f64
 type Shape = Circle|Square|null
 
-switch color:
-case Red:
-    print("red")
-case Green, Blue:
-    print("not red")
+func show(color: Color, shape: Shape):
+    switch color:
+    case Red:
+        print("red")
+    case Green, Blue:
+        print("not red")
 
-switch shape:
-case Circle:
-    print("a circle of radius ", shape.r)
-case:
-    print("not a circle") # shape is Square|null here
+    switch shape:
+    case Circle:
+        print("a circle of radius ", shape.r)
+    case:
+        print("not a circle") # shape is Square|null here
 ```
 ### break, continue
 `break` leaves the loop and `continue` goes to the next round
@@ -692,6 +700,10 @@ func size(a: array[$T, $$n]) -> i64:
 Given integers of different types, a `$T` takes the widest: `biggest(a, b)` with an `i32` and an `i64` is an `i64`. A `$T` inside a type like `&list[$T]` is fixed by it, so `append(l, k)` on a `&list[i64]` takes a `k: i32`.
 A `$T` that no argument gives comes from a parameter that takes a type, `type $T`. The call names the type, and the parameter takes nothing when the program runs
 ```flag
+type Point:
+    x: f64
+    y: f64
+
 func make(kind: type $T) -> $T:
     x: $T
     return x
@@ -712,7 +724,7 @@ func kind(v: $T) -> &strview where $T is i32|i64:
 func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
-It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if one type can be assigned to another with `@can_assign(&str, $T)`. Those are a `bool` in any expression too, `if @windows():`, but an `if` checks both branches on every system. `a if c else b` with a `c` the compiler knows is only the side it chose, so `19 if @linux() else 8` is a literal that goes to an `i32`.
+It can also ask for the platform with `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()` and `@riscv64()`, and if a `$T` can be assigned to a `&str` with `@can_assign(&str, $T)`. Those are a `bool` in any expression too, `if @windows():`, but an `if` checks both branches on every system. `a if c else b` with a `c` the compiler knows is only the side it chose, so `19 if @linux() else 8` is a literal that goes to an `i32`.
 
 A `where` at the start of a line opens a block that exists only where it holds. Inside a function it holds statements, so code that calls a C function of one system goes there, and at the root it holds declarations, only for a system or a processor
 ```flag
@@ -721,6 +733,15 @@ where @windows():
 
 where not @windows():
     LINE_END = "\n"
+
+extern "c" where @linux():
+    func __errno_location() -> *i32
+
+extern "c" where @macos():
+    func __error() -> *i32
+
+extern "c" where @windows():
+    func _errno() -> *i32
 
 func errno() -> i32:
     where @linux():
@@ -1008,7 +1029,7 @@ func visit():
     with lock(stats.visits):
         stats.visits.value += 1
 ```
-A number or a pointer that threads change at once can be an `atomic[T]`, without a lock. It's not a value: `get` reads it, and `set`, `add`, `swap` and `compare_swap` change it, each in one instruction of the processor
+A number or a pointer that threads change at once can be an `atomic[T]`, without a lock. It's not a value: `get` reads it, and `set`, `add`, `swap` and `compare_swap` change it, each with the instructions of the processor, in line
 ```flag
 shared context stats:
     served: atomic[i64]
@@ -1035,7 +1056,7 @@ func main():
     for w in workers:
         wait(w)
 ```
-`print` writes each line whole, so the lines of two threads never mix. What a thread writes another one sees after `parallel`, `wait`, a `Lock`, a `Channel` or an atomic, and `done` only says that the thread ended: what it wrote is read after `wait`. `-memory` checks threads too: two threads that may use the same memory at once while one of them changes it, outside a lock that both hold and outside an atomic, a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it.
+What a thread writes another one sees after `parallel`, `wait`, a `Lock`, a `Channel` or an atomic, and `done` only says that the thread ended: what it wrote is read after `wait`. `-memory` checks threads too: two threads that may use the same memory at once while one of them changes it, outside a lock that both hold and outside an atomic, a thread never waited, or waited twice, a pointer to a local variable that goes to a thread that outlives the function, and a temporary that its `with scratch():` may release while a thread still uses it. It also warns about a copy of a `Lock`, a `Channel` or an `Arena` in use: pass a pointer to it.
 ```flag
 func add(count: *i64):
     count.* += 1
@@ -1071,7 +1092,7 @@ func check(line: i64, text: &strview) -> BadLine?:
         return BadLine{line, "too long"}
     return null
 ```
-You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `trust`, or you ignore it on purpose with `_ =`
+You cannot forget an error, a statement that leaves an error without handling does not compile. You handle it with `is`, `switch`, `try`, `iferror` or `trust`, or you ignore it on purpose with `_ =`
 ```flag
 got := index_of(names, "ana")
 if got is i64:
@@ -1131,7 +1152,7 @@ To restrict access there are modules. A module is declared at the start of the f
 module mymodulename
 type Hello
 ```
-To give access to a module from another file you use 'use'.
+To give access to a module from another file you use `use`.
 This gives a namespace so you can access things from the module and also includes them directly to use
 ```flag
 use mymodulename
@@ -1169,7 +1190,7 @@ A type brings its functions: a call sees the functions of the modules that decla
 ## The standard library
 The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`, and `get`, `add`... of an `atomic`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
 - `fs`, opening files, whole files, folders and paths
-- `os`, the arguments, the environment, other programs, the processors and the time
+- `os`, the arguments, the environment, other programs, libraries, the processors and the time
 - `json`, reading and writing JSON
 - `net`, TCP connections and UDP
 - `math`, `sqrt`, `sin`, `PI`, random numbers...
@@ -1248,7 +1269,7 @@ A function can have another name in Flag than in C, after `=`, and so one C func
 ```flag
 extern "objc":
     func send_id(self: *bytes, sel: *bytes) -> *bytes = "objc_msgSend"
-    func send_rect(self: *bytes, sel: *bytes) -> Rect = "objc_msgSend"
+    func send_f64(self: *bytes, sel: *bytes) -> f64 = "objc_msgSend"
 ```
 A variable of C goes in by its address, a constant that points to it, and the text of the block can name a framework of macOS or a file
 ```flag
@@ -1275,7 +1296,7 @@ An `extern func` is called like C calls, structs too, so it's also what a table 
 
 `@offset_of(T, field)` gives the place of a field, like `@sizeof` gives the size, both known when the program compiles.
 
-A library that a program loads is built with `-shared`, and the program loads it with `load` and `symbol` of [os](Library.md#libraries). That's how a game reloads its code while it runs: see [Libraries](Reference.md#libraries).
+A library that a program loads is built with `-shared`, and the program loads it with `load_library` and `symbol` of [os](Library.md#libraries). That's how a game reloads its code while it runs: see [Libraries](Reference.md#libraries).
 
 ## Memory safety
 ### The flag
@@ -1337,7 +1358,7 @@ flagc test src -- gcd
 What goes after `--` chooses the tests: the ones that have one of those words in their name. A test that takes more than 10 seconds is stopped, `-timeout` changes that. At the end it says which tests failed, where, and what they wrote, and flagc exits with 1 when one failed
 ```
 FAIL test_gcd, src/math.flg:3, exit code 134
-flag: assertion failed
+flag: gcd(12, 18) == 6 is false, gcd(12, 18) is 4
   --> src/math.flg:4:5
   in test_gcd, src/math.flg:3
 2 passed, 1 failed
