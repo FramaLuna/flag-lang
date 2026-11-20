@@ -347,7 +347,7 @@ func gen_from(from: i64) -> i64|Fail:
                 used += room(t)
             store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at, comp.binds[-1].type), offset(block, HEAD))
             append(args, Value{type = pointer(BYTES), at = block})
-            append(args, truth(pointers(shape.ret) != 0))
+            append(args, truth(holds_pointer(shape.ret)))
             try invoke("finished", args, 0)
             terminate("ret", int_arg(0))
             close_proc(made, L, 1)
@@ -1744,12 +1744,12 @@ func iterate(n: i64) -> Fail?:
 
 # for -memory, the element of t at place is one of its own in this round of the walk l_body, when it holds a pointer or it is in place, inside
 func round(place: Arg, t: i64, l_body: u32, inside: bool) -> bool:
-    if pointers(t) == 0 and not inside:
+    if not holds_pointer(t) and not inside:
         return false
     to: u32 = 0
     if inside:
         to = u32(place.n)
-    add(Ins{op = "round", to = to, a = place, b = int_arg(i64(l_body)), c = int_arg(comp.types[t].size), mask = pointers(t), copy = true, ghost = true})
+    add(Ins{op = "round", to = to, a = place, b = int_arg(i64(l_body)), c = int_arg(comp.types[t].size), shape = t, copy = true, ghost = true})
     return true
 
 func counting(name: &strview) -> &strview:
@@ -2969,7 +2969,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             for l in comp.loops:
                 if l.counter == local_of(kid(n, 1)):
                     walk = l.walk
-        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, mask = pointers(elem), copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
+        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, shape = elem, copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
         if ty.name == "&strview" and assignment != 0:
             return fail(VIEW, at_of(n + 1))
         if ty.name == "&strview" and passing:
@@ -4168,8 +4168,8 @@ func payload(addr: Arg, t: i64) -> Arg:
 
 func absent(addr: Arg, t: i64, here: &list[i64]):
     for m in members(t):
-        if not contains(here, m) and pointers(m) != 0:
-            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), mask = pointers(m), copy = true, ghost = true, member = u32(m)})
+        if not contains(here, m) and holds_pointer(m):
+            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), shape = m, copy = true, ghost = true, member = u32(m)})
 
 func times(count: Arg, size: i64) -> Arg:
     if size == 1:
@@ -4283,48 +4283,25 @@ func blit(from: Arg, to: Arg, t: i64):
         return
     size := i64(comp.types[t].size)
     if not big(t):
-        add(Ins{op = "blit", a = from, b = to, c = int_arg(size), mask = pointers(t), copy = true})
+        add(Ins{op = "blit", a = from, b = to, c = int_arg(size), shape = t, copy = true})
         return
     first := comp.passes.len
     append(comp.passes, Pass{L, to, false})
     append(comp.passes, Pass{L, from, false})
     append(comp.passes, Pass{L, int_arg(size), true})
-    add(Ins{op = "call", cls = L, to = u32(temp().n), a = global("$memcpy"), first = u32(first), count = 3, mask = pointers(t), copy = true})
+    add(Ins{op = "call", cls = L, to = u32(temp().n), a = global("$memcpy"), first = u32(first), count = 3, shape = t, copy = true})
 
-func pointers(t: i64) -> u64:
+func holds_pointer(t: i64) -> bool:
     ty := comp.types[t]
-    if ty.kind == Ptr or ty.kind == Func or ty.kind == Thread:
-        return 1
-    if ty.size < 8:
-        return 0
-    mask := u64(ty.kind == Fat)
-    if ty.kind == Array:
-        inner := pointers(ty.elem)
-        i := 0
-        while inner != 0 and i < ty.count and i * comp.types[ty.elem].size < 512:
-            mask = mask or words(inner, i * comp.types[ty.elem].size / 8)
-            i += 1
-    elif ty.kind == Struct or ty.kind == Fat or ty.kind == Union or ty.kind == Untagged:
-        for i in 0..ty.count:
-            item := comp.items[ty.first + i]
-            if ty.kind == Struct or ty.kind == Fat:
-                mask = mask or words(pointers(item.type), item.n / 8)
-            elif ty.kind == Union:
-                mask = mask or words(pointers(item.type), 1)
-            else:
-                mask = mask or pointers(item.type)
-    elif ty.kind == Atomic:
-        mask = pointers(ty.elem)
-    return mask
-
-func words(mask: u64, shift: i64) -> u64:
-    if mask == 0:
-        return 0
-    if shift >= 63:
-        return u64(1) << 63
-    if mask >> u64(63 - shift) != 0:
-        return (mask << u64(shift)) or (u64(1) << 63)
-    return mask << u64(shift)
+    if ty.kind == Ptr or ty.kind == Func or ty.kind == Thread or ty.kind == Fat:
+        return true
+    if ty.kind == Array or ty.kind == Atomic:
+        return holds_pointer(ty.elem)
+    if ty.kind == Struct or ty.kind == Union or ty.kind == Untagged:
+        for item in comp.items[ty.first:ty.first + ty.count]:
+            if holds_pointer(item.type):
+                return true
+    return false
 
 func zero(t: i64, addr: Arg) -> Fail?:
     if comp.types[t].kind == Simd and vectors():

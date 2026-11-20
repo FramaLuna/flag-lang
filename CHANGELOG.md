@@ -174,6 +174,9 @@ New
 - `hex(value, digits)` fills with zeros up to that many digits, `hex(u8(7), 2)` is `0x07`
 
 Fixed
+- `(i32, bool){1, true}` is a literal of that tuple, like `Point{1, 2}`, where it was `unexpected '{', the statement already ended`
+- `-memory` knows which words of a struct of any size hold a pointer, where past the first 504 bytes it took every word for one: the `name` of a struct of 64 numbers, freed through the elements of a list, was `the memory allocated here for b.name is never freed`, and a function that copied a struct that big was near `it has more than 512 blocks of memory to follow`
+- `-memory` says when it doesn't follow a call, `-memory gives up on grow, it changes memory more than three pointers away from its parameters, so this call is not checked`, for a function that moves, allocates or stores a pointer that far, like `append(p.a.b.c.names, x)`: four pointers away it said nothing, and five away it gave false warnings like `free cannot release l.names, it is not on the heap`. A free that far no longer says that the variable of the caller is not on the heap
 - `x + 1.5` with `x: i32` says `+ expects two numbers of one type but got i32 and f64, convert one side with i32(...) or f64(...)`, as with a float variable, where the literal tried to become an `i32`: `cannot assign f64 to i32, and no operator = makes i32 from it`
 - `add(hits, 1)` with `hits: *atomic[i64]` says `add of an atomic takes the atomic itself, and this is *atomic[i64]: reach it with .*`, where it was `no function named add is visible here`, and `get(hits)` sent you to `use json`
 - A byte that a message cannot show is written with its escape when it has one, `'\t'` and `invalid character '\e'`, where it was `\x09` and `\x1b`
@@ -205,6 +208,7 @@ Fixed
 - `-memory` keeps apart what a member of a union holds also where the other member writes nothing, like a `&str|null`: `if got is &str: free(got)` on what a function gave was `the memory that build allocates here may never be freed`
 
 Faster
+- Checking the compiler takes 1 % fewer instructions, and so does `-memory`: a copy carries its type, and `-memory` reads which words hold a pointer from a table made once for each type
 - Checking a chain of `elif` takes time in proportion to its length: 40000 `elif` check in 1.9 s, where they took 12 s, because each `elif` looked through the rest of the chain for its place
 - Checking the compiler takes 4 % fewer instructions, 918 M where it took 958 M: a call to a function without `$T` makes its instance without matching its arguments again, which choosing the overload already did
 - A division or a remainder of a signed integer by a power of two that the compiler knows is shifts, like one without sign: `len / 2` and `i % 8` on `i64`, which lengths are now. A loop of `i / 2 + i % 8 + i / 64` over 100 million `i64` takes 0.58 G cycles where it took 7.8 G, with one change more to QBE
