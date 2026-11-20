@@ -1,0 +1,18 @@
+func fill(l: *&list[i64]):
+    for k in 0..1000:
+        append(l, k)
+
+func main():
+    rows: &list[&list[i64]] = heap([])
+    for i in 0..4:
+        append(rows, heap([]))
+    ts: &list[Thread[null]] = heap([])
+    defer free(ts)
+    for r in rows:
+        append(ts, parallel fill(r))
+        append(r, 5) # the thread of this round grows r too
+    for t in ts:
+        wait(t)
+    for r in rows:
+        free(r)
+    free(rows)

@@ -1,0 +1,47 @@
+func fill(l: *&list[i64]):
+    for k in 0..1000:
+        append(l, k)
+
+func room(l: *&list[i64]):
+    reserve(l, 100)
+
+func grow(s: *&str):
+    for k in 0..1000:
+        s.* += "x"
+
+func main():
+    rows: &list[&list[i64]] = heap([])
+    for i in 0..4:
+        append(rows, heap([]))
+    names: &list[&str] = heap([])
+    for i in 0..4:
+        s: &str = heap("name")
+        append(names, s)
+    ts: &list[Thread[null]] = heap([])
+    defer free(ts)
+    for r in rows: # each thread grows its own element
+        append(ts, parallel fill(r))
+    for t in ts:
+        wait(t)
+    clear(ts)
+    for r in rows:
+        append(ts, parallel room(r))
+    for t in ts:
+        wait(t)
+    clear(ts)
+    for s in names:
+        append(ts, parallel grow(s))
+    for t in ts:
+        wait(t)
+    clear(ts)
+    for i in 0..names.len:
+        append(ts, parallel grow(ptr(names[i])))
+    for t in ts:
+        wait(t)
+    for r in rows:
+        print(r.len)
+        free(r)
+    free(rows)
+    for s in names:
+        free(s)
+    free(names)

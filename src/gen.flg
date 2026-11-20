@@ -957,7 +957,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         l_exit := label()
         jump(l_head)
         open_block(l_head)
-        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, comp.slots.len, 0, 0, false})
+        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, comp.slots.len, 0, 0, 0, false})
         c := try condition(cond)
         forever := c.at.kind == Const and c.at.n == 1
         if not forever:
@@ -1624,7 +1624,13 @@ func iterate(n: i64) -> Fail?:
         counted := 0
         if range or counter != 0:
             counted = comp.vars.len
-        append(comp.loops, Loop{l_exit, l_step, comp.defers.len, round, counted, l_body, false})
+        whole := subject
+        if range:
+            ends := node_end(subject + 1)
+            whole = 0
+            if comp.nodes[ends].kind == Field and text(ends) == "len": # 0..x.len
+                whole = ends + 1
+        append(comp.loops, Loop{l_exit, l_step, comp.defers.len, round, counted, l_body, whole, false})
     else:
         if backward and counter != 0:
             return fail("reverse over " + comp.types[walked.type].name + " has no index to give " + text(counter) + ", only an array, a list or a listview knows the index of each element: count in a variable", comp.tokens[comp.nodes[counter].tok].at)
@@ -1739,16 +1745,12 @@ func iterate(n: i64) -> Fail?:
             fixed = tok.text + " is a copy that next gives, assigning it does not change " + named + ": write " + named + "[" + tok.text + ".key] = v"
         mention(tok.text, place, item, node.tok)
         append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, view(heap(fixed)), 0, true, false})
-        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, round, 0, 0, false})
+        append(comp.loops, Loop{l_exit, l_head, comp.defers.len, round, 0, 0, 0, false})
     try statements(node_end(subject))
     if range: # a walk by index when the body reads x[i], for -memory
-        ends := node_end(subject + 1)
-        whole := not inclusive and comp.nodes[ends].kind == Field and text(ends) == "len" # 0..x.len, or 0..n over an array of n
         for i in comp.body[opened:]:
-            if i.op == "add" and i.first == l_body:
-                rounds = true
-                whole = whole or i.count != 0 and end.lit and u64(i.count) == end.n + u64(inclusive)
-        every = start.lit and start.n == 0 and whole
+            rounds = rounds or i.op == "add" and i.first == l_body
+        every = start.lit and start.n == 0
         if rounds:
             insert(comp.body, opened, Ins{op = "round", b = int_arg(i64(l_body)), pos = comp.at, ghost = true})
     comp.at = tok.at
@@ -1764,7 +1766,7 @@ func iterate(n: i64) -> Fail?:
     else:
         jump(l_head)
     close_scope(round)
-    every = every and not comp.loops[-1].broke
+    every = every and not comp.loops[-1].broke and comp.loops[-1].whole != NONE
     comp.loops.len -= 1
     try forget(before)
     open_block(l_exit)
@@ -3004,9 +3006,13 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             count = u32(comp.types[t].count) # -memory keeps the elements of an array apart from what follows it
         walk: u32 = 0 # x[i] of a list or an array, with the i that counts a walk, is its element of the round, for -memory
         if local_of(kid(n, 1)) != 0 and (array or owner(t)):
-            for l in comp.loops:
+            for k in 0..comp.loops.len:
+                l := comp.loops[k]
                 if l.counter == local_of(kid(n, 1)):
                     walk = l.walk
+                    whole := l.whole > 0 and code_of(l.whole) == code_of(kid(n, 0)) or array and limit == comp.types[t].count
+                    if holds_pointer(elem) and not whole: # so the walk doesn't free every element
+                        comp.loops[k].whole = NONE
         spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, shape = elem, copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
         if ty.name == "&strview" and assignment != 0:
             return fail(VIEW, at_of(n + 1))
@@ -3986,6 +3992,9 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
                 try assign(offset(addr, at + field.n), field.type, v, at_of(field.default))
             elif not field.shared:
                 try stamp(field.type, addr, at + field.n)
+    elif ty.kind == Array and ty.count <= 16: # one by one, so -memory sees every element get its defaults
+        for k in 0..ty.count:
+            try stamp(ty.elem, addr, at + i64(k) * comp.types[ty.elem].size)
     elif ty.kind == Array:
         slot := alloc(I64)
         l_head := label()
