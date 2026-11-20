@@ -2,10 +2,6 @@
 use fs
 use os
 
-ERR = "\e[1;31merror:\e[0m "
-NOTE = "\e[1;36mnote:\e[0m "
-WARN = "\e[1;33mwarning:\e[0m "
-
 type error Fail
 
 type enum TokenKind:
@@ -14,44 +10,45 @@ type enum TokenKind:
 type Token:
     kind: TokenKind
     text: &strview
-    at: usize
-    line: usize
+    at: i64
+    line: i64
 
 type Source:
     path: &str
     code: &str
-    start: usize
+    start: i64
     module: &strview
     library: bool
 
 type Trust:
-    from: usize
-    to: usize
+    from: i64
+    to: i64
     check: bool
 
 type Use:
-    file: usize
+    file: i64
     module: &strview
     alias: &strview
-    at: usize
+    at: i64
+    path: &strview # the folder of a use in quotes
 
 type enum NodeKind:
     Func, Struct, Fat, Context, Alias, Void, Extern, Field, Var, Named, Constant, Assign
-    TName, TUnary, TUnion, TFunc
-    Block, Return, If, While, For, Switch, Case, Jump, Defer, With, Where
-    Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Items, Pairs
+    TName, TUnary, TUnion, TFunc, TTuple
+    Block, Return, If, While, For, Switch, Case, Jump, Assert, Defer, With, Where
+    Name, Literal, Call, Brace, Fill, Index, Binary, Unary, Choice, Items, Pairs
 
 type Node:
     kind: NodeKind
-    tok: usize
-    size: usize
+    tok: i64
+    size: i64
     module: &strview
 
 type Sym:
-    name: &strview
-    node: usize
-    next: usize
-    module: &strview
+    name: &strview = ""
+    node: i64
+    next: i64
+    module: &strview = ""
     priv: bool
     error: bool
     packed: bool
@@ -59,42 +56,45 @@ type Sym:
     library: bool
 
 type enum TypeKind:
-    Void, Bool, Int, Uint, Float, Ptr, Func, Bytes, Struct, Fat, Union, Untagged, Array, Simd, Thread
+    Void, Bool, Int, Uint, Float, Ptr, Func, Bytes, Struct, Fat, Union, Untagged, Array, Simd, Thread, Given, Atomic
 
 type Type:
     kind: TypeKind
     name: &strview
-    size: usize
-    align: usize
-    elem: usize
-    ret: usize
-    first: usize
-    count: usize
-    start: usize
-    args: usize
-    decl: usize
+    size: i64
+    align: i64
+    elem: i64
+    ret: i64
+    first: i64
+    count: i64
+    start: i64
+    args: i64
+    decl: i64
     tag: u32
     error: bool
     packed: bool
     foreign: bool
+    stamped: bool # it starts at something other than zero: the tag of a union without null, or the default value of a field
+    hollow: bool # zero is not a value of it: a fat pointer, or a struct or an array that holds one with no default
 
 type Item:
-    name: &strview
-    type: usize
-    n: usize
+    name: &strview = ""
+    type: i64
+    n: i64
     shared: bool
+    default: i64 # the node of the default value of a field, 0 when it has none
 
 type Inst:
-    node: usize
+    node: i64
     name: &strview
-    binds: usize
-    count: usize
-    ret: usize
-    at: usize
+    binds: i64
+    count: i64
+    ret: i64
+    at: i64
     export: bool
     library: bool
-    depth: usize
-    valued: bool
+    depth: i64
+    taken_as: i64
 
 type enum ArgKind:
     Empty, Temp, Const, Single, Double, Global
@@ -112,8 +112,8 @@ type Ins:
     c: Arg
     first: u32
     count: u32
-    pos: usize
-    mask: u64
+    pos: i64
+    shape: i64 # the type whose words it copies, for -memory to see which hold a pointer
     number: bool
     copy: bool
     ghost: bool
@@ -123,175 +123,200 @@ type Pass:
     cls: u32
     arg: Arg
     number: bool
+    value: i64 # of a parameter, the struct or array that the function takes by value, else VOID
 
 type Mention:
     temp: u32
     name: &strview
-    type: usize
-    tok: usize
-    scope: usize
+    type: i64
+    tok: i64
+    scope: i64
     pointer: u32
 
 type Proc:
     name: &strview
     cls: u32
-    file: usize
-    params: usize
-    count: usize
-    code: usize
-    end: usize
+    file: i64
+    params: i64
+    count: i64
+    code: i64
+    end: i64
     temps: u32
     last: u32
     labels: u32
-    mentions: usize
-    mentioned: usize
-    scopes: usize
-    scoped: usize
-    node: usize
-    inst: usize
+    mentions: i64
+    mentioned: i64
+    scopes: i64
+    scoped: i64
+    node: i64
+    inst: i64
     export: bool
     recursive: bool
 
 type Local:
     name: &strview
-    type: usize
+    type: i64
     addr: Arg
-    depth: usize
-    tok: usize
-    limit: usize
-    counts: bool
-    unread: bool
+    depth: i64
+    tok: i64
+    limit: u64
+    fixed: &strview # why it cannot be assigned, or nothing when it can
+    unread: i64 # where it got an error or a thread that nothing read since, or 0
+    given: bool # some path gave it a value, which one of a hollow type declared without a value has not
+    inside: bool # the element in place of what a for walks, which lives where that does
 
 type Value:
-    type: usize
+    type: i64
     at: Arg
     mem: bool
     place: bool
     lit: bool
     neg: bool
-    n: usize
-    f: f64
-    element: usize
+    flipped: bool # a literal made by not, its bits wrap at the width of an unsigned place
+    n: u64
+    element: i64
 
 type Loop:
     exit: u32
     again: u32
-    defers: usize
+    defers: i64
+    slots: i64 # the first slot of a round
+    counter: i64 # the local that counts the elements of a walk, or 0
+    walk: u32 # the walk that counter counts, for -memory
+    whole: i64 # the node of the list or array that the walk visits whole, 0 for none, NONE once it indexes another one that holds pointers
     broke: bool
 
 type Deferred:
-    node: usize
-    visible: usize
+    node: i64
+    visible: i64
     subject: Value
 
 context comp:
-    files: &list[Source]
-    uses: &list[Use]
-    libs: &list[&strview]
-    tokens: &list[Token]
-    trusted: &list[Trust]
-    nodes: &list[Node]
-    pos: usize
-    width: usize
-    depth: usize
-    syms: &list[Sym]
-    names: &map[&strview, usize]
-    types: &list[Type]
-    type_ids: &map[&strview, usize]
-    items: &list[Item]
-    binds: &list[Item]
-    frame: usize
-    insts: &list[Inst]
-    inst_ids: &map[&strview, usize]
-    inst_binds: &list[Item]
-    chosen: &map[&strview, usize]
-    resolving: &list[usize]
-    spelled: usize
-    c_types: &list[usize]
-    c_defs: &str
-    data: &str
-    texts: &list[usize]
-    stored: &map[&strview, i64]
-    globals: &list[&strview]
-    global_ids: &map[&strview, usize]
-    reached: usize
-    procs: &list[Proc]
-    code: &list[Ins]
-    body: &list[Ins]
-    slots: &list[Ins]
-    spare: &list[usize]
-    held: &list[usize]
-    passes: &list[Pass]
-    mentions: &list[Mention]
-    scopes: &list[usize]
-    scope: usize
+    files: &list[Source] = heap([])
+    uses: &list[Use] = heap([])
+    libs: &list[&strview] = heap([])
+    library: &str = heap("")
+    tokens: &list[Token] = heap([])
+    trusted: &list[Trust] = heap([])
+    nodes: &list[Node] = heap([])
+    pos: i64
+    width: i64
+    depth: i64
+    syms: &list[Sym] = heap([])
+    names: &map[&strview, i64] = heap({})
+    types: &list[Type] = heap([])
+    type_ids: &map[&strview, i64] = heap({})
+    items: &list[Item] = heap([])
+    binds: &list[Item] = heap([])
+    frame: i64
+    insts: &list[Inst] = heap([])
+    inst_ids: &map[&strview, i64] = heap({})
+    inst_binds: &list[Item] = heap([])
+    chosen: &map[&strview, i64] = heap({})
+    resolving: &list[i64] = heap([])
+    spelled: i64
+    c_types: &list[i64] = heap([])
+    c_defs: &str = heap("")
+    data: &str = heap("")
+    texts: &list[i64] = heap([])
+    stored: &map[&strview, i64] = heap({})
+    globals: &list[&strview] = heap([])
+    global_ids: &map[&strview, i64] = heap({})
+    reached: i64
+    procs: &list[Proc] = heap([])
+    code: &list[Ins] = heap([])
+    body: &list[Ins] = heap([])
+    slots: &list[Ins] = heap([])
+    spare: &list[i64] = heap([])
+    held: &list[i64] = heap([])
+    passes: &list[Pass] = heap([])
+    mentions: &list[Mention] = heap([])
+    scopes: &list[i64] = heap([])
+    scope: i64
     temps: u32
-    numbers: &list[bool]
+    numbers: &list[bool] = heap([])
     labels: u32
-    at: usize
-    site: usize
-    target: usize
-    passed: usize
-    elements: &list[Value]
-    vars: &list[Local]
-    defers: &list[Deferred]
-    loops: &list[Loop]
-    leaving: usize
-    staying: usize
-    ret: usize
+    at: i64
+    site: i64
+    target: i64
+    passed: i64
+    elements: &list[Value] = heap([])
+    turns: &list[i64] = heap([]) # of the values of each call or literal being made, those whose code calls something: the index and where the code starts
+    calls: i64 # how many calls the code made, but for those that never return, to know when it may have changed what was read
+    vars: &list[Local] = heap([])
+    given: &list[i64] = heap([]) # the locals that got their first value, in order, so a branch takes back what the one before it gave
+    defers: &list[Deferred] = heap([])
+    loops: &list[Loop] = heap([])
+    leaving: i64
+    staying: i64
+    ret: i64
     dest: Arg
-    blame: usize
+    blame: i64
     live: bool
-    inst: usize
-    entry: usize # main, the main of C
-    tests: &list[usize]
-    settler: usize # main, when the program starts threads
-    stamping: bool # a context or a file variable holds a union without null, that gets its tag when a thread enters
-    asked: usize
-    defined: &list[usize]
-    hover: &str
-    assembly: &str # written after what QBE writes: the files of @embed and the DWARF
-    system: &strview
-    machine: &strview
+    inst: i64
+    entry: i64 # main, the main of C
+    tests: &list[i64] = heap([])
+    settler: i64 # main, when the program starts threads
+    stamping: bool # a context of a thread starts at something other than zero, which stamp writes when the thread enters
+    asked: i64
+    defined: &list[i64] = heap([])
+    hover: &str = heap("")
+    assembly: &str = heap("") # written after what QBE writes: the files of @embed and the DWARF
+    system: &strview = ""
+    machine: &strview = ""
     choosing: bool
     debug: bool
     shared: bool
+    err: &strview = "error: " # in color when the errors go to a terminal
+    note: &strview = "note: "
+    warn: &strview = "warning: "
 
 extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
-    func _wfullpath(into: wstr, path: wstr, size: usize) -> wstr
+    func _wfullpath(into: wstr, path: wstr, size: i64) -> wstr
     func getpid() -> i32
-    func qbe_main(count: i32, args: **u8) -> i32
-    func flag_embedded(index: usize, name: **u8, size: *usize) -> *bytes
-    func flag_version() -> *u8
-    func flag_stamp() -> *u8
-    func flag_target() -> *u8
+    func qbe_main(count: i32, args: *cstr) -> i32
+    func flag_embedded(index: i64, name: *cstr, size: *i64) -> *bytes
+    func flag_version() -> cstr
+    func flag_stamp() -> cstr
+    func flag_target() -> cstr
+    func isatty(fd: i32) -> i32
 
 func main() -> i32:
-    output: &str
+    plain := env("NO_COLOR") ifnull ""
+    if isatty(2) != 0 and plain.len == 0:
+        comp.err = "\e[1;31merror:\e[0m "
+        comp.note = "\e[1;36mnote:\e[0m "
+        comp.warn = "\e[1;33mwarning:\e[0m "
+    output: &str = heap("")
     keep := false
     check := false
     memory := false
     overlay: &strview
     query: &strview|null = null
     target := view(flag_target())
-    inputs: &list[&strview]
-    rest: &list[&strview]
+    inputs: &list[&strview] = heap([])
+    rest: &list[&strview] = heap([])
     arguments := args()
     testing := arguments.len > 1 and arguments[1] == "test"
     running := arguments.len > 1 and arguments[1] == "run" or testing
-    program: &list[&strview]
-    seconds: i64 = 10
-    i := 1 + usize(running)
+    program: &list[&strview] = heap([])
+    seconds := 10
+    passing := false
+    i := 1 + i64(running)
     while i < arguments.len:
         a := arguments[i]
         if running and a == "--":
             append(program, arguments[i + 1:])
             break
-        if a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
+        if passing:
+            append(rest, a)
+        elif a == "-cc":
+            passing = true
+        elif a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
             i += 1
             if i == arguments.len:
-                eprint(ERR, a, " expects a value after it")
+                eprint(comp.err, a, " expects a value after it")
                 return 2
             if a == "-o":
                 output = arguments[i]
@@ -302,7 +327,7 @@ func main() -> i32:
             elif a == "-timeout":
                 seconds = parse_int(arguments[i]) ifnull 0
                 if seconds < 1 or seconds > 2000000:
-                    eprint(ERR, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
+                    eprint(comp.err, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
                     return 2
             else:
                 query = arguments[i]
@@ -323,51 +348,86 @@ func main() -> i32:
             append(inputs, a)
         elif is_dir(a):
             before := inputs.len
-            found := walk(a)
-            if found is &slice[&strview]:
+            found := walk_dir(a)
+            if found is &listview[&strview]:
                 for path in found:
                     if ends_with(path, ".flg"):
                         append(inputs, path)
             if inputs.len == before:
-                eprint(ERR, "the folder ", a, " has no .flg file to compile")
+                eprint(comp.err, "the folder ", a, " has no .flg file to compile")
                 return 2
+        elif a == "run" or a == "test":
+            line: &str = heap("flagc " + a)
+            for j in 1..arguments.len:
+                if j != i:
+                    line += " " + arguments[j]
+            eprint(comp.err, a, " has to be the first argument: ", line)
+            return 2
+        elif a == "--":
+            line: &str = heap("flagc run")
+            for b in arguments[1:]:
+                line += " " + b
+            eprint(comp.err, "-- passes what follows it to the program, so it goes after run or test: ", line)
+            return 2
+        elif starts_with(a, "-") or exists(a):
+            line: &str = heap("flagc")
+            moved := false
+            for j in 1..arguments.len:
+                b := arguments[j]
+                if j == i:
+                    continue
+                if not moved and b == "--":
+                    line += " -cc " + a
+                    moved = true
+                line += " " + b
+                if not moved and b == "-cc":
+                    line += " " + a
+                    moved = true
+            if not moved:
+                line += " -cc " + a
+            if starts_with(a, "-"):
+                eprint(comp.err, a, " is not an option of flagc, and an option of the C compiler goes after -cc: ", line)
+            else:
+                eprint(comp.err, a, " goes to the C compiler, after -cc: ", line)
+            return 2
         else:
-            append(rest, a)
+            eprint(comp.err, a, " is not an option of flagc, a .flg file or a folder")
+            return 2
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [anything else goes to cc] [-- arguments for run, or names for test]")
+        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-cc anything for the C compiler] [-- arguments for run, or names for test]")
         return 2
     if running and comp.shared:
-        eprint(ERR, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
+        eprint(comp.err, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
     if backend is null:
-        eprint(ERR, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
+        eprint(comp.err, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
-    texts: &map[&strview, &strview]
+    texts: &map[&strview, &strview] = heap({})
     if overlay.len > 0:
         given := read_file(overlay)
         if given is FsError:
-            eprint(ERR, given)
+            eprint(comp.err, given)
             return 1
         rest_of := view(given)
         while rest_of.len > 0:
             path_end := find(rest_of, "\n")
-            size_end: usize|null = null
+            size_end: i64|null = null
             size: i64|null = null
-            if path_end is usize:
+            if path_end is i64:
                 size_end = find(rest_of[path_end + 1:], "\n")
-            if path_end is usize and size_end is usize:
+            if path_end is i64 and size_end is i64:
                 size = parse_int(rest_of[path_end + 1:path_end + 1 + size_end])
-            if path_end is null or size_end is null or size is null or size < 0 or usize(size) > rest_of.len - path_end - size_end - 2:
-                eprint(ERR, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
+            if path_end is null or size_end is null or size is null or size < 0 or size > rest_of.len - path_end - size_end - 2:
+                eprint(comp.err, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
                 return 1
             from := path_end + size_end + 2
-            put(texts, real_path(rest_of[:path_end]), rest_of[from:from + usize(size)])
-            rest_of = rest_of[from + usize(size):]
+            put(texts, real_path(rest_of[:path_end]), rest_of[from:from + size])
+            rest_of = rest_of[from + size:]
     fleeting := running and output.len == 0
     suffix: &strview = ".out"
     if comp.system == "windows":
@@ -383,9 +443,9 @@ func main() -> i32:
         output += "/flag-run-" + getpid() + suffix
     elif output.len == 0:
         output = "a" + suffix
-    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 usize f32 f64 bytes [] {} IterationEnd never"
-    start: usize = 0
-    for k in 0..builtin.len + 1:
+    builtin: &strview = "void null bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bytes cstr wstr emptyarray emptyfixmap IterationEnd never bool8 bool16 bool32 bool64"
+    start := 0
+    for k in 0..=builtin.len:
         if k == builtin.len or items(builtin)[k] == ' ':
             id := comp.types.len
             t := Type{kind = Void, name = builtin[start:k], align = 1}
@@ -394,31 +454,35 @@ func main() -> i32:
                 t.size = 1
             elif id >= I8 and id <= I64:
                 t.kind = Int
-                t.size = usize(1) << (id - I8)
+                t.size = 1 << (id - I8)
             elif id >= U8 and id <= U64:
                 t.kind = Uint
-                t.size = usize(1) << (id - U8)
-            elif id == USIZE:
-                t.kind = Uint
-                t.size = 8
+                t.size = 1 << (id - U8)
             elif id >= F32 and id <= F64:
                 t.kind = Float
                 t.size = 4 * (id - F32 + 1)
             elif id == BYTES:
                 t.kind = Bytes
+            elif id == CSTR or id == WSTR:
+                t.kind = Ptr
+                t.size = 8
+                t.elem = U8 + id - CSTR # u8 or u16
+            elif id >= BOOL8:
+                t.kind = Bool
+                t.size = 1 << (id - BOOL8)
             if t.size > 0:
                 t.align = t.size
             add_type(t)
             start = k + 1
     nothing: Sym
     append(comp.syms, nothing)
-    lib: &str = dir_of(executable())
-    lib += "../lib/"
+    comp.library = dir_of(executable())
+    comp.library += "../lib/"
     here := current_dir() + "/"
-    if starts_with(view(lib), here):
-        lib = lib[here.len:]
-    if not exists(join_path(lib, "core.flg")):
-        root: &str = "/tmp"
+    if starts_with(view(comp.library), here):
+        comp.library = comp.library[here.len:]
+    if not exists(join_path(comp.library, "core.flg")):
+        root: &str = heap("/tmp")
         cache := env("XDG_CACHE_HOME")
         local := env("LOCALAPPDATA")
         home := env("HOME")
@@ -429,49 +493,89 @@ func main() -> i32:
         elif home is &strview and home.len > 0:
             root = home
             root += "/.cache"
-        lib = join_path(root, "flag/")
-        lib += view(flag_stamp()) + "/"
-        if not exists(join_path(lib, "core.flg")):
-            part: &str = lib[:-1]
+        comp.library = join_path(root, "flag/")
+        comp.library += view(flag_stamp()) + "/"
+        if not exists(join_path(comp.library, "core.flg")):
+            part: &str = heap(comp.library[:-1])
             part += ".part" + getpid()
             _ = make_dir(view(part))
-            name: *u8
-            size: usize = 0
+            name: cstr
+            size := 0
             data := flag_embedded(0, ptr(name), ptr(size))
-            k: usize = 0
-            while data as usize != 0:
+            k := 0
+            while data as u64 != 0:
                 file: &strview
                 file = data
                 file.len = size
                 _ = write_file(join_path(part, view(name)), file)
                 k += 1
                 data = flag_embedded(k, ptr(name), ptr(size))
-            _ = rename(view(part), lib[:-1])
-            _ = remove(view(part))
-        if not exists(join_path(lib, "core.flg")):
-            eprint(ERR, "cannot unpack the library into ", lib)
+            _ = rename_file(view(part), comp.library[:-1])
+            _ = remove_file(view(part))
+        if not exists(join_path(comp.library, "core.flg")):
+            eprint(comp.err, "cannot unpack the library into ", comp.library)
             return 1
-    core: &str = join_path(lib, "core.flg")
-    loaded: &list[&strview]
-    append(loaded, real_path(view(core)))
+    core: &str = heap(join_path(comp.library, "core.flg"))
+    loaded: &map[&strview, i64] = heap({}) # the files of the program by their real path, and core
+    put(loaded, real_path(view(core)), 0)
     if add_file(core, read_source(view(core), texts), true) is Fail:
         return 1
     for input in inputs:
-        real := real_path(input)
-        if not contains(loaded, real):
-            append(loaded, real)
-            path: &str = input
-            if add_file(path, read_source(input, texts), false) is Fail:
-                return 1
-    done: usize = 0
+        if load(input, loaded, texts) is Fail:
+            return 1
+    # the folders of the uses in quotes go before the library, whose modules give way to those of the program
+    done := 0
     while done < comp.uses.len:
         u := comp.uses[done]
         done += 1
+        if u.path.len == 0:
+            continue
+        if not is_dir(u.path):
+            if exists(join_path(comp.library, u.module + ".flg")):
+                _ = fail("there is no folder " + u.path + ", and the module " + u.module + " of the library is used without quotes: use " + u.module, u.at)
+            else:
+                _ = fail("there is no folder " + u.path + ", the path of a use is from the folder of its file", u.at)
+            return 1
+        again := false
+        for v in comp.uses[:done - 1]:
+            if v.path.len > 0 and v.module == u.module and real_path(v.path) != real_path(u.path):
+                _ = fail(v.path + " and " + u.path + " both hold module " + u.module + ", a program has one module of each name", u.at)
+                return 1
+            again = again or v.path.len > 0 and v.module == u.module
+        if again:
+            continue
+        found: &list[&strview] = heap([])
+        names := list_dir(u.path)
+        if names is &listview[&strview]:
+            for name in names:
+                if ends_with(name, ".flg"):
+                    append(found, join_path(u.path, name))
+        if found.len == 0:
+            _ = fail("the folder " + u.path + " has no .flg file to compile", u.at)
+            return 1
+        sort(found)
+        holds := false
+        for path in found:
+            k := load(path, loaded, texts)
+            if k is Fail:
+                return 1
+            holds = holds or comp.files[k].module == u.module
+        if not holds:
+            _ = fail(u.path + " has no file that says module " + u.module + ", the last folder of a use names its module", u.at)
+            return 1
+    done = 0
+    while done < comp.uses.len:
+        u := comp.uses[done]
+        done += 1
+        if u.path.len > 0:
+            continue
         known := false
+        path: &str = heap(join_path(comp.library, written(u.module) + ".flg"))
+        fresh := exists(view(path))
         for f in comp.files:
             known = known or f.module == u.module
-        path: &str = join_path(lib, u.module + ".flg")
-        if not known and not contains(loaded, real_path(view(path))) and exists(view(path)):
+            fresh = fresh and not (f.library and f.path == path)
+        if not known and fresh:
             if add_file(path, read_source(view(path), texts), true) is Fail:
                 return 1
             known = comp.files[-1].module == u.module
@@ -486,19 +590,19 @@ func main() -> i32:
             line = parse_int(parts[-2])
             column = parse_int(parts[-1])
         if line is null or column is null or line < 1 or column < 1:
-            eprint(ERR, "-at expects file:line:column but got ", query)
+            eprint(comp.err, "-at expects file:line:column but got ", query)
             return 2
         path := query[:query.len - parts[-2].len - parts[-1].len - 2]
         wanted := real_path(path)
-        f: usize = 0
+        f := 0
         while f < comp.files.len and real_path(view(comp.files[f].path)) != wanted:
             f += 1
         if f == comp.files.len:
-            eprint(ERR, "-at names ", path, ", which is not one of the files compiled")
+            eprint(comp.err, "-at names ", path, ", which is not one of the files compiled")
             return 2
         code := comp.files[f].code
-        first: usize = 0
-        row: i64 = 1
+        first := 0
+        row := 1
         while row < line and first < code.len:
             if items(code)[first] == '\n':
                 row += 1
@@ -507,12 +611,12 @@ func main() -> i32:
         while last < code.len and items(code)[last] != '\n':
             last += 1
         if row < line:
-            eprint(ERR, "-at ", query, " is past the end of the file, its last line is ", row)
+            eprint(comp.err, "-at ", query, " is past the end of the file, its last line is ", row)
             return 2
-        if first + usize(column) - 1 > last:
-            eprint(ERR, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
+        if first + column - 1 > last:
+            eprint(comp.err, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
             return 2
-        at := comp.files[f].start + first + usize(column) - 1
+        at := comp.files[f].start + first + column - 1
         for t in 0..comp.tokens.len:
             k := comp.tokens[t]
             if k.kind != Line and k.at <= at and at < k.at + k.text.len:
@@ -533,25 +637,25 @@ func main() -> i32:
         return 1
     if check:
         return 0
-    ssa: &str = view(output)
+    ssa: &str = heap(output)
     ssa += ".ssa"
-    asm: &str = view(output)
+    asm: &str = heap(output)
     asm += ".s"
     if write_file(view(ssa), listing()) is FsError:
-        eprint(ERR, "cannot write ", ssa)
+        eprint(comp.err, "cannot write ", ssa)
         return 1
-    args := array[*u8, 8]{"qbe", "-t", cstr(backend), "-o", asm, ssa, usize(0) as *u8, usize(0) as *u8}
+    args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm), c_text(ssa), 0 as cstr, 0 as cstr}
     if comp.debug:
         args[5] = "-g"
-        args[6] = ssa
-    if qbe_main(6 + i32(comp.debug), ptr(args) as **u8) != 0:
+        args[6] = c_text(ssa)
+    if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
         return 1
     if comp.debug:
         comp.assembly += dwarf()
     if append_file(view(asm), comp.assembly) is FsError:
-        eprint(ERR, "cannot write ", asm)
+        eprint(comp.err, "cannot write ", asm)
         return 1
-    cc: &list[&strview]
+    cc: &list[&strview] = heap([])
     compiler: &strview = "cc"
     given := env("CC")
     if given is &strview and given.len > 0:
@@ -561,26 +665,49 @@ func main() -> i32:
             append(cc, part)
     linking: &strview = ", flagc links with a C compiler and the CC variable chooses which"
     source := view(asm)
-    object: &str = view(output)
+    object: &str = heap(output)
     object += ".o"
     apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
     if apart:
-        assembling: &list[&strview]
+        assembling: &list[&strview] = heap([])
         append(assembling, cc)
         append(assembling, ptr(["-c", "-o", view(object), view(asm)]))
         if not ran(assembling, linking):
             return 1
         source = view(object)
-    link: &list[&strview]
+    link: &list[&strview] = heap([])
     append(link, cc)
     append(link, "-o")
     append(link, output)
     append(link, source)
-    append(link, "-L" + lib)
-    for input in inputs:
-        append(link, "-L" + dir_of(input))
+    folders: &list[&strview] = heap([]) # where the linker looks for a library, and flagc for a file that an extern names
+    append(folders, comp.library)
+    for f in comp.files:
+        if not f.library:
+            append(folders, dir_of(view(f.path)))
+    for f in folders:
+        append(link, "-L" + f)
+    for k, r in rest:
+        if starts_with(r, "-L") and r.len > 2:
+            append(folders, r[2:])
+        elif r == "-L" and k + 1 < rest.len:
+            append(folders, rest[k + 1])
     for l in comp.libs:
-        append(link, "-l" + l)
+        if ends_with(l, ".framework"):
+            append(link, ptr(["-framework", l[:-10]]))
+        elif not (ends_with(l, ".so") or contains(l, ".so.") or ends_with(l, ".a") or ends_with(l, ".dylib") or ends_with(l, ".dll")):
+            append(link, "-l" + l)
+        elif comp.system == "linux":
+            append(link, "-l:" + l) # the linker looks in its own folders too, where the libraries of the system are
+        else:
+            path := ""
+            for f in folders:
+                if path.len == 0 and exists(join_path(f, l)):
+                    path = join_path(f, l)
+            if path.len == 0:
+                eprint(comp.err, "cannot find ", l, " in the folders of -L: ", join(folders, ", "))
+                return 1
+            append(link, path)
     if comp.shared:
         append(link, "-shared")
     if comp.shared and comp.system == "linux":
@@ -592,10 +719,10 @@ func main() -> i32:
     if apart and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
-        _ = remove(view(ssa))
-        _ = remove(view(asm))
+        _ = remove_file(view(ssa))
+        _ = remove_file(view(asm))
         if apart:
-            _ = remove(view(object))
+            _ = remove_file(view(object))
     if not running:
         return 0
     me := view(output)
@@ -603,7 +730,7 @@ func main() -> i32:
         me = "./" + me
     code: i32|FsError = 0
     if testing:
-        chosen: &list[usize]
+        chosen: &list[i64] = heap([])
         for k in comp.tests:
             picked := program.len == 0
             for word in program:
@@ -611,33 +738,30 @@ func main() -> i32:
             if picked:
                 append(chosen, k)
         if chosen.len == 0:
-            words: &str
+            words: &str = heap("")
             for word in program:
                 if words.len > 0:
                     words += " or "
                 words += word
-            eprint(ERR, "no test has ", words, " in its name")
+            eprint(comp.err, "no test has ", words, " in its name")
             code = 2
-        commands: &list[&list[&strview]]
-        codes: &list[i32|FsError]
-        said: &list[&str]
-        for j, k in chosen:
-            command: &list[&strview]
-            append(command, ptr([me, test_name(k), "" + seconds]))
-            append(commands, command)
+        commands: &list[&list[&strview]] = heap([])
+        codes: &list[i32|FsError] = heap([])
+        said: &list[&str] = heap([])
+        for k in chosen:
+            append(commands, heap([me, test_name(k), "" + seconds]))
             append(codes, 0)
-            none: &str
-            append(said, none)
-        queue: Channel[usize, 64]
-        workers: &list[Thread[null]]
+            append(said, heap(""))
+        queue: Channel[i64, 64]
+        workers: &list[Thread[null]] = heap([])
         while workers.len < cores() and workers.len < chosen.len:
             append(workers, parallel run_tests(ptr(queue), commands, codes, said))
         for j in 0..chosen.len:
             send(ptr(queue), j)
         close(ptr(queue))
         for w in workers:
-            wait w
-        failures: usize = 0
+            wait(w)
+        failures := 0
         for j, k in chosen:
             ended := codes[j]
             if ended is i32 and ended == 0:
@@ -660,60 +784,68 @@ func main() -> i32:
         insert(program, 0, me)
         code = run(program)
     if fleeting:
-        _ = remove(view(output))
+        _ = remove_file(view(output))
     if code is FsError:
-        eprint(ERR, code)
+        eprint(comp.err, code)
         return 1
     return code
 
 # each test reads the end of its input and writes to a pipe, the output and the errors in the order it wrote them
-func run_tests(queue: *Channel[usize, 64], commands: &slice[&list[&strview]], codes: &slice[i32|FsError], said: &slice[&str]):
+func run_tests(queue: *Channel[i64, 64], commands: &listview[&list[&strview]], codes: &listview[i32|FsError], said: &listview[&str]):
     for j in queue:
         p := start(commands[j])
         if p is FsError:
             codes[j] = p
             continue
         close(p.input)
-        got: usize = 1
+        got := 1
         while got > 0:
             got = read(p.output, ptr(said[j]), 65536) iferror 0
         close(p.output)
-        codes[j] = wait p
+        codes[j] = wait(p)
 
-func ran(command: &slice[&strview], why: &strview) -> bool:
+func ran(command: &listview[&strview], why: &strview) -> bool:
     code := run(command)
     if code is FsError:
-        eprint(ERR, code, why)
+        eprint(comp.err, code, why)
         return false
     return code == 0
 
 func real_path(path: &strview) -> &strview where not @windows():
-    found := realpath(cstr(path), usize(0) as *u8)
-    if found as usize == 0:
+    found := realpath(cstr(path), 0 as *u8)
+    if found as u64 == 0:
         return path
     return view(found)
 
 func real_path(path: &strview) -> &strview where @windows():
-    found := _wfullpath(usize(0) as wstr, wstr(path), 0)
-    if found as usize == 0:
+    found := _wfullpath(0 as wstr, wstr(path), 0)
+    if found as u64 == 0:
         return path
-    kept: &str = temp(found)
-    return kept
+    return heap(tmp(found))
+
+# a file of the program, loaded once, and its place among the files
+func load(path: &strview, loaded: &map[&strview, i64], texts: &map[&strview, &strview]) -> i64|Fail:
+    real := real_path(path)
+    known := loaded[real]
+    if known is i64:
+        return known
+    put(loaded, real, comp.files.len)
+    try add_file(heap(path), read_source(path, texts), false)
+    return comp.files.len - 1
 
 func read_source(path: &strview, texts: &map[&strview, &strview]) -> &str|FsError:
     code := texts[real_path(path)] ifnull view(try read_file(path))
     if starts_with(code, "\xef\xbb\xbf"):
         code = code[3:]
-    out: &str = code
-    return out
+    return heap(code)
 
 func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
     if code is &str:
-        start: usize = 0
+        start := 0
         if comp.files.len > 0:
             last := comp.files[-1]
             start = last.start + last.code.len + 1
-        own: &str
+        own: &str = heap("")
         for b in items(base_name(view(path))):
             if is_letter(b) or is_digit(b) or b == '.':
                 add_byte(own, b)
@@ -723,32 +855,34 @@ func add_file(path: &str, code: &str|FsError, library: bool) -> Fail?:
             if f.module == view(own):
                 own += "." + comp.files.len
         append(comp.files, Source{path, code, start, view(own), library})
+        comp.pos = comp.tokens.len # a file loaded for an error comes in the middle of the checks
+        comp.depth = 0
         try lex(comp.files.len - 1)
         return parse()
-    eprint(ERR, code)
+    eprint(comp.err, code)
     return Fail
 
-func fail(message: &strview, at: usize) -> Fail:
-    eprint(ERR, message)
+func fail(message: &strview, at: i64) -> Fail:
+    eprint(comp.err, message)
     show(at)
     return Fail
 
-func note(message: &strview, at: usize):
-    eprint(NOTE, message)
+func note(message: &strview, at: i64):
+    eprint(comp.note, message)
     show(at)
 
-func show(at: usize):
+func show(at: i64):
     blamed := comp.blame
     comp.blame = 0
     if blamed != 0 and comp.insts[comp.inst].library and blamed != at:
         show(blamed)
-        eprint(NOTE, "it fails here, inside ", text(comp.insts[comp.inst].node), ", with ", made(comp.inst))
+        eprint(comp.note, "it fails here, inside ", text(comp.insts[comp.inst].node), ", with ", made(comp.inst))
     f := comp.files[file_of(at)]
     bytes := items(f.code)
     local := at - f.start
     first := line_start(at) - f.start
-    line: &str
-    pad: &str
+    line: &str = heap("")
+    pad: &str = heap("")
     i := first
     while i < f.code.len and bytes[i] != '\n':
         b := bytes[i]
@@ -768,14 +902,14 @@ func show(at: usize):
     if blamed != 0 and not comp.insts[comp.inst].library:
         note("the " + text(comp.insts[comp.inst].node) + " that fails was made for this call, with " + made(comp.inst), blamed)
 
-func location(at: usize) -> &str:
+func location(at: i64) -> &str:
     f := comp.files[file_of(at)]
-    out: &str
+    out: &str = heap("")
     out += f.path + ":" + line_of(at) + ":" + (at - line_start(at) + 1)
     return out
 
-func token_at(at: usize) -> usize:
-    low: usize = 0
+func token_at(at: i64) -> i64:
+    low := 0
     high := comp.tokens.len
     while high - low > 1:
         middle := (low + high) / 2
@@ -785,10 +919,10 @@ func token_at(at: usize) -> usize:
             high = middle
     return low
 
-func line_of(at: usize) -> usize:
+func line_of(at: i64) -> i64:
     f := comp.files[file_of(at)]
     low := token_at(at)
-    line: usize = 1
+    line := 1
     from := f.start
     if comp.tokens[low].at >= f.start and comp.tokens[low].at <= at:
         line = comp.tokens[low].line
@@ -798,23 +932,36 @@ func line_of(at: usize) -> usize:
             line += 1
     return line
 
-func line_start(at: usize) -> usize:
+func line_start(at: i64) -> i64:
     f := comp.files[file_of(at)]
     while at > f.start and items(f.code)[at - f.start - 1] != '\n':
         at -= 1
     return at
 
-func header(tok: usize) -> &strview:
+func header(tok: i64) -> &strview:
     first := tok
     while comp.tokens[first - 1].kind != Line:
         first -= 1
     last := tok
     while comp.tokens[last + 1].kind != Line:
         last += 1
-    f := comp.files[file_of(comp.tokens[tok].at)]
+    return excerpt(first, last)
+
+func excerpt(first: i64, last: i64) -> &strview:
+    f := comp.files[file_of(comp.tokens[first].at)]
     return f.code[comp.tokens[first].at - f.start:comp.tokens[last].at + comp.tokens[last].text.len - f.start]
 
-func mark(tok: usize, hover: &strview = ""):
+# how many brackets the tokens from first to last open, less the ones they close
+func unclosed(first: i64, last: i64) -> i64:
+    open := 0
+    for t in comp.tokens[first:last + 1]:
+        if t.kind == Symbol and (t.text == "(" or t.text == "[" or t.text == "{"):
+            open += 1
+        elif t.kind == Symbol and (t.text == ")" or t.text == "]" or t.text == "}"):
+            open -= 1
+    return open
+
+func mark(tok: i64, hover: &strview = ""):
     for d in comp.defined:
         if d == tok:
             return
@@ -825,25 +972,34 @@ func mark(tok: usize, hover: &strview = ""):
         hover = header(tok)
     comp.hover += hover
 
-func node_end(n: usize) -> usize:
+func node_end(n: i64) -> i64:
     return n + comp.nodes[n].size
 
-func kid(n: usize, k: usize) -> usize:
+func kid(n: i64, k: i64) -> i64:
     c := n + 1
     for i in 0..k:
         c += comp.nodes[c].size
     return c
 
-func kids(n: usize) -> usize:
-    count: usize = 0
+func kids(n: i64) -> i64:
+    count := 0
     c := n + 1
     while c < node_end(n):
         count += 1
         c += comp.nodes[c].size
     return count
 
-func body(f: usize) -> usize:
-    last: usize = 0
+# the function of C that a func of an extern block calls: its name, or the symbol after =
+func linked(f: i64) -> &strview:
+    c := kid(f, params(f))
+    while c < node_end(f) and comp.nodes[c].kind != Literal:
+        c = node_end(c)
+    if c == node_end(f):
+        return text(f)
+    return text(c)[1:text(c).len - 1]
+
+func body(f: i64) -> i64:
+    last := 0
     c := f + 1
     while c < node_end(f):
         last = c
@@ -852,5 +1008,5 @@ func body(f: usize) -> usize:
         return last
     return 0
 
-func text(n: usize) -> &strview:
+func text(n: i64) -> &strview:
     return comp.tokens[comp.nodes[n].tok].text

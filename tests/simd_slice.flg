@@ -1,0 +1,23 @@
+# a simd reads as many elements of a list or an array, with the operator = of core, and goes back into them
+func main():
+    values: &list[f32] = heap([])
+    for i in 0..12:
+        append(values, f32(i))
+    four: simd[f32, 4] = values[0:4]
+    eight: simd[f32, 8] = values[4:12]
+    print(four, " ", eight, " ", simd[f32, 4](values[8:12]), " ", simd[f32, 8](values[0:8]))
+    four = values[1:5]
+    print(four)
+    values[0:4] = four * 10.0
+    values[4:12] = eight + 0.5
+    print(values)
+    numbers: array[i32, 16]
+    numbers[0:8] = simd[i32, 8](7)
+    numbers[8:12] = simd[i32, 4](-1)
+    wide: simd[i32, 8] = numbers[4:12]
+    print(numbers, " ", wide)
+    bytes: array[u8, 32]
+    for i in 0..32:
+        bytes[i] = u8(i)
+    print(sum(simd[u8, 32](bytes[:])), " ", simd[u8, 16](bytes[16:]))
+    free(values)

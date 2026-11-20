@@ -1,43 +1,41 @@
 extern "c":
-    func malloc(size: usize) -> *bytes
-    func calloc(count: usize, size: usize) -> *bytes
-    func realloc(at: *bytes, size: usize) -> *bytes
+    func malloc(size: i64) -> *bytes
+    func calloc(count: i64, size: i64) -> *bytes
+    func realloc(at: *bytes, size: i64) -> *bytes
     func free(at: *bytes)
-    func memcpy(to: *bytes, from: *bytes, size: usize) -> *bytes
-    func memmove(to: *bytes, from: *bytes, size: usize) -> *bytes
-    func memset(to: *bytes, byte: i32, size: usize) -> *bytes
-    func memcmp(a: *bytes, b: *bytes, size: usize) -> i32
-    func memchr(at: *bytes, byte: i32, size: usize) -> *bytes
-    func strlen(s: cstr) -> usize
-    func exit(code: i32) -> never
-    func snprintf(into: *u8, size: usize, format: cstr, ...) -> i32
+    func memcpy(to: *bytes, from: *bytes, size: i64) -> *bytes
+    func memmove(to: *bytes, from: *bytes, size: i64) -> *bytes
+    func memset(to: *bytes, byte: i32, size: i64) -> *bytes
+    func memcmp(a: *bytes, b: *bytes, size: i64) -> i32
+    func memchr(at: *bytes, byte: i32, size: i64) -> *bytes
+    func strlen(s: cstr) -> i64
+    func snprintf(into: *u8, size: i64, format: cstr, ...) -> i32
     func strtod(text: cstr, end: *bytes) -> f64
 
 priv extern "c":
-    func stamp(variables: bool) = "flag.stamp"
-    func read(fd: i32, at: *bytes, size: usize) -> i32
-    func write(fd: i32, at: *bytes, size: usize) -> i32
-    func open(path: cstr, flags: i32, ...) -> i32
+    func read(fd: i32, at: *bytes, size: i64) -> i32
+    func write(fd: i32, at: *bytes, size: i64) -> i32
     func close(fd: i32) -> i32
     func isatty(fd: i32) -> i32
-    func poll(fds: *bytes, count: u64, timeout: i32) -> i32
-    func send(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
-    func recv(fd: i64, at: *bytes, size: usize, flags: i32) -> i32
+    func poll(fds: *bytes, count: i64, timeout: i32) -> i32
+    func send(fd: i64, at: *bytes, size: i64, flags: i32) -> i32
+    func recv(fd: i64, at: *bytes, size: i64, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
     func atexit(callback: *bytes) -> i32
+    func quit(code: i32) -> never = "exit"
     func _exit(code: i32) -> never
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
     func __errno_location() -> *i32
     func __error() -> *i32
     func _errno() -> *i32
-    func _wopen(path: wstr, flags: i32, ...) -> i32
     func FormatMessageW(flags: u32, source: *bytes, code: u32, language: u32, into: wstr, size: u32, arguments: *bytes) -> u32
-    func pthread_create(thread: *usize, attributes: *bytes, run: *bytes, argument: *bytes) -> i32
-    func pthread_join(thread: usize, result: *bytes) -> i32
-    func pthread_detach(thread: usize) -> i32
+    func pthread_create(thread: *u64, attributes: *bytes, run: *bytes, argument: *bytes) -> i32
+    func pthread_join(thread: u64, result: *bytes) -> i32
+    func pthread_detach(thread: u64) -> i32
+    func pthread_self() -> u64
     func pthread_attr_init(attributes: *bytes) -> i32
-    func pthread_attr_setstacksize(attributes: *bytes, size: usize) -> i32
+    func pthread_attr_setstacksize(attributes: *bytes, size: i64) -> i32
     func pthread_attr_destroy(attributes: *bytes) -> i32
     func pthread_mutex_lock(mutex: *bytes) -> i32
     func pthread_mutex_trylock(mutex: *bytes) -> i32
@@ -46,49 +44,105 @@ priv extern "c":
     func pthread_cond_broadcast(condition: *bytes) -> i32
     func os_unfair_lock_lock(lock: *u32)
     func os_unfair_lock_unlock(lock: *u32)
-    func sysconf(name: i32) -> i64
-    func CreateThread(attributes: *bytes, stack: usize, run: *bytes, argument: *bytes, flags: u32, id: *u32) -> usize
-    func WaitForSingleObject(handle: usize, milliseconds: u32) -> u32
-    func CloseHandle(handle: usize) -> i32
+    func CreateThread(attributes: *bytes, stack: i64, run: *bytes, argument: *bytes, flags: u32, id: *u32) -> u64
+    func GetCurrentThreadId() -> u32
+    func WaitForSingleObject(handle: u64, milliseconds: u32) -> u32
+    func CloseHandle(handle: u64) -> i32
     func AcquireSRWLockExclusive(lock: *bytes)
     func TryAcquireSRWLockExclusive(lock: *bytes) -> u8
     func ReleaseSRWLockExclusive(lock: *bytes)
     func SleepConditionVariableSRW(condition: *bytes, lock: *bytes, milliseconds: u32, flags: u32) -> i32
     func WakeAllConditionVariable(condition: *bytes)
-    func GetActiveProcessorCount(group: u16) -> u32
     func sigaction(signal: i32, action: *bytes, old: *bytes) -> i32
     func sigaltstack(stack: *bytes, old: *bytes) -> i32
+    func signal(number: i32, handler: *bytes) -> *bytes
     func AddVectoredExceptionHandler(first: u32, handler: *bytes) -> *bytes
     func SetThreadStackGuarantee(size: *u32) -> i32
-    func flag_frame() -> usize
-    func flag_functions() -> *usize
-    func flag_tests() -> *usize
+    func flag_frame() -> u64
+    func flag_functions() -> *u64
+    func flag_tests() -> *i64
     func dup2(from: i32, to: i32) -> i32
     func alarm(seconds: u32) -> u32
-    func GetCurrentProcess() -> usize
-    func GetCurrentThread() -> usize
-    func DuplicateHandle(process: usize, handle: usize, into_process: usize, into: *usize, access: u32, inherit: i32, options: u32) -> i32
-    func CreateTimerQueueTimer(timer: *usize, queue: usize, callback: *bytes, parameter: *bytes, due: u32, period: u32, flags: u32) -> i32
-    func SuspendThread(thread: usize) -> u32
-    func GetThreadContext(thread: usize, context: *bytes) -> i32
-    func _get_osfhandle(fd: i32) -> usize
-    func GetFileType(file: usize) -> u32
-    func PeekNamedPipe(pipe: usize, into: *bytes, size: u32, read: *u32, left: *u32, message: *u32) -> i32
+    func GetCurrentProcess() -> u64
+    func GetCurrentThread() -> u64
+    func DuplicateHandle(process: u64, handle: u64, into_process: u64, into: *u64, access: u32, inherit: i32, options: u32) -> i32
+    func CreateTimerQueueTimer(timer: *u64, queue: u64, callback: *bytes, parameter: *bytes, due: u32, period: u32, flags: u32) -> i32
+    func SuspendThread(thread: u64) -> u32
+    func GetThreadContext(thread: u64, context: *bytes) -> i32
+    func _get_osfhandle(fd: i32) -> u64
+    func GetFileType(file: u64) -> u32
+    func PeekNamedPipe(pipe: u64, into: *bytes, size: u32, read: *u32, left: *u32, message: *u32) -> i32
     func GetTickCount64() -> u64
     func Sleep(milliseconds: u32)
 
 extern "pthread" where @linux():
+
+priv extern "c" where @linux():
+    func pthread_key_create(key: *u32, destructor: *bytes) -> i32
+    func set_key(key: u32, value: *bytes) -> i32 = "pthread_setspecific"
+    func drop_key(key: u32) -> i32 = "pthread_key_delete"
+
+priv extern "c" where @windows():
+    func FlsAlloc(callback: *bytes) -> u32
+    func set_key(index: u32, value: *bytes) -> i32 = "FlsSetValue"
+    func drop_key(index: u32) -> i32 = "FlsFree"
+
+priv extern "c" where @macos():
+    func _tlv_atexit(callback: *bytes, argument: *bytes)
 
 priv extern "ws2_32" where @windows():
     func WSAGetLastError() -> i32
     func closesocket(fd: i64) -> i32
     func WSAPoll(fds: *bytes, count: u32, timeout: i32) -> i32
 
-type Integer = i8|i16|i32|i64|u8|u16|u32|u64|usize
+type Integer = i8|i16|i32|i64|u8|u16|u32|u64
+
+func min(a: $T, b: $T) -> $T:
+    if b < a:
+        return b
+    return a
+
+func max(a: $T, b: $T) -> $T:
+    if a < b:
+        return b
+    return a
+
+func clamp(x: $T, low: $T, high: $T) -> $T:
+    return min(max(x, low), high)
+
+func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
+    return min(max(x, low), high)
+
+# the lanes of a simd from as many elements, v: simd[f32, 4] = values[i:i + 4]
+operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n]:
+    if src.len != $$n:
+        panic("a simd of " + $$n + " lanes expects a slice of " + $$n + ", this one has " + src.len, place = place)
+    return (ptr(src[0]) as *simd[$T, $$n]).*
+
+func abs(x: $T) -> $T where $T is i8|i16|i32|i64:
+    if x < 0:
+        return 0 - x
+    return x
+
+func abs(x: $T) -> $T where $T is f32:
+    return (x as u32 and 0x7fff_ffff) as f32
+
+func abs(x: $T) -> $T where $T is f64:
+    return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
+
+func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
+    if t == 0.0:
+        return a
+    if t == 1.0:
+        return b
+    d := b - a
+    if d - d != 0.0: # the distance is too far for the float
+        return a * (1.0 - t) + b * t
+    return a + d * t # a when b is a
 
 func heap(v: $T) -> *$T:
-    p := malloc(sizeof($T)) as *$T
-    if p as usize == 0:
+    p := malloc(@sizeof($T)) as *$T
+    if p as u64 == 0:
         out_of_memory()
     p.* = v
     return p
@@ -101,26 +155,26 @@ func panic(message: &strview, place: &strview = @here()) -> never:
     flush()
     report("flag: ")
     report(message)
-    report("\n  --> ")
-    report(place)
+    if place.len > 0:
+        report("\n  --> ")
+        report(place)
     report("\n")
     frame := flag_frame()
     trace(Crash{frame, 0, frame, 0, 0})
+    hook := failure.hook
+    if hook as u64 != 0:
+        hook(message, place)
     exit(134)
 
-func assert(condition: bool, message: &strview = "assertion failed", place: &strview = @here()):
-    if not condition:
-        panic(message, place)
-
-type cstr = *u8
+# the function that runs when the program stops with 134, after the message and the chain of calls: a new one replaces the last
+func on_panic(hook: func(&strview, &strview)):
+    failure.hook = hook
 
 func cstr(text: &strview) -> cstr:
-    return ptr(temp(text).*) as *u8
-
-type wstr = *u16
+    return ptr(tmp(text).*) as cstr
 
 func wstr(text: &strview) -> wstr:
-    out := temp(text.len * 2 + 2) as *u16
+    out := tmp(text.len * 2 + 2) as *u16
     at := out
     for c in text:
         code := u32(c[0])
@@ -132,33 +186,35 @@ func wstr(text: &strview) -> wstr:
             code = 0xfffd # a byte that is not UTF-8
         if code >= 0x10000:
             at.* = u16(0xd800 + (code - 0x10000 >> 10))
-            at = (at as usize + 2) as *u16
+            at = (at as *bytes + 2) as *u16
             code = 0xdc00 or code and 0x3ff
         at.* = u16(code)
-        at = (at as usize + 2) as *u16
+        at = (at as *bytes + 2) as *u16
     at.* = 0
-    return out
+    return out as wstr
 
-func temp(w: wstr) -> &strview:
-    out: &str
+func tmp(w: wstr) -> &strview:
+    if w as u64 == 0:
+        return ""
+    out: &str = heap("")
     defer free(out)
-    at := w
+    at := w as *u16
     while at.* != 0:
         code := u32(at.*)
-        at = (at as usize + 2) as *u16
+        at = (at as *bytes + 2) as *u16
         if code >= 0xd800 and code < 0xdc00 and at.* >= 0xdc00 and at.* < 0xe000:
             code = 0x10000 + (code - 0xd800 << 10) + u32(at.*) - 0xdc00
-            at = (at as usize + 2) as *u16
+            at = (at as *bytes + 2) as *u16
         elif code >= 0xd800 and code < 0xe000:
             code = 0xfffd # half of a pair, alone
         add_char(out, code)
-    return temp(out)
+    return tmp(out)
 
 func windows_errno(code: u32) -> i32:
     switch code:
-    case 2, 3, 15, 18, 53, 67, 161, 206:
-        return 2 # ENOENT
-    case 5, 16, 19..37, 65, 82, 83, 108, 132, 158, 167:
+    case 2, 3, 15, 18, 53, 67, 161, 206, 267:
+        return 2 # ENOENT, and 267 is the folder that CreateProcessW cannot find
+    case 5, 16, 19..=36, 65, 82, 83, 108, 132, 158, 167:
         return 13 # EACCES
     case 1, 12, 13, 87, 124, 131:
         return 22 # EINVAL
@@ -168,7 +224,7 @@ func windows_errno(code: u32) -> i32:
         return 9 # EBADF
     case 80, 183:
         return 17 # EEXIST
-    case 11, 188..203:
+    case 11, 188..=202:
         return 8 # ENOEXEC
     case 89, 164, 215:
         return 11 # EAGAIN
@@ -195,43 +251,38 @@ priv MOST = 0x7fff_ffff_ffff_ffff # the most bytes C allocates at once, PTRDIFF_
 
 func out_of_memory() -> never:
     tell(9)
-    message: &strview = "flag: out of memory\n"
-    write(2, ptr(message.*), message.len)
-    exit(9)
+    drain()
+    report("flag: out of memory\n")
+    _exit(9)
 
-func out_of_bounds(i: $I, len: usize, place: &strview = @here()) -> never where $I is Integer:
-    panic("index " + i + " is out of bounds, length " + len, place)
+func out_of_bounds(i: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
+    panic("index " + i + " is out of bounds, length " + len, place = place)
 
-func out_of_bounds(from: $I, to: $I, len: usize, place: &strview = @here()) -> never where $I is Integer:
-    panic("slice " + from + ":" + to + " is out of bounds, length " + len, place)
+func out_of_bounds(from: $I, to: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
+    panic("slice " + from + ":" + to + " is out of bounds, length " + len, place = place)
 
-func natural(i: $I, len: usize) -> usize where $I is Integer:
-    if i < 0:
-        return len + usize(i) # wraps into the length, or stays past it
-    return usize(i)
+type fatptr listview[$T]:
+    len: i64
 
-type fatptr slice[$T]:
-    len: usize
-
-func slice(s: &slice[$T], from: $I, to: $I, place: &strview = @here()) -> &slice[$T] where $I is Integer:
-    first := natural(from, s.len)
-    last := natural(to, s.len)
-    if first > last or last > s.len:
-        out_of_bounds(from, to, s.len, place)
-    out: &slice[$T]
-    out = (ptr(s.*) as usize + first * sizeof($T)) as *bytes
-    out.len = last - first
+operator [:](s: &listview[$T], from: $I, to: $I, place: &strview = @here()) -> &listview[$T] where $I is Integer:
+    first := u64(from) # a negative is past every length
+    last := u64(to)
+    if first > last or last > u64(s.len):
+        out_of_bounds(from, to, s.len, place = place)
+    out: &listview[$T]
+    out = ptr(s.*) + first * @sizeof($T)
+    out.len = i64(last - first)
     return out
 
 priv type Walk[$T]:
     base: *bytes
-    len: usize
-    i: usize
+    len: i64
+    i: i64
 
-func next(w: *Walk[$T]) -> $T|IterationEnd:
+operator next(w: *Walk[$T]) -> $T|IterationEnd:
     if w.i >= w.len:
         return IterationEnd
-    p := (w.base as usize + w.i * sizeof($T)) as *$T
+    p := (w.base + w.i * @sizeof($T)) as *$T
     w.i += 1
     return p.*
 
@@ -242,41 +293,45 @@ operator ==(a: *array[$T, $$n], b: *array[$T, $$n]) -> bool:
     return true
 
 type fatptr list[$T]:
-    len: usize
-    cap: usize
+    len: i64
+    cap: i64
     arena: *Arena
 
-func reserve(l: *&list[$T], want: usize):
+func reserve(l: *&list[$T], want: i64):
+    if want < 0:
+        out_of_memory()
     if want <= l.cap:
         return
     cap := doubled(l.cap, want, 8)
-    bytes := cap * sizeof($T)
-    if bytes / cap != sizeof($T) or bytes > MOST:
+    bytes := cap * @sizeof($T)
+    if bytes / cap != @sizeof($T):
         out_of_memory()
-    grown := resize(l.arena, ptr(l.*.*), l.cap * sizeof($T), bytes)
-    if grown as usize == 0 and bytes > 0:
+    grown := resize(l.arena, ptr(l.*.*), l.cap * @sizeof($T), bytes, NO_LIST)
+    if grown as u64 == 0 and bytes > 0:
         out_of_memory()
     l.* = grown
     l.cap = cap
 
 # a new block and a copy: -memory reads resize as a move, and here the old block stays when there is no memory
-func try_reserve(l: *&list[$T], want: usize) -> NoMemory?:
+func try_reserve(l: *&list[$T], want: i64) -> NoMemory?:
+    if want < 0:
+        return NoMemory
     if want <= l.cap:
         return null
     cap := doubled(l.cap, want, 8)
-    bytes := cap * sizeof($T)
-    if bytes / cap != sizeof($T) or bytes > MOST:
+    bytes := cap * @sizeof($T)
+    if bytes / cap != @sizeof($T):
         return NoMemory
-    grown := resize(l.arena, usize(0) as *bytes, 0, bytes)
-    if grown as usize == 0 and bytes > 0:
+    grown := resize(l.arena, 0 as *bytes, 0, bytes, NO_LIST)
+    if grown as u64 == 0 and bytes > 0:
         return NoMemory
-    memcpy(grown, ptr(l.*.*), l.len * sizeof($T))
+    memcpy(grown, ptr(l.*.*), l.len * @sizeof($T))
     discard(l.arena, ptr(l.*.*))
     l.* = grown
     l.cap = cap
     return null
 
-priv func doubled(cap: usize, want: usize, least: usize) -> usize:
+priv func doubled(cap: i64, want: i64, least: i64) -> i64:
     more := cap * 2
     if more < want:
         more = want
@@ -287,62 +342,67 @@ priv func doubled(cap: usize, want: usize, least: usize) -> usize:
 func append(l: *&list[$T], v: $T):
     if l.len == l.cap:
         reserve(l, l.len + 1)
-    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    p := (ptr(l.*.*) + l.len * @sizeof($T)) as *$T
     p.* = v
     l.len += 1
 
-func append(l: *&list[$T], items: &slice[$T]):
-    if ptr(items.*) as usize - ptr(l.*.*) as usize < l.cap * sizeof($T):
+func append(l: *&list[$T], items: &listview[$T]):
+    if u64(ptr(items.*) - ptr(l.*.*)) < u64(l.cap * @sizeof($T)): # a negative is past every length
         with scratch():
-            append(l, temp(items))
+            append(l, tmp(items))
         return
     reserve(l, l.len + items.len)
-    memcpy((ptr(l.*.*) as usize + l.len * sizeof($T)) as *bytes, ptr(items.*), items.len * sizeof($T))
+    memcpy(ptr(l.*.*) + l.len * @sizeof($T), ptr(items.*), items.len * @sizeof($T))
     l.len += items.len
+
+operator =(l: *&list[$T], items: &listview[$T]) -> &list[$T]:
+    clear(l)
+    append(l, items)
+    return l.*
 
 func pop(l: *&list[$T]) -> $T|null:
     if l.len == 0:
         return null
     l.len -= 1
-    p := (ptr(l.*.*) as usize + l.len * sizeof($T)) as *$T
+    p := (ptr(l.*.*) + l.len * @sizeof($T)) as *$T
     return p.*
 
 func insert(l: *&list[$T], at: $I, v: $T, place: &strview = @here()) where $I is Integer:
-    n := natural(at, l.len)
-    if n > l.len:
-        out_of_bounds(at, l.len, place)
+    n := i64(at)
+    if u64(n) > u64(l.len): # a negative is past every length
+        out_of_bounds(at, l.len, place = place)
     append(l, v)
-    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
-    memmove((first as usize + sizeof($T)) as *bytes, first, (l.len - 1 - n) * sizeof($T))
+    first := ptr(l.*.*) + n * @sizeof($T)
+    memmove(first + @sizeof($T), first, (l.len - 1 - n) * @sizeof($T))
     l[n] = v
 
 func remove(l: *&list[$T], at: $I, place: &strview = @here()) -> $T where $I is Integer:
-    n := natural(at, l.len)
-    if n >= l.len:
-        out_of_bounds(at, l.len, place)
+    n := i64(at)
+    if u64(n) >= u64(l.len): # a negative is past every length
+        out_of_bounds(at, l.len, place = place)
     kept := l[n]
-    first := (ptr(l.*.*) as usize + n * sizeof($T)) as *bytes
-    memmove(first, (first as usize + sizeof($T)) as *bytes, (l.len - 1 - n) * sizeof($T))
+    first := ptr(l.*.*) + n * @sizeof($T)
+    memmove(first, first + @sizeof($T), (l.len - 1 - n) * @sizeof($T))
     l.len -= 1
     return kept
 
-func find(items: &slice[$T], v: $T) -> usize|null:
+func find(items: &listview[$T], v: $T) -> i64|null:
     for i in 0..items.len:
         if items[i] == v:
             return i
     return null
 
-func find(items: &slice[$T], fits: func($T) -> bool) -> usize|null:
+func find(items: &listview[$T], fits: func($T) -> bool) -> i64|null:
     for i in 0..items.len:
         if fits(items[i]):
             return i
     return null
 
-func contains(items: &slice[$T], v: $T) -> bool:
-    return find(items, v) is usize
+func contains(items: &listview[$T], v: $T) -> bool:
+    return find(items, v) is i64
 
-func binary_search(items: &slice[$T], v: $T) -> usize|null:
-    low: usize = 0
+func binary_search(items: &listview[$T], v: $T) -> i64|null:
+    low := 0
     high := items.len
     while low < high:
         middle := (low + high) / 2
@@ -354,7 +414,7 @@ func binary_search(items: &slice[$T], v: $T) -> usize|null:
             return middle
     return null
 
-operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
+operator ==(a: &listview[$T], b: &listview[$T]) -> bool:
     if a.len != b.len:
         return false
     for i in 0..a.len:
@@ -362,7 +422,7 @@ operator ==(a: &slice[$T], b: &slice[$T]) -> bool:
             return false
     return true
 
-func reverse(items: &slice[$T]):
+func flip(items: &listview[$T]):
     for i in 0..items.len / 2:
         swap(items, i, items.len - 1 - i)
 
@@ -371,29 +431,29 @@ func clear(l: *&list[$T]):
 
 func free(l: *&list[$T]):
     discard(l.arena, ptr(l.*.*))
-    l.* = usize(0) as *bytes
+    l.* = 0 as *bytes
     l.len = 0
     l.cap = 0
 
-func sort(s: &slice[$T]):
+func sort(s: &listview[$T]):
     before: func($T, $T) -> bool = less
     sort(s, before)
 
 priv func less(a: $T, b: $T) -> bool:
     return a < b
 
-func sort(s: &slice[$T], before: func($T, $T) -> bool):
+func sort(s: &listview[$T], before: func($T, $T) -> bool):
     if s.len < 2:
         return
-    spare: &slice[$T]
-    spare = malloc(s.len / 2 * sizeof($T))
-    if ptr(spare.*) as usize == 0:
+    spare: &listview[$T]
+    spare = malloc(s.len / 2 * @sizeof($T))
+    if ptr(spare.*) as u64 == 0:
         out_of_memory()
     spare.len = s.len / 2
     merge_sort(s, spare, before)
     free(ptr(spare.*))
 
-priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> bool):
+priv func merge_sort(s: &listview[$T], spare: &listview[$T], before: func($T, $T) -> bool):
     if s.len <= 16:
         for i in 1..s.len:
             v := s[i]
@@ -408,10 +468,10 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
     merge_sort(s[half:], spare, before)
     if not before(s[half], s[half - 1]):
         return
-    memcpy(ptr(spare.*), ptr(s.*), half * sizeof($T))
-    i: usize = 0
+    memcpy(ptr(spare.*), ptr(s.*), half * @sizeof($T))
+    i := 0
     j := half
-    k: usize = 0
+    k := 0
     while i < half:
         if j < s.len and before(s[j], spare[i]):
             s[k] = s[j]
@@ -421,23 +481,21 @@ priv func merge_sort(s: &slice[$T], spare: &slice[$T], before: func($T, $T) -> b
             i += 1
         k += 1
 
-func swap(s: &slice[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
-    a := natural(i, s.len)
-    b := natural(j, s.len)
-    if a >= s.len:
-        out_of_bounds(i, s.len, place)
-    if b >= s.len:
-        out_of_bounds(j, s.len, place)
-    kept := s[a]
-    s[a] = s[b]
-    s[b] = kept
+func swap(s: &listview[$T], i: $I, j: $I, place: &strview = @here()) where $I is Integer:
+    if u64(i) >= u64(s.len): # a negative is past every length
+        out_of_bounds(i, s.len, place = place)
+    if u64(j) >= u64(s.len):
+        out_of_bounds(j, s.len, place = place)
+    kept := s[i]
+    s[i] = s[j]
+    s[j] = kept
 
 type fatptr strview:
-    len: usize
+    len: i64
 
 type fatptr str:
-    len: usize
-    cap: usize
+    len: i64
+    cap: i64
     arena: *Arena
 
 func view(s: &str) -> &strview:
@@ -448,53 +506,60 @@ func view(s: &str) -> &strview:
 
 func view(c: cstr) -> &strview:
     out: &strview
-    if c as usize != 0:
-        out = c
+    if c as u64 != 0:
+        out = c as *u8
         out.len = strlen(c)
     return out
 
-func view(bytes: &slice[u8]) -> &strview:
+operator +=(s: *&str, c: cstr):
+    s.* += view(c)
+
+operator +=(s: *&str, w: wstr):
+    with scratch():
+        s.* += tmp(w)
+
+func view(bytes: &listview[u8]) -> &strview:
     out: &strview
     out = ptr(bytes.*)
     out.len = bytes.len
     return out
 
-func items(s: &strview) -> &slice[u8]:
-    out: &slice[u8]
+func items(s: &strview) -> &listview[u8]:
+    out: &listview[u8]
     out = ptr(s.*)
     out.len = s.len
     return out
 
-func slice(v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
-    first := natural(from, v.len)
-    last := natural(to, v.len)
-    if first > last or last > v.len:
-        out_of_bounds(from, to, v.len, place)
+operator [:](v: &strview, from: $I, to: $I, place: &strview = @here()) -> &strview where $I is Integer:
+    first := u64(from) # a negative is past every length
+    last := u64(to)
+    if first > last or last > u64(v.len):
+        out_of_bounds(from, to, v.len, place = place)
     out: &strview
-    out = (ptr(v.*) as usize + first) as *bytes
-    out.len = last - first
+    out = ptr(v.*) + first
+    out.len = i64(last - first)
     return out
 
-func reserve(s: *&str, want: usize):
+func reserve(s: *&str, want: i64):
+    if want < 0:
+        out_of_memory()
     if want <= s.cap:
         return
     cap := doubled(s.cap, want, 32)
-    if cap > MOST:
-        out_of_memory()
-    grown := resize(s.arena, ptr(s.*.*), s.cap, cap)
-    if grown as usize == 0:
+    grown := resize(s.arena, ptr(s.*.*), s.cap, cap, NO_TEXT)
+    if grown as u64 == 0:
         out_of_memory()
     s.* = grown
     s.cap = cap
 
-func try_reserve(s: *&str, want: usize) -> NoMemory?:
+func try_reserve(s: *&str, want: i64) -> NoMemory?:
+    if want < 0:
+        return NoMemory
     if want <= s.cap:
         return null
     cap := doubled(s.cap, want, 32)
-    if cap > MOST:
-        return NoMemory
-    grown := resize(s.arena, usize(0) as *bytes, 0, cap)
-    if grown as usize == 0:
+    grown := resize(s.arena, 0 as *bytes, 0, cap, NO_TEXT)
+    if grown as u64 == 0:
         return NoMemory
     memcpy(grown, ptr(s.*.*), s.len)
     discard(s.arena, ptr(s.*.*))
@@ -503,21 +568,81 @@ func try_reserve(s: *&str, want: usize) -> NoMemory?:
     return null
 
 type Arena:
-    blocks: &list[&strview]
-    count: usize
-    used: usize
+    blocks: &list[&strview] = heap([])
+    count: i64
+    used: i64
 
 func arena(a: *Arena, v: $T) -> *$T:
-    p := take(a, sizeof($T)) as *$T
-    if p as usize == 0:
+    p := take(a, @sizeof($T)) as *$T
+    if p as u64 == 0:
         out_of_memory()
     p.* = v
     return p
 
+# the arena of an owner whose memory is in the heap, which the compiler writes too: 0 is an owner with no memory
+priv HEAP = 1
+priv NO_LIST = "this &list has no memory to grow in: give it heap([]) or arena(a, [])"
+priv NO_TEXT = "this &str has no memory to grow in: give it heap(\"\") or arena(a, \"\")"
+priv NO_MAP = "this &map has no memory to grow in: give it heap({}) or arena(a, {})"
+
+# the words of an owner, to make one in its arena
+priv type Owner:
+    data: *bytes
+    len: i64
+    cap: i64
+    arena: *Arena
+
+# an owner of never holds nothing, so it goes where any owner of its kind goes
+func heap(items: emptyarray) -> &list[never]:
+    return arena(HEAP as *Arena, items)
+
+func arena(a: *Arena, items: emptyarray) -> &list[never]:
+    return Owner{arena = a} as &list[never]
+
+func heap(pairs: emptyfixmap) -> &map[never, never]:
+    return arena(HEAP as *Arena, pairs)
+
+func arena(a: *Arena, pairs: emptyfixmap) -> &map[never, never]:
+    return Owner{arena = a} as &map[never, never]
+
+func heap(text: &strview) -> &str:
+    return arena(HEAP as *Arena, text)
+
 func arena(a: *Arena, text: &strview) -> &str:
-    out: &str
-    out.arena = a
+    out := Owner{arena = a} as &str
     out += text
+    return out
+
+func heap(items: &listview[$T]) -> &list[$T]:
+    return arena(HEAP as *Arena, items)
+
+func arena(a: *Arena, items: &listview[$T]) -> &list[$T]:
+    out := Owner{arena = a} as &list[$T]
+    append(out, items)
+    return out
+
+func heap(items: array[$T, $$n]) -> &list[$T]:
+    return arena(HEAP as *Arena, items)
+
+func arena(a: *Arena, items: array[$T, $$n]) -> &list[$T]:
+    return arena(a, items[:])
+
+func heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
+    return arena(HEAP as *Arena, pairs)
+
+func arena(a: *Arena, pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]:
+    out := Owner{arena = a} as &map[$K, $V]
+    for e in pairs:
+        out[e.key] = e.value
+    return out
+
+func heap(pairs: &map[$K, $V]) -> &map[$K, $V]:
+    return arena(HEAP as *Arena, pairs)
+
+func arena(a: *Arena, pairs: &map[$K, $V]) -> &map[$K, $V]:
+    out := Owner{arena = a} as &map[$K, $V]
+    for e in pairs:
+        out[e.key] = e.value
     return out
 
 func clear(a: *Arena):
@@ -526,14 +651,14 @@ func clear(a: *Arena):
 func free(a: *Arena):
     reclaim(a, true)
 
-func reserve(a: *Arena, size: usize):
+func reserve(a: *Arena, size: i64):
     if try_reserve(a, size) is NoMemory:
         out_of_memory()
 
-func try_reserve(a: *Arena, size: usize) -> NoMemory?:
+func try_reserve(a: *Arena, size: i64) -> NoMemory?:
     count := a.count
     used := a.used
-    if take(a, size) as usize == 0:
+    if take(a, size) as u64 == 0:
         return NoMemory
     if a.count == count:
         a.used = used # the piece goes back, and the room stays
@@ -542,44 +667,46 @@ func try_reserve(a: *Arena, size: usize) -> NoMemory?:
     return null
 
 # 0 when there is no memory, like malloc
-priv func take(a: *Arena, size: usize) -> *bytes:
-    if size > MOST:
-        return usize(0) as *bytes
+priv func take(a: *Arena, size: i64) -> *bytes:
+    if size < 0 or size > MOST - 15:
+        return 0 as *bytes
     need := (size + 15) / 16 * 16
     if a.count == 0 or a.used + need > a.blocks[a.count - 1].len:
         if a.count == a.blocks.len or a.blocks[a.count].len < need:
-            room: usize = 65536
+            room := 65536
             if room < need:
                 room = need
             block: &strview
             block = malloc(room)
-            if ptr(block.*) as usize == 0 or try_reserve(a.blocks, a.blocks.len + 1) is NoMemory:
+            if ptr(block.*) as u64 == 0 or try_reserve(a.blocks, a.blocks.len + 1) is NoMemory:
                 free(ptr(block.*))
-                return usize(0) as *bytes
+                return 0 as *bytes
             block.len = room
             insert(a.blocks, a.count, block)
         a.count += 1
         a.used = 0
-    out := (ptr(a.blocks[a.count - 1].*) as usize + a.used) as *bytes
+    out := ptr(a.blocks[a.count - 1].*) + a.used
     a.used += need
     return out
 
-priv func resize(a: *Arena, at: *bytes, size: usize, wanted: usize) -> *bytes:
-    if a as usize == 0:
+priv func resize(a: *Arena, at: *bytes, size: i64, wanted: i64, no_memory: &strview) -> *bytes:
+    if a as u64 == HEAP:
         return realloc(at, wanted)
+    if a as u64 == 0:
+        panic(no_memory, place = "") # no place, it would be here: the chain shows the function that grew it
     held := (size + 15) / 16 * 16
-    last := a.count > 0 and at as usize + held == ptr(a.blocks[a.count - 1].*) as usize + a.used
+    last := a.count > 0 and at + held == ptr(a.blocks[a.count - 1].*) + a.used
     if last:
         a.used -= held # the last piece of the block, take gives the same place back when it fits
     grown := take(a, wanted)
-    if grown as usize == 0 and last:
+    if grown as u64 == 0 and last:
         a.used += held
-    elif grown as usize != at as usize:
+    elif grown != at:
         memcpy(grown, at, size)
     return grown
 
 priv func discard(a: *Arena, at: *bytes):
-    if a as usize == 0:
+    if a as u64 == HEAP:
         free(at)
 
 priv func reclaim(a: *Arena, freeing: bool):
@@ -591,8 +718,8 @@ priv func reclaim(a: *Arena, freeing: bool):
     a.used = 0
 
 type Scratch:
-    count: usize
-    used: usize
+    count: i64
+    used: i64
 
 priv context scratch_space:
     arena: Arena
@@ -600,48 +727,50 @@ priv context scratch_space:
 func scratch() -> Scratch:
     return Scratch{scratch_space.arena.count, scratch_space.arena.used}
 
-func close(s: Scratch):
+operator with(s: Scratch):
     scratch_space.arena.count = s.count
     scratch_space.arena.used = s.used
 
-func temp(size: usize) -> *bytes:
+func tmp(size: i64) -> *bytes:
+    if scratch_space.arena.blocks.cap == 0:
+        free_at_end()
     at := take(scratch_space.arena, size)
-    if at as usize == 0:
+    if at as u64 == 0:
         out_of_memory()
     return at
 
-func temp(text: &strview) -> &strview:
-    at := temp(text.len + 1)
+func tmp(text: &strview) -> &strview:
+    at := tmp(text.len + 1)
     memcpy(at, ptr(text.*), text.len)
-    ((at as usize + text.len) as *u8).* = 0
+    ((at + text.len) as *u8).* = 0
     out: &strview
     out = at
     out.len = text.len
     return out
 
-func temp(items: &slice[$T]) -> &slice[$T]:
-    out: &slice[$T]
-    out = temp(items.len * sizeof($T))
+func tmp(items: &listview[$T]) -> &listview[$T]:
+    out: &listview[$T]
+    out = tmp(items.len * @sizeof($T))
     out.len = items.len
-    memcpy(ptr(out.*), ptr(items.*), items.len * sizeof($T))
+    memcpy(ptr(out.*), ptr(items.*), items.len * @sizeof($T))
     return out
 
 operator +=(s: *&str, v: &strview):
-    inside := ptr(v.*) as usize - ptr(s.*.*) as usize < s.cap
+    inside := u64(ptr(v.*) - ptr(s.*.*)) < u64(s.cap) # a negative is past every length
     if inside:
         with scratch():
-            s.* += temp(v)
+            s.* += tmp(v)
         return
     reserve(s, s.len + v.len)
-    memcpy((ptr(s.*.*) as usize + s.len) as *bytes, ptr(v.*), v.len)
+    memcpy(ptr(s.*.*) + s.len, ptr(v.*), v.len)
     s.len += v.len
 
 func c_text(s: &str) -> cstr:
     if s.cap <= s.len:
         return cstr(view(s))
-    last := (ptr(s.*) as usize + s.len) as *u8
+    last := (ptr(s.*) + s.len) as *u8
     last.* = 0
-    return ptr(s.*) as *u8
+    return ptr(s.*) as cstr
 
 operator =(s: *&str, v: &strview) -> &str:
     s.len = 0
@@ -650,7 +779,7 @@ operator =(s: *&str, v: &strview) -> &str:
 
 func free(s: *&str):
     discard(s.arena, ptr(s.*.*))
-    s.* = usize(0) as *bytes
+    s.* = 0 as *bytes
     s.len = 0
     s.cap = 0
 
@@ -672,11 +801,13 @@ operator <(a: &strview, b: &strview) -> bool:
 
 func add_byte(s: *&str, b: u8):
     reserve(s, s.len + 1)
-    ((ptr(s.*.*) as usize + s.len) as *u8).* = b
+    ((ptr(s.*.*) + s.len) as *u8).* = b
     s.len += 1
 
 func add_char(s: *&str, code: u32):
-    if code < 0x80:
+    if code >= 0xD800 and code < 0xE000 or code > 0x10FFFF: # a surrogate, or past the last code, which UTF-8 doesn't hold
+        add_char(s, 0xFFFD)
+    elif code < 0x80:
         add_byte(s, u8(code))
     elif code < 0x800:
         add_byte(s, u8(0xC0 or code >> 6))
@@ -708,60 +839,60 @@ func parse_hex(s: &strview) -> u64|null:
         n = n * 16 + digit
     return n
 
-func find(s: &strview, part: &strview) -> usize|null: @trust
+func find(s: &strview, part: &strview) -> i64|null:
     if part.len == 0:
         return 0
     first := i32(part[0])
-    at: usize = 0
+    at := 0
     while at + part.len <= s.len:
-        hit := memchr((ptr(s.*) as usize + at) as *bytes, first, s.len - part.len + 1 - at)
-        if hit as usize == 0:
+        hit := memchr(ptr(s.*) + at, first, s.len - part.len + 1 - at)
+        if hit as u64 == 0:
             return null
-        at = hit as usize - ptr(s.*) as usize
+        at = hit - ptr(s.*)
         if memcmp(hit, ptr(part.*), part.len) == 0:
             return at
         at += 1
     return null
 
-func find_last(s: &strview, part: &strview) -> usize|null: @trust
+func find_last(s: &strview, part: &strview) -> i64|null:
     if part.len > s.len:
         return null
     if part.len == 0:
         return s.len
     first := part[0]
-    for at in reverse 0..s.len - part.len + 1:
-        hit := (ptr(s.*) as usize + at) as *u8
-        if hit.* == first and memcmp(hit as *bytes, ptr(part.*), part.len) == 0:
+    for at in reverse 0..=s.len - part.len:
+        hit := ptr(s.*) + at
+        if (hit as *u8).* == first and memcmp(hit, ptr(part.*), part.len) == 0:
             return at
     return null
 
 func contains(s: &strview, part: &strview) -> bool:
-    return find(s, part) is usize
+    return find(s, part) is i64
 
 func replace(s: &strview, old: &strview, new: &strview) -> &strview:
-    out: &str
+    out: &str = heap("")
     defer free(out)
     rest := s
     cut := find(rest, old)
-    while cut is usize and old.len > 0:
+    while cut is i64 and old.len > 0:
         out += rest[:cut]
         out += new
         rest = rest[cut + old.len:]
         cut = find(rest, old)
     out += rest
-    return temp(out)
+    return tmp(out)
 
-func join(parts: &slice[$T], separator: &strview) -> &strview:
-    out: &str
+func join(parts: &listview[$T], separator: &strview) -> &strview:
+    out: &str = heap("")
     defer free(out)
     for i, part in parts:
         if i > 0:
             out += separator
         out += part
-    return temp(out)
+    return tmp(out)
 
 func lower(s: &strview) -> &strview:
-    out := temp(s)
+    out := tmp(s)
     bytes := items(out)
     for i in 0..bytes.len:
         if bytes[i] >= 'A' and bytes[i] <= 'Z':
@@ -769,7 +900,7 @@ func lower(s: &strview) -> &strview:
     return out
 
 func upper(s: &strview) -> &strview:
-    out := temp(s)
+    out := tmp(s)
     bytes := items(out)
     for i in 0..bytes.len:
         if bytes[i] >= 'a' and bytes[i] <= 'z':
@@ -787,7 +918,7 @@ func trim(s: &strview) -> &strview:
 
 func trim_start(s: &strview) -> &strview:
     bytes := items(s)
-    first: usize = 0
+    first := 0
     while first < bytes.len and blank(bytes[first]):
         first += 1
     return s[first:]
@@ -802,11 +933,11 @@ func trim_end(s: &strview) -> &strview:
 priv func blank(b: u8) -> bool:
     return b == ' ' or b == '\t' or b == '\n' or b == '\r'
 
-func words(s: &strview) -> &slice[&strview]:
-    found: &list[&strview]
+func words(s: &strview) -> &listview[&strview]:
+    found: &list[&strview] = heap([])
     defer free(found)
     bytes := items(s)
-    at: usize = 0
+    at := 0
     while at < bytes.len:
         start := at
         while at < bytes.len and not blank(bytes[at]):
@@ -814,18 +945,18 @@ func words(s: &strview) -> &slice[&strview]:
         if at > start:
             append(found, s[start:at])
         at += 1
-    return temp(found)
+    return tmp(found)
 
-func split(s: &strview, separator: &strview) -> &slice[&strview]:
-    count: usize = 1
+func split(s: &strview, separator: &strview) -> &listview[&strview]:
+    count := 1
     rest := s
     cut := find(rest, separator)
-    while cut is usize and separator.len > 0:
+    while cut is i64 and separator.len > 0:
         count += 1
         rest = rest[cut + separator.len:]
         cut = find(rest, separator)
-    parts: &slice[&strview]
-    parts = temp(count * sizeof(&strview))
+    parts: &listview[&strview]
+    parts = tmp(count * @sizeof(&strview))
     parts.len = count
     rest = s
     for k in 0..count - 1:
@@ -838,7 +969,7 @@ func split(s: &strview, separator: &strview) -> &slice[&strview]:
 func parse_int(s: &strview) -> i64|null:
     b := items(s)
     negative := s.len > 0 and b[0] == '-'
-    i: usize = 0
+    i := 0
     if negative or s.len > 0 and b[0] == '+':
         i = 1
     if i == s.len:
@@ -850,7 +981,7 @@ func parse_int(s: &strview) -> i64|null:
     while i < s.len:
         if b[i] < '0' or b[i] > '9':
             return null
-        digit := u64(b[i] - '0')
+        digit := b[i] - '0'
         if n > (limit - digit) / 10:
             return null
         n = n * 10 + digit
@@ -873,13 +1004,13 @@ func parse_float(s: &strview) -> f64|null:
         text := cstr(s)
         end := text
         x := strtod(text, ptr(end) as *bytes)
-        if end as usize == text as usize + s.len:
+        if end as *bytes == text as *bytes + s.len:
             return x
     return null
 
-operator +=(s: *&str, n: usize):
+operator +=(s: *&str, n: u64):
     digits: array[u8, 20]
-    i: usize = 20
+    i := 20
     while true:
         i -= 1
         digits[i] = u8(n % 10) + '0'
@@ -887,15 +1018,15 @@ operator +=(s: *&str, n: usize):
         if n == 0:
             break
     out: &strview
-    out = (ptr(digits) as usize + i) as *bytes
+    out = ptr(digits) as *bytes + i
     out.len = 20 - i
     s.* += out
 
 operator +=(s: *&str, n: i64):
     if n < 0:
-        s.* += "-" + usize(0 - n)
+        s.* += "-" + u64(0 - n)
     else:
-        s.* += usize(n)
+        s.* += u64(n)
 
 operator +=(s: *&str, n: i32):
     s.* += i64(n)
@@ -906,17 +1037,14 @@ operator +=(s: *&str, n: i16):
 operator +=(s: *&str, n: i8):
     s.* += i64(n)
 
-operator +=(s: *&str, n: u64):
-    s.* += usize(n)
-
 operator +=(s: *&str, n: u32):
-    s.* += usize(n)
+    s.* += u64(n)
 
 operator +=(s: *&str, n: u16):
-    s.* += usize(n)
+    s.* += u64(n)
 
 operator +=(s: *&str, n: u8):
-    s.* += usize(n)
+    s.* += u64(n)
 
 operator +=(s: *&str, b: bool):
     if b:
@@ -953,18 +1081,31 @@ priv func float_text(s: *&str, f: f64, single: bool):
     at := ptr(buf) as *u8
     out: &strview
     out = ptr(buf) as *bytes
-    out.len = usize(snprintf(at, 32, "%#.*e", digits - 1, f))
+    out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
+    lead := i64(buf[0] == '-')
     while digits < most:
-        back := strtod(at, usize(0) as *bytes)
+        back := strtod(at as cstr, 0 as *bytes)
         if back == f or single and f32(back) == f32(f):
             break
+        if (f as u64 and 0xf_ffff_ffff_ffff) == 0: # a power of two has half the gap below it, so the digits one step above may read back where the nearest don't
+            up := buf
+            k := (trust find(items(out), 'e')) - 1
+            while k >= lead and (up[k] == '9' or up[k] == '.'):
+                if up[k] == '9':
+                    up[k] = '0'
+                k -= 1
+            if k >= lead:
+                up[k] += 1
+                back = strtod(ptr(up) as cstr, 0 as *bytes)
+            if k >= lead and (back == f or single and f32(back) == f32(f)):
+                buf = up
+                break
         digits += 1
-        out.len = usize(snprintf(at, 32, "%#.*e", digits - 1, f))
-    lead := usize(buf[0] == '-')
-    mark := lead + usize(digits) + 1
+        out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
+    mark := lead + digits + 1
     exponent: i32 = 0
     for i in mark + 2..out.len:
-        exponent = exponent * 10 + i32(buf[i] - '0')
+        exponent = exponent * 10 + (buf[i] - '0')
     if buf[mark + 1] == '-':
         exponent = 0 - exponent
     last := mark
@@ -990,16 +1131,16 @@ priv func float_text(s: *&str, f: f64, single: bool):
         for k in 0..-exponent - 1:
             add_byte(s, '0')
         s.* += shown
-    elif shown.len > usize(exponent) + 1:
-        point := usize(exponent) + 1
+    elif shown.len > exponent + 1:
+        point := exponent + 1
         s.* += shown[:point] + "." + shown[point:]
     else:
         s.* += shown
-        for k in shown.len..usize(exponent) + 1:
+        for k in shown.len..=exponent:
             add_byte(s, '0')
         s.* += ".0"
 
-operator +=(s: *&str, items: &slice[$T]):
+operator +=(s: *&str, items: &listview[$T]):
     s.* += "["
     for i, item in items:
         if i > 0:
@@ -1025,40 +1166,44 @@ operator +=(s: *&str, f: Fixed):
     if value - value != 0.0:
         s.* += value
         return
-    places := f.places
-    if places < 0:
-        places = 0
+    places := min(max(f.places, 0), 1100) # a double has at most 1074 decimals, the others are zeros
     halves := value
-    for k in 0..places + 1:
+    for k in 0..=places:
         halves *= 2.0
-    tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 # 2^53
+    scaled := value
+    for k in 0..places:
+        scaled *= 10.0
+    tie := halves > -9007199254740992.0 and halves < 9007199254740992.0 and f64(i64(halves)) == halves and i64(halves) % 2 != 0 and scaled > -4503599627370496.0 and scaled < 4503599627370496.0 # 2^53 and 2^52: past them one step of the float jumps over a digit, and printf rounds an exact tie to even
     bits := ptr(value) as *u64
     bits.* -= u64(tie)
     with scratch():
-        room := usize(places) + 312 # the sign, 309 digits, the point and the zero
+        room := places + 312 # the sign, 309 digits, the point and the zero
         out: &strview
-        out = temp(room)
-        out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
+        out = tmp(room)
+        out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
         if tie and out[-1] % 2 == 1:
             bits.* += 2
-            out.len = usize(snprintf(ptr(out.*) as *u8, room, "%.*f", places, value))
-        if out[0] == '-' and strtod(ptr(out.*) as *u8, usize(0) as *bytes) == 0.0:
+            out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
+        if out[0] == '-' and strtod(ptr(out.*) as cstr, 0 as *bytes) == 0.0:
             out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
+    for k in places..f.places:
+        add_byte(s, '0')
 
 type Hex:
     value: u64
+    digits: i32
 
-func hex(value: $I) -> Hex where $I is Integer:
+func hex(value: $I, digits: i32 = 0) -> Hex where $I is Integer:
     bits := u64(value)
-    if sizeof($I) < 8:
-        bits = bits and (u64(1) << u64(sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
-    return Hex{bits}
+    if @sizeof($I) < 8:
+        bits = bits and (u64(1) << u64(@sizeof($I) * 8)) - 1 # the bits of its own size, a negative i8 is 0xff
+    return Hex{bits, digits}
 
 operator +=(s: *&str, h: Hex):
     digits: &strview = "0123456789abcdef"
     buf: array[u8, 16]
-    i: usize = 16
+    i := 16
     v := h.value
     while true:
         i -= 1
@@ -1067,9 +1212,12 @@ operator +=(s: *&str, h: Hex):
         if v == 0:
             break
     out: &strview
-    out = (ptr(buf) as usize + i) as *bytes
+    out = ptr(buf) as *bytes + i
     out.len = 16 - i
-    s.* += "0x" + out
+    s.* += "0x"
+    for k in out.len..h.digits:
+        add_byte(s, '0')
+    s.* += out
 
 type Padded[$T]:
     value: $T
@@ -1079,79 +1227,93 @@ func pad(value: $T, width: i32) -> Padded[$T]:
     return Padded[$T]{value, width}
 
 operator +=(s: *&str, p: Padded[$T]):
-    text := "" + p.value
-    count: i32 = 0
-    for c in text:
-        count += 1
-    if p.width > 0:
-        for k in count..p.width:
+    with scratch():
+        text := "" + p.value
+        count: i32 = 0
+        for c in text:
+            count += 1
+        if p.width > 0:
+            for k in count..p.width:
+                add_byte(s, ' ')
+        s.* += text
+        for k in count..-p.width:
             add_byte(s, ' ')
-    s.* += text
-    for k in count..-p.width:
-        add_byte(s, ' ')
 
-type Lock:
+type Lock[$T]:
     room: array[u64, 8] # a pthread_mutex_t or an SRWLOCK
-    owner: *bytes
-    depth: usize
+    owner: atomic[u64] # the thread that holds it, which the others read too
+    depth: i64
+    value: $T # what it guards, null when it guards code
 
 type Locked:
-    lock: *Lock
+    lock: *Lock[null]
 
-func lock(l: *Lock) -> Locked:
-    if l.owner != me():
+# every Lock starts as a Lock[null], and its value goes after, so one code takes them all
+func lock(l: *Lock[$T]) -> Locked where $T != null:
+    return lock(l as *Lock[null])
+
+func lock(l: *Lock[null]) -> Locked:
+    if get(l.owner) != me():
         acquire(l)
-        l.owner = me()
+        set(l.owner, me())
     l.depth += 1
     return Locked{l}
 
-func close(held: Locked):
+operator with(held: Locked):
     l := held.lock
     l.depth -= 1
     if l.depth == 0:
-        l.owner = usize(0) as *bytes
+        set(l.owner, 0)
         release(l)
 
 # takes the lock only when no thread holds it, this one neither, so a thread that must not wait never does
-priv func try_lock(l: *Lock) -> bool:
+priv func try_lock(l: *Lock[$T]) -> bool where $T != null:
+    return try_lock(l as *Lock[null])
+
+priv func try_lock(l: *Lock[null]) -> bool:
     if not seized(l):
         return false
-    l.owner = me()
+    set(l.owner, me())
     l.depth = 1
     return true
 
-priv func me() -> *bytes:
-    return ptr(scratch_space) as *bytes # each thread has its own
+# the same for the program and for each library, which have contexts of their own
+priv func me() -> u64 where not @windows():
+    return pthread_self()
 
-priv func acquire(l: *Lock) where not @windows():
+priv func me() -> u64 where @windows():
+    return u64(GetCurrentThreadId())
+
+priv func acquire(l: *Lock[null]) where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     pthread_mutex_lock(ptr(l.room) as *bytes)
 
-priv func acquire(l: *Lock) where @windows():
+priv func acquire(l: *Lock[null]) where @windows():
     AcquireSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv func seized(l: *Lock) -> bool where not @windows():
+priv func seized(l: *Lock[null]) -> bool where not @windows():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     return pthread_mutex_trylock(ptr(l.room) as *bytes) == 0
 
-priv func seized(l: *Lock) -> bool where @windows():
+priv func seized(l: *Lock[null]) -> bool where @windows():
     return TryAcquireSRWLockExclusive(ptr(l.room) as *bytes) != 0
 
-priv func release(l: *Lock) where not @windows():
+priv func release(l: *Lock[null]) where not @windows():
     pthread_mutex_unlock(ptr(l.room) as *bytes)
 
-priv func release(l: *Lock) where @windows():
+priv func release(l: *Lock[null]) where @windows():
     ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv signing: u32 # an os_unfair_lock, valid at zero
+priv shared context signing:
+    lock: u32 # an os_unfair_lock, valid at zero
 
 # at zero they are ready, but on macOS their initializer is a signature and zeros
 priv func sign(first: *u64, signature: u64) where @macos():
     if first.* == 0:
-        os_unfair_lock_lock(ptr(signing))
+        os_unfair_lock_lock(ptr(signing.lock))
         if first.* == 0:
             first.* = signature
-        os_unfair_lock_unlock(ptr(signing))
+        os_unfair_lock_unlock(ptr(signing.lock))
 
 priv func sign(first: *u64, signature: u64) where not @macos():
     return
@@ -1159,19 +1321,23 @@ priv func sign(first: *u64, signature: u64) where not @macos():
 priv type Condition:
     room: array[u64, 6] # a pthread_cond_t or a CONDITION_VARIABLE
 
-priv func pause(c: *Condition, l: *Lock):
-    depth := l.depth
-    l.owner = usize(0) as *bytes
+priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
+    pause(c, l as *Lock[null])
+
+priv func pause(c: *Condition, l: *Lock[null]):
+    if l.depth > 1:
+        panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", place = "") # no place, the chain shows the with
+    set(l.owner, 0)
     l.depth = 0
     rest(c, l)
-    l.owner = me()
-    l.depth = depth
+    set(l.owner, me())
+    l.depth = 1
 
-priv func rest(c: *Condition, l: *Lock) where not @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where not @windows():
     sign(ptr(c.room[0]), 0x3cb0_b1bb)
     pthread_cond_wait(ptr(c.room) as *bytes, ptr(l.room) as *bytes)
 
-priv func rest(c: *Condition, l: *Lock) where @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where @windows():
     SleepConditionVariableSRW(ptr(c.room) as *bytes, ptr(l.room) as *bytes, 0xffff_ffff, 0)
 
 priv func wake(c: *Condition) where not @windows():
@@ -1182,31 +1348,31 @@ priv func wake(c: *Condition) where @windows():
     WakeAllConditionVariable(ptr(c.room) as *bytes)
 
 priv type Started: # the start of the block of a thread, the result goes after it
-    handle: usize
+    handle: u64
     done: bool
     alone: bool
     left: Arena # the temporaries the result may point to, for the thread that waits
 
-priv type Threads:
-    lock: Lock
-    changed: Condition
-    running: usize
+priv HEAD = 64 # where the compiler puts the result of a thread
 
-priv threads: Threads
+priv shared context threads:
+    running: Lock[i64] # it guards the done and alone of each thread too
+    changed: Condition
+    key: Lock[i64] = {value = -1} # of pthread or of FLS, whose callback is flag_ended: -1 until a thread asks, and -2 once flag_exit forgot it, so the ending asks for no other
 
 priv STACK = 8 << 20
 
-priv func spawn(size: usize) -> *bytes:
+priv func spawn(size: i64) -> *bytes:
     block := calloc(1, size)
-    if block as usize == 0:
+    if block as u64 == 0:
         out_of_memory()
     return block
 
 priv func launch(block: *bytes, run: *bytes, place: &strview):
-    with lock(threads.lock):
-        threads.running += 1
+    with lock(threads.running):
+        threads.running.value += 1
     if not started(block as *Started, run):
-        panic("cannot start a thread, the system refuses one more", place)
+        panic("cannot start a thread, the system refuses one more", place = place)
 
 priv func started(t: *Started, run: *bytes) -> bool where not @windows():
     attributes: array[u64, 8]
@@ -1217,31 +1383,52 @@ priv func started(t: *Started, run: *bytes) -> bool where not @windows():
     return failed == 0
 
 priv func started(t: *Started, run: *bytes) -> bool where @windows():
-    t.handle = CreateThread(usize(0) as *bytes, STACK, run, t as *bytes, 0x10000, usize(0) as *u32) # STACK_SIZE_PARAM_IS_A_RESERVATION
+    t.handle = CreateThread(0 as *bytes, STACK, run, t as *bytes, 0x10000, 0 as *u32) # STACK_SIZE_PARAM_IS_A_RESERVATION
     return t.handle != 0
 
 priv func finished(block: *bytes, pointing: bool):
-    free(printing.line)
     drop_stack()
     t := block as *Started
     alone := false
-    with lock(threads.lock):
+    with lock(threads.running):
         alone = t.alone
         if pointing and not alone:
             t.left = scratch_space.arena
+            scratch_space.arena = Arena{} # its blocks are of the thread that waits now, not of flag_ended
         t.done = true
-        threads.running -= 1
+        threads.running.value -= 1
         wake(threads.changed)
-    if alone or not pointing:
-        free(scratch_space.arena)
     if alone:
         free(block)
 
+# what core gives a thread, its scratch and the line of print, goes when the thread ends: the first time each one takes memory, the thread asks the system to call flag_ended then
+priv func free_at_end():
+    where @macos():
+        _tlv_atexit(ptr(flag_ended), 0 as *bytes) # macOS never unloads a library with thread data, so this needs no key that a close forgets
+    where not @macos():
+        with lock(threads.key):
+            if threads.key.value == -1:
+                where @linux():
+                    key: u32 = 0
+                    if pthread_key_create(ptr(key), ptr(flag_ended)) == 0:
+                        threads.key.value = i64(key)
+                where @windows():
+                    threads.key.value = i64(i32(FlsAlloc(ptr(flag_ended)))) # FLS_OUT_OF_INDEXES is -1
+                if threads.key.value >= 0:
+                    atexit(ptr(flag_exit)) # it forgets the key, before the library and flag_ended go
+            if threads.key.value >= 0:
+                set_key(u32(threads.key.value), 1 as *bytes)
+
+priv export func flag_ended(unused: *bytes):
+    free(printing.line)
+    free(scratch_space.arena)
+
 # the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
-priv func join(block: *bytes, place: &strview):
-    if block as usize == 0:
-        panic("wait of a thread that was never started", place)
+priv func reap(block: *bytes, place: &strview):
+    if block as u64 == 0:
+        panic("wait of a thread that was never started", place = place)
     t := block as *Started
+    flush() # what you wrote goes out before the thread waits for another
     wait_for(t.handle)
     a := ptr(scratch_space.arena)
     had := a.blocks.len
@@ -1256,10 +1443,10 @@ priv func join(block: *bytes, place: &strview):
         last := trust pop(a.blocks) # one spare block less for each one it got, so waiting in a loop doesn't grow
         free(ptr(last.*))
 
-priv func wait_for(handle: usize) where not @windows():
-    pthread_join(handle, usize(0) as *bytes)
+priv func wait_for(handle: u64) where not @windows():
+    pthread_join(handle, 0 as *bytes)
 
-priv func wait_for(handle: usize) where @windows():
+priv func wait_for(handle: u64) where @windows():
     WaitForSingleObject(handle, 0xffff_ffff)
     CloseHandle(handle)
 
@@ -1267,45 +1454,44 @@ priv func detach(block: *bytes):
     t := block as *Started
     let_go(t.handle)
     done := false
-    with lock(threads.lock):
+    with lock(threads.running):
         done = t.done
         t.alone = true
     if done:
         free(t.left)
         free(block)
 
-priv func let_go(handle: usize) where not @windows():
+priv func let_go(handle: u64) where not @windows():
     pthread_detach(handle)
 
-priv func let_go(handle: usize) where @windows():
+priv func let_go(handle: u64) where @windows():
     CloseHandle(handle)
 
 priv func settle():
-    with lock(threads.lock):
-        while threads.running > 0:
-            pause(threads.changed, threads.lock)
+    flush() # what you wrote goes out before the thread waits for another
+    with lock(threads.running):
+        while threads.running.value > 0:
+            pause(threads.changed, threads.running)
+
+func wait(t: Thread[$T], place: &strview = @here()) -> $T:
+    reap(t as *bytes, place = place)
+    defer free(t as *bytes)
+    return ((t as *bytes + HEAD) as *$T).*
 
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
-    if t as usize == 0:
-        panic("done of a thread that was never started", place)
-    with lock(threads.lock):
+    if t as u64 == 0:
+        panic("done of a thread that was never started", place = place)
+    with lock(threads.running):
         return (t as *Started).done
 
-func cores() -> usize where @linux():
-    return usize(sysconf(84)) # _SC_NPROCESSORS_ONLN
-
-func cores() -> usize where @macos():
-    return usize(sysconf(58)) # _SC_NPROCESSORS_ONLN
-
-func cores() -> usize where @windows():
-    return usize(GetActiveProcessorCount(0xffff)) # ALL_PROCESSOR_GROUPS
-
 type Channel[$T, $$size]:
-    lock: Lock
+    queue: Lock[Queue[$T, $$size]]
     filled: Condition
     emptied: Condition
-    first: usize
-    len: usize
+
+priv type Queue[$T, $$size]:
+    first: i64
+    len: i64
     closed: bool
     items: array[$T, $$size]
 
@@ -1313,49 +1499,58 @@ func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$siz
     @compile_error("a channel holds at least one value, its size cannot be 0")
 
 func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$size > 0:
-    with lock(c.lock):
-        while c.len == $$size and not c.closed:
-            pause(c.emptied, c.lock)
-        if c.closed:
-            panic("send on a closed channel", place)
-        c.items[(c.first + c.len) % $$size] = v
-        c.len += 1
+    with lock(c.queue):
+        q := ptr(c.queue.value)
+        while q.len == $$size and not q.closed:
+            pause(c.emptied, c.queue)
+        if q.closed:
+            panic("send on a closed channel", place = place)
+        q.items[(q.first + q.len) % $$size] = v
+        q.len += 1
         wake(c.filled)
 
 func receive(c: *Channel[$T, $$size]) -> $T|null:
-    r := Receiving[$T, $$size]{c}
-    v := next(ptr(r))
-    if v is IterationEnd:
-        return null
-    return v
+    for v in c:
+        return v
+    return null
 
 func close(c: *Channel[$T, $$size]):
-    with lock(c.lock):
-        c.closed = true
+    with lock(c.queue):
+        c.queue.value.closed = true
         wake(c.filled)
         wake(c.emptied)
+
+operator with(c: *Channel[$T, $$size]):
+    close(c)
 
 priv type Receiving[$T, $$size]:
     channel: *Channel[$T, $$size]
 
-func iter(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
+operator for(c: *Channel[$T, $$size]) -> Receiving[$T, $$size]:
     return Receiving[$T, $$size]{c}
 
-func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
+operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size == 0:
     @compile_error("a channel holds at least one value, its size cannot be 0")
 
-func next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
+# an empty channel lets its lock go while what you wrote goes out, and then waits
+operator next(r: *Receiving[$T, $$size]) -> $T|IterationEnd where $$size > 0:
     c := r.channel
-    with lock(c.lock):
-        while c.len == 0 and not c.closed:
-            pause(c.filled, c.lock)
-        if c.len == 0:
-            return IterationEnd
-        v := c.items[c.first]
-        c.first = (c.first + 1) % $$size
-        c.len -= 1
-        wake(c.emptied)
-        return v
+    flushed := false
+    while true:
+        with lock(c.queue):
+            q := ptr(c.queue.value)
+            while flushed and q.len == 0 and not q.closed:
+                pause(c.filled, c.queue)
+            if q.len > 0:
+                v := q.items[q.first]
+                q.first = (q.first + 1) % $$size
+                q.len -= 1
+                wake(c.emptied)
+                return v
+            if q.closed:
+                return IterationEnd
+        flush()
+        flushed = true
 
 type File:
     fd: i32
@@ -1372,34 +1567,41 @@ type error FsError:
     path: &strview
 
 operator +=(s: *&str, e: FsError):
-    s.* += "cannot " + e.action
-    if e.path.len > 0:
-        s.* += " " + e.path
-    if e.code == TIMED_OUT:
-        s.* += ": the timeout ran out"
-    else:
-        s.* += ": " + reason(e.code)
+    with scratch():
+        s.* += "cannot " + e.action
+        if e.path.len > 0:
+            s.* += " " + e.path
+        if e.code == TIMED_OUT:
+            s.* += ": the timeout ran out"
+        else:
+            s.* += ": " + reason(e.code)
 
 priv type Stream:
-    writing: Lock
-    reading: Lock
+    writing: Lock[Outbox]
+    reading: Lock[Inbox]
     fd: i32
     open: bool
     socket: bool
     by_lines: bool
-    failed: i32
-    path: &str
-    unsent: &str
-    received: &str
-    given: usize
+    path: &str = heap("")
+
+priv type Outbox:
+    unsent: &str = heap("")
+    failed: i32 # the code of the first write that failed
+
+priv type Inbox:
+    received: &str = heap("")
+    given: i64 # how much of it read and read_line gave
 
 priv type Streams:
-    lock: Lock
-    streams: &list[*Stream]
+    streams: &list[*Stream] = heap([])
     last: i32
 
-# a stream is locked for reading before it is locked for writing, and nothing else is locked while io.lock is held
-priv io: Streams
+# a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
+priv shared context io:
+    table: Lock[Streams]
+    ended: atomic[i32] # 1 when main or exit ended the program with 0, which a failure of the standard output after it turns into 1
+    told: atomic[i32] # 1 once the failure of the standard output was said
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1408,19 +1610,20 @@ priv context cached:
     standard: array[*Stream?, 3]
 
 priv func stream(f: File, place: &strview = @here()) -> *Stream:
-    valid(f, place)
+    valid(f, place = place)
     if f.fd < 3:
         known := cached.standard[f.fd]
         if known is *Stream and known.open:
             return known
-    with lock(io.lock):
-        if io.streams.len == 0:
+    with lock(io.table):
+        streams := ptr(io.table.value.streams)
+        if streams.len == 0:
             atexit(ptr(flag_exit))
-        while io.streams.len <= usize(f.fd):
-            append(io.streams, usize(0) as *Stream)
-        if io.streams[usize(f.fd)] as usize == 0:
-            io.streams[usize(f.fd)] = heap(Stream{fd = f.fd})
-        s := io.streams[usize(f.fd)]
+        while streams.len <= f.fd:
+            append(streams, 0 as *Stream)
+        if streams[f.fd] as u64 == 0:
+            streams[f.fd] = heap(Stream{fd = f.fd})
+        s := streams[f.fd]
         if not s.open:
             s.open = true
             s.fd = f.fd
@@ -1435,195 +1638,223 @@ priv func stream(f: File, place: &strview = @here()) -> *Stream:
 # a file that another thread writes at this moment is left to it, so one thread never waits for another
 func flush():
     with scratch():
-        all: &slice[*Stream]
-        with lock(io.lock):
-            all = temp(io.streams)
+        all: &listview[*Stream]
+        with lock(io.table):
+            all = tmp(io.table.value.streams)
         for s in all:
-            if s as usize != 0 and try_lock(s.writing):
-                drain(s)
-                close(Locked{ptr(s.writing)})
+            if s as u64 != 0 and try_lock(s.writing):
+                with Locked{ptr(s.writing) as *Lock[null]}:
+                    drain(s)
 
 priv export func flag_exit():
-    flush()
-    out := stream(stdout)
-    if try_lock(out.writing) and out.failed != 0: # never let go, the program ends
-        eprint("flag: ", FsError{out.failed, "write", out.path})
+    if io.table.value.streams.len > 0 and said() and get(io.ended) == 1: # a library that never wrote has nothing to say at its close, and a thread wrote after the end
         _exit(1)
+    flag_ended(0 as *bytes) # the thread that closes the library, or ends the program, is done with it
+    where not @macos():
+        with lock(threads.key):
+            if threads.key.value >= 0:
+                drop_key(u32(threads.key.value))
+            threads.key.value = -2
 
-func open(path: &strview) -> File|FsError:
-    return opened(path, 0, "open")
+# if the standard output failed, after what waits goes out, said once
+priv func said() -> bool:
+    flush()
+    s := stream(stdout)
+    failed: i32 = 0
+    if try_lock(s.writing):
+        with Locked{ptr(s.writing) as *Lock[null]}:
+            failed = s.writing.value.failed
+    if failed != 0 and compare_swap(io.told, 0, 1):
+        eprint("flag: ", FsError{failed, "write", s.path})
+    return failed != 0
 
-func create(path: &strview, append: bool = false) -> File|FsError:
-    return opened(path, 1 + usize(append), "create")
+func exit(code: i32) -> never:
+    quit(ending(code))
 
-priv func opened(path: &strview, mode: usize, action: &strview) -> File|FsError:
-    flags := open_flags()
-    f := File{-1}
-    with scratch():
-        f.fd = open_file(path, flags[mode], flags[3])
-    if f.fd < 0:
-        return FsError{errno(), action, path}
-    stream(f).path = path
+# what main and exit end the program with: a failed standard output turns an end with 0 into 1
+priv func ending(code: i32) -> i32:
+    zero := code == 0 if @windows() else (code and 255) == 0 # what the shell gets, the low byte on Linux and macOS
+    if said() and zero:
+        return 1
+    if zero:
+        set(io.ended, 1)
+    return code
+
+func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
+    f := File{fd}
+    stream(f, place = place).path = path
     return f
 
 # print formats its line here, and a print inside the += of a value adds its own after it
 priv context printing:
-    line: &str
+    line: &str = heap("")
 
 priv func line() -> *&str:
+    if printing.line.cap == 0:
+        free_at_end()
     return ptr(printing.line)
 
-priv func print_line(f: File, from: usize):
+priv func print_line(f: File, from: i64):
     write(f, printing.line[from:])
     printing.line.len = from
 
 func write(f: File, value: $T, place: &strview = @here()):
     with scratch():
-        write(f, "" + value, place) # formatted before the lock, its += may print
+        write(f, "" + value, place = place) # formatted before the lock, its += may print
 
 func write(f: File, text: &strview, place: &strview = @here()):
-    s := stream(f, place)
-    if (f.fd == 1 or f.fd == 2) and io.last != f.fd:
+    s := stream(f, place = place)
+    if (f.fd == 1 or f.fd == 2) and io.table.value.last != f.fd:
         other := stream(File{3 - f.fd})
         switched := false
-        with lock(io.lock):
-            switched = io.last != f.fd
-            io.last = f.fd
+        with lock(io.table):
+            switched = io.table.value.last != f.fd
+            io.table.value.last = f.fd
         if switched:
             with lock(other.writing):
                 drain(other) # stdout and stderr keep the order of the calls
     with lock(s.writing):
-        s.unsent += text
-        if s.unsent.len >= 65536 or s.by_lines and contains(text, "\n"):
+        outbox := ptr(s.writing.value)
+        outbox.unsent += text
+        if outbox.unsent.len >= 65536 or s.by_lines and contains(text, "\n"):
             drain(s)
-            if s.unsent.cap > 131072:
-                free(s.unsent) # after a big text the stream keeps only its usual room
+            if outbox.unsent.cap > 131072:
+                free(outbox.unsent) # after a big text the stream keeps only its usual room
 
 func flush(f: File, place: &strview = @here()) -> FsError?:
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.writing):
         drain(s)
-        if s.failed == 0:
+        outbox := ptr(s.writing.value)
+        if outbox.failed == 0:
             return null
-        failed := FsError{s.failed, "write", temp(s.path)}
-        s.failed = 0
+        failed := FsError{outbox.failed, "write", tmp(s.path)}
+        outbox.failed = 0
         return failed
 
 priv func drain(s: *Stream):
-    sent: usize = 0
-    while sent < s.unsent.len:
-        n := transfer(s, (ptr(s.unsent.*) as usize + sent) as *bytes, s.unsent.len - sent, true)
+    outbox := ptr(s.writing.value)
+    sent := 0
+    while sent < outbox.unsent.len:
+        n := transfer(s, ptr(outbox.unsent.*) + sent, outbox.unsent.len - sent, true)
         if n is FsError:
-            if s.failed == 0:
-                s.failed = n.code
+            if outbox.failed == 0:
+                outbox.failed = n.code
             break
         sent += n
-    s.unsent.len = 0
+    outbox.unsent.len = 0
 
-func read(f: File, into: *&str, size: usize, place: &strview = @here()) -> usize|FsError:
-    s := stream(f, place)
+func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsError:
+    if size < 0:
+        panic("read takes a size of 0 or more, and this one is " + size, place = place)
+    if size == 0:
+        return 0
+    s := stream(f, place = place)
     with lock(s.reading):
-        if s.given == s.received.len:
-            s.given = 0
-            s.received.len = 0
+        inbox := ptr(s.reading.value)
+        if inbox.given == inbox.received.len:
+            inbox.given = 0
+            inbox.received.len = 0
             if size >= 65536:
                 return receive(s, into, size) # straight into yours, without a copy
-            try receive(s, s.received, 65536)
-        taken := s.received.len - s.given
+            try receive(s, inbox.received, 65536)
+        taken := inbox.received.len - inbox.given
         if taken > size:
             taken = size
-        into.* += s.received[s.given:s.given + taken]
-        s.given += taken
+        into.* += inbox.received[inbox.given:inbox.given + taken]
+        inbox.given += taken
         return taken
 
 func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.reading):
-        checked: usize = 0
+        inbox := ptr(s.reading.value)
+        checked := 0
         while true:
             line: &strview
-            line = (ptr(s.received.*) as usize + s.given) as *bytes
-            line.len = s.received.len - s.given
-            end := memchr((ptr(line.*) as usize + checked) as *bytes, '\n', line.len - checked)
-            if end as usize != 0:
-                line.len = end as usize - ptr(line.*) as usize @trust
-                s.given += line.len + 1
+            line = ptr(inbox.received.*) + inbox.given
+            line.len = inbox.received.len - inbox.given
+            end := memchr(ptr(line.*) + checked, '\n', line.len - checked)
+            if end as u64 != 0:
+                line.len = end - ptr(line.*)
+                inbox.given += line.len + 1
                 if line.len > 0 and line[-1] == '\r':
                     line.len -= 1
-                return temp(line)
+                return tmp(line)
             checked = line.len
-            if s.given > 0:
-                memmove(ptr(s.received.*), ptr(line.*), line.len)
-                s.received.len = line.len
-                s.given = 0
-            if try receive(s, s.received, 65536) == 0:
-                s.given = s.received.len
-                if s.received.len == 0:
+            if inbox.given > 0:
+                memmove(ptr(inbox.received.*), ptr(line.*), line.len)
+                inbox.received.len = line.len
+                inbox.given = 0
+            if try receive(s, inbox.received, 65536) == 0:
+                inbox.given = inbox.received.len
+                if inbox.received.len == 0:
                     return null
-                return temp(view(s.received))
+                return tmp(view(inbox.received))
 
-priv func receive(s: *Stream, into: *&str, size: usize) -> usize|FsError:
+priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError:
     flush() # what you wrote goes out before the program waits for an answer
-    reserve(into, into.len + size)
-    got := try transfer(s, (ptr(into.*.*) as usize + into.len) as *bytes, size, false)
+    part := min(size, 1 << 20) # a read gives what is there, so the memory is asked for a part at a time
+    reserve(into, into.len + part)
+    got := try transfer(s, ptr(into.*.*) + into.len, part, false)
     into.len += got
     return got
 
-priv func transfer(s: *Stream, at: *bytes, size: usize, writing: bool) -> usize|FsError:
+priv func transfer(s: *Stream, at: *bytes, size: i64, writing: bool) -> i64|FsError:
     part := size
     if part > 1 << 30:
         part = 1 << 30 # macOS refuses 2 GiB in one call, and Windows counts in an i32
     while true:
         n := moved(s, at, part, writing)
         if n >= 0:
-            return usize(n)
+            return n
         code := failure(s, writing)
         if code != 0 and writing:
             return FsError{code, "write", ""} # drain keeps only its code, so a crash can write without memory
         if code != 0:
-            return FsError{code, "read", temp(s.path)}
+            return FsError{code, "read", tmp(s.path)}
 
 func ready(f: File, seconds: f64 = 0.0, place: &strview = @here()) -> bool:
     with scratch():
-        return ready(ptr([f]), seconds, place).len > 0
+        return ready(ptr([f]), seconds, place = place).len > 0
 
-func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -> &slice[usize] where not @windows():
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where not @windows():
     flush() # what you wrote goes out before the program waits for an answer
-    polled: &list[array[i32, 2]] # each a struct pollfd: the descriptor, POLLIN, and what poll finds
+    polled: &list[array[i32, 2]] = heap([]) # each a struct pollfd: the descriptor, POLLIN, and what poll finds
     defer free(polled)
     limit := milliseconds(seconds)
     for f in files:
-        valid(f, place)
+        valid(f, place = place)
         append(polled, [f.fd, 1])
         if buffered(f):
             limit = 0
-    while poll(ptr(polled.*), u64(polled.len), limit) < 0 and errno() == 4: # EINTR
+    while poll(ptr(polled.*), polled.len, limit) < 0 and errno() == 4: # EINTR
         pass
-    found: &list[usize]
+    found: &list[i64] = heap([])
     defer free(found)
     for i, p in polled:
         if p[1] >> 16 != 0 or buffered(files[i]):
             append(found, i)
-    return temp(found)
+    return tmp(found)
 
 # WSAPoll waits only for sockets, so with a pipe or a console it looks again every millisecond
-func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -> &slice[usize] where @windows():
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where @windows():
     flush()
     limit := milliseconds(seconds)
     began := GetTickCount64()
-    sockets: &list[Polled]
+    sockets: &list[Polled] = heap([])
     defer free(sockets)
-    found: &list[usize]
+    found: &list[i64] = heap([])
     defer free(found)
     while true:
         clear(sockets)
         for f in files:
-            valid(f, place)
+            valid(f, place = place)
             if f.fd >= 8192:
                 append(sockets, Polled{u64(f.fd - 8192), 0x100, 0}) # POLLRDNORM
         if sockets.len > 0:
             WSAPoll(ptr(sockets.*), u32(sockets.len), 0)
-        k: usize = 0
+        k := 0
         for i, f in files:
             hit := buffered(f)
             if f.fd >= 8192:
@@ -1635,8 +1866,8 @@ func ready(files: &slice[File], seconds: f64 = 0.0, place: &strview = @here()) -
                 append(found, i)
         left := limit - i32(GetTickCount64() - began)
         if found.len > 0 or limit >= 0 and left <= 0:
-            return temp(found)
-        if sockets.len == files.len:
+            return tmp(found)
+        if sockets.len > 0 and sockets.len == files.len:
             WSAPoll(ptr(sockets.*), u32(sockets.len), left) # then the next round tells which
         elif sockets.len > 0:
             WSAPoll(ptr(sockets.*), u32(sockets.len), 1)
@@ -1648,11 +1879,11 @@ priv type Polled: # a WSAPOLLFD
     events: i16
     found: i16
 
-priv func arrived(file: usize) -> bool:
+priv func arrived(file: u64) -> bool:
     kind := GetFileType(file)
     if kind == 3: # FILE_TYPE_PIPE
         left: u32 = 0
-        return PeekNamedPipe(file, usize(0) as *bytes, 0, usize(0) as *u32, ptr(left), usize(0) as *u32) == 0 or left > 0 # a pipe that is broken gives its end
+        return PeekNamedPipe(file, 0 as *bytes, 0, 0 as *u32, ptr(left), 0 as *u32) == 0 or left > 0 # a pipe that is broken gives its end
     if kind == 2: # FILE_TYPE_CHAR, a console
         return WaitForSingleObject(file, 0) == 0
     return true
@@ -1666,34 +1897,37 @@ priv func milliseconds(seconds: f64) -> i32:
 
 # what a read gives without asking the system, and nothing when another thread is reading it now
 priv func buffered(f: File) -> bool:
-    s := usize(0) as *Stream
-    with lock(io.lock):
-        if usize(f.fd) < io.streams.len:
-            s = io.streams[usize(f.fd)]
-    if s as usize == 0 or not s.open or not try_lock(s.reading):
+    s := 0 as *Stream
+    with lock(io.table):
+        if f.fd < io.table.value.streams.len:
+            s = io.table.value.streams[f.fd]
+    if s as u64 == 0 or not s.open or not try_lock(s.reading):
         return false
-    waiting := s.given < s.received.len
-    close(Locked{ptr(s.reading)})
-    return waiting
+    with Locked{ptr(s.reading) as *Lock[null]}:
+        return s.reading.value.given < s.reading.value.received.len
 
 priv func valid(f: File, place: &strview):
     if f.fd < 0:
-        panic("File{" + f.fd + "} is not an open file", place)
+        panic("File{" + f.fd + "} is not an open file", place = place)
 
 func close(f: File, place: &strview = @here()):
-    s := stream(f, place)
+    s := stream(f, place = place)
     with lock(s.reading):
         with lock(s.writing):
             drain(s)
-            s.failed = 0
+            s.writing.value.failed = 0
             s.path.len = 0
-            s.received.len = 0
-            s.given = 0
-            if s.received.cap > 131072:
-                free(s.received) # after a long line the stream keeps only its usual room
-            with lock(io.lock):
+            inbox := ptr(s.reading.value)
+            inbox.received.len = 0
+            inbox.given = 0
+            if inbox.received.cap > 131072:
+                free(inbox.received) # after a long line the stream keeps only its usual room
+            with lock(io.table):
                 s.open = false
             release(s) # last, a file that another thread opens can get the same number
+
+operator with(f: File, place: &strview = @here()):
+    close(f, place = place)
 
 func errno() -> i32 where @linux():
     return __errno_location().*
@@ -1704,19 +1938,19 @@ func errno() -> i32 where @macos():
 func errno() -> i32 where @windows():
     return _errno().*
 
-priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @linux():
+priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @linux():
     if not writing:
         return read(s.fd, at, size)
     if s.socket:
         return send(i64(s.fd), at, size, 0x4000) # MSG_NOSIGNAL, a closed peer is an error and not a signal
     return write(s.fd, at, size)
 
-priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @macos():
+priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @macos():
     if writing:
         return write(s.fd, at, size) # net sets SO_NOSIGPIPE on its sockets
     return read(s.fd, at, size)
 
-priv func moved(s: *Stream, at: *bytes, size: usize, writing: bool) -> i32 where @windows():
+priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @windows():
     if s.socket and writing:
         return send(i64(s.fd), at, size, 0)
     if s.socket:
@@ -1765,21 +1999,6 @@ priv func release(s: *Stream) where @windows():
     else:
         close(s.fd)
 
-priv func open_file(path: &strview, flags: i32, mode: i32) -> i32 where not @windows():
-    return open(cstr(path), flags, mode)
-
-priv func open_file(path: &strview, flags: i32, mode: i32) -> i32 where @windows():
-    return _wopen(wstr(path), flags, mode)
-
-priv func open_flags() -> array[i32, 4] where @linux():
-    return [0x80000, 0x80241, 0x80441, 438] # to read, to write from the start or at the end, and 0o666: O_CLOEXEC, O_WRONLY 1, O_CREAT 0x40, O_TRUNC 0x200, O_APPEND 0x400
-
-priv func open_flags() -> array[i32, 4] where @macos():
-    return [0x1000000, 0x1000601, 0x1000209, 438] # O_CLOEXEC 0x1000000, O_CREAT 0x200, O_TRUNC 0x400, O_APPEND 8
-
-priv func open_flags() -> array[i32, 4] where @windows():
-    return [0x8080, 0x8381, 0x8189, 0x180] # _O_BINARY 0x8000, _O_NOINHERIT 0x80, _O_CREAT 0x100, _O_TRUNC 0x200, _O_APPEND 8, _S_IREAD and _S_IWRITE
-
 priv func reason(code: i32) -> &strview where @linux():
     if code < 0:
         return view(gai_strerror(code))
@@ -1794,35 +2013,35 @@ priv func reason(code: i32) -> &strview where @windows():
     if code >= 0:
         return view(strerror(code))
     text: array[u16, 512]
-    FormatMessageW(0x1200, usize(0) as *bytes, u32(0 - code), 0, ptr(text) as wstr, 512, usize(0) as *bytes)
-    return trim_end(temp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
+    FormatMessageW(0x1200, 0 as *bytes, u32(0 - code), 0, ptr(text) as wstr, 512, 0 as *bytes)
+    return trim_end(tmp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
 
 type entry[$K, $V]:
     key: $K
     value: $V
 
 type fatptr map[$K, $V]:
-    len: usize
-    cap: usize
+    len: i64
+    cap: i64
     arena: *Arena
 
-func hash(s: &strview) -> u64:
+operator hash(s: &strview) -> u64:
     # FNV-1a
     h: u64 = 0xcbf2_9ce4_8422_2325
     for b in items(s):
         h = (h xor u64(b)) * 0x100_0000_01b3
     return h
 
-func hash(n: $T) -> u64 where $T is Integer:
+operator hash(n: $T) -> u64 where $T is Integer:
     h := u64(n) * 0x9e37_79b9_7f4a_7c15 # 2^64 over the golden ratio
     return h xor (h >> 32)
 
-func hash(f: f64) -> u64:
+operator hash(f: f64) -> u64:
     if f == 0.0:
         return 0
     return hash(f as u64)
 
-func hash(f: f32) -> u64:
+operator hash(f: f32) -> u64:
     return hash(f64(f))
 
 priv type Slot[$K, $V]:
@@ -1830,38 +2049,55 @@ priv type Slot[$K, $V]:
     key: $K
     value: $V
 
-priv func slots(m: &map[$K, $V]) -> &slice[Slot[$K, $V]]:
-    out: &slice[Slot[$K, $V]]
+priv func slots(m: &map[$K, $V]) -> &listview[Slot[$K, $V]]:
+    out: &listview[Slot[$K, $V]]
     out = ptr(m.*)
     out.len = m.cap
     return out
 
 priv TAKEN = 0x8000_0000_0000_0000 # in the hash of every key, so 0 marks a free slot
 
-priv func locate(m: &map[$K, $V], key: $Q) -> usize:
+priv func locate(m: &map[$K, $V], key: $Q) -> i64:
     table := slots(m)
     h := hash(key) or TAKEN
-    i := usize(h) and m.cap - 1
+    i := i64(h) and m.cap - 1
     while table[i].hash != 0 and (table[i].hash != h or table[i].key != key):
         i = (i + 1) and m.cap - 1
     return i
 
-func put(m: *&map[$K, $V], key: $K, value: $V):
+# keys of text are copies that the map frees, so those maps have functions of their own
+func put(m: *&map[$K, $V], key: $K, value: $V) where $K != &str:
     put(m, key).* = value
 
-priv func put(m: *&map[$K, $V], key: $K) -> *$V:
-    reserve(m, m.len + 1)
-    i := locate(m.*, key)
+func put(m: *&map[&str, $V], key: &strview, value: $V):
+    put(m, key).* = value
+
+operator []=(m: *&map[$K, $V], key: $K) -> *$V where $K != &str:
+    return put(m, key)
+
+operator []=(m: *&map[&str, $V], key: &strview) -> *$V:
+    return put(m, key)
+
+priv func put(m: *&map[$K, $V], key: $Q) -> *$V:
+    i := 0
+    if m.cap > 0:
+        i = locate(m.*, key)
+    if m.cap == 0 or slots(m.*)[i].hash == 0: # only a new key grows the table, so a key that is there keeps its place
+        reserve(m, m.len + 1)
+        i = locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
-        table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = key}
+        where $K == &str:
+            table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = arena(m.arena, key)}
+        where $K != &str:
+            table[i] = Slot[$K, $V]{hash = hash(key) or TAKEN, key = key}
         m.len += 1
     return ptr(table[i].value)
 
-func at(m: &map[$K, $V], key: $K) -> $V|null:
+operator [](m: &map[$K, $V], key: $K) -> $V|null where $K != &str:
     return found(m, key)
 
-func at(m: &map[&str, $V], key: &strview) -> $V|null:
+operator [](m: &map[&str, $V], key: &strview) -> $V|null:
     return found(m, key)
 
 priv func found(m: &map[$K, $V], key: $Q) -> $V|null:
@@ -1873,13 +2109,13 @@ priv func found(m: &map[$K, $V], key: $Q) -> $V|null:
         return null
     return table[i].value
 
-func contains(m: &map[$K, $V], key: $K) -> bool:
+func contains(m: &map[$K, $V], key: $K) -> bool where $K != &str:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
 func contains(m: &map[&str, $V], key: &strview) -> bool:
     return m.cap > 0 and slots(m)[locate(m, key)].hash != 0
 
-func remove(m: *&map[$K, $V], key: $K) -> $V|null:
+func remove(m: *&map[$K, $V], key: $K) -> $V|null where $K != &str:
     return removed(m, key)
 
 func remove(m: *&map[&str, $V], key: &strview) -> $V|null:
@@ -1893,10 +2129,12 @@ priv func removed(m: *&map[$K, $V], key: $Q) -> $V|null:
     if table[hole].hash == 0:
         return null
     value := table[hole].value
+    where $K == &str:
+        free(table[hole].key)
     j := hole
     while table[(j + 1) and m.cap - 1].hash != 0:
         j = (j + 1) and m.cap - 1
-        home := usize(table[j].hash) and m.cap - 1
+        home := i64(table[j].hash) and m.cap - 1
         if j > hole and (home <= hole or home > j) or j < hole and home <= hole and home > j:
             table[hole] = table[j]
             hole = j
@@ -1904,31 +2142,31 @@ priv func removed(m: *&map[$K, $V], key: $Q) -> $V|null:
     m.len -= 1
     return value
 
-func reserve(m: *&map[$K, $V], want: usize):
-    if want > m.cap / 2 and try_reserve(m, want) is NoMemory:
+func reserve(m: *&map[$K, $V], want: i64):
+    if (want < 0 or want > m.cap / 2) and try_reserve(m, want) is NoMemory:
         out_of_memory()
 
-func try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?:
+func try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?:
+    if want < 0 or want > MOST / 2 / @sizeof(Slot[$K, $V]):
+        return NoMemory
     if want <= m.cap / 2:
         return null
-    if want > MOST / 2 / sizeof(Slot[$K, $V]):
-        return NoMemory
     cap := m.cap
     if cap < 16:
         cap = 16
     while cap < want * 2:
         cap *= 2
-    grown := resize(m.arena, usize(0) as *bytes, 0, cap * sizeof(Slot[$K, $V]))
-    if grown as usize == 0:
+    grown := resize(m.arena, 0 as *bytes, 0, cap * @sizeof(Slot[$K, $V]), NO_MAP)
+    if grown as u64 == 0:
         return NoMemory
     old := slots(m.*)
-    memset(grown, 0, cap * sizeof(Slot[$K, $V]))
+    memset(grown, 0, cap * @sizeof(Slot[$K, $V]))
     m.* = grown
     m.cap = cap
     table := slots(m.*)
     for s in old:
         if s.hash != 0:
-            j := usize(s.hash) and cap - 1
+            j := i64(s.hash) and cap - 1
             while table[j].hash != 0:
                 j = (j + 1) and cap - 1
             table[j] = s
@@ -1938,23 +2176,28 @@ func try_reserve(m: *&map[$K, $V], want: usize) -> NoMemory?:
 func clear(m: *&map[$K, $V]):
     table := slots(m.*)
     for i in 0..table.len:
+        where $K == &str:
+            if table[i].hash != 0:
+                free(table[i].key)
         table[i].hash = 0
     m.len = 0
 
 func free(m: *&map[$K, $V]):
+    where $K == &str:
+        clear(m)
     discard(m.arena, ptr(m.*.*))
-    m.* = usize(0) as *bytes
+    m.* = 0 as *bytes
     m.len = 0
     m.cap = 0
 
 priv type Pairs[$K, $V]:
-    table: &slice[Slot[$K, $V]]
-    i: usize
+    table: &listview[Slot[$K, $V]]
+    i: i64
 
-func iter(m: &map[$K, $V]) -> Pairs[$K, $V]:
+operator for(m: &map[$K, $V]) -> Pairs[$K, $V]:
     return Pairs[$K, $V]{slots(m), 0}
 
-func next(p: *Pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
+operator next(p: *Pairs[$K, $V]) -> entry[$K, $V]|IterationEnd:
     while p.i < p.table.len:
         p.i += 1
         s := p.table[p.i - 1]
@@ -1973,13 +2216,13 @@ operator +=(s: *&str, m: &map[$K, $V]):
     s.* += "}"
 
 type fixmap[$K, $V, $$max]:
-    len: usize
+    len: i64
     entries: array[entry[$K, $V], $$max]
 
 type error MapFull
 
-priv func place(m: *fixmap[$K, $V, $$max], key: $K) -> usize:
-    i: usize = 0
+priv func place(m: *fixmap[$K, $V, $$max], key: $K) -> i64:
+    i := 0
     while i < m.len and m.entries[i].key != key:
         i += 1
     return i
@@ -1993,7 +2236,10 @@ func put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
     m.entries[i] = entry[$K, $V]{key, value}
     return null
 
-func at(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
+operator []=(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?:
+    return put(m, key, value)
+
+operator [](m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
     i := place(m, key)
     if i == m.len:
         return null
@@ -2015,7 +2261,7 @@ func remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null:
 func clear(m: *fixmap[$K, $V, $$max]):
     m.len = 0
 
-func iter(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
+operator for(m: *fixmap[$K, $V, $$max]) -> Walk[entry[$K, $V]]:
     return Walk[entry[$K, $V]]{ptr(m.entries) as *bytes, m.len, 0}
 
 operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
@@ -2027,7 +2273,7 @@ operator ==(a: *fixmap[$K, $V, $$max], b: *fixmap[$K, $V, $$max]) -> bool:
             return false
     return true
 
-func hash(m: *fixmap[$K, $V, $$max]) -> u64:
+operator hash(m: *fixmap[$K, $V, $$max]) -> u64:
     h: u64 = 0
     for i in 0..m.len:
         h += hash(m.entries[i].key) * 31 + hash(m.entries[i].value) # a sum, so the order of the entries doesn't count
@@ -2045,87 +2291,85 @@ operator +=(s: *&str, m: *fixmap[$K, $V, $$max]):
 priv SHOWN_CALLS = 20
 
 priv type Function:
-    start: usize
+    start: u64
     place: u32
     library: bool
 
 priv type Crash:
-    frame: usize
-    code: usize
-    stack: usize
-    address: usize
-    leaf: usize # where a function of C keeps the address it returns to while it keeps nothing on the stack
+    frame: u64
+    code: u64
+    stack: u64
+    address: u64
+    leaf: u64 # where a function of C keeps the address it returns to while it keeps nothing on the stack
 
 priv type Chain:
-    head: usize
-    table: &slice[Function]
-    line: usize
-    times: usize
-    shown: usize
-    more: usize
+    head: u64
+    table: &listview[Function]
+    line: i64
+    times: i64
+    shown: i64
+    more: i64
 
 priv context failing:
     stack: *bytes # where the handler runs, each thread takes its own
 
-priv telling: Lock # the first thread that fails takes it and keeps it, the others wait there for the end
+priv shared context failure:
+    telling: Lock[null] # the first thread that fails takes it and keeps it, the others wait there for the end
+    hook: func(&strview, &strview) # what on_panic gave, it runs before the program ends with 134
 
 # one thread tells how the program fails, and if it fails again while it tells, it ends at once
 priv func tell(code: i32):
-    if telling.owner == me():
+    if get(failure.telling.owner) == me():
         _exit(code)
-    lock(telling)
+    lock(failure.telling)
 
 priv export func flag_start():
     catch_crashes()
     guard_stack()
 
-priv entering: Lock
-priv stamped: bool
-
-# the first time a thread runs code of this program or library, stamp writes the tags its contexts start with, and the first time of all those of the file variables
-priv func enter():
-    with lock(entering):
-        stamp(not stamped)
-        stamped = true
-
 priv func catch_crashes() where @linux():
-    for signal in [4, 7, 8, 11]: # SIGILL, SIGBUS, SIGFPE, SIGSEGV
-        catch(signal)
+    for signal in [4, 6, 7, 8, 11]: # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV
+        catch(i32(signal))
 
 priv func catch_crashes() where @macos():
-    for signal in [4, 8, 10, 11]: # SIGILL, SIGFPE, SIGBUS, SIGSEGV
-        catch(signal)
+    for signal in [4, 6, 8, 10, 11]: # SIGILL, SIGABRT, SIGFPE, SIGBUS, SIGSEGV
+        catch(i32(signal))
 
 priv func catch(signal: i32) where @linux():
-    action: array[usize, 19] # struct sigaction: the handler, the mask, the flags and the restorer
-    action[0] = ptr(flag_crash) as usize
+    action: array[u64, 19] # struct sigaction: the handler, the mask, the flags and the restorer
+    action[0] = ptr(flag_crash) as u64
     action[17] = 0x4800_0004 # SA_NODEFER, SA_ONSTACK, SA_SIGINFO
-    sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
+    sigaction(signal, ptr(action) as *bytes, 0 as *bytes)
 
 priv func catch(signal: i32) where @macos():
-    action := [ptr(flag_crash) as usize, 0x51 << 32] # struct sigaction: the handler, then the mask and the flags SA_SIGINFO, SA_NODEFER and SA_ONSTACK
-    sigaction(signal, ptr(action) as *bytes, usize(0) as *bytes)
+    action := [ptr(flag_crash) as u64, 0x51 << 32] # struct sigaction: the handler, then the mask and the flags SA_SIGINFO, SA_NODEFER and SA_ONSTACK
+    sigaction(signal, ptr(action) as *bytes, 0 as *bytes)
 
 priv func catch_crashes() where @windows():
     AddVectoredExceptionHandler(1, ptr(flag_exception))
+    signal(22, ptr(flag_abort)) # SIGABRT, that abort raises before the C runtime ends the program
+
+priv export func flag_abort(number: i32):
+    frame := flag_frame()
+    crashed("aborted", Crash{frame, 0, frame, 0, 0}, 134)
 
 priv type Test:
     name: cstr
     run: func()
 
-priv overtime: &str # what a test says when its time is up
-
-priv tested: usize # the thread that runs the test, on Windows
+priv shared context testing:
+    overtime: &str = heap("") # what a test says when its time is up
+    thread: u64 # the thread that runs the test, on Windows
 
 # the main of the program that flagc test builds: it runs the test it names, in the seconds it gives
 priv func run_test() -> i32:
     head := flag_tests()
-    tests: &slice[Test]
-    tests = (head as usize + 8) as *bytes
+    tests: &listview[Test]
+    tests = head as *bytes + 8
     tests.len = head.*
-    given: &slice[cstr]
+    given: &listview[cstr]
     given = @argv()
-    given.len = usize(@argc())
+    given.len = @argc()
     if given.len < 2:
         eprint("flag: name the test to run")
         return 2
@@ -2135,7 +2379,7 @@ priv func run_test() -> i32:
             if given.len > 2:
                 seconds := parse_int(view(given[2])) ifnull 0
                 if seconds > 0:
-                    overtime += "the test takes more than " + seconds + " s"
+                    testing.overtime += "the test takes more than " + seconds + " s"
                     limit(u32(seconds))
             t.run()
             return 0
@@ -2147,33 +2391,33 @@ priv func limit(seconds: u32) where not @windows():
     alarm(seconds)
 
 priv func limit(seconds: u32) where @windows():
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(tested), 0, 0, 2) # DUPLICATE_SAME_ACCESS
-    timer: usize = 0
-    CreateTimerQueueTimer(ptr(timer), 0, ptr(flag_overtime), usize(0) as *bytes, seconds * 1000, 0, 8) # WT_EXECUTEONLYONCE
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(testing.thread), 0, 0, 2) # DUPLICATE_SAME_ACCESS
+    timer: u64 = 0
+    CreateTimerQueueTimer(ptr(timer), 0, ptr(flag_overtime), 0 as *bytes, seconds * 1000, 0, 8) # WT_EXECUTEONLYONCE
 
 priv export func flag_overtime(parameter: *bytes, fired: u8) where @windows():
-    SuspendThread(tested)
+    SuspendThread(testing.thread)
     room: array[u64, 160]
-    context := (ptr(room) as usize + 15) / 16 * 16 # a CONTEXT is aligned to 16
+    context := (ptr(room) as u64 + 15) / 16 * 16 # a CONTEXT is aligned to 16
     ((context + 48) as *u32).* = 0x10_0003 # ContextFlags: CONTEXT_CONTROL and CONTEXT_INTEGER
-    GetThreadContext(tested, context as *bytes)
-    record: array[usize, 6] # with no address in it
-    crashed(overtime, crash(ptr(record) as usize, context), 142)
+    GetThreadContext(testing.thread, context as *bytes)
+    record: array[u64, 6] # with no address in it
+    crashed(testing.overtime, crash(ptr(record) as u64, context), 142)
 
 # each thread keeps room for the handler, so a stack overflow is reported too
 priv func guard_stack() where @linux():
     failing.stack = malloc(65536)
-    if failing.stack as usize == 0:
+    if failing.stack as u64 == 0:
         out_of_memory()
-    stack := [failing.stack as usize, 0, 65536] # stack_t: where, the flags and the size
-    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    stack := [failing.stack as u64, 0, 65536] # stack_t: where, the flags and the size
+    sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
 
 priv func guard_stack() where @macos():
     failing.stack = malloc(65536)
-    if failing.stack as usize == 0:
+    if failing.stack as u64 == 0:
         out_of_memory()
-    stack := [failing.stack as usize, 65536, 0] # stack_t: where, the size and the flags
-    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    stack := [failing.stack as u64, 65536, 0] # stack_t: where, the size and the flags
+    sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
 
 priv func guard_stack() where @windows():
     room: u32 = 65536 # what a stack overflow leaves to the handler
@@ -2181,32 +2425,34 @@ priv func guard_stack() where @windows():
 
 priv func drop_stack() where @linux():
     stack := [0, 2, 0] # SS_DISABLE
-    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
     free(failing.stack)
 
 priv func drop_stack() where @macos():
     stack := [0, 0, 4] # SS_DISABLE
-    sigaltstack(ptr(stack) as *bytes, usize(0) as *bytes)
+    sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
     free(failing.stack)
 
 priv func drop_stack() where @windows():
     return
 
 priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
-    c := crash(info as usize, context as usize)
+    c := crash(info as u64, context as u64)
     what: &strview = "invalid memory access"
     if signal == 4:
         what = "illegal instruction"
+    elif signal == 6:
+        what = "aborted"
     elif signal == 8:
         what = "arithmetic error"
     elif signal == 14:
-        what = overtime
+        what = testing.overtime
     elif c.address + 65536 >= c.stack and c.address < c.stack + 1048576:
         what = "stack overflow"
     crashed(what, c, 128 + signal)
 
 priv export func flag_exception(pointers: *bytes) -> i32:
-    record := peek(pointers as usize)
+    record := peek(pointers as u64)
     code := (record as *u32).*
     what: &strview
     switch code:
@@ -2219,27 +2465,27 @@ priv export func flag_exception(pointers: *bytes) -> i32:
     case 0xc0000094, 0xc0000095:
         what = "arithmetic error"
     if what.len > 0:
-        crashed(what, crash(record, peek(pointers as usize + 8)), i32(code))
+        crashed(what, crash(record, peek(pointers as u64 + 8)), i32(code))
     return 0 # EXCEPTION_CONTINUE_SEARCH, the exception is not one that ends the program
 
-priv func crash(info: usize, context: usize) -> Crash where @linux() and @x86_64():
+priv func crash(info: u64, context: u64) -> Crash where @linux() and @x86_64():
     return {peek(context + 120), peek(context + 168), peek(context + 160), peek(info + 16), peek(context + 160)} # rbp, rip and rsp of the ucontext_t, si_addr of the siginfo_t
 
-priv func crash(info: usize, context: usize) -> Crash where @linux() and @arm64():
+priv func crash(info: u64, context: u64) -> Crash where @linux() and @arm64():
     return {peek(context + 416), peek(context + 440), peek(context + 432), peek(info + 16), context + 424} # x29, pc, sp and x30
 
-priv func crash(info: usize, context: usize) -> Crash where @linux() and @riscv64():
+priv func crash(info: u64, context: u64) -> Crash where @linux() and @riscv64():
     return {peek(context + 240), peek(context + 176), peek(context + 192), peek(info + 16), context + 184} # s0, pc, sp and ra
 
-priv func crash(info: usize, context: usize) -> Crash where @macos() and @x86_64():
+priv func crash(info: u64, context: u64) -> Crash where @macos() and @x86_64():
     state := peek(context + 48)
     return {peek(state + 64), peek(state + 144), peek(state + 72), peek(info + 24), peek(state + 72)} # rbp, rip and rsp of the mcontext, si_addr
 
-priv func crash(info: usize, context: usize) -> Crash where @macos() and @arm64():
+priv func crash(info: u64, context: u64) -> Crash where @macos() and @arm64():
     state := peek(context + 48)
     return {peek(state + 248), peek(state + 272), peek(state + 264), peek(info + 24), state + 256} # fp, pc, sp and lr
 
-priv func crash(record: usize, context: usize) -> Crash where @windows():
+priv func crash(record: u64, context: u64) -> Crash where @windows():
     return {peek(context + 0xa0), peek(context + 0xf8), peek(context + 0x98), peek(record + 40), peek(context + 0x98)} # Rbp, Rip and Rsp of the CONTEXT, the address of an access violation
 
 # asks for no memory and waits for no lock: a crash can come from inside malloc, or while a lock is held
@@ -2247,25 +2493,29 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
     tell(code)
     if what == "stack overflow":
         c.leaf = 0 # the stack pointer can be past the end of the stack
-    if try_lock(io.lock):
-        for s in io.streams:
-            if s as usize != 0 and try_lock(s.writing):
-                drain(s)
+    drain()
     report("flag: ")
     report(what)
     if what == "invalid memory access":
         report(" at 0x")
-        report(u64(c.address), 16)
+        report(c.address, 16)
     report("\n")
     trace(c)
     _exit(code)
 
+# what was written goes out, without memory and without waiting for a lock, and the locks it takes stay taken: the program ends
+priv func drain():
+    if try_lock(io.table):
+        for s in io.table.value.streams:
+            if s as u64 != 0 and try_lock(s.writing):
+                drain(s)
+
 # the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
 priv func trace(c: Crash):
-    head := flag_functions() as usize # how many functions, where the last one ends, and then each function in the order of their code
-    table: &slice[Function]
+    head := flag_functions() as u64 # how many functions, where the last one ends, and then each function in the order of their code
+    table: &listview[Function]
     table = (head + 16) as *bytes
-    table.len = peek(head)
+    table.len = i64(peek(head))
     chain := Chain{head, table, table.len, 0, 0, 0}
     code := c.code
     fp := c.frame
@@ -2277,7 +2527,7 @@ priv func trace(c: Crash):
             if up <= fp:
                 up = 0 # the stack grows down, a caller is above
             fp = up
-        low: usize = 0 # how many functions start at code or before it
+        low: i64 = 0 # how many functions start at code or before it
         high := table.len
         while low < high:
             middle := (low + high) / 2
@@ -2323,22 +2573,22 @@ priv func put_line(chain: *Chain):
         return
     chain.shown += 1
     report("  in ")
-    report(view((chain.head + usize(chain.table[chain.line].place)) as cstr))
+    report(view((chain.head + chain.table[chain.line].place) as cstr))
     if chain.times > 1:
         report(", ")
         report(u64(chain.times), 10)
         report(" times")
     report("\n")
 
-priv func peek(at: usize) -> usize:
-    return (at as *usize).*
+priv func peek(at: u64) -> u64:
+    return (at as *u64).*
 
 priv func report(text: &strview):
     write(2, ptr(text.*), text.len)
 
 priv func report(n: u64, base: u64):
     digits: array[u8, 20]
-    i: usize = 20
+    i := 20
     while true:
         i -= 1
         digits[i] = "0123456789abcdef"[n % base]

@@ -1,0 +1,33 @@
+inherited context trace:
+    request: i64
+    level: i32 = 1
+    names: array[&strview, 2] = ["a", "b"]
+
+context app:
+    depth: i32 = 3
+
+func seen() -> &str:
+    out: &str = heap("request " + trace.request + ", level " + trace.level + ", " + trace.names + ", depth " + app.depth)
+    return out
+
+func again() -> &str:
+    trace.request += 1
+    app.depth = 5
+    return wait(parallel seen())
+
+func show(t: Thread[&str]):
+    text := wait(t)
+    print(text)
+    free(text)
+
+func main():
+    show(parallel seen())
+    trace.request = 7
+    trace.level = 2
+    trace.names[1] = "z"
+    app.depth = 9
+    show(parallel seen())
+    show(parallel again())
+    text := seen()
+    print(text)
+    free(text)

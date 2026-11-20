@@ -30,14 +30,14 @@ func int_arg(n: i64) -> Arg:
 
 func global(name: &strview) -> Arg:
     found := comp.global_ids[name]
-    if found is usize:
+    if found is i64:
         return Arg{Global, i64(found)}
     put(comp.global_ids, name, comp.globals.len)
     append(comp.globals, name)
     return Arg{Global, i64(comp.globals.len - 1)}
 
 func is_number(a: Arg) -> bool:
-    return a.kind != Temp or comp.numbers[usize(a.n) - 1]
+    return a.kind != Temp or comp.numbers[a.n - 1]
 
 func add(i: Ins) -> Arg:
     i.pos = comp.at
@@ -48,10 +48,167 @@ func add(i: Ins) -> Arg:
     return Arg{Temp, i64(i.to)}
 
 func op(cls: u32, name: &strview, a: Arg, b: Arg) -> Arg:
+    if (a.kind == Const or a.kind == Single or a.kind == Double) and (b.kind == Empty or b.kind == a.kind):
+        known := computed(cls, name, a, b)
+        if known.kind != Empty:
+            return known
     return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a, b = b})
 
 func op1(cls: u32, name: &strview, a: Arg) -> Arg:
-    return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a})
+    return op(cls, name, a, Arg{})
+
+# the number that QBE would compute for an instruction on numbers the compiler knows, as it folds one, or nothing for one it leaves to the program
+func computed(cls: u32, name: &strview, left: Arg, right: Arg) -> Arg:
+    float := left.kind != Const
+    f := left.n as f64
+    g := right.n as f64
+    a := left.n
+    b := right.n
+    if cls == S or cls == D:
+        word := cls == S
+        if float == (ends_with(name, "tof") or name == "cast"): # only those take an integer
+            return Arg{}
+        r := 0.0
+        switch name:
+        case "add":
+            r = f64(f32(f) + f32(g)) if word else f + g
+        case "sub":
+            r = f64(f32(f) - f32(g)) if word else f - g
+        case "mul":
+            r = f64(f32(f) * f32(g)) if word else f * g
+        case "div":
+            r = f64(f32(f) / f32(g)) if word else f / g
+        case "neg":
+            r = -f
+        case "exts", "truncd":
+            r = f64(f32(f)) if word else f
+        case "swtof", "sltof":
+            if name == "swtof":
+                a = a << 32 >> 32
+            r = f64(f32(a)) if word else f64(a)
+        case "uwtof", "ultof":
+            if name == "uwtof":
+                a = a and 0xffff_ffff
+            r = f64(f32(u64(a))) if word else f64(u64(a))
+        case "cast":
+            r = f64(u32(a) as f32) if word else a as f64
+            if word and r != r: # an f32 holds as an f64, where a nan doesn't keep its bits
+                return Arg{}
+        case:
+            return Arg{}
+        return Arg{Single if word else Double, r as i64}
+    if cls != W and cls != L:
+        return Arg{}
+    o := name
+    word := cls == W
+    if starts_with(name, "c") and (ends_with(name, "w") or ends_with(name, "l") or float and name != "cast"): # a comparison names the class of what it compares
+        o = name[:name.len - 1]
+        word = ends_with(name, "w")
+    r := 0
+    if float:
+        switch o:
+        case "ceq":
+            r = i64(f == g)
+        case "cne":
+            r = i64(f != g)
+        case "clt":
+            r = i64(f < g)
+        case "cle":
+            r = i64(f <= g)
+        case "cgt":
+            r = i64(f > g)
+        case "cge":
+            r = i64(f >= g)
+        case "dtosi", "stosi":
+            if not (f > (-2147483649.0 if cls == W else -9223372036854777856.0) and f < (2147483648.0 if cls == W else 9223372036854775808.0)): # out of its range each processor gives its own
+                return Arg{}
+            r = i64(f)
+        case "dtoui", "stoui":
+            if not (f > -1.0 and f < (4294967296.0 if cls == W else 18446744073709551616.0)):
+                return Arg{}
+            r = u64(f) as i64
+        case "cast":
+            r = i64(f32(f) as u32) if cls == W else a
+        case:
+            return Arg{}
+        return int_arg(r << 32 >> 32 if cls == W else r)
+    if word:
+        a = a << 32 >> 32
+        b = b << 32 >> 32
+    mask: u64 = 0xffff_ffff if word else 0xffff_ffff_ffff_ffff
+    x := u64(a) and mask
+    y := u64(b) and mask
+    shift := b and (31 if word else 63)
+    switch o:
+    case "add":
+        r = a + b
+    case "sub":
+        r = a - b
+    case "mul":
+        r = a * b
+    case "and":
+        r = a and b
+    case "or":
+        r = a or b
+    case "xor":
+        r = a xor b
+    case "neg":
+        r = 0 - a
+    case "copy":
+        r = a
+    case "shl":
+        r = a << shift
+    case "sar":
+        r = a >> shift
+    case "shr":
+        r = i64(x >> shift)
+    case "div", "rem", "udiv", "urem":
+        if b == 0:
+            return Arg{}
+        switch o:
+        case "div":
+            r = a / b
+        case "rem":
+            r = a % b
+        case "udiv":
+            r = i64(x / y)
+        case:
+            r = i64(x % y)
+    case "ceq":
+        r = i64(a == b)
+    case "cne":
+        r = i64(a != b)
+    case "cslt":
+        r = i64(a < b)
+    case "csle":
+        r = i64(a <= b)
+    case "csgt":
+        r = i64(a > b)
+    case "csge":
+        r = i64(a >= b)
+    case "cult":
+        r = i64(x < y)
+    case "cule":
+        r = i64(x <= y)
+    case "cugt":
+        r = i64(x > y)
+    case "cuge":
+        r = i64(x >= y)
+    case "extsb":
+        r = a << 56 >> 56
+    case "extub":
+        r = a and 0xff
+    case "extsh":
+        r = a << 48 >> 48
+    case "extuh":
+        r = a and 0xffff
+    case "extsw":
+        r = a << 32 >> 32
+    case "extuw":
+        r = a and 0xffff_ffff
+    case:
+        return Arg{}
+    return int_arg(r << 32 >> 32 if cls == W else r)
 
 func terminate(name: &strview, a: Arg):
     add(Ins{op = name, a = a})
@@ -70,7 +227,7 @@ func open_block(l: u32):
     add(Ins{op = "@", a = int_arg(i64(l))})
     comp.live = true
 
-func mention(name: &strview, a: Arg, type: usize, tok: usize):
+func mention(name: &strview, a: Arg, type: i64, tok: i64):
     if a.kind != Temp:
         return
     pointer := Arg{}
@@ -78,7 +235,7 @@ func mention(name: &strview, a: Arg, type: usize, tok: usize):
     for s in comp.slots:
         own = own or s.to == u32(a.n)
     if comp.debug and not own:
-        pointer = alloc(USIZE) # a debugger reads the variable through it
+        pointer = alloc(U64) # a debugger reads the variable through it
         add(Ins{op = "storel", a = a, b = pointer})
     append(comp.mentions, Mention{u32(a.n), name, type, tok, comp.scope, u32(pointer.n)})
     for k in reverse 0..comp.held.len:
@@ -92,13 +249,13 @@ func label_prefix() -> &strview:
     return "L"
 
 func listing() -> &str:
-    ids: &map[&strview, usize]
+    ids: &map[&strview, i64] = heap({})
     defer free(ids)
-    sizes: &list[usize]
+    sizes: &list[i64] = heap([])
     defer free(sizes)
-    rooms: &list[i64]
+    rooms: &list[i64] = heap([])
     defer free(rooms)
-    framed: &list[bool]
+    framed: &list[bool] = heap([])
     defer free(framed)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
@@ -120,27 +277,27 @@ func listing() -> &str:
                 given.arg = named(given.arg, names, first)
                 append(comp.passes, given)
             p.params = params
-            slots: &list[Ins]
-            body: &list[Ins]
-            pool: &list[Ins]
+            slots: &list[Ins] = heap([])
+            body: &list[Ins] = heap([])
+            pool: &list[Ins] = heap([])
             for k in p.code..p.end:
                 i := renamed(comp.code[k], names, first, hop)
                 g := callee(i, ids)
-                if g < f and (sizes[g] <= SMALL and not large and rooms[g] <= ROOMY and (rooms[g] <= SNUG or not p.recursive) or declared_inline(comp.procs[g].node)) and not comp.procs[g].recursive and not framed[g] and not comp.procs[g].export:
+                if g < f and (sizes[g] <= SMALL and not large and rooms[g] <= ROOMY and (rooms[g] <= SNUG or not p.recursive) or declared(comp.procs[g].node) == "inline") and not comp.procs[g].recursive and not framed[g] and not comp.procs[g].export:
                     q := comp.procs[g]
                     inner := fresh(q.temps, q.last)
-                    taken: &list[usize]
+                    taken: &list[i64] = heap([])
                     for j in 0..q.count:
                         want := comp.passes[q.params + j]
-                        given := comp.passes[usize(i.first) + j]
-                        at := usize(want.arg.n) - usize(q.temps)
+                        given := comp.passes[i.first + j]
+                        at := want.arg.n - i64(q.temps)
                         inner[at] = given.arg
                         if want.cls >= AGG:
-                            t := usize(want.cls - AGG)
+                            t := i64(want.cls - AGG)
                             inner[at] = pooled(Ins{op = alloc_op(t), a = int_arg(i64(room(t)))}, g, pool, taken)
                             append(body, Ins{op = "blit", a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
                     if i.cls >= AGG:
-                        append(slots, Ins{op = alloc_op(usize(i.cls - AGG)), cls = L, to = i.to, a = int_arg(i64(room(usize(i.cls - AGG))))})
+                        append(slots, Ins{op = alloc_op(i.cls - AGG), cls = L, to = i.to, a = int_arg(room(i.cls - AGG))})
                     comp.labels += 1
                     after := comp.labels
                     jumped := false
@@ -158,7 +315,7 @@ func listing() -> &str:
                             append(body, c)
                             continue
                         if i.cls >= AGG:
-                            append(body, Ins{op = "blit", a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(i64(comp.types[usize(i.cls - AGG)].size)), pos = c.pos})
+                            append(body, Ins{op = "blit", a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(comp.types[i64(i.cls - AGG)].size), pos = c.pos})
                         elif i.to != 0:
                             append(body, Ins{op = "copy", cls = i.cls, to = i.to, a = c.a, pos = c.pos})
                         if j + 1 < q.end:
@@ -184,55 +341,58 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        cut: &list[bool] # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
-        for t in p.temps..p.last + 1:
+        cut: &list[bool] = heap([]) # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
+        for t in p.temps..=p.last:
             append(cut, false)
         for k in p.params..p.params + p.count:
             given := comp.passes[k]
             if given.cls >= AGG and given.cls < CAGG and comp.types[given.cls - AGG].size <= CUT:
                 cut[given.arg.n - i64(p.temps)] = true
-        stays: usize = 0
-        room: i64 = 0
-        frame := false
+        stays := 0
+        room := 0
+        frame := declared(p.node) == "noinline"
         for i in comp.code[p.code:p.end]:
             if starts_with(i.op, "alloc"):
                 room += i.a.n
                 cut[i.to - p.temps] = i.a.n <= CUT
             elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
                 cut[i.to - p.temps] = true
-            elif not (i.op == "absent" or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+            elif not (i.ghost or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
                 stays += 1
-            frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[usize(i.a.n)] == "$flag_frame" # it reads the frame of its caller, panic for the chain
+            frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_frame" # it reads the frame of its caller, panic for the chain
         free(cut)
         append(sizes, stays)
         append(rooms, room)
         append(framed, frame)
-    live: &list[bool]
+    live: &list[bool] = heap([])
     defer free(live)
-    work: &list[usize]
+    work: &list[i64] = heap([])
     defer free(work)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
-        append(live, p.export or comp.insts[p.inst].valued)
+        append(live, p.export or comp.insts[p.inst].taken_as != VOID)
         if live[f]:
             append(work, f)
+    shaped := comp.shared
+    asked := comp.global_ids["$flag_shapes"] ifnull -1 # what load calls for the table of the program
     while work.len > 0:
         p := comp.procs[trust pop(work)]
         for i in comp.code[p.code:p.end]:
+            shaped = shaped or i.a.n == asked and i.a.kind == Global and i.op == "call"
             g := callee(i, ids)
             if g < comp.procs.len and not live[g]:
                 live[g] = true
                 append(work, g)
-    written: &list[Proc]
+    written: &list[Proc] = heap([])
     for index, f in comp.procs:
         if live[index]:
             append(written, f)
     comp.procs = written
-    out: &str
-    moved: &list[i64]
-    for l in 0..comp.labels + 1:
+    out: &str = heap("")
+    moved: &list[i64] = heap([])
+    for l in 0..=comp.labels:
         append(moved, 0)
-    dropped: &list[bool]
+    dropped: &list[bool] = heap([])
     for i in comp.code:
         append(dropped, i.ghost)
     for t in 0..comp.reached:
@@ -240,12 +400,47 @@ func listing() -> &str:
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
     out += comp.data
+    if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
+        privs: &map[i64, bool] = heap({}) # the declarations that are priv
+        for sym in comp.syms:
+            if sym.priv:
+                privs[sym.node] = true
+        rows: &list[&strview] = heap([])
+        tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
+        for t in 0..comp.types.len:
+            ty := comp.types[t]
+            k := comp.nodes[ty.decl].kind
+            if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
+                shape: &str = heap("")
+                shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
+                for f in comp.items[ty.first:ty.first + ty.count]:
+                    shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
+                append(tags, u64(ty.tag) << 32 or u64(rows.len))
+                append(rows, "w " + ty.tag + ", w 0, l " + hash(view(shape)) as i64 + ", l $flag.shape." + rows.len)
+                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + ty.name + "\", b 0 }\n"
+        for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
+            sym := comp.syms[a]
+            if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
+                name: &str = heap("")
+                if sym.module.len > 0:
+                    name += sym.module + "."
+                name += sym.name
+                tag := tag_of_shape(view(name))
+                target := comp.types[trust make_type(a, [], false, 0)]
+                append(tags, u64(tag) << 32 or u64(rows.len))
+                append(rows, "w " + tag + ", w " + i64(target.kind == Union) + ", l " + i64(target.tag) + ", l $flag.shape." + rows.len)
+                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + name + "\", b 0 }\n"
+        sort(tags)
+        shapes: &str = heap("")
+        for t in tags:
+            shapes += ", " + rows[i64(t and 0xffff_ffff)]
+        out += read_only(true) + "data $flag.shapes = { l " + rows.len + shapes + " }\nexport function l $flag_shapes() {\n@start\n\tret $flag.shapes\n}\n"
     out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
-    places: &str
+    places: &str = heap("")
     place := 16 + 16 * comp.procs.len
     for f in comp.procs:
         hidden := f.node == 0 or comp.insts[f.inst].library
-        out += ", l " + f.name + ", w " + place + ", w " + usize(hidden)
+        out += ", l " + f.name + ", w " + place + ", w " + i64(hidden)
         if not hidden:
             at := declared_at(f)
             shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
@@ -282,8 +477,8 @@ func listing() -> &str:
                 dropped[next] = true
             if not dropped[k]:
                 ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
-        shown: usize = 0
-        line: usize = 0
+        shown := 0
+        line := 0
         slotted := not comp.debug
         for k in f.code..f.end:
             i := comp.code[k]
@@ -356,14 +551,14 @@ func listing() -> &str:
         out += "}\n"
     return out
 
-func callee(i: Ins, ids: &map[&strview, usize]) -> usize:
+func callee(i: Ins, ids: &map[&strview, i64]) -> i64:
     if i.op != "call" or i.a.kind != Global or i.ghost:
         return comp.procs.len
-    return ids[comp.globals[usize(i.a.n)]] ifnull comp.procs.len
+    return ids[comp.globals[i.a.n]] ifnull comp.procs.len
 
 # the inlined bodies of one function share their slots: those of another may give their address to a call, and QBE would keep the shared slot whole
-func pooled(slot: Ins, callee: usize, pool: *&list[Ins], taken: *&list[usize]) -> Arg:
-    k: usize = 0
+func pooled(slot: Ins, callee: i64, pool: *&list[Ins], taken: *&list[i64]) -> Arg:
+    k := 0
     while k < pool.len and (pool[k].a.n != slot.a.n or pool[k].op != slot.op or pool[k].first != u32(callee) or contains(taken.*, k)):
         k += 1
     if k == pool.len:
@@ -376,8 +571,8 @@ func cut_at(cut: &list[bool], a: Arg, first: u32) -> bool:
     return a.kind == Temp and cut[a.n - i64(first)]
 
 func fresh(first: u32, last: u32) -> &list[Arg]:
-    names: &list[Arg]
-    for k in first..last + 1:
+    names: &list[Arg] = heap([])
+    for k in first..=last:
         comp.temps += 1
         append(names, Arg{Temp, i64(comp.temps)})
     return names
@@ -385,7 +580,7 @@ func fresh(first: u32, last: u32) -> &list[Arg]:
 func named(a: Arg, names: &list[Arg], first: u32) -> Arg:
     if a.kind != Temp:
         return a
-    return names[usize(a.n) - usize(first)]
+    return names[a.n - i64(first)]
 
 func renamed(i: Ins, names: &list[Arg], first: u32, labels: i64) -> Ins:
     if i.to != 0:
@@ -407,7 +602,7 @@ func renamed(i: Ins, names: &list[Arg], first: u32, labels: i64) -> Ins:
         i.first = u32(from)
     return i
 
-func kept(dropped: &list[bool], k: usize, end: usize) -> usize:
+func kept(dropped: &list[bool], k: i64, end: i64) -> i64:
     while k < end and dropped[k]:
         k += 1
     return k
@@ -451,18 +646,12 @@ func put_arg(out: *&str, a: Arg, first: u32):
     case Const:
         out.* += a.n
     case Global:
-        if comp.shared and comp.system == "linux" and starts_with(comp.globals[usize(a.n)], "thread "):
+        if comp.shared and comp.system == "linux" and starts_with(comp.globals[a.n], "thread "):
             out.* += "extern " # initial-exec, the place of thread data comes from the GOT
-        out.* += comp.globals[usize(a.n)]
-    case Single, Double:
-        if a.kind == Single:
-            out.* += "s_"
-        else:
-            out.* += "d_"
-        buf: array[u8, 40]
-        printed: &strview
-        printed = ptr(buf) as *bytes
-        printed.len = usize(snprintf(ptr(buf) as *u8, 40, "%.17g", a.n as f64))
-        out.* += printed
+        out.* += comp.globals[a.n]
+    case Single:
+        out.* += f32(a.n as f64) as u32 # QBE reads the bits of a float from an integer
+    case Double:
+        out.* += a.n
     case:
         return

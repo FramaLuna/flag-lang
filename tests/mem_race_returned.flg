@@ -1,0 +1,24 @@
+type P:
+    a: i64
+    b: i64
+
+shared context box:
+    pair: P
+    guarded: Lock[P]
+
+func write():
+    box.pair = P{1, 2}
+    with lock(box.guarded):
+        box.guarded.value = P{3, 4}
+
+noinline func pair() -> P:
+    return box.pair
+
+noinline func guarded() -> P:
+    with lock(box.guarded):
+        return box.guarded.value
+
+func main():
+    t := parallel write()
+    print(pair(), " ", guarded())
+    wait(t)

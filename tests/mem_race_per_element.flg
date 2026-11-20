@@ -1,0 +1,24 @@
+func add(total: *i64, n: i64):
+    total.* += n
+
+func double(x: *i64):
+    x.* *= 2
+
+func main():
+    totals: array[i64, 4]
+    adding: &list[Thread[null]] = heap([])
+    defer free(adding)
+    for k in 0..4:
+        totals[k] = 1 # before its thread starts
+        append(adding, parallel add(ptr(totals[k]), k))
+    for t in adding:
+        wait(t)
+    values: &list[i64] = heap([1, 2, 3])
+    defer free(values)
+    doubling: &list[Thread[null]] = heap([])
+    defer free(doubling)
+    for v in values:
+        append(doubling, parallel double(v))
+    for t in doubling:
+        wait(t)
+    print(totals, " ", values)

@@ -1,0 +1,15 @@
+type Counter:
+    hits: atomic[i64]
+
+func work(c: *Counter):
+    for i in 0..1000:
+        add(c.hits, 1)
+
+func main():
+    cs: &list[Counter] = heap([])
+    defer free(cs)
+    append(cs, Counter{})
+    t := parallel work(ptr(cs[0]))
+    for i in 0..100:
+        append(cs, Counter{}) # moves the counter the thread adds to
+    wait(t)

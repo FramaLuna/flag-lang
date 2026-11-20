@@ -1,0 +1,25 @@
+type Stats:
+    seen: &list[i64] = heap([])
+
+type Job:
+    id: i64
+    stats: *Stats
+
+func run(j: *Job):
+    for i in 0..1000:
+        append(j.stats.seen, j.id)
+
+func main():
+    stats := heap(Stats{})
+    jobs: &list[Job] = heap([])
+    defer free(jobs)
+    for i in 0..4:
+        append(jobs, Job{id = i, stats = stats}) # every job points to the one stats
+    ts: &list[Thread[null]] = heap([])
+    defer free(ts)
+    for j in jobs:
+        append(ts, parallel run(j))
+    for t in ts:
+        wait(t)
+    free(stats.seen)
+    free(stats as *bytes)

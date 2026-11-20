@@ -1,0 +1,17 @@
+type Row:
+    count: i64
+    cells: array[i64, 3]
+
+func fill(row: *Row, cell: *i64):
+    row.count += 1
+    cell.* = 1
+
+func main():
+    rows: array[Row, 2]
+    threads: &list[Thread[null]] = heap([])
+    defer free(threads)
+    for r in 0..2:
+        for c in 0..3:
+            append(threads, parallel fill(ptr(rows[r]), ptr(rows[r].cells[c])))
+    for t in threads:
+        wait(t)

@@ -1,0 +1,23 @@
+type Node:
+    v: i64
+    kids: &list[*Node] = heap([])
+    name: &str = heap("")
+
+func build(d: i64) -> *Node:
+    n := heap(Node{v = d})
+    n.name += d
+    if d > 0:
+        for i in 0..2:
+            append(n.kids, build(d - 1))
+    return n
+
+func release(n: *Node):
+    for k in n.kids:
+        release(k)
+    free(n.kids)
+    free(n.name)
+    free(n)
+
+func main():
+    root := build(4)
+    release(root)

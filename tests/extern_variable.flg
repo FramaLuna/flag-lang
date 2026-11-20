@@ -1,0 +1,20 @@
+use fs
+use os
+
+extern "c":
+    index: *i32 = "optind"
+
+func main():
+    print(index.*)
+    index.* = 3
+    print(index.*)
+    index.* = 1
+    library := dir_of(args()[0]) + "extern_variable_library.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/extern_variable_library.flg", "-shared", "-o", library]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library)
+    loaded := load_library(library)
+    if loaded is LoadError:
+        panic("" + loaded)
+    read := trust symbol(loaded, "read_index") as extern func() -> i32
+    print(read())

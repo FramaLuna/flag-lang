@@ -1,0 +1,50 @@
+type Bag:
+    items: &list[i64] = heap([])
+
+type Room:
+    bags: array[Bag, 4]
+
+func lists():
+    grid: array[array[&list[i64], 2], 2] = [[heap([]), heap([])], [heap([]), heap([])]]
+    for row in grid:
+        for b in row:
+            append(b, 1)
+    for row in grid:
+        for b in row:
+            free(b)
+
+func indexed():
+    grid: array[array[&list[i64], 2], 2] = [[heap([]), heap([])], [heap([]), heap([])]]
+    for i in 0..2:
+        for j in 0..2:
+            append(ptr(grid[i][j]), i * 2 + j)
+    for row in grid:
+        for b in row:
+            free(b)
+
+func defaults():
+    grid: array[array[Bag, 2], 2]
+    for i in 0..2:
+        for j in 0..2:
+            append(ptr(grid[i][j].items), i * 2 + j)
+    for row in grid:
+        for b in row:
+            free(b.items)
+
+func rooms():
+    rooms: &list[Room] = heap([])
+    for i in 0..3:
+        append(rooms, Room{})
+    for r in rooms:
+        for k in 0..4:
+            append(ptr(r.bags[k].items), k)
+    for r in rooms:
+        for b in r.bags:
+            free(b.items)
+    free(rooms)
+
+func main():
+    lists()
+    indexed()
+    defaults()
+    rooms()

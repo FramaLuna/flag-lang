@@ -1,0 +1,56 @@
+type Point:
+    x: i32
+    y: i32
+
+type enum Mode = Slow|Fast
+
+type Settings:
+    mode: Mode
+    size: u16
+    name: &strview = ""
+
+shared context stats:
+    counter: i32
+
+names: array[&strview, 3] = ["a", "bb", "ccc"]
+origin: Point = {3, 4}
+corner: Point = Point{y = 9}
+mode: Mode = Fast
+limit: i64? = 100
+nothing: i64? = null
+ratio: f64 = 1.5
+small: f32 = -0.25
+LIMIT = 7
+seven: u8 = LIMIT * 2 - LIMIT
+greeting: &strview = "hi\tthere"
+GREETING = "constant"
+again: &strview = GREETING
+where: *i32 = ptr(stats.counter)
+settings: Settings = {size = 640}
+modes: array[Mode, 3] = [Slow, Fast, Slow]
+table: array[Point, 2] = [{1, 2}, {3, 4}]
+handler: func(i32) -> i32 = twice
+flags: array[bool, 2] = [true, false]
+same: Point = origin
+narrow: i32 = 5
+wide: i64|i32 = narrow # the constant keeps its type, i32
+BACK: i64 = 2
+
+func twice(x: i32) -> i32:
+    return x * 2
+
+func bump():
+    stats.counter += 1
+
+func main():
+    bump()
+    bump()
+    print(stats.counter, " ", where.*)
+    print(names, " ", origin, " ", corner, " ", table, " ", same)
+    print(mode, " ", modes, " ", settings)
+    print(limit, " ", nothing, " ", ratio, " ", small, " ", seven)
+    print(greeting, " ", again, " ", flags)
+    print(handler(21), " ", wide is i32)
+    copy := origin
+    copy.x = 30
+    print(copy, " ", origin, " ", names[-1], " ", names[-BACK])

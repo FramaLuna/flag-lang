@@ -1,0 +1,21 @@
+func worker(jobs: *Channel[&str, 4], done: *Channel[&str, 4]):
+    for name in jobs:
+        line: &str = heap(name)
+        line += "!"
+        free(name)
+        send(done, line)
+    close(done)
+
+func main():
+    jobs: Channel[&str, 4]
+    done: Channel[&str, 4]
+    t := parallel worker(jobs, done)
+    for k in 0..3:
+        name: &str = heap("job ")
+        name += k
+        send(jobs, name)
+    close(jobs)
+    for line in done:
+        print(line)
+        free(line)
+    wait(t)

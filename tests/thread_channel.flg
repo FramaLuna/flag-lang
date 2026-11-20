@@ -14,7 +14,7 @@ func consume(jobs: *Jobs, results: *Results):
 
 func names(into: *Channel[&str, 3]):
     for name in ["ana", "luis", "eva", "ivo"]:
-        owned: &str = name
+        owned: &str = heap(name)
         send(into, owned)
     close(into)
 
@@ -22,21 +22,21 @@ func main():
     jobs: Jobs
     results: Results
     p := parallel produce(jobs, 1000)
-    consumers: &list[Thread[null]]
+    consumers: &list[Thread[null]] = heap([])
     defer free(consumers)
     for k in 0..3:
         append(consumers, parallel consume(jobs, results))
     total: i64 = 0
     for k in 0..3:
         total += trust receive(results)
-    wait p
+    wait(p)
     for c in consumers:
-        wait c
+        wait(c)
     print(total)
     texts: Channel[&str, 3]
     n := parallel names(texts)
     for name in texts:
         print(name)
         free(name)
-    wait n
+    wait(n)
     print(receive(texts))

@@ -13,18 +13,18 @@ func main():
     show(kept + " mathx.test_gcd_of_zero")
     show(kept + " test_gcd")
     show(kept)
-    _ = remove(kept)
+    _ = remove_file(kept)
     show(flagc + files + "gcd.flg -- nothing")
     show(flagc + files + "gcd.flg " + files + "gcd_test.flg -- nothing private")
     show(flagc + wrong + "none.flg")
     show(flagc + wrong + "takes.flg")
     show(flagc + files + "gcd.flg -timeout 0")
     show(flagc + "-check " + wrong + "none.flg " + files)
+    show(flagc + "tests/use_path.flg")
 
 func show(command: &strview):
-    said: &str
+    said: &str = heap("")
     code := output(command + " 2>&1", ptr(said)) iferror -1
     print("$ ", replace(command, dir_of(executable()), "build/tests/"))
-    shown := replace(view(said), "\e[1;31merror:\e[0m", "error:")
-    write(stdout, replace(shown, "exit code 0xc0000005", "exit code 139")) # a crash on Windows, 128 + SIGSEGV on Linux and macOS
+    write(stdout, replace(view(said), "exit code 0xc0000005", "exit code 139")) # a crash on Windows, 128 + SIGSEGV on Linux and macOS
     print("exit code ", code)

@@ -1,0 +1,66 @@
+# a thread that core didn't start frees what core gave it when it ends, and the thread that closes a library what the library gave it
+use fs
+use os
+
+extern "c":
+    func run_threads(count: i32)
+
+extern "c" where @macos():
+    func malloc_zone_statistics(zone: *bytes, statistics: *bytes)
+
+extern "c" where @windows():
+    func GetCurrentProcess() -> u64
+    func K32GetProcessMemoryInfo(process: u64, counters: *bytes, size: u32) -> i32
+
+export func work(n: i32) -> i64:
+    if n == 0:
+        print("a thread of C prints")
+    t := "number " + n
+    return t.len
+
+func call(f: extern func(i32) -> i64, n: i32) -> i64:
+    return f(n)
+
+func memory() -> i64 where @linux():
+    status := trust read_file("/proc/self/status")
+    defer free(status)
+    data := status[(trust find(status, "VmData:")) + 7:]
+    return (trust parse_int(trim(data[:trust find(data, " kB")]))) << 10
+
+func memory() -> i64 where @macos():
+    statistics: array[u64, 4] # a malloc_statistics_t, with the bytes in use second
+    malloc_zone_statistics(0 as *bytes, ptr(statistics) as *bytes)
+    return i64(statistics[1])
+
+func memory() -> i64 where @windows():
+    counters: array[u64, 9] # a PROCESS_MEMORY_COUNTERS, its size first and the bytes it commits, PagefileUsage, eighth
+    counters[0] = 72
+    K32GetProcessMemoryInfo(GetCurrentProcess(), ptr(counters) as *bytes, 72)
+    return i64(counters[7])
+
+func main():
+    library_path := dir_of(args()[0]) + "thread_end_memory_lib.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/thread_end_memory_lib.flg", "-shared", "-o", library_path]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library_path)
+    before := memory()
+    run_threads(3000)
+    print("3000 threads of C that call an export keep less than 64 MiB: ", memory() - before < 64 << 20)
+    library := load_library(library_path)
+    if library is LoadError:
+        panic("" + library)
+    library_work := trust symbol(library, "work") as extern func(i32) -> i64
+    before = memory()
+    for i in 0..3000:
+        wait(parallel call(library_work, i32(i)))
+    print("3000 threads that call a library keep less than 64 MiB: ", memory() - before < 64 << 20)
+    close(library)
+    before = memory()
+    for i in 0..20:
+        again := load_library(library_path)
+        if again is LoadError:
+            panic("" + again)
+        big := trust symbol(again, "big") as extern func()
+        big()
+        close(again)
+    print("20 temporaries of 8 MiB in a library closed after each keep less than 64 MiB: ", memory() - before < 64 << 20)

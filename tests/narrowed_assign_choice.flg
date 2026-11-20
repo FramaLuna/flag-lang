@@ -1,0 +1,48 @@
+# the right side of an assignment to a narrowed variable reads with the type it was declared with
+type Node:
+    v: i64
+    next: *Node?
+
+type Point:
+    x: i32
+    y: i32
+
+func main():
+    w: i32? = 5
+    if w is i32:
+        w = null if w > 3 else w
+    print(w)
+    z: i32? = 5
+    if z is i32:
+        z = 0 if z > 3 else null
+    print(z)
+    v: i32|&strview = 5
+    if v is i32:
+        v = "big" if v > 3 else v
+    print(v)
+    p: Point|&strview = Point{1, 2}
+    if p is Point:
+        p = "far" if p.x > 0 else p
+    print(p)
+    q: Point? = Point{1, 2}
+    if q != null:
+        q = {3, 4} if q.x > 5 else null
+    print(q)
+    c := Node{3, null}
+    b := Node{2, ptr(c)}
+    a := Node{1, ptr(b)}
+    cur: *Node? = ptr(a)
+    while cur != null:
+        print(cur.v)
+        cur = null if cur.v == 2 else cur.next
+    x: i32? = 5
+    if x is i32:
+        for i in 0..3: # both sides fit the narrowed type, so it stays narrowed in the loop
+            x = x + 1 if i > 0 else x
+            x = x * 2 if i < 9 else 7
+        print(x + 1)
+    y: i32? = 5
+    n := 0
+    if y is i32:
+        y, n = null if y > 3 else y, 1
+    print(y, " ", n)

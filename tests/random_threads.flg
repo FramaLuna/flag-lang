@@ -1,0 +1,33 @@
+use math
+
+func draw(times: i64) -> &list[f64]:
+    got: &list[f64] = heap([])
+    for i in 0..times:
+        append(got, random())
+    return got
+
+func main():
+    seed(7)
+    workers: &list[Thread[&list[f64]]] = heap([])
+    defer free(workers)
+    for k in 0..4:
+        append(workers, parallel draw(1000))
+    shared: &list[f64] = heap([])
+    defer free(shared)
+    for w in workers:
+        part := wait(w)
+        append(shared, part)
+        free(part)
+    sort(shared)
+    seed(7)
+    alone := draw(4000)
+    defer free(alone)
+    sort(alone)
+    repeated := 0
+    same := 0
+    for i in 0..shared.len:
+        if i > 0 and shared[i] == shared[i - 1]:
+            repeated += 1
+        if shared[i] == alone[i]:
+            same += 1
+    print(shared.len, " numbers, ", repeated, " repeated, ", same, " the same as one thread draws after the same seed")

@@ -1,12 +1,13 @@
 # draws the Mandelbrot set with a band of rows for each processor,
 # and counts primes with workers that take numbers from a channel
+use os
 
 WIDTH = 72
 HEIGHT = 24
 
 func band(first: i32, last: i32) -> &str:
     shades: &strview = " .:-=+*#%@"
-    out: &str
+    out: &str = heap("")
     for row in first..last:
         for column in 0..WIDTH:
             x := -2.2 + 3.0 * f64(column) / f64(WIDTH)
@@ -23,13 +24,10 @@ func band(first: i32, last: i32) -> &str:
         out += "\n"
     return out
 
-type Total:
-    lock: Lock
-    primes: i32
+shared context tally:
+    primes: Lock[i64]
 
-total: Total
-
-func prime(n: i32) -> bool:
+func prime(n: i64) -> bool:
     if n < 2:
         return false
     d := 2
@@ -39,30 +37,30 @@ func prime(n: i32) -> bool:
         d += 1
     return true
 
-func count(numbers: *Channel[i32, 64]):
+func count(numbers: *Channel[i64, 64]):
     found := 0
     for n in numbers:
         if prime(n):
             found += 1
-    with lock(total.lock):
-        total.primes += found
+    with lock(tally.primes):
+        tally.primes.value += found
 
 func main():
-    bands: &list[Thread[&str]]
+    bands: &list[Thread[&str]] = heap([])
     defer free(bands)
     n := i32(cores())
     for k in 0..n:
         append(bands, parallel band(HEIGHT * k / n, HEIGHT * (k + 1) / n))
-    texts: &list[&str]
+    texts: &list[&str] = heap([])
     defer free(texts)
     for b in bands:
-        append(texts, wait b)
+        append(texts, wait(b))
     for text in texts:
         write(stdout, text)
         free(text)
 
-    numbers: Channel[i32, 64]
-    workers: &list[Thread[null]]
+    numbers: Channel[i64, 64]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..n:
         append(workers, parallel count(numbers))
@@ -70,5 +68,5 @@ func main():
         send(numbers, i)
     close(numbers)
     for w in workers:
-        wait w
-    print(total.primes, " primes below 100000")
+        wait(w)
+    print(tally.primes.value, " primes below 100000")

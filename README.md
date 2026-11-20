@@ -14,8 +14,8 @@ This is the compiler for the Flag programming language, my own language, a mix o
 - Errors as values that can carry data, handled with `try`, `trust`, `iferror` or a `switch`, and a dropped error doesn't compile
 - Tagged unions, narrowed by `is` and by the cases of a `switch`, and fat pointers built into the syntax
 - Structs compare and hash themselves, so they work as map keys
-- Automatic context management across functions with the `context` keyword, a context for each thread
-- Threads with `parallel f(x)` and `wait t`, a `Lock` that works at zero and bounded `Channel`s
+- Automatic context management across functions with the `context` keyword: a context for each thread, `inherited` by the threads it starts, or `shared` by all of them, and nothing runs before `main`
+- Threads with `parallel f(x)` and `wait(t)`, a `Lock[T]` that wraps what it guards and works at zero, and bounded `Channel`s
 - Generics support
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures
@@ -32,7 +32,7 @@ This is the compiler for the Flag programming language, my own language, a mix o
 type error NotFound:
     name: &strview
 
-func index_of(names: &slice[&strview], name: &strview) -> usize|NotFound:
+func index_of(names: &listview[&strview], name: &strview) -> i64|NotFound:
     for i, n in names:
         if n == name:
             return i
@@ -43,7 +43,7 @@ func main():
     for name in ["alice", "ada"]:
         found := index_of(ptr(names), name)
         switch found:
-        case usize:
+        case i64:
             print(name, " is at ", found)
         case NotFound:
             print("there is no ", found.name)
@@ -64,16 +64,16 @@ Except for the lexer which is the base of the code style, all the code in the co
 
 ## Installation
 
-Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.5.0-linux-x86_64.tar.gz`, `flag-0.5.0-macos-arm64.tar.gz` or `flag-0.5.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
+Download the archive for your system from the [releases](https://github.com/FramaLuna/flag-lang/releases): `flag-0.6.0-linux-x86_64.tar.gz`, `flag-0.6.0-macos-arm64.tar.gz` or `flag-0.6.0-windows-x86_64.tar.gz`. Unpack it and put its `bin` folder in your `PATH`
 
 ```sh
-tar -xzf flag-0.5.0-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.5.0-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.6.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.6.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
 `flagc` is a single file, the standard library is inside it. You also need a C compiler, see [Requirements](#requirements).
-- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.5.0-macos-arm64/bin/flagc`
+- On macOS, if the system says it cannot check the developer, run `xattr -d com.apple.quarantine flag-0.6.0-macos-arm64/bin/flagc`
 - On Windows, unpack it the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell
 
 For errors, hover and go to definition in your editor, see [flag-lsp](https://github.com/FramaLuna/flag-lsp).

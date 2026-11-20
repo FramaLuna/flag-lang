@@ -1,0 +1,83 @@
+use shapes
+
+type enum Mode = Fast | Slow
+
+LIMIT = 10
+
+type Point:
+    x: i32
+    y: i32
+
+type Settings:
+    size: i32 = 640
+    name: &strview = "window"
+    mode: Mode = Slow
+    scale: f64 = 1.5
+    limit: i64 = LIMIT * 2
+    origin: Point = {3, 4}
+    maybe: i32? = null
+    pick: i32|f64 = 2.5
+    plain: i32
+
+type Owners:
+    items: &list[i64] = heap([])
+    title: &str = heap("")
+    counts: &map[&strview, i64] = heap({})
+
+type Box[$T]:
+    value: $T = 0
+    size: i64 = @sizeof($T)
+
+type Grid:
+    cells: array[Box[u8], 3]
+
+DEFAULT = Settings{}
+SMALL = Settings{size = 10}
+shared context saved:
+    kept: Settings
+    named: Settings = {name = "kept"}
+
+context app:
+    level: i32 = 3
+    settings: Settings
+
+func report(from: &strview) -> i32:
+    print(from, " ", app.level, " ", app.settings.size)
+    return app.level
+
+func make(x: $T) -> Box[i32]:
+    b: Box[i32] # its $T, not the one of the call
+    print(@sizeof($T), " ", b)
+    return b
+
+func main():
+    s: Settings
+    print(s)
+    print(Settings{size = 800}.size, " ", Settings{1, "one", Fast, 2.0, 3, {5, 6}, 7, 8, 9})
+    print(DEFAULT == s, " ", SMALL.size, " ", saved.kept.name, " ", saved.named.name)
+    many: array[Settings, 3]
+    print(many[2].size, " ", many[1].origin)
+    m: &map[&strview, Settings] = heap({})
+    m["a"].plain = 7
+    print(m["a"])
+    free(m)
+    app.level = 9
+    print(wait(parallel report("thread")), " ", report("main"))
+    make(2.5)
+    c := Box[i64]{}
+    g: Grid
+    print(c, " ", g)
+    START := 5
+    counter: shapes.Counter
+    append(counter.seen, START)
+    print(counter.n, " ", counter.seen)
+    free(counter.seen)
+    o: Owners
+    print(ptr(o.items.*) as u64 == 0, " ", ptr(o.title.*) as u64 == 0, " ", ptr(o.counts.*) as u64 == 0)
+    append(o.items, 1)
+    o.title += "t"
+    o.counts["k"] = 2
+    print(o.items, " ", o.title, " ", o.counts)
+    free(o.items)
+    free(o.title)
+    free(o.counts)

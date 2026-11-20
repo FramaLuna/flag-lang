@@ -3,21 +3,21 @@ module bits
 type Bits[$$words]:
     words: array[u64, $$words]
 
-func at(b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
-    n := usize(i)
+operator [](b: *Bits[$$w], i: $I, place: &strview = @here()) -> bool where $I is Integer:
+    n := u64(i) # a negative is past every bit
     if n >= $$w * 64:
-        out_of_bounds(i, $$w * 64, place)
-    return ((b.words[n / 64] >> u64(n % 64)) and 1) != 0
+        out_of_bounds(i, $$w * 64, place = place)
+    return ((b.words[n / 64] >> n % 64) and 1) != 0
 
-func put(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
-    n := usize(i)
+operator []=(b: *Bits[$$w], i: $I, on: bool, place: &strview = @here()) where $I is Integer:
+    n := u64(i)
     if n >= $$w * 64:
-        out_of_bounds(i, $$w * 64, place)
-    one := u64(1) << u64(n % 64)
+        out_of_bounds(i, $$w * 64, place = place)
+    one := u64(1) << n % 64
     if on:
         b.words[n / 64] = b.words[n / 64] or one
     else:
-        b.words[n / 64] = b.words[n / 64] and (one xor 0xffff_ffff_ffff_ffff)
+        b.words[n / 64] = b.words[n / 64] and not one
 
 operator or(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
@@ -40,13 +40,13 @@ operator xor(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
 operator -(a: *Bits[$$w], b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
     for i in 0..$$w:
-        out.words[i] = a.words[i] and (b.words[i] xor 0xffff_ffff_ffff_ffff)
+        out.words[i] = a.words[i] and not b.words[i]
     return out
 
-func complement(b: *Bits[$$w]) -> Bits[$$w]:
+operator not(b: *Bits[$$w]) -> Bits[$$w]:
     out: Bits[$$w]
     for i in 0..$$w:
-        out.words[i] = b.words[i] xor 0xffff_ffff_ffff_ffff
+        out.words[i] = not b.words[i]
     return out
 
 func empty(b: *Bits[$$w]) -> bool:
@@ -55,8 +55,8 @@ func empty(b: *Bits[$$w]) -> bool:
             return false
     return true
 
-func count(b: *Bits[$$w]) -> usize:
-    n: usize = 0
+func count(b: *Bits[$$w]) -> i64:
+    n := 0
     for i in 0..$$w:
         w := b.words[i]
         while w != 0:
@@ -66,13 +66,13 @@ func count(b: *Bits[$$w]) -> usize:
 
 priv type Ones[$$w]:
     words: array[u64, $$w]
-    at: usize
+    at: i64
     left: u64
 
-func iter(b: *Bits[$$w]) -> Ones[$$w]:
+operator for(b: *Bits[$$w]) -> Ones[$$w]:
     return Ones[$$w]{b.words, 0, 0}
 
-func next(o: *Ones[$$w]) -> usize|IterationEnd:
+operator next(o: *Ones[$$w]) -> i64|IterationEnd:
     while o.left == 0:
         if o.at == $$w:
             return IterationEnd

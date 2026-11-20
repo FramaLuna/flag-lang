@@ -4,7 +4,7 @@ type Config:
     lives: i64
 
 type error BadLine:
-    line: usize
+    line: i64
     why: &strview
 
 type error UnknownKey:
@@ -27,12 +27,8 @@ func load(text: &strview) -> Config|BadLine|UnknownKey:
     for i, line in split(text, "\n"):
         if trim(line).len == 0:
             continue
-        cut := find(line, "=")
-        if cut is null:
-            return BadLine{i + 1, "it has no ="}
-        value := parse_int(trim(line[cut + 1:]))
-        if value is null:
-            return BadLine{i + 1, "the value is not a number"}
+        cut := find(line, "=") ifnull return BadLine{i + 1, "it has no ="}
+        value := parse_int(trim(line[cut + 1:])) ifnull return BadLine{i + 1, "the value is not a number"}
         try set(ptr(config), trim(line[:cut]), value)
     return config
 

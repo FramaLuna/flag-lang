@@ -1,0 +1,12 @@
+type Counter:
+    hits: atomic[i64]
+
+func work(c: *Counter):
+    for i in 0..1000:
+        add(c.hits, 1)
+
+func main():
+    c := heap(Counter{})
+    t := parallel work(c)
+    free(c) # the atomics of the thread don't order a free
+    wait(t)

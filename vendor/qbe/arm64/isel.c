@@ -201,9 +201,9 @@ callable(Ref r, Fn *fn)
 static void
 sel(Ins i, Fn *fn)
 {
-	Ref *iarg;
+	Ref r, *iarg;
 	Ins *i0;
-	int ck, cc;
+	int ck, cc, k;
 
 	if (INRANGE(i.op, Oalloc, Oalloc1)) {
 		i0 = curi - 1;
@@ -218,6 +218,30 @@ sel(Ins i, Fn *fn)
 			i0->op += cmpop(cc);
 		else
 			i0->op += cc;
+		return;
+	}
+	if (i.op == Oacas0) {
+		/* x0 holds the value given and then the one memory
+		 * had, and the copy after the atomic keeps x0 out of
+		 * other hands */
+		k = i.cls;
+		emit(Ocopy, k, TMP(R0), i.arg[0], R);
+		fixarg(&curi->arg[0], k, 0, fn);
+		return;
+	}
+	if (i.op == Oaadd || i.op == Oaswap || i.op == Oacas1) {
+		k = i.cls;
+		r = req(i.to, R) || fn->tmp[i.to.val].nuse == 0 ? R : i.to;
+		emit(Ocopy, k, r, TMP(R0), R);
+		emit(i.op, k, R, i.arg[0], i.op == Oacas1 ? i.arg[1] : R);
+		i0 = curi;
+		iarg = i0->arg;
+		if (i.op != Oacas1) {
+			emit(Ocopy, k, TMP(R0), i.arg[1], R);
+			fixarg(&curi->arg[0], k, 0, fn);
+		}
+		fixarg(&iarg[0], Kl, 0, fn);
+		fixarg(&iarg[1], k, 0, fn);
 		return;
 	}
 	if (i.op == Ocall)

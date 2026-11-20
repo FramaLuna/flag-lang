@@ -1,0 +1,41 @@
+shared context totals:
+    count: atomic[i64]
+    doubled: atomic[u32]
+    go: atomic[i32]
+    done: atomic[i32]
+    data: i64
+
+func count(times: i64):
+    for i in 0..times:
+        add(totals.count, 1)
+
+# a loop of compare_swap, what add does in one step
+func double_up(times: i64):
+    for i in 0..times:
+        old := get(totals.doubled)
+        while not compare_swap(totals.doubled, old, old + 1):
+            old = get(totals.doubled)
+
+func write():
+    while get(totals.go) == 0:
+        pass
+    totals.data = 42
+    set(totals.done, 1)
+
+func main():
+    workers: &list[Thread[null]] = heap([])
+    defer free(workers)
+    for k in 0..8:
+        append(workers, parallel count(100000))
+    for k in 0..4:
+        append(workers, parallel double_up(50000))
+    for w in workers:
+        wait(w)
+    print(get(totals.count), " ", get(totals.doubled))
+    writer := parallel write()
+    totals.data = 7 # what the read after the wait could take, if the atomics did not keep it there
+    set(totals.go, 1)
+    while get(totals.done) == 0:
+        pass
+    print(totals.data)
+    wait(writer)

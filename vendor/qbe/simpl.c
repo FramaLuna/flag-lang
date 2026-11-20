@@ -60,13 +60,58 @@ ispow2(uint64_t v)
 	return v && (v & (v - 1)) == 0;
 }
 
+/* x/2^n and x%2^n round toward zero: a negative
+ * x is moved up by 2^n-1 before the shift */
+static void
+sdiv(Ins *i, int n, Fn *fn)
+{
+	Ref sign, bias, sum, low;
+	int k;
+
+	k = i->cls;
+	if (n == 0) {
+		emit(Ocopy, k, i->to, i->op == Odiv ? i->arg[0] : CON_Z, R);
+		return;
+	}
+	sign = n > 1 ? newtmp("sdv", k, fn) : i->arg[0];
+	bias = newtmp("sdv", k, fn);
+	sum = newtmp("sdv", k, fn);
+	if (i->op == Odiv)
+		emit(Osar, k, i->to, sum, getcon(n, fn));
+	else {
+		low = newtmp("sdv", k, fn);
+		emit(Osub, k, i->to, low, bias);
+		emit(Oand, k, low, sum, getcon((1ull<<n) - 1, fn));
+	}
+	emit(Oadd, k, sum, i->arg[0], bias);
+	emit(Oshr, k, bias, sign, getcon((KWIDE(k) ? 64 : 32) - n, fn));
+	if (n > 1)
+		emit(Osar, k, sign, i->arg[0], getcon(KWIDE(k) ? 63 : 31, fn));
+}
+
+/* the instructions after i go to the buffer, so
+ * the ones that replace i are emitted before them */
+static void
+renew(Ins *i, int *new, Blk *b)
+{
+	ulong ni;
+
+	if (*new)
+		return;
+	curi = &insb[NIns];
+	ni = &b->ins[b->nins] - (i+1);
+	curi -= ni;
+	icpy(curi, i+1, ni);
+	*new = 1;
+}
+
 static void
 ins(Ins **pi, int *new, Blk *b, Fn *fn)
 {
-	ulong ni;
 	Con *c;
 	Ins *i;
 	Ref r;
+	int64_t v;
 	int n;
 
 	i = *pi;
@@ -77,16 +122,25 @@ ins(Ins **pi, int *new, Blk *b, Fn *fn)
 	case Oblit1:
 		assert(i > b->ins);
 		assert((i-1)->op == Oblit0);
-		if (!*new) {
-			curi = &insb[NIns];
-			ni = &b->ins[b->nins] - (i+1);
-			curi -= ni;
-			icpy(curi, i+1, ni);
-			*new = 1;
-		}
+		renew(i, new, b);
 		blit((i-1)->arg, rsval(i->arg[0]), fn);
 		*pi = i-1;
 		return;
+	case Odiv:
+	case Orem:
+		r = i->arg[1];
+		if (KBASE(i->cls) == 0)
+		if (rtype(r) == RCon) {
+			c = &fn->con[r.val];
+			v = KWIDE(i->cls) ? c->bits.i : (int32_t)c->bits.i;
+			if (c->type == CBits)
+			if (v > 0 && ispow2(v)) {
+				renew(i, new, b);
+				sdiv(i, ulog2(v), fn);
+				return;
+			}
+		}
+		break;
 	case Oudiv:
 	case Ourem:
 		r = i->arg[1];
@@ -212,8 +266,8 @@ thronce(Fn *fn)
 			in = *--i;
 			for (x=0; x<2; x++) {
 				t[x] = R;
-				if (isarg(in.op) || in.op == Osel1) {
-					/* the arguments of a call and the sels stay together */
+				if (isarg(in.op) || in.op == Osel1 || in.op == Oacas1) {
+					/* the arguments of a call, the sels and an acas stay together */
 					r = thrstart(in.arg[x], fn);
 					if (!req(r, R))
 						in.arg[x] = r;

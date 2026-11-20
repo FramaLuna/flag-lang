@@ -1,0 +1,14 @@
+shared context stats:
+    count: Lock[i64]
+
+func work():
+    for i in 0..1000:
+        with lock(stats.count):
+            stats.count.value += 1
+
+func main():
+    stats.count.value = 5 # no thread runs yet
+    t := parallel work()
+    stats.count.value += 1
+    wait(t)
+    print(stats.count.value)

@@ -6,7 +6,7 @@ context state:
 
 func work(n: i32) -> &str:
     state.count += n
-    out: &str
+    out: &str = heap("")
     keep := ""
     for i in 0..1000:
         with scratch():
@@ -20,12 +20,12 @@ func work(n: i32) -> &str:
 func main():
     state.count = 100
     state.mode = Busy
-    threads: &list[Thread[&str]]
+    threads: &list[Thread[&str]] = heap([])
     defer free(threads)
     for k in 0..4:
-        append(threads, parallel work(k))
+        append(threads, parallel work(i32(k)))
     for t in threads:
-        text := wait t
+        text := wait(t)
         print(text)
         free(text)
     print("main: count ", state.count, ", mode ", state.mode)

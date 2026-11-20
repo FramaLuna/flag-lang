@@ -1,0 +1,13 @@
+func add(total: *i64, n: i64):
+    total.* += n
+
+func main():
+    totals: array[i64, 4]
+    threads: &list[Thread[null]] = heap([])
+    defer free(threads)
+    for k in 0..4:
+        append(threads, parallel add(ptr(totals[k]), k))
+        totals[k] += 1
+    for t in threads:
+        wait(t)
+    print(totals)

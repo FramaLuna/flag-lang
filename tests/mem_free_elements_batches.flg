@@ -1,0 +1,40 @@
+func work(n: i64) -> i64:
+    return n * 2
+
+func main():
+    for text in ["a b", "c d e"]: # a list filled in an inner loop, each round of an outer one
+        owned: &list[&str] = heap([])
+        for w in words(text):
+            append(owned, heap(w))
+        print(owned)
+        for word in owned:
+            free(word)
+        free(owned)
+    batch: &list[&str] = heap([]) # one list emptied with clear each round
+    for round in 0..3:
+        for i in 0..4:
+            s: &str = heap("x")
+            s += i
+            append(batch, s)
+        for s in batch:
+            print(s)
+            free(s)
+        clear(batch)
+    free(batch)
+    total: i64 = 0
+    for round in 0..3: # threads in batches
+        ts: &list[Thread[i64]] = heap([])
+        for i in 0..4:
+            append(ts, parallel work(i))
+        for t in ts:
+            total += wait(t)
+        free(ts)
+    pool: &list[Thread[i64]] = heap([])
+    defer free(pool)
+    for round in 0..2:
+        for i in 0..4:
+            append(pool, parallel work(i))
+        for t in pool:
+            total += wait(t)
+        clear(pool)
+    print(total)

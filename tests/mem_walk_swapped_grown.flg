@@ -1,0 +1,54 @@
+func grow(s: *&str):
+    s.* += "!"
+
+func swapped():
+    l: &list[&str] = heap([])
+    append(l, heap("a"))
+    append(l, heap("b"))
+    l[0], l[1] = l[1], l[0]
+    for x in l:
+        x += "!"
+    for x in l:
+        free(x)
+    free(l)
+
+func moved():
+    l: &list[&str] = heap([])
+    append(l, heap("a"))
+    append(l, heap("b"))
+    t := l[0]
+    l[0] = l[1]
+    l[1] = t
+    for x in l:
+        x += "!"
+    for x in l:
+        free(x)
+    free(l)
+
+func array():
+    a: array[&str, 2] = [heap("a"), heap("b")]
+    for x in a:
+        x += "!"
+    for x in a:
+        free(x)
+
+func threads():
+    l: &list[&str] = heap([])
+    append(l, heap("a"))
+    append(l, heap("b"))
+    l[0], l[1] = l[1], l[0]
+    ts: &list[Thread[null]] = heap([])
+    defer free(ts)
+    for x in l:
+        append(ts, parallel grow(x))
+    for t in ts:
+        wait(t)
+    for x in l:
+        free(x)
+    free(l)
+
+func main():
+    swapped()
+    moved()
+    array()
+    threads()

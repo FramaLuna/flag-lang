@@ -24,8 +24,12 @@ within() {
 for expected in tests/*.out tests/*.err tests/*.warn; do
     name=$(basename "${expected%.*}")
     files=
+    cc=
     [ -f "tests/$name.flg" ] && files=tests/$name.flg
-    [ -d "tests/$name" ] && files=$(ls -d "tests/$name/"*)
+    if [ -d "tests/$name" ]; then
+        files=$(ls -d "tests/$name/"* | grep -v '\.c$')
+        ls "tests/$name/"*.c > /dev/null 2>&1 && cc="-cc $(ls "tests/$name/"*.c)"
+    fi
     args=
     [ -f "tests/$name.args" ] && args=$(cat "tests/$name.args")
     flagc=$compiler
@@ -35,7 +39,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         vars=$(cat "tests/$name.env")
     fi
     if [ -f "tests/$name.err" ]; then
-        if within env $vars "$flagc" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+        if within env $vars "$flagc" $files -o "$out/$name" $args $cc > "$out/$name.got" 2>&1; then
             echo "FAIL $name: compiled, expected an error"
             fail=$((fail + 1))
         elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
@@ -48,7 +52,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         continue
     fi
     if [ -f "tests/$name.warn" ]; then
-        if ! within env $vars "$flagc" $files -o "$out/$name" -memory $args > "$out/$name.got" 2>&1; then
+        if ! within env $vars "$flagc" $files -o "$out/$name" -memory $args $cc > "$out/$name.got" 2>&1; then
             echo "FAIL $name: does not compile"
             cat "$out/$name.got"
             fail=$((fail + 1))
@@ -65,7 +69,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         fi
         continue
     fi
-    if ! within env $vars "$flagc" $files -o "$out/$name" $args > "$out/$name.got" 2>&1; then
+    if ! within env $vars "$flagc" $files -o "$out/$name" $args $cc > "$out/$name.got" 2>&1; then
         echo "FAIL $name: does not compile"
         cat "$out/$name.got"
         fail=$((fail + 1))

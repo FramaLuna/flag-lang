@@ -1,0 +1,17 @@
+func count(c: *Channel[&list[&strview], 2]) -> i64:
+    n: i64 = 0
+    for words in c:
+        n += words.len
+        free(words)
+    return n
+
+func main():
+    text: &str = heap("one two")
+    c: Channel[&list[&strview], 2]
+    t := parallel count(c)
+    words: &list[&strview] = heap([])
+    append(words, text[0:3])
+    send(c, words)
+    close(c)
+    print(wait(t))
+    free(text)

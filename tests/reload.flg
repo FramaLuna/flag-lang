@@ -22,7 +22,7 @@ func build(version: &strview) -> &strview:
     return library
 
 func open(version: &strview) -> Library:
-    library := load(build(version))
+    library := load_library(build(version))
     if library is LoadError:
         panic("" + library)
     return library
@@ -47,7 +47,7 @@ func main():
     show(state)
     step(ptr(state))
     show(state)
-    wait parallel call(step, ptr(state))
+    wait(parallel call(step, ptr(state)))
     show(state)
     close(library)
     library = open("v2")
@@ -59,6 +59,6 @@ func main():
     step(ptr(state))
     show(state)
     close(library)
-    missing := load("build/tests/no_such_library.so")
+    missing := load_library("build/tests/no_such_library.so")
     if missing is LoadError:
         print("cannot load ", missing.path, ", and the system says why: ", missing.reason.len > 0)

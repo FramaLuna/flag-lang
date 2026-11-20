@@ -8,10 +8,10 @@ operator +(a: Counter, b: Counter) -> Counter:
 type Grid:
     cells: array[i32, 4]
 
-func at(g: *Grid, i: i32) -> i32:
+operator [](g: *Grid, i: i32) -> i32:
     return g.cells[i]
 
-func put(g: *Grid, i: i32, v: i32):
+operator []=(g: *Grid, i: i32, v: i32):
     g.cells[i] = v
 
 func count() -> i32:
@@ -19,26 +19,26 @@ func count() -> i32:
     return 2
 
 func main():
-    m: &map[&strview, i32]
+    m: &map[&strview, i32] = heap({})
     defer free(m)
     for w in ["a", "b", "a", "c", "a"]:
         m[w] += 1
     m["b"] *= 10
     m["z"] -= 4
     print(m["a"], " ", m["b"], " ", m["c"], " ", m["z"])
-    texts: &map[i32, &str]
+    texts: &map[i32, &str] = heap({})
     defer free(texts)
-    texts[1] += "hello"
+    texts[1] = heap("hello")
     texts[1] += " world"
     print(texts[1])
     for e in texts:
         free(e.value)
-    floats: &map[i32, f64]
+    floats: &map[i32, f64] = heap({})
     defer free(floats)
     floats[3] += 1.5
     floats[3] /= 2.0
     print(floats[3])
-    counters: &map[i32, Counter]
+    counters: &map[i32, Counter] = heap({})
     defer free(counters)
     counters[1] += Counter{2, "two"}
     counters[1] += Counter{3, "three"}
@@ -49,7 +49,7 @@ func main():
     print(g.cells)
     fixed: fixmap[i32, i32, 2]
     _ = put(fixed, 1, 0)
-    l: &list[i32] = heap([1, 2])
+    l: &list[i64] = heap([1, 2])
     defer free(l)
     l[0] += 10
     print(l)

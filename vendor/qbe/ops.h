@@ -209,6 +209,14 @@ O(frame,   T(e,x,e,e, e,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 /* amd64: ecx of cpuid with the leaf in eax */
 O(cpuid,   T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,1) V(0)
 
+/* Atomics: one total order, add and swap give the value before */
+/* (acas %p, %old, %new gives it too, see acas0 and acas1)     */
+O(aload,   T(m,m,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+O(astorew, T(w,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+O(astorel, T(l,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+O(aadd,    T(m,m,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+O(aswap,   T(m,m,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+
 /****************************************/
 /* INTERNAL OPERATIONS (keep nop first) */
 /****************************************/
@@ -220,6 +228,9 @@ O(blit0,   T(m,e,e,e, m,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,1,0) V(0)
 O(blit1,   T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,1,0) V(0)
 O(sel0,    T(w,e,e,e, x,e,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(sel1,    T(w,l,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+/* acas: acas0 has the old value, acas1 the address and the new one */
+O(acas0,   T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
+O(acas1,   T(m,m,e,e, w,l,e,e), F(0,0,0,0,0,0,0,0,0,1)) X(0,0,0) V(0)
 O(swap,    T5(w,l,s,d,v, w,l,s,d,v), F(0,0,0,0,0,0,0,0,0,0)) X(1,0,0) V(0)
 O(sign,    T(w,l,e,e, x,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)
 O(salloc,  T(e,l,e,e, e,x,e,e), F(0,0,0,0,0,0,0,0,0,0)) X(0,0,0) V(0)

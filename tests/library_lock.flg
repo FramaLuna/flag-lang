@@ -1,0 +1,34 @@
+# the thread that holds a Lock takes it again in a library, and in the program from the library, where each one has its own core
+use fs
+use os
+
+type Shared:
+    count: Lock[i64]
+    queue: Channel[i64, 2]
+
+export func bump_here(s: *Shared):
+    with lock(s.count):
+        s.count.value += 10
+
+func main():
+    library_path := dir_of(args()[0]) + "library_lock_lib.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/library_lock_lib.flg", "-shared", "-o", library_path]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library_path)
+    library := load_library(library_path)
+    if library is LoadError:
+        panic("" + library)
+    bump := trust symbol(library, "bump") as extern func(*Shared)
+    bump_back := trust symbol(library, "bump_back") as extern func(*Shared, extern func(*Shared))
+    put := trust symbol(library, "put") as extern func(*Shared, i64)
+    s: Shared
+    with lock(s.count):
+        s.count.value += 1
+        bump(ptr(s))
+    print("the library takes the lock of the program: ", s.count.value)
+    bump_back(ptr(s), bump_here)
+    print("and the program the lock of the library: ", s.count.value)
+    with lock(s.queue.queue):
+        put(ptr(s), 7)
+    print("the library sends on a channel whose lock the program holds: ", receive(s.queue))
+    close(library)

@@ -1,27 +1,24 @@
-type Counter:
-    lock: Lock
-    count: i64
-
-counter: Counter
+shared context totals:
+    counter: Lock[i64]
 
 func add(times: i32, by: i64):
     for i in 0..times:
-        with lock(counter.lock):
-            counter.count += by
+        with lock(totals.counter):
+            totals.counter.value += by
 
-func nested(c: *Counter):
-    with lock(c.lock):
-        with lock(c.lock):
-            c.count += 1000
+func nested(c: *Lock[i64]):
+    with lock(c):
+        with lock(c):
+            c.value += 1000
 
 func main():
-    workers: &list[Thread[null]]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..8:
         append(workers, parallel add(100000, 1))
     for w in workers:
-        wait w
-    print(counter.count)
-    local: Counter
+        wait(w)
+    print(totals.counter.value)
+    local: Lock[i64]
     nested(local)
-    print(local.count)
+    print(local.value)

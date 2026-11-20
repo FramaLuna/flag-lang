@@ -45,7 +45,10 @@ emitlnk(char *n, Lnk *l, int s, FILE *f)
 		l->secf = "\"dw\"";
 	}
 	if (l->sec) {
-		fprintf(f, ".section %s", l->sec);
+		if (T.apple && l->sec[0] == '"') /* Mach-O takes segment,section bare */
+			fprintf(f, ".section %.*s", (int)strlen(l->sec) - 2, l->sec + 1);
+		else
+			fprintf(f, ".section %s", l->sec);
 		if (l->secf)
 			fprintf(f, ",%s", l->secf);
 	} else

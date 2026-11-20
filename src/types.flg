@@ -1,4 +1,6 @@
 @trust
+use fs
+
 VOID = 0
 NULL = 1
 BOOL = 2
@@ -7,43 +9,62 @@ I32 = 5
 I64 = 6
 U8 = 7
 U64 = 10
-USIZE = 11
-F32 = 12
-F64 = 13
-BYTES = 14
-EMPTYARRAY = 15
-EMPTYMAP = 16
-ITERATIONEND = 17
-NEVER = 18
+F32 = 11
+F64 = 12
+BYTES = 13
+CSTR = 14
+WSTR = 15
+EMPTYARRAY = 16
+EMPTYMAP = 17
+ITERATIONEND = 18
+NEVER = 19
+BOOL8 = 20 # the lanes of a mask, bool8, bool16, bool32 and bool64
+BOOL64 = 23
 
 HEAD = 64 # core's Started, then the result of a thread
+HEAP = 1 # the arena of an owner whose memory is in the heap, the mark that core reads: 0 is an owner with no memory
 BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thread[null] when it returns nothing"
+NO_USIZE = "there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64"
 DEEP = 500
 LONG = 64000000
+HUGE = 1 << 61 # the most bytes of a type: a multiple of every alignment, and a sum of two never wraps
 STEP = 256
 PRIVATE = STEP << 32
 
-func first_sym(name: &strview) -> usize:
+func first_sym(name: &strview) -> i64:
     s := comp.names[name]
-    if s is usize:
+    if s is i64:
         return s
     return 0
 
-func file_of(at: usize) -> usize:
+func file_of(at: i64) -> i64:
     f := comp.files.len - 1
     while comp.files[f].start > at:
         f -= 1
     return f
 
-func module_of(name: &strview, file: usize) -> &strview:
-    if name == comp.files[file].module:
-        return name
+func module_of(name: &strview, file: i64) -> &strview:
+    if name == written(comp.files[file].module):
+        return comp.files[file].module
     for u in comp.uses:
-        if u.file == file and (u.alias == name or u.alias.len == 0 and u.module == name):
+        if u.file == file and (u.alias == name or u.alias.len == 0 and written(u.module) == name):
             return u.module
     return ""
 
-func visible(s: usize, module: &strview, at: usize) -> bool:
+# a module of the library gives way to one of the program with its name, and inside the library it is lib$name
+func layered(name: &strview, file: i64) -> &strview:
+    if comp.files[file].library:
+        for f in comp.files:
+            if f.module == name and not f.library:
+                return "lib$" + name
+    return name
+
+func written(module: &strview) -> &strview:
+    if starts_with(module, "lib$"):
+        return module[4:]
+    return module
+
+func visible(s: i64, module: &strview, at: i64) -> bool:
     sym := comp.syms[s]
     file := file_of(at)
     if sym.priv and sym.module != comp.files[file].module:
@@ -57,11 +78,11 @@ func visible(s: usize, module: &strview, at: usize) -> bool:
             return true
     return false
 
-func named(name: &strview, module: &strview, at: usize) -> usize|Fail:
+func named(name: &strview, module: &strview, at: i64) -> i64|Fail:
     here := comp.files[file_of(at)].module
-    global: usize = 0
-    found: usize = 0
-    clash: usize = 0
+    global := 0
+    found := 0
+    clash := 0
     s := first_sym(name)
     while s != 0:
         m := comp.syms[s].module
@@ -81,7 +102,7 @@ func named(name: &strview, module: &strview, at: usize) -> usize|Fail:
         return fail(name + " is declared in both " + comp.syms[clash].module + " and " + comp.syms[found].module + ", name the module: " + comp.syms[found].module + "." + name, at)
     return found
 
-func hidden(name: &strview, function: bool, at: usize) -> Fail?:
+func hidden(name: &strview, function: bool, at: i64) -> Fail?:
     file := file_of(at)
     s := first_sym(name)
     while s != 0:
@@ -91,19 +112,35 @@ func hidden(name: &strview, function: bool, at: usize) -> Fail?:
             for u in comp.uses:
                 if u.file == file and u.module == sym.module:
                     alias = u.alias
-            if sym.priv:
-                return fail(name + " is priv to module " + sym.module + ", only the files of " + sym.module + " see it", at)
+            if sym.priv and not sym.library:
+                return fail(name + " is priv to the module " + sym.module + ", only the files of " + sym.module + " see it", at)
+            if not sym.priv and sym.module != written(sym.module):
+                return fail(name + " is in the module " + written(sym.module) + " of the library, and the module " + written(sym.module) + " of this program hides it", at)
             if alias.len > 0:
-                return fail(name + " is declared in module " + sym.module + ", reach it as " + alias + "." + name, at)
-            return fail(name + " is declared in module " + sym.module + ", add 'use " + sym.module + "'", at)
+                return fail(name + " is in the module " + sym.module + ": reach it as " + alias + "." + name, at)
+            if not sym.priv:
+                return fail(name + " is in the module " + sym.module + ": add use " + sym.module, at)
         s = sym.next
+    # the rest of the library is loaded, so a module that no file uses is named too
+    more := false
+    names := list_dir(comp.library) iferror return null
+    for given in names:
+        path: &str = heap(join_path(comp.library, given))
+        known := not ends_with(given, ".flg")
+        for f in comp.files:
+            known = known or f.library and f.path == path
+        if not known:
+            try add_file(path, read_file(view(path)), true)
+            more = true
+    if more:
+        return hidden(name, function, at)
     return null
 
-func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
+func find_type(name: &strview, path: &strview, at: i64) -> i64|Fail:
     module := path
     inner := name
     dot := find(path, ".")
-    if dot is usize:
+    if dot is i64:
         module = path[:dot]
         inner = path[dot + 1:] + "." + name
     s := try named(inner, module, at)
@@ -112,26 +149,30 @@ func find_type(name: &strview, path: &strview, at: usize) -> usize|Fail:
         return s
     return 0
 
-func fat_type(name: &strview, elem: usize, at: usize) -> usize|Fail:
+func fat_type(name: &strview, elem: i64, at: i64) -> i64|Fail:
+    args: &list[Item] = heap([])
+    if elem != VOID:
+        append(args, Item{type = elem})
+    return core_type(name, args, at)
+
+# a type that core declares and a literal is, like the &strview of a text or the fixmap of pairs
+func core_type(name: &strview, args: &listview[Item], at: i64) -> i64|Fail:
     s := first_sym(name)
-    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat):
+    while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat and comp.nodes[comp.syms[s].node].kind != Struct):
         s = comp.syms[s].next
     if s == 0:
-        return fail("the language needs the fat pointer " + name + ", and the library does not declare it", at)
-    args: &list[Item]
-    if elem != VOID:
-        append(args, Item{name = "", type = elem})
-    return make_type(s, args, true, at)
+        return fail("the language needs the type " + name + ", and the library does not declare it", at)
+    return make_type(s, args, comp.nodes[comp.syms[s].node].kind == Fat, at)
 
 # the tag of a builtin is its place among them, so null is 0, and any other tag is a hash of the type, the same in every program and library that has it
-func add_type(t: Type) -> usize:
+func add_type(t: Type) -> i64:
     if t.kind != Union:
         comp.spelled += t.name.len
     t.tag = u32(comp.types.len) - 1
     if comp.types.len > NEVER:
-        shape: &str
+        shape: &str = heap("")
         defer free(shape)
-        if t.kind == Ptr or t.kind == Array or t.kind == Thread:
+        if t.kind == Ptr or t.kind == Array or t.kind == Thread or t.kind == Atomic:
             shape += "" + t.kind + "[" + comp.types[t.elem].tag + ", " + t.count + "]"
         elif t.kind == Func:
             shape += t.name[:trust find(t.name, "(")] + "(" + comp.types[t.ret].tag
@@ -139,7 +180,7 @@ func add_type(t: Type) -> usize:
                 shape += ", " + comp.types[comp.items[t.first + i].type].tag
             shape += ")"
         elif t.kind == Union or t.kind == Untagged:
-            parts: &list[u32]
+            parts: &list[u32] = heap([])
             defer free(parts)
             for i in 0..t.count:
                 append(parts, comp.types[comp.items[t.first + i].type].tag)
@@ -156,27 +197,30 @@ func add_type(t: Type) -> usize:
             shape += "]"
         else:
             shape += t.name
-        t.tag = u32(32 + hash(view(shape)) % 0x7fff_ffe0)
+        t.tag = tag_of_shape(view(shape))
     append(comp.types, t)
     put(comp.type_ids, t.name, comp.types.len - 1)
     return comp.types.len - 1
 
-func enclosed(t: usize) -> &strview:
+func tag_of_shape(shape: &strview) -> u32:
+    return u32(32 + hash(shape) % 0x7fff_ffe0)
+
+func enclosed(t: i64) -> &strview:
     ty := comp.types[t]
     if ty.kind == Union or ty.kind == Untagged or ty.kind == Func and ty.ret != VOID:
         return "(" + ty.name + ")"
     return ty.name
 
-func pointer(t: usize) -> usize:
-    key: &str = "*"
+func pointer(t: i64) -> i64:
+    key: &str = heap("*")
     key += enclosed(t)
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
     return add_type(Type{kind = Ptr, name = view(key), size = 8, align = 8, elem = t})
 
-func members(t: usize) -> &list[usize]:
-    out: &list[usize]
+func members(t: i64) -> &list[i64]:
+    out: &list[i64] = heap([])
     if comp.types[t].kind == Union:
         for i in 0..comp.types[t].count:
             append(out, comp.items[comp.types[t].first + i].type)
@@ -184,10 +228,10 @@ func members(t: usize) -> &list[usize]:
         append(out, t)
     return out
 
-func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
-    flat: &list[usize]
+func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
+    flat: &list[i64] = heap([])
     defer free(flat)
-    spread: &list[usize]
+    spread: &list[i64] = heap([])
     defer free(spread)
     for p in parts:
         ty := comp.types[try concrete(p, at)]
@@ -208,48 +252,48 @@ func union_of(parts: &list[usize], kind: TypeKind, at: usize) -> usize|Fail:
     separator: &strview = "|"
     if kind == Untagged:
         separator = "||"
-    key: &str
+    key: &str = heap("")
     for m in flat:
         if key.len > 0:
             key += separator
         key += enclosed(m)
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
-    tags: &list[u32]
+    tags: &list[u32] = heap([])
     defer free(tags)
     for m in flat:
         append(tags, comp.types[m].tag)
     sort(tags)
     for i in 1..tags.len:
         if kind == Union and tags[i] == tags[i - 1]:
-            same: &list[&strview]
+            same: &list[&strview] = heap([])
             for m in flat:
                 if comp.types[m].tag == tags[i]:
                     append(same, comp.types[m].name)
             return fail(same[0] + " and " + same[1] + " have the same tag, so a union of them cannot tell which one it holds: rename one of them", at)
     first := comp.items.len
     for m in flat:
-        append(comp.items, Item{name = "", type = m})
-    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0]})
-    lay_out(made)
+        append(comp.items, Item{type = m})
+    made := add_type(Type{kind = kind, name = view(key), first = first, count = flat.len, start = flat[0], stamped = kind == Union and flat[0] != NULL})
+    try lay_out(made, at)
     return made
 
-func concrete(t: usize, at: usize) -> usize|Fail:
+func concrete(t: i64, at: i64) -> i64|Fail:
     if t == EMPTYARRAY or t == EMPTYMAP:
-        example: &strview = "x: &list[i32] = []"
+        example: &strview = "x: &list[i32] = heap([])"
         if t == EMPTYMAP:
-            example = "x: &map[&strview, i32] = {}"
+            example = "x: fixmap[&strview, i32, 4] = {}"
         return fail("no type can be made from " + comp.types[t].name + ", an empty literal has no type of its own: give it one first, like " + example, at)
     return t
 
-func lay_out(t: usize):
-    size: usize = 0
-    align: usize = 1
+func lay_out(t: i64, at: i64) -> Fail?:
+    size := 0
+    align := 1
     for i in 0..comp.types[t].count:
         m := comp.types[comp.items[comp.types[t].first + i].type]
         if m.align == 0:
-            return
+            return null
         if m.size > size:
             size = m.size
         if m.align > align:
@@ -260,16 +304,22 @@ func lay_out(t: usize):
     elif comp.types[t].kind == Union:
         align = align_up(8, align)
         size = align + align_up(size, 8)
+    if size > HUGE:
+        return too_large(comp.types[t].name, at)
     comp.types[t].size = align_up(size, align)
     comp.types[t].align = align
+    return null
 
-func align_up(n: usize, a: usize) -> usize:
+func too_large(name: &strview, at: i64) -> Fail:
+    return fail(name + " is too large, a type holds at most " + HUGE + " bytes", at)
+
+func align_up(n: i64, a: i64) -> i64:
     return (n + a - 1) / a * a
 
-func past_tag(member: usize) -> usize:
+func past_tag(member: i64) -> i64:
     return align_up(8, comp.types[member].align)
 
-func bound(name: &strview) -> usize:
+func bound(name: &strview) -> i64:
     i := comp.binds.len
     while i > comp.frame:
         i -= 1
@@ -277,31 +327,32 @@ func bound(name: &strview) -> usize:
             return i + 1
     return 0
 
-func open_frame() -> usize:
+func open_frame() -> i64:
     saved := comp.frame
     comp.frame = comp.binds.len
     return saved
 
-func close_frame(saved: usize):
+func close_frame(saved: i64):
     comp.binds.len = comp.frame
     comp.frame = saved
 
-func resolve(n: usize) -> usize|Fail:
+func resolve(n: i64) -> i64|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
     if node.kind == Struct:
-        none: &list[Item]
-        s: usize = 1
+        s := 1
         while comp.syms[s].node != n:
             s += 1
-        return make_type(s, none, false, tok.at)
+        return make_type(s, [], false, tok.at)
     if node.kind == TUnary and tok.text == "&":
         if comp.nodes[n + 1].kind != TName:
             return fail("'&' expects the name of a fat pointer type after it", tok.at)
         return instance(n + 1, true)
     if node.kind == TUnary and tok.text == "*":
         return pointer(try resolve(n + 1))
-    parts: &list[usize]
+    if node.kind == TUnary and tok.text == "type":
+        return given_of(try resolve(n + 1))
+    parts: &list[i64] = heap([])
     if node.kind == TUnary:
         append(parts, try resolve(n + 1))
         append(parts, NULL)
@@ -314,8 +365,14 @@ func resolve(n: usize) -> usize|Fail:
         if tok.text == "||":
             return union_of(parts, Untagged, tok.at)
         return union_of(parts, Union, tok.at)
+    if node.kind == TTuple:
+        c := n + 1
+        while c < node_end(n):
+            append(parts, try resolve(c))
+            c = node_end(c)
+        return tuple_of(parts, tok.at)
     if node.kind == TFunc:
-        ret: usize = VOID
+        ret := VOID
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Var:
@@ -338,29 +395,35 @@ func resolve(n: usize) -> usize|Fail:
         return comp.binds[b - 1].type
     return instance(n, false)
 
-func result_type(n: usize) -> usize|Fail:
+func result_type(n: i64) -> i64|Fail:
     if comp.nodes[n].kind == TName and comp.nodes[n].module.len == 0 and text(n) == "never" and node_end(n) == n + 1:
         return NEVER
     return resolve(n)
 
-func instance(n: usize, fat: bool) -> usize|Fail:
+func instance(n: i64, fat: bool) -> i64|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
-    args: &list[Item]
+    args: &list[Item] = heap([])
     c := n + 1
     while c < node_end(n):
         count := try count_of(c)
-        if count is usize:
-            append(args, Item{name = "", type = VOID, n = count})
+        if count is i64:
+            append(args, Item{type = VOID, n = count})
+        elif fat:
+            append(args, Item{type = try result_type(c)}) # &list[never] holds nothing, so it goes where any list goes
         else:
-            append(args, Item{name = "", type = try resolve(c)})
+            append(args, Item{type = try resolve(c)})
         c = node_end(c)
     if node.module.len == 0 and args.len == 0:
         id := comp.type_ids[tok.text]
-        if id is usize and id == NEVER:
+        if id is i64 and id == NEVER:
             return fail("never is what a function that never returns gives, a value cannot be never", tok.at)
-        if id is usize and id >= NULL and id < NEVER:
+        if id is i64 and id >= NULL and id < NEVER:
             return id
+        if id is i64 and id >= BOOL8 and id <= BOOL64:
+            if comp.nodes[n - 1].kind == TName and comp.nodes[n - 1].size > 1 and text(n - 1) == "simd": # its first argument
+                return id
+            return fail(tok.text + " is a lane of a mask, it goes only inside a simd: simd[" + tok.text + ", " + 16 / comp.types[id].size + "]", tok.at)
     if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
         if args.len != 1 or args[0].type == VOID:
             return fail(BARE_THREAD, tok.at)
@@ -372,51 +435,73 @@ func instance(n: usize, fat: bool) -> usize|Fail:
             return fail("type " + comp.types[args[0].type].name + " contains itself, hold it through a pointer", tok.at)
         if comp.types[args[0].type].kind == Bytes:
             return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
-        return array_of(try concrete(args[0].type, tok.at), args[1].n)
+        return array_of(try concrete(args[0].type, tok.at), args[1].n, tok.at)
     if node.module.len == 0 and tok.text == "simd":
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
             return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
         return simd_of(args[0].type, args[1].n, tok.at)
+    if node.module.len == 0 and tok.text == "atomic":
+        if args.len != 1 or args[0].type == VOID:
+            return fail("atomic expects the type it holds: atomic[i64]", tok.at)
+        held := comp.types[args[0].type]
+        if not (integer(args[0].type) and held.size >= 4 or held.kind == Ptr):
+            return fail("atomic holds i32, u32, i64, u64 or a pointer, and " + held.name + " is none of them", tok.at)
+        key: &str = heap("atomic[")
+        key += held.name + "]"
+        id := comp.type_ids[view(key)]
+        if id is i64:
+            return id
+        return add_type(Type{kind = Atomic, name = view(key), size = held.size, align = held.size, elem = args[0].type})
     s := try find_type(tok.text, node.module, tok.at)
     if s == 0:
         try hidden(tok.text, false, tok.at)
         other := try named(tok.text, node.module, tok.at)
         if other != 0 and comp.nodes[comp.syms[other].node].kind == Constant:
             return fail(tok.text + " is a constant, not a type", tok.at)
-        if other != 0 and comp.nodes[comp.syms[other].node].kind == Var:
-            return fail(tok.text + " is a variable, not a type", tok.at)
         if node.module.len == 0 and tok.text == "Thread":
             return fail(BARE_THREAD, tok.at)
+        if node.module.len == 0 and tok.text == "usize":
+            return fail(NO_USIZE, tok.at)
+        if node.module.len == 0 and tok.text == "slice":
+            return fail("&slice is called &listview now", tok.at)
+        f := comp.insts[comp.inst].node if comp.inst < comp.insts.len else 0
+        if node.module.len == 0 and lookup(tok.text) != 0 and n > f and n < node_end(f): # a variable of the function that this type is written in
+            return fail(tok.text + " is a variable, and a type is made of types and of counts that the compiler knows: literals and constants", tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
     return make_type(s, args, fat, tok.at)
 
-func count_of(n: usize) -> usize|null|Fail:
+func count_of(n: i64) -> i64|null|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
+    count: u64
     if node.kind == Literal:
-        return int_value(tok.text, tok.at)
-    if node.kind != TName or node.size != 1:
+        count = try int_value(tok.text, tok.at)
+    elif node.kind != TName or node.size != 1:
         return null
-    if tok.kind == Generic:
+    elif tok.kind == Generic:
         b := bound(tok.text)
         if b != 0 and comp.binds[b - 1].type == VOID:
             return comp.binds[b - 1].n
         return null
-    s := try named(tok.text, node.module, tok.at)
-    if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
-        return null
-    v := try constant(s, VOID, tok.at)
-    if not v.lit or v.neg or not integer(v.type):
-        return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
-    return v.n
+    else:
+        s := try named(tok.text, node.module, tok.at)
+        if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
+            return null
+        v := try constant(s, VOID, tok.at)
+        if not integer(v.type) or v.at.kind != Const or comp.types[v.type].kind == Int and v.at.n < 0:
+            return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
+        count = u64(v.at.n)
+    if count > largest(I64):
+        return fail("" + count + " does not fit in i64, the largest i64 is " + largest(I64), tok.at)
+    return i64(count)
 
-func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
+func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
     sym := comp.syms[s]
     decl := sym.node
     kind := comp.nodes[decl].kind
-    key: &str
+    key: &str = heap("")
     if fat:
         key += "&"
     if sym.module.len > 0:
@@ -430,11 +515,11 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
             key += arg_name(args[i])
         key += "]"
     id := comp.type_ids[view(key)]
-    if id is usize and kind != Alias and comp.types[id].decl != decl:
+    if id is i64 and kind != Alias and comp.types[id].decl != decl:
         failed := fail("two types are named " + key + ", one of a module and one inside a type: rename one of them", at)
         note("the other " + key + " is declared here", comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
         return failed
-    if id is usize:
+    if id is i64:
         return id
     if kind == Fat and not fat:
         return fail(sym.name + " is a fat pointer, write &" + sym.name, at)
@@ -446,6 +531,8 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
     c := kid(decl, generics)
     if kind == Void and generics > 0:
         return fail("void type " + sym.name + " cannot have parameters, it carries no data to shape", at)
+    if generics != args.len and args.len == 0 and sym.name == "Lock" and sym.library and sym.module.len == 0:
+        return fail("Lock expects the type it guards: Lock[i64], or Lock[null] when it guards code and no value", at)
     if generics != args.len:
         return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + " but got " + args.len, at)
     for a in args:
@@ -454,7 +541,7 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         return add_type(Type{kind = Void, name = view(key), align = 1, decl = decl, error = sym.error})
     saved := open_frame()
     for i in 0..generics:
-        append(comp.binds, Item{text(kid(decl, i)), args[i].type, args[i].n, false})
+        append(comp.binds, Item{name = text(kid(decl, i)), type = args[i].type, n = args[i].n})
     if kind == Alias:
         through := false
         seen := false
@@ -480,8 +567,8 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
     arg_start := comp.items.len
     for a in args:
         append(comp.items, a)
-    offset: usize = 0
-    align: usize = 1
+    offset := 0
+    align := 1
     shape: TypeKind = Struct
     if kind == Fat:
         shape = Fat
@@ -489,12 +576,16 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         align = 8
     made := add_type(Type{kind = shape, name = view(key), args = arg_start, decl = decl, error = sym.error, packed = sym.packed})
     append(comp.resolving, decl)
-    fields: &list[Item]
+    fields: &list[Item] = heap([])
+    stamped := false
+    hollow := kind == Fat
     while c < node_end(decl):
         name := text(c)
         field_at := comp.tokens[comp.nodes[c].tok].at
         ft := try resolve(c + 1)
         f := comp.types[ft]
+        if f.align == 0 and f.decl == decl and f.name != view(key) and contains(view(key), f.name): # a smaller instance of it, which is being made because it holds this one
+            return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", comp.tokens[comp.nodes[decl].tok].at)
         if f.align == 0:
             return fail("type " + key + " contains itself, hold it through a pointer", field_at)
         if f.kind == Bytes:
@@ -502,10 +593,13 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
         for g in fields:
             if g.name == name:
                 return fail("type " + key + " declares the field " + name + " twice", field_at)
-        if kids(c) == 2:
-            other := text(kid(c, 1))
+        given := kid(c, 1) # its default value, or the @other whose storage it shares
+        if given == node_end(c):
+            given = 0
+        if given != 0 and comp.nodes[given].kind == Name and comp.tokens[comp.nodes[given].tok].kind == Builtin:
+            other := text(given)
             other = other[1:]
-            owner: usize = 0
+            owner := 0
             while owner < fields.len and fields[owner].name != other:
                 owner += 1
             if kind == Fat:
@@ -514,12 +608,16 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
                 return fail(name + " cannot share the storage of " + other + ", only of a field declared above it", field_at)
             if f.size > comp.types[fields[owner].type].size:
                 return fail(name + " cannot share the storage of " + other + ", it is " + f.size + " bytes and " + other + " holds " + comp.types[fields[owner].type].size + ": declare the larger field first", field_at)
-            append(fields, Item{name, ft, fields[owner].n, true})
+            append(fields, Item{name = name, type = ft, n = fields[owner].n, shared = true})
         else:
             if not sym.packed:
                 offset = align_up(offset, f.align)
-            append(fields, Item{name, ft, offset, false})
+            append(fields, Item{name = name, type = ft, n = offset, default = given})
+            stamped = stamped or given != 0 or f.stamped
+            hollow = hollow or bare(made, fields[-1])
             offset += f.size
+            if offset > HUGE:
+                return too_large(key, field_at)
         if f.align > align and not sym.packed:
             align = f.align
         c = node_end(c)
@@ -527,66 +625,134 @@ func make_type(s: usize, args: &list[Item], fat: bool, at: usize) -> usize|Fail:
     close_frame(saved)
     comp.types[made].first = comp.items.len
     comp.types[made].count = fields.len
+    comp.types[made].stamped = stamped
+    comp.types[made].hollow = hollow
     for f in fields:
         append(comp.items, f)
     comp.types[made].size = align_up(offset, align)
     comp.types[made].align = align
     for t in made..comp.types.len:
         if (comp.types[t].kind == Union or comp.types[t].kind == Untagged) and comp.types[t].align == 0:
-            lay_out(t)
+            try lay_out(t, at)
+    defaulted := false
+    for f in fields:
+        if f.default != 0:
+            defaulted = true
+            for i in f.default..node_end(f.default):
+                for g in fields:
+                    if comp.nodes[i].kind == Name and text(i) == g.name and first_sym(g.name) == 0:
+                        return fail("the default of " + f.name + " cannot read the field " + g.name + ", " + KNOWN, at_of(i))
+    if not defaulted:
+        return made
+    body := comp.body.len # a value of it is born here to check the defaults, and the code is dropped
+    slots := comp.slots.len
+    held := comp.held.len
+    born := zero(made, alloc(made))
+    known: &str = heap("")
+    defer free(known)
+    unknown := 0
+    if born is null:
+        unknown = try image(made, 0, known)
+    if unknown != 0:
+        born = fail(KNOWN + ", and this one is computed when the program runs", at_of(unknown))
+    if born is Fail and generics > 0:
+        note(key + " is made here", at)
+    if born is Fail:
+        return Fail
+    drop(body, slots, held)
     return made
+
+# a field that starts without a value when its type is born: one that holds a fat pointer and has no default, unless a type parameter gives its type, which starts as that type does, like the value of a new key of a map
+func bare(t: i64, f: Item) -> bool:
+    return comp.types[f.type].hollow and f.default == 0 and not f.shared and (tuple(t) or comp.tokens[comp.nodes[field_node(t, f.name) + 1].tok].kind != Generic)
 
 func arg_name(a: Item) -> &strview:
     if a.type == VOID:
         return "" + a.n
     return comp.types[a.type].name
 
-func array_of(elem: usize, count: usize) -> usize:
+func array_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
-    key: &str = "array["
+    key: &str = heap("array[")
     key += e.name + ", " + count + "]"
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
-    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count})
+    if e.size > 0 and count > HUGE / e.size:
+        return too_large(view(key), at)
+    return add_type(Type{kind = Array, name = view(key), size = e.size * count, align = e.align, elem = elem, count = count, stamped = e.stamped, hollow = e.hollow})
 
-func simd_of(elem: usize, count: usize, at: usize) -> usize|Fail:
+func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
     e := comp.types[elem]
-    key: &str = "simd["
+    key: &str = heap("simd[")
     key += e.name + ", " + count + "]"
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
+    if elem == BOOL:
+        forms: &str = heap("")
+        for size in [16, 32]:
+            if count <= size and size % count == 0 and size / count <= 8:
+                if forms.len > 0:
+                    forms += " or "
+                forms += "simd[bool" + 8 * size / count + ", " + count + "]"
+        if forms.len == 0:
+            forms += "bool8, bool16, bool32 or bool64"
+        return fail(key + " cannot hold bool, a mask names the width of its lanes: " + forms, at)
     if not numeric(elem) and e.kind != Bool:
-        return fail("the lanes of a simd hold numbers or bool, and " + e.name + " is neither", at)
-    if e.kind == Bool and count != 2 and count != 4 and count != 8 and count != 16:
-        return fail(key + " does not split a register of 16 bytes, a mask has 2, 4, 8 or 16 lanes", at)
-    if e.kind != Bool and e.size * count != 16:
+        return fail("the lanes of a simd hold numbers, or the bool8 to bool64 of a mask, and " + e.name + " is neither", at)
+    size := e.size * count
+    if size != 16 and size != 32:
+        fewer := 16 / e.size
         more: &strview
-        if e.size * count > 16:
+        if size > 32:
+            fewer = 32 / e.size
             more = ", or an array of them"
-        return fail(key + " is " + e.size * count + " bytes, and a simd is one register of 16: use simd[" + e.name + ", " + 16 / e.size + "]" + more, at)
-    return add_type(Type{kind = Simd, name = view(key), size = 16, align = 16, elem = elem, count = count})
+        return fail(key + " is " + size + " bytes, and a simd fills one or two registers of 16: use simd[" + e.name + ", " + fewer + "]" + more, at)
+    return add_type(Type{kind = Simd, name = view(key), size = size, align = 16, elem = elem, count = count})
 
-func lane_type(t: usize) -> usize:
+# the mask of a simd, with lanes as wide as its own
+func mask_of(t: i64, at: i64) -> i64|Fail:
+    lane := BOOL8
+    while comp.types[lane].size < comp.types[comp.types[t].elem].size:
+        lane += 1
+    return simd_of(lane, comp.types[t].count, at)
+
+# the integer that holds a lane, all ones for a true lane of a mask
+func lane_type(t: i64) -> i64:
     ty := comp.types[t]
-    if ty.kind != Simd or ty.elem != BOOL:
+    if ty.kind != Simd or comp.types[ty.elem].kind != Bool:
         return ty.elem
-    lane: usize = I8
-    while comp.types[lane].size < 16 / ty.count:
+    lane := I8
+    while comp.types[lane].size < comp.types[ty.elem].size:
         lane += 1
     return lane
 
-func thread_of(result: usize) -> usize:
-    key: &str = "Thread["
+# the type of a lane of a simd or an element of an array as a value, where a lane of a mask is a bool
+func lane_value(t: i64) -> i64:
+    if comp.types[comp.types[t].elem].kind == Bool:
+        return BOOL
+    return comp.types[t].elem
+
+func thread_of(result: i64) -> i64:
+    key: &str = heap("Thread[")
     key += comp.types[result].name + "]"
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
     return add_type(Type{kind = Thread, name = view(key), size = 8, align = 8, elem = result})
 
-func func_of(taken: &list[usize], ret: usize, foreign: bool) -> usize:
-    key: &str
+# a type given as an argument, the value a type $T parameter takes
+func given_of(t: i64) -> i64:
+    key: &str = heap("type ")
+    key += comp.types[t].name
+    id := comp.type_ids[view(key)]
+    if id is i64:
+        return id
+    return add_type(Type{kind = Given, name = view(key), align = 1, elem = t})
+
+func func_of(taken: &listview[i64], ret: i64, foreign: bool) -> i64:
+    key: &str = heap("")
     if foreign:
         key += "extern "
     key += "func("
@@ -598,30 +764,96 @@ func func_of(taken: &list[usize], ret: usize, foreign: bool) -> usize:
     if ret != VOID:
         key += " -> " + comp.types[ret].name
     id := comp.type_ids[view(key)]
-    if id is usize:
+    if id is i64:
         return id
     first := comp.items.len
     for t in taken:
-        append(comp.items, Item{name = "", type = t})
+        append(comp.items, Item{type = t})
     return add_type(Type{kind = Func, name = view(key), size = 8, align = 8, ret = ret, first = first, count = taken.len, foreign = foreign})
 
-func type_params(decl: usize) -> usize:
-    count: usize = 0
+# a struct without names, of the types in parts in their order, the same wherever it is written: (i32, bool)
+func tuple_of(parts: &listview[i64], at: i64) -> i64|Fail:
+    key: &str = heap("(")
+    for i, p in parts:
+        if i > 0:
+            key += ", "
+        key += comp.types[p].name
+    key += ")"
+    id := comp.type_ids[view(key)]
+    if id is i64:
+        return id
+    first := comp.items.len
+    size := 0
+    align := 1
+    stamped := false
+    hollow := false
+    for i, p in parts:
+        t := comp.types[try concrete(p, at)]
+        if fails(p):
+            values: &str = heap("")
+            errors: &list[i64] = heap([])
+            for q in parts:
+                kept: &list[i64] = heap([])
+                for m in members(q):
+                    if comp.types[m].error:
+                        append(errors, m)
+                    else:
+                        append(kept, m)
+                if kept.len > 0 and values.len > 0:
+                    values += ", "
+                if kept.len > 0:
+                    values += comp.types[try union_of(kept, Union, at)].name
+            if contains(view(values), ","):
+                values = "(" + values + ")"
+            if values.len > 0:
+                values += "|"
+            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + comp.types[try union_of(errors, Union, at)].name, at)
+        if t.kind == Bytes:
+            return fail("a tuple needs elements with a size, bytes is a run of unknown length", at)
+        if t.align == 0:
+            return fail("type " + t.name + " contains itself, hold it through a pointer", at)
+        size = align_up(size, t.align)
+        name: &str = heap("")
+        name += i
+        append(comp.items, Item{name = view(name), type = p, n = size})
+        size += t.size
+        if size > HUGE:
+            return too_large(view(key), at)
+        align = max(align, t.align)
+        stamped = stamped or t.stamped
+        hollow = hollow or t.hollow
+    return add_type(Type{kind = Struct, name = view(key), size = align_up(size, align), align = align, first = first, count = parts.len, stamped = stamped, hollow = hollow})
+
+# a struct of tuple_of, which no declaration names
+func tuple(t: i64) -> bool:
+    return comp.types[t].kind == Struct and comp.types[t].decl == 0
+
+# the frame where the declaration of t reads its type parameters, as the default value of a field does
+func frame_of(t: i64) -> i64:
+    saved := open_frame()
+    decl := comp.types[t].decl
+    for i in 0..type_params(decl):
+        arg := comp.items[comp.types[t].args + i]
+        append(comp.binds, Item{name = text(kid(decl, i)), type = arg.type, n = arg.n})
+    return saved
+
+func type_params(decl: i64) -> i64:
+    count := 0
     c := decl + 1
     while c < node_end(decl) and comp.nodes[c].kind == TName and (comp.nodes[decl].kind != Alias or node_end(c) < node_end(decl)):
         count += 1
         c = node_end(c)
     return count
 
-func int_value(digits: &strview, at: usize) -> usize|Fail:
+func int_value(digits: &strview, at: i64) -> u64|Fail:
     bytes := items(digits)
     if bytes[0] == '\'':
         if bytes[1] != '\\':
-            return usize(bytes[1])
-        return usize(escaped(digits, 2))
-    value: usize = 0
-    base: usize = 10
-    i: usize = 0
+            return u64(bytes[1])
+        return u64(escaped(digits, 2))
+    value: u64 = 0
+    base: u64 = 10
+    i := 0
     if digits.len > 2 and bytes[0] == '0' and (bytes[1] == 'x' or bytes[1] == 'b'):
         base = 16
         if bytes[1] == 'b':
@@ -632,17 +864,17 @@ func int_value(digits: &strview, at: usize) -> usize|Fail:
         i += 1
         if b == '_':
             continue
-        d := usize(b) - '0'
+        d := u64(b) - '0'
         if b >= 'a':
-            d = usize(b) - 'a' + 10
+            d = u64(b) - 'a' + 10
         elif b >= 'A':
-            d = usize(b) - 'A' + 10
+            d = u64(b) - 'A' + 10
         if value > (0xffff_ffff_ffff_ffff - d) / base:
             return fail(digits + " is too large, the largest number is 18446744073709551615", at)
         value = value * base + d
     return value
 
-func escaped(raw: &strview, i: usize) -> u8:
+func escaped(raw: &strview, i: i64) -> u8:
     b := items(raw)[i]
     switch b:
     case 'n':

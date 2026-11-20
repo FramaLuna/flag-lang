@@ -1,0 +1,51 @@
+type error BadLine:
+    line: i64
+
+type error Oops
+
+func cut_at(line: &strview, i: i64) -> i64|BadLine:
+    cut := find(line, "=") ifnull return BadLine{i + 1}
+    return cut
+
+func port(text: &strview) -> u16?:
+    n := parse_int(text) ifnull return null
+    return u16(n)
+
+func doubled(n: i32) -> i32|Oops:
+    if n == 0:
+        return Oops
+    return 2 * n
+
+func quad(n: i32) -> i32|Oops:
+    d := doubled(n) iferror return Oops
+    return 2 * d
+
+func sum(a: i64, b: i64) -> i64:
+    return a + b
+
+func plus_two(text: &strview) -> i64:
+    return sum(parse_int(text) ifnull return -1, 2)
+
+func total(texts: &listview[&strview]) -> i64:
+    all: i64 = 0
+    for t in texts:
+        all += parse_int(t) ifnull continue
+    return all
+
+func main():
+    print(cut_at("a=b", 0), " ", cut_at("ab", 4))
+    print(port("80"), " ", port("x"))
+    print(quad(3), " ", quad(0))
+    print(plus_two("3"), " ", plus_two("x"))
+    texts: &listview[&strview] = ptr(["1", "x", "3"])
+    print(total(texts))
+    for row in ["7", "y", "8"]:
+        for t in ["1", row]:
+            n := parse_int(t) ifnull continue 2
+            print(n)
+    ages: &map[&strview, i64] = heap({})
+    ages["ana"] = 30
+    while true:
+        age := ages["bo"] ifnull break
+        print(age)
+    print("done")

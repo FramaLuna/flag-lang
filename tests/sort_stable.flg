@@ -2,7 +2,7 @@ use math
 
 type Pair:
     key: i32
-    order: i32
+    order: i64
 
 operator <(a: Pair, b: Pair) -> bool:
     return a.key < b.key
@@ -10,7 +10,7 @@ operator <(a: Pair, b: Pair) -> bool:
 func main():
     seed(3)
     for n in [0, 1, 2, 5, 16, 17, 33, 1000, 12345]:
-        l: &list[i64]
+        l: &list[i64] = heap([])
         for i in 0..n:
             append(l, random(-50, 50))
         sort(l)
@@ -19,7 +19,7 @@ func main():
             ok = ok and not (l[i] < l[i - 1])
         print(n, " sorted ", ok)
         free(l)
-    pairs: &list[Pair]
+    pairs: &list[Pair] = heap([])
     defer free(pairs)
     for i in 0..300:
         append(pairs, Pair{i32(random(0, 5)), i})
@@ -30,6 +30,6 @@ func main():
             stable = stable and pairs[i - 1].order < pairs[i].order
     print("stable ", stable)
     words := ["pear", "apple", "fig", "apple", "kiwi"]
-    s: &slice[&strview] = ptr(words)
+    s: &listview[&strview] = ptr(words)
     sort(s)
     print(words)

@@ -1,0 +1,36 @@
+type V2:
+    x: f32
+    y: f32
+
+type Rgba:
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+
+type Padded:
+    a: u8
+    b: u16
+
+type Flag:
+    on: u8
+
+func moved(v: V2) -> V2:
+    return V2{v.x + 1.0, v.y}
+
+func main():
+    v := V2{1.0, 2.0}
+    print(hex(v as u64))
+    back := 0x400000003f800000 as V2
+    print(back.x, " ", back.y, " ", (v as u64) as V2 == v)
+    print(hex(moved(v) as u64))
+    c := u32(0x04030201) as Rgba
+    print(c.r, " ", c.g, " ", c.b, " ", c.a, " ", hex(Rgba{4, 3, 2, 1} as u32))
+    print(hex(c as f32 as u32))
+    print(hex(Padded{7, 0x1234} as u32 and 0xffff_00ff))
+    one: f64 = 1.0
+    bytes := one as array[u8, 8]
+    print(bytes[7], " ", bytes[6], " ", hex(bytes as u64))
+    print((Flag{1} as bool), " ", (true as Flag).on)
+    at := ptr(v) as *bytes
+    print((at as array[u8, 8]) as *bytes == at)

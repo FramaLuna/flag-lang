@@ -1,34 +1,33 @@
-type Counter:
-    lock: Lock
-    count: i64
+use os
 
-counter: Counter
+shared context totals:
+    counter: Lock[i64]
 
 func add(times: i32):
     for i in 0..times:
-        with lock(counter.lock):
-            counter.count += 1
+        with lock(totals.counter):
+            totals.counter.value += 1
 
-func square_all(jobs: *Channel[i32, 8], results: *Channel[i32, 8]):
+func square_all(jobs: *Channel[i64, 8], results: *Channel[i64, 8]):
     for n in jobs:
         send(results, n * n)
     close(results)
 
 func main():
-    workers: &list[Thread[null]]
+    workers: &list[Thread[null]] = heap([])
     defer free(workers)
     for k in 0..cores():
         append(workers, parallel add(1000))
     for w in workers:
-        wait w
-    print(counter.count) # 1000 for each core
+        wait(w)
+    print(totals.counter.value) # 1000 for each core
 
-    jobs: Channel[i32, 8]
-    results: Channel[i32, 8]
+    jobs: Channel[i64, 8]
+    results: Channel[i64, 8]
     t := parallel square_all(jobs, results)
     for n in 1..4:
         send(jobs, n)
     close(jobs)
     for r in results:
         print(r) # 1, 4 and 9
-    wait t
+    wait(t)

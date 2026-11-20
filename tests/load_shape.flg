@@ -1,0 +1,23 @@
+# a library that made a type of the program with other fields or variants doesn't load
+use fs
+use os
+
+type Door:
+    open: bool
+    width: i32
+
+type enum Mood:
+    Calm, Angry
+
+func main():
+    print(Door{true, 80}, " ", Calm)
+    for name in ["load_shape_door", "load_shape_mood"]:
+        library := dir_of(args()[0]) + name + ".so"
+        code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/" + name + ".flg", "-shared", "-o", library]))
+        if code is FsError or code != 0:
+            panic("cannot build " + library)
+        loaded := load_library(library)
+        if loaded is LoadError:
+            print(loaded.reason)
+        else:
+            close(loaded)

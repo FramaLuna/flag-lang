@@ -35,7 +35,7 @@ func by_size(a: i32, b: i32) -> bool:
 func apply(f: func($T) -> $U, x: $T) -> $U:
     return f(x)
 
-func first_sorted(items: &slice[$T], less: func($T, $T) -> bool) -> $T:
+func first_sorted(items: &listview[$T], less: func($T, $T) -> bool) -> $T:
     best := items[0]
     for v in items:
         if less(v, best):
@@ -52,7 +52,7 @@ func half(x: i32) -> i32:
 
 func main():
     f := double
-    print(f(4), " ", sizeof(func(i32) -> i32))
+    print(f(4), " ", @sizeof(func(i32) -> i32))
     g: func(f64) -> &strview = show
     print(g(1.5), " ", apply(double, 5), " ", apply(positive, -1))
     top: func(f64, f64) -> f64 = biggest
@@ -67,13 +67,13 @@ func main():
         print(check(3), " ", check(-3))
     steps: array[func(i32) -> i32, 2] = [double, half]
     print(steps[0](10), " ", steps[1](10), " ", pick(true)(7), " ", pick(false)(7))
-    nums := [5, 2, 9]
+    nums: array[i32, 3] = [5, 2, 9]
     print(first_sorted(ptr(nums), by_size))
     less: Less[i32] = by_size
     print(less(1, 2), " ", f == double, " ", f != half, " ", f == pick(true))
     empty: func(i32) -> i32
     print(empty == f)
-    table: &map[&strview, func(i32) -> i32]
+    table: &map[&strview, func(i32) -> i32] = heap({})
     defer free(table)
     table["double"] = double
     run := table["double"]

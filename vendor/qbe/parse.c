@@ -49,6 +49,7 @@ enum Token {
 	Talloc2,
 
 	Tblit,
+	Tacas,
 	Tcall,
 	Tenv,
 	Tphi,
@@ -111,6 +112,7 @@ static char *kwmap[Ntok] = {
 	[Talloc1] = "alloc1",
 	[Talloc2] = "alloc2",
 	[Tblit] = "blit",
+	[Tacas] = "acas",
 	[Tcall] = "call",
 	[Tenv] = "env",
 	[Tphi] = "phi",
@@ -638,6 +640,8 @@ parseline(PState ps)
 		case Tblit:
 		case Tcall:
 		case Ovastart:
+		case Oastorew:
+		case Oastorel:
 			/* operations without result */
 			r = R;
 			k = Kw;
@@ -818,6 +822,15 @@ parseline(PState ps)
 		curi->op = Oblit1;
 		curi->arg[0] = r;
 		curi++;
+		return PIns;
+	case Tacas:
+		if (i != 3 || req(r, R))
+			err("acas expects a result and three arguments");
+		if (curi - insb >= NIns-1)
+			err("too many instructions");
+		curi[0] = (Ins){Oacas0, k, R, {arg[1], R}};
+		curi[1] = (Ins){Oacas1, k, r, {arg[0], arg[2]}};
+		curi += 2;
 		return PIns;
 	default:
 		if (op >= NPubOp)

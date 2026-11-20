@@ -1,0 +1,15 @@
+type Stats:
+    hits: atomic[i64]
+    name: &strview
+
+func hit(s: *Stats):
+    for i in 0..1000:
+        add(s.hits, 1)
+
+func main():
+    s := Stats{name = "page"}
+    t := parallel hit(s)
+    copy := s # a copy reads hits as one word, the thread only adds to it
+    print(copy.name)
+    wait(t)
+    print(get(s.hits))

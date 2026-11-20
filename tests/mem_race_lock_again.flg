@@ -1,0 +1,12 @@
+func add(c: *Lock[i64]):
+    with lock(c):
+        with lock(c):
+            c.value += 1
+        c.value += 1 # still under the with outside
+
+func main():
+    c: Lock[i64]
+    t := parallel add(c)
+    add(c)
+    wait(t)
+    print(c.value)
