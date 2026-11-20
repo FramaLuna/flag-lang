@@ -1618,10 +1618,9 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
         x := real(v)
         if to == F32 and x - x == 0.0 and f32(x) - f32(x) != 0.0:
             return fail(x + " does not fit in f32, the largest f32 is 3.4028234663852886e+38", at)
-        f := float_literal(x)
         if to == F32:
-            f.at.kind = Single
-        return Value{type = to, at = f.at}
+            x = f64(f32(x)) # the f32 it rounds to, which the compiler computes with
+        return Value{type = to, at = Arg{Single if to == F32 else Double, x as i64}}
     if v.lit and textual(v.type) and to == CSTR: # a literal ends with a 0 already
         return Value{type = to, at = op1(L, "loadl", v.at)}
     if (target.kind == Union or v.lit and numeric(v.type) and target.kind == Untagged) and not contains(members(to), v.type) and not untagged_member(to, v.type):
@@ -1911,15 +1910,15 @@ func convert_number(v: Value, to: i64, at: i64) -> Value|Fail:
         wide := x
         if from.size == 4:
             wide = op1(D, "exts", x)
-        top := Arg{Double, f64(largest(to)) as i64}
-        bottom := Arg{Double, 0.0 as i64}
         low := 0
-        if target.kind == Int:
-            low = 0 - i64(largest(to)) - 1
-            bottom = Arg{Double, f64(low) as i64}
         name: &strview = "dtoui"
         if target.kind == Int:
+            low = 0 - i64(largest(to)) - 1
             name = "dtosi"
+        top := Arg{Double, f64(largest(to)) as i64}
+        bottom := Arg{Double, f64(low) as i64}
+        if wide.kind == Double and (wide.n as f64) > f64(low) and (wide.n as f64) < f64(largest(to)): # a number the compiler knows, inside the range
+            return Value{type = to, at = extend(to, op1(cls(to), name, wide))}
         slot := alloc(to)
         try zero(to, slot)
         l_number := label()

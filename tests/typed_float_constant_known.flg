@@ -1,0 +1,43 @@
+# a float constant with a type keeps it, and what is computed from it is the float the program would get, also through a conversion
+TENTH: f32 = 0.1
+THREE: f32 = 3.0
+SCALE: f32 = 2.5
+FT: f64 = 0.1
+BIG: f64 = 1e300
+NEG: f64 = -2.75
+I: i32 = -7
+U: u32 = 0xffff_fff0
+L: i64 = 0x7fff_ffff_ffff_ffff
+UL: u64 = 0xffff_ffff_ffff_ffff
+CELLS: i64 = i64(SCALE * 4.0)
+HIGH: f64 = inf
+NOTHING: f64 = HIGH - HIGH
+SIGNAL: u32 = 0x7f80_0001
+
+noinline func id(x: $T) -> $T:
+    return x
+
+func half(x: f32) -> f32:
+    return x / 2.0
+
+func half(x: f64) -> f64:
+    return x / 2.0
+
+func pick(x: $T) -> &strview:
+    where SCALE > 1.0:
+        return "big"
+    where not (SCALE > 1.0):
+        return "small"
+
+func main():
+    a := TENTH
+    b := THREE
+    print(TENTH + THREE == id(a) + id(b), " ", TENTH * THREE == id(a) * id(b), " ", TENTH / THREE == id(a) / id(b), " ", TENTH - THREE == id(a) - id(b))
+    c := FT
+    print(FT * 3.0 == id(c) * 3.0, " ", FT / 3.0 == id(c) / 3.0, " ", f32(FT) == f32(id(c)), " ", f64(TENTH) == f64(id(a)), " ", f32(BIG), " ", f32(id(BIG)))
+    print(i32(NEG), " ", i32(id(NEG)), " ", u8(NEG), " ", u8(id(NEG)), " ", i64(BIG), " ", i64(id(BIG)), " ", u32(FT * 3e10), " ", u32(id(FT) * 3e10))
+    print(f32(I), " ", f32(id(I)), " ", f64(U), " ", f64(id(U)), " ", f32(L), " ", f32(id(L)), " ", f64(UL), " ", f64(id(UL)), " ", f32(UL), " ", f32(id(UL)))
+    print(TENTH as u32, " ", id(a) as u32, " ", FT as u64, " ", id(c) as u64, " ", U as f32, " ", id(U) as f32, " ", -TENTH, " ", -FT)
+    print(TENTH == 0.1, " ", f64(TENTH) == FT, " ", half(FT), " ", pick(1), " ", 1 if SCALE > 1.0 else "one", " ", 1 if TENTH * 10.0 == 1.0 else 2)
+    cells: array[u8, CELLS]
+    print(cells.len, " ", NOTHING, " ", NOTHING == NOTHING, " ", SIGNAL as f32 as u32)

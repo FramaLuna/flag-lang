@@ -635,6 +635,10 @@ func brief(name: &strview) -> &strview:
     return name
 
 func open_proc(name: &strview, node: i64, inst: i64, export: bool) -> Proc:
+    comp.slots.len = 0 # what reading a constant outside a function left, like the array that N = ARR.len reads, belongs to none
+    comp.spare.len = 0
+    comp.held.len = 0
+    comp.body.len = 0
     return Proc{name = name, file = file_of(comp.at), params = comp.passes.len, temps = comp.temps + 1, labels = comp.labels, mentions = comp.mentions.len, scopes = comp.scopes.len, node = node, inst = inst, export = export}
 
 func proc_name(f: Proc) -> &str:
@@ -670,10 +674,6 @@ func close_proc(made: Proc, cls: u32, count: i64):
     made.mentioned = comp.mentions.len
     made.scoped = comp.scopes.len
     append(comp.procs, made)
-    comp.slots.len = 0
-    comp.spare.len = 0
-    comp.held.len = 0
-    comp.body.len = 0
 
 func takes_types(f: i64) -> bool:
     for k in 0..params(f):
@@ -811,7 +811,9 @@ func gen(n: i64, want: i64) -> Value|Fail:
                 p := left
                 while c < node_end(source):
                     typed := VOID # the type its place declares, so the value reads as it would alone
-                    if tok.text == "=" and p < source:
+                    if tok.text == "=" and p < source and local_of(p) != 0:
+                        typed = comp.vars[declaration(text(p))].type
+                    elif tok.text == "=" and p < source:
                         typed = try place_type(p)
                     try read_in_turn(values, c, typed)
                     c = node_end(c)
@@ -1050,7 +1052,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             try put_words(line, spelled(first, last) + " is false", tok.at)
             joiner: &strview = ", "
             for k, side in sides:
-                if not side.lit and comp.types[side.type].kind != Void:
+                if not side.lit and not immediate(side) and comp.types[side.type].kind != Void:
                     shown := spelled(first, sign - 1)
                     if k == 1:
                         shown = spelled(sign + 1, last)
@@ -1335,7 +1337,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
                     read = Value{type = I32, at = tag(w)}
                 bits := read.at
                 if bits.kind == Single:
-                    bits = int_arg(i64(f32(bits.n as f64) as u32))
+                    bits = op1(W, "cast", bits)
                 known = known and bits.kind == Const
                 if known:
                     joined = joined or (u64(bits.n) and (u64(1) << u64(8 * size)) - 1) << u64(8 * (f.n - at))
@@ -2606,6 +2608,17 @@ func choice(n: i64, want: i64) -> Value|Fail:
     result := want
     if want == VOID:
         result = try either(a, b, at)
+    elif comp.types[want].kind == Union: # each side takes the members of the place it fits, so a narrowed variable keeps what both give
+        parts: &list[i64] = heap([])
+        for side in sides:
+            part := side.type
+            if part != NEVER and not within(part, want):
+                part = try member_for(want, side, at)
+            if part == VOID:
+                part = want
+            if part != NEVER:
+                append(parts, part)
+        result = try union_of(parts, Union, at)
     slot := alloc(result)
     l_done := label()
     for k, side in [n + 1, node_end(cond)]:
@@ -2952,14 +2965,14 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
     array := comp.types[t].kind == Array
     ty := comp.types[t]
     if ty.kind == Simd:
-        if kids(n) == 3 or not index.lit or not integer(index.type):
+        if kids(n) == 3 or index.at.kind != Const or not integer(index.type):
             return fail("a lane of a simd is chosen with a constant, for a variable one convert it to an array", at_of(kid(n, 1)))
-        if index.neg or index.n >= ty.count:
-            sign: &strview
-            if index.neg:
-                sign = "-"
-            return fail(ty.name + " has " + counted(ty.count, "lane", "lanes") + ", there is no lane " + sign + index.n, at_of(kid(n, 1)))
-        spot = lane(Value{type = t, at = addr, mem = true, place = base.place}, i64(index.n))
+        if index.at.n < 0 or index.at.n >= ty.count:
+            shown := "" + index.at.n
+            if comp.types[index.type].kind == Uint:
+                shown = "" + u64(index.at.n)
+            return fail(ty.name + " has " + counted(ty.count, "lane", "lanes") + ", there is no lane " + shown, at_of(kid(n, 1)))
+        spot = lane(Value{type = t, at = addr, mem = true, place = base.place}, index.at.n)
         if lane_value(t) == BOOL and passing:
             append(comp.elements, Value{type = t, at = addr, mem = true})
             append(comp.elements, index)
@@ -3117,7 +3130,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         b := ahead(try value(node_end(n), BOOL), first, middle)
         if text(assignment) != "=":
             b = try binary(text(assignment)[:1], spot, b, comp.tokens[comp.nodes[assignment].tok].at)
-        try set_lane(addr, t, i64(index.n), b, at_of(node_end(n)))
+        try set_lane(addr, t, index.at.n, b, at_of(node_end(n)))
     else:
         try update(spot, assignment, first)
     return none
@@ -3165,18 +3178,19 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
         try invoke("free", args, sign)
         return assign(spot.at, spot.type, joined, sign)
     at := at_of(right)
+    d := 0
+    if local_of(left) != 0:
+        d = declaration(text(left))
     wanted := VOID
-    if o == "=":
-        wanted = spot.type
+    if o == "=": # a narrowed variable takes any value of its declaration
+        wanted = comp.vars[d].type if local_of(left) != 0 else spot.type
     v := ahead(try value(right, wanted), first, middle)
     if o != "=":
         at = sign
         v = try binary(o[:1], load(spot), v, at)
     place := spot
     given := true
-    d := 0
     if local_of(left) != 0:
-        d = declaration(text(left))
         decl := comp.vars[d]
         given = decl.given
         outside := decl
@@ -3741,7 +3755,7 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
         note(comp.syms[s].name + " is read here", at)
         return Fail
     v.place = false
-    if kids(d) == 2 and integer(t): # a number of its type, not a literal that takes the type of its place
+    if kids(d) == 2 and numeric(t): # a number of its type, not a literal that takes the type of its place
         v.lit = false
     if inner or not aggregate(v.type) or v.at.kind != Temp:
         return v
@@ -3873,8 +3887,20 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                     unknown = try image(inner, given[filler], out)
                 if unknown != 0:
                     return unknown
-                zeros(out, comp.types[field.type].size - comp.types[inner].size)
-                offset = field.n + comp.types[field.type].size
+                size := comp.types[field.type].size
+                if comp.types[inner].size < size and (field.default != 0 or comp.types[field.type].stamped): # a shared field fills its first bytes, the rest keep how the field starts
+                    bits := Arg{}
+                    if field.default != 0:
+                        bits = load(try convert(try default_of(t, field), field.type, Arg{}, at_of(field.default))).at
+                    if bits.kind == Single:
+                        bits = op1(W, "cast", bits)
+                    if bits.kind != Const and bits.kind != Double:
+                        return given[filler]
+                    for k in comp.types[inner].size..size:
+                        out.* += "b " + (bits.n >> (8 * k) and 255) + ", "
+                else:
+                    zeros(out, size - comp.types[inner].size)
+                offset = field.n + size
         zeros(out, ty.size - offset)
         return 0
     if (ty.kind == Array or ty.kind == Simd) and (n == 0 or kind == Items or kind == Brace):
@@ -3901,15 +3927,16 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
     if kind == Items and node_end(n) == n + 1 and ty.kind == Fat and field_of(t, "arena").type == VOID: # the empty view
         zeros(out, ty.size)
         return 0
-    if quoted and ty.name == "&strview":
+    if quoted and (ty.name == "&strview" or t == CSTR): # the address of its bytes, and a view its length
         id := comp.globals[text_data(unquoted(text(n))).n][9:]
-        out.* += "l $flag.str." + id + ", l " + comp.texts[trust parse_int(id)] + ", "
+        out.* += "l $flag.str." + id + ", "
+        if t != CSTR:
+            out.* += "l " + comp.texts[trust parse_int(id)] + ", "
         return 0
     if ty.size == 0:
         return 0
     v := try convert(try value(n, t), t, Arg{}, at_of(n))
-    known := v.at.kind == Const or v.at.kind == Single or v.at.kind == Double or v.at.kind == Global and not v.mem and not starts_with(comp.globals[v.at.n], "thread ")
-    if aggregate(t) or not known:
+    if aggregate(t) or not immediate(v):
         return n
     letter: &strview = "l"
     if v.at.kind == Single:
@@ -3948,6 +3975,11 @@ func literal(neg: bool, n: u64) -> Value:
 func float_literal(x: f64) -> Value:
     return Value{type = F64, at = Arg{Double, x as i64}, lit = true}
 
+# a value the compiler knows, which goes in the instruction: a number, or the address of data or of a function
+func immediate(v: Value) -> bool:
+    k := v.at.kind
+    return k == Const or k == Single or k == Double or k == Global and not v.mem and not starts_with(comp.globals[v.at.n], "thread ")
+
 func real(v: Value) -> f64:
     if comp.types[v.type].kind == Float:
         return v.at.n as f64
@@ -3978,15 +4010,7 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
     if ty.kind == Struct or ty.kind == Fat:
         for field in comp.items[ty.first:ty.first + ty.count]:
             if field.default != 0:
-                if contains(comp.resolving, field.default):
-                    return fail("the default of " + field.name + " cannot make " + ty.name + ", which starts with that default", at_of(field.default))
-                saved := frame_of(t) # the default reads what the declaration of t sees, not the variables where t is born
-                aside := set_aside(0)
-                append(comp.resolving, field.default)
-                v := try value(field.default, field.type)
-                comp.resolving.len -= 1
-                put_back(0, aside)
-                close_frame(saved)
+                v := try default_of(t, field)
                 if owner(field.type) and v.type != field.type and emptied(field.type).len > 0:
                     return fail("a default value is one the compiler knows, and an owner that holds something is made when the program runs: " + field.name + " starts with " + emptied(field.type) + ", and gets the rest where its value is made", at_of(field.default))
                 try assign(offset(addr, at + field.n), field.type, v, at_of(field.default))
@@ -4011,6 +4035,19 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
         jump(l_head)
         open_block(l_done)
     return null
+
+# the default value of a field of t, which reads what the declaration of t sees, not the variables where t is born
+func default_of(t: i64, field: Item) -> Value|Fail:
+    if contains(comp.resolving, field.default):
+        return fail("the default of " + field.name + " cannot make " + comp.types[t].name + ", which starts with that default", at_of(field.default))
+    saved := frame_of(t)
+    aside := set_aside(0)
+    append(comp.resolving, field.default)
+    v := value(field.default, field.type)
+    comp.resolving.len -= 1
+    put_back(0, aside)
+    close_frame(saved)
+    return v
 
 func packs(f: Item, at: i64) -> bool:
     size := comp.types[f.type].size
@@ -4362,6 +4399,10 @@ func extend(t: i64, x: Arg) -> Arg:
         return op1(W, "extsh", x)
     if ty.size == 2:
         return op1(W, "extuh", x)
+    if ty.size == 4 and x.kind == Const and ty.kind == Int: # a number the compiler knows is held as the value of its type
+        return int_arg(x.n << 32 >> 32)
+    if ty.size == 4 and x.kind == Const and ty.kind == Uint:
+        return int_arg(x.n and 0xffff_ffff)
     return x
 
 func load(v: Value) -> Value:
