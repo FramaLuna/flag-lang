@@ -490,9 +490,9 @@ func count_of(n: i64) -> i64|null|Fail:
         if s == 0 or comp.nodes[comp.syms[s].node].kind != Constant:
             return null
         v := try constant(s, VOID, tok.at)
-        if not v.lit or v.neg or not integer(v.type):
+        if not integer(v.type) or v.at.kind != Const or comp.types[v.type].kind == Int and v.at.n < 0:
             return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
-        count = v.n
+        count = u64(v.at.n) and largest(v.type) # a u32 that the compiler computed carries a sign above its bits
     if count > largest(I64):
         return fail("" + count + " does not fit in i64, the largest i64 is " + largest(I64), tok.at)
     return i64(count)

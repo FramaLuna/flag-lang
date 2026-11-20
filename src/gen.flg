@@ -959,7 +959,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         open_block(l_head)
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, comp.slots.len, 0, 0, false})
         c := try condition(cond)
-        forever := c.lit and c.n == 1
+        forever := c.at.kind == Const and c.at.n == 1
         if not forever:
             branch(c.at, l_body, l_exit)
         open_block(l_body)
@@ -2315,11 +2315,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 return fail("- expects a signed number or a float on its right, this is " + t.name, tok.at)
             if t.kind == Simd:
                 return lanes("neg", ptr([v]), v.type, tok.at)
-            x := load(v).at
-            if x.kind == Const: # a typed constant stays one the compiler knows, wrapped at its width
-                bits := i64(64 - 8 * t.size)
-                return Value{type = v.type, at = int_arg((0 - x.n) << bits >> bits)}
-            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", x))}
+            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", load(v).at))}
         if o == "not":
             if t.kind == Simd and lane.kind != Float:
                 return lanes("not", ptr([v]), v.type, tok.at)
@@ -2493,8 +2489,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
         i -= 1
         k := chain[i]
         o = text(k)
-        if (o == "and" or o == "or") and l.type == BOOL and l.lit:
-            if (l.n == 1) == (o == "and"): # a left side the compiler knows leaves the right one, or decides alone, like a if c else b
+        if (o == "and" or o == "or") and l.type == BOOL and l.at.kind == Const:
+            if (l.at.n == 1) == (o == "and"): # a left side the compiler knows leaves the right one, or decides alone, like a if c else b
                 l = try condition(node_end(k + 1))
         elif (o == "and" or o == "or") and l.type == BOOL:
             slot := alloc(BOOL)
@@ -2584,8 +2580,8 @@ func choice(n: i64, want: i64) -> Value|Fail:
     at := comp.tokens[comp.nodes[n].tok].at
     cond := node_end(n + 1)
     c := try condition(cond)
-    if c.lit: # the compiler knows c, so the side it chose is all there is, like a where
-        return value(n + 1 if c.n == 1 else node_end(cond), want)
+    if c.at.kind == Const: # the compiler knows c, so the side it chose is all there is, like a where
+        return value(n + 1 if c.at.n == 1 else node_end(cond), want)
     l_sides := array[u32, 2]{label(), label()}
     l_ends := array[u32, 2]{label(), label()}
     branch(c.at, l_sides[0], l_sides[1])
@@ -3739,6 +3735,8 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
         note(comp.syms[s].name + " is read here", at)
         return Fail
     v.place = false
+    if kids(d) == 2 and integer(t): # a number of its type, not a literal that takes the type of its place
+        v.lit = false
     if inner or not aggregate(v.type) or v.at.kind != Temp:
         return v
     end := comp.body.len
@@ -3776,7 +3774,13 @@ func empty_owner(n: i64) -> bool:
     return (given == Items or given == Pairs or given == Literal and text(n + 1) == "\"\"") and text(n) == "heap" and comp.nodes[n].module.len == 0
 
 func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is computed, or 0
-    while n != 0 and comp.nodes[n].kind == Name:
+    while n != 0 and (comp.nodes[n].kind == Name or comp.nodes[n].kind == Choice):
+        if comp.nodes[n].kind == Choice:
+            c := try condition(node_end(n + 1))
+            if c.at.kind != Const:
+                break
+            n = n + 1 if c.at.n == 1 else node_end(node_end(n + 1))
+            continue
         s := try named(text(n), comp.nodes[n].module, at_of(n))
         d := comp.syms[s].node
         if s == 0 or comp.nodes[d].kind != Constant or kids(d) == 2 and try resolve(d + 1) != t: # a constant of another type is read as a value
@@ -3789,7 +3793,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         out.* += "l " + HEAP + ", "
         zeros(out, ty.size - arena - 8)
         return 0
-    if n != 0 and empty_owner(n):
+    if n != 0 and comp.nodes[n].kind == Pairs and node_end(n) == n + 1 and ty.kind != Union: # {}, the value as it is born
         n = 0
     if n == 0 and not ty.stamped:
         zeros(out, ty.size)
@@ -3874,7 +3878,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         raw := lane_type(t)
         for i in 0..ty.count:
             element := 0
-            if n != 0:
+            if n != 0 and c < node_end(n):
                 element = c
                 c = node_end(c)
             if raw != ty.elem and element != 0: # a mask keeps true as all ones

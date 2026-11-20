@@ -48,10 +48,108 @@ func add(i: Ins) -> Arg:
     return Arg{Temp, i64(i.to)}
 
 func op(cls: u32, name: &strview, a: Arg, b: Arg) -> Arg:
+    if a.kind == Const and b.kind == Const:
+        known := computed(cls, name, a.n, b.n)
+        if known is i64:
+            return int_arg(known)
     return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a, b = b})
 
 func op1(cls: u32, name: &strview, a: Arg) -> Arg:
+    if a.kind == Const:
+        known := computed(cls, name, a.n, 0)
+        if known is i64:
+            return int_arg(known)
     return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a})
+
+# the number that QBE would compute for an instruction on numbers the compiler knows, or null for one it leaves to QBE
+func computed(cls: u32, name: &strview, a: i64, b: i64) -> i64?:
+    if cls != W and cls != L:
+        return null
+    o := name
+    word := cls == W
+    if starts_with(name, "c") and (ends_with(name, "w") or ends_with(name, "l")): # a comparison names the class of what it compares
+        o = name[:name.len - 1]
+        word = ends_with(name, "w")
+    if word:
+        a = a << 32 >> 32
+        b = b << 32 >> 32
+    mask: u64 = 0xffff_ffff if word else 0xffff_ffff_ffff_ffff
+    x := u64(a) and mask
+    y := u64(b) and mask
+    shift := b and (31 if word else 63)
+    r := 0
+    switch o:
+    case "add":
+        r = a + b
+    case "sub":
+        r = a - b
+    case "mul":
+        r = a * b
+    case "and":
+        r = a and b
+    case "or":
+        r = a or b
+    case "xor":
+        r = a xor b
+    case "neg":
+        r = 0 - a
+    case "copy":
+        r = a
+    case "shl":
+        r = a << shift
+    case "sar":
+        r = a >> shift
+    case "shr":
+        r = i64(x >> shift)
+    case "div", "rem", "udiv", "urem":
+        if b == 0:
+            return null
+        switch o:
+        case "div":
+            r = a / b
+        case "rem":
+            r = a % b
+        case "udiv":
+            r = i64(x / y)
+        case:
+            r = i64(x % y)
+    case "ceq":
+        r = i64(a == b)
+    case "cne":
+        r = i64(a != b)
+    case "cslt":
+        r = i64(a < b)
+    case "csle":
+        r = i64(a <= b)
+    case "csgt":
+        r = i64(a > b)
+    case "csge":
+        r = i64(a >= b)
+    case "cult":
+        r = i64(x < y)
+    case "cule":
+        r = i64(x <= y)
+    case "cugt":
+        r = i64(x > y)
+    case "cuge":
+        r = i64(x >= y)
+    case "extsb":
+        r = a << 56 >> 56
+    case "extub":
+        r = a and 0xff
+    case "extsh":
+        r = a << 48 >> 48
+    case "extuh":
+        r = a and 0xffff
+    case "extsw":
+        r = a << 32 >> 32
+    case "extuw":
+        r = a and 0xffff_ffff
+    case:
+        return null
+    if cls == W:
+        return r << 32 >> 32
+    return r
 
 func terminate(name: &strview, a: Arg):
     add(Ins{op = name, a = a})

@@ -206,7 +206,7 @@ func binary(o: &strview, l: Value, r: Value, at: i64) -> Value|Fail:
         return fail("division by zero", at)
     if k != Float and (o == "/" or o == "%") and y.kind == Temp:
         try panic_if(op(W, cmp_name("ceq", l.type), y, int_arg(0)), "division by zero", at)
-    if k == Int and (name == "div" or name == "rem") and (y.kind == Temp or y.kind == Const and y.n == -1):
+    if k == Int and (name == "div" or name == "rem") and (y.kind == Temp or y.kind == Const and y.n == -1 and x.kind == Temp):
         slot := alloc(l.type)
         l_minus := label()
         l_plain := label()
@@ -1873,9 +1873,9 @@ func holds(n: i64) -> bool|Fail:
         if b != 0 and comp.binds[b - 1].type != VOID:
             return (try resolve(left) == try resolve(node_end(left))) == (o == "==")
     v := try gen(n, VOID)
-    if v.type != BOOL or not v.lit:
+    if v.type != BOOL or v.at.kind != Const:
         return fail("a where reads types, numbers and constants that the compiler knows, and this is not one", at_of(n))
-    return v.n == 1
+    return v.at.n == 1
 
 func assignable(to: i64, from: i64, at: i64) -> bool|Fail:
     v := Value{type = from}

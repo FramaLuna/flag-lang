@@ -1,0 +1,28 @@
+# {} is the value with every field at its default, and a if c else b with a c the compiler knows is the side it chose, in a default and in a typed constant
+type Point:
+    x: i64 = 1
+    y: i64 = 2
+
+type Shape:
+    center: Point = {}
+    maybe: Point? = {}
+    list: &list[i64]? = heap([])
+    cells: array[i64, 2] = {}
+    sep: &strview = "\\" if @windows() else "/"
+    corner: Point = {1, 2} if @linux() else {3, 4}
+    side: Point? = {} if @sizeof(Point) == 16 else null
+
+shared context app:
+    center: Point = {}
+    sep: &strview = "\\" if @windows() else "/"
+
+P0: Point = {}
+MAYBE: Point? = {}
+LIST: &list[i64]? = heap([])
+CORNER: Point = {1, 2} if @linux() else {3, 4}
+NAME: &strview = "Windows" if @windows() else "elsewhere"
+
+func main():
+    s: Shape
+    print(s.center, " ", s.maybe, " ", s.list is null, " ", s.cells, " ", s.sep.len, " ", s.corner == CORNER, " ", s.side)
+    print(app.center, " ", app.sep.len, " ", P0, " ", MAYBE, " ", LIST is null, " ", NAME.len > 0)
