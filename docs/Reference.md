@@ -224,7 +224,7 @@ An enum that gets no value starts as the first variant you wrote, also when anot
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
-An untagged union (`i32||f32`) is as big as its biggest member and has no tag. It starts at zero, and a member that holds a union without `null` is not a value until you assign it. A member is read by converting to it, `f32(u)` or `x: f32 = u`, and nothing tells which one it holds, so printing it is an error: `i32||f32 has no tag that says which member it holds, so it cannot be written: write the member you mean, i32(u)`.
+An untagged union (`i32||f32`) is as big as its biggest member and has no tag. It starts at zero, and a member that holds a union without `null` is not a value until you assign it. A member is read by converting to it, `f32(u)` or `x: f32 = u`, and nothing tells which one it holds, so printing it is an error: `i32||f32 has no tag that says which member it holds, so it cannot be written: convert it to the member you mean, like i32(...)`.
 
 ### Fat pointers
 A fat pointer is the address of the data and then its fields
@@ -412,7 +412,7 @@ func main():
     small: i32 = 4
     print(sum(1, 2, small), " ", sum()) # 7 0
 ```
-- `..items` goes last and has no default value: `..items goes last, it gathers the arguments after the others`. A call to it takes no named arguments
+- `..items` goes last and has no default value: `..items goes last, it gathers the arguments after the others`. A call to it takes no named arguments, `a function with ..items takes its arguments in order, none by its name`, so a `place: &strview = @here()` before it always takes the place of the call
 - a view that you already have goes as the extra arguments with `..` before it, last and alone: `sum(..values)` with a `&list[i64]` or a `&listview[i64]`. Its elements are `T` itself, nothing converts them: `no overload of sum matches (&list[i32]), the elements of the view after .. are i32, and they go to ..items: T without converting`
 - `..items: $T` takes one `$T` from the extra arguments with the usual rules, so a call without any doesn't fit it, and when no other overload fits the error says why: `no overload of biggest matches (), biggest gets $T from its extra arguments, and this call gives none`
 - `parallel sum(1, 2, 3)` copies the extra arguments into the block of the new thread, so the thread can outlive the frame of the call
@@ -777,7 +777,7 @@ An expression statement that leaves an error without handling it doesn't compile
 ```
 error: this statement drops an error: test it with is, pass it up with try or drop it with _ =
 ```
-If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. That holds for each value that may be an error, so one that gets another before anything reads it is `x can hold an error and nothing reads it before it gets another value`, at the place it got the first one. A value it gets inside a loop declared after it isn't checked, the next round may read it. A `switch` over the value handles its errors, in the cases that name them or in the default.
+If you keep the result in a variable, you can't use its value until you check it with `is`, and a variable that keeps an error and is never read doesn't compile either: `x can hold an error and nothing reads it: test it with is, pass it up with try or drop it with _ =`. The check is that something reads the variable, not each value it gets: a value that gets another before anything reads it is lost without a word, so read each one before the next or keep them in variables of their own. The same goes for a variable that keeps a `Thread`, `t keeps a thread and nothing reads it`. A `switch` over the value handles its errors, in the cases that name them or in the default.
 
 `try` gives the value and returns the errors from the function, so each error must be in the return type of the function
 - `try passes Bad up but this function returns i32`
@@ -1119,6 +1119,7 @@ The promise ends at a border, and past it you are the checker:
 - `@trust`, which hides the warnings of the lines it covers (see [@trust and @check](#trust-and-check))
 - `trust` and `as`, which take your word: `trust` on a real error gives garbage, `as` reads a member of a union without its tag, and a struct that holds a pointer read as a number with `as` loses that pointer without a warning
 - the arithmetic of `*bytes`: a `*bytes` moved with `+` and `-` is still followed into the memory it came from, and using it after a `free` warns, but nothing checks that it stays inside that memory
+- a variable narrowed by `is` and changed through a pointer taken before it: what it frees or reads as the member it was narrowed to may be the other one (see [Unions and narrowing](#unions-and-narrowing))
 - what C does: a function of C, and a call through a value of an `extern func` type, is taken as one that only reads what it gets, and a thread of C is not seen, so an `export func` that C calls from several threads at once is yours to guard
 - a pointer at 0, like a `*T` declared without a value: a read or a write through it is a crash that stops the program, `flag: invalid memory access at 0x8` (see [Runtime errors](#runtime-errors)), while what it reaches is in the low memory that the system never maps, the first 64 KiB on Windows and on most Linux systems and the first 4 GiB on macOS. A field farther than that reads or writes whatever memory is there
 
@@ -1266,6 +1267,10 @@ Where it cannot be sure it warns, and these warnings come from right programs. `
 - a list of lists emptied with `pop` or `remove`: the elements of the element taken may be freed already and may never be freed for it
 - threads that another function starts into a list, which it returns or fills through a pointer, each giving a block that you free as you wait them: `the memory that start allocates here may never be freed`. Started in the function that waits them, they are clean
 - threads of a list that each get a block allocated in their round and give it back, `parallel double(heap(i))`, waited one by one and used: for it another thread of the list may still change that block, `this memory is changed by a thread that may run at the same time as this`
+- a pointer to a variable of `main` kept in a context, `app.mem = ptr(a)`: the variables of `main` live as long as the program, but it warns `a pointer to a cannot leave main, a lives on its stack`
+- threads that each clear or free their own arena of an array or a list, given as `ptr(arenas[k])`: for it the arenas give out the same memory, so `arenas is changed by each thread that this starts`
+- a block sent with `send` that owns other blocks, like a `*Msg` whose `body` is a `&str`: `send` gives away the block that the value points to and not what that block owns, so the `&str` warns that it is never freed
+- a function that allocates in an arena it was given, by pointer, in a field or in a context, and clears or frees it there, `clear(a)` and `arena(a, 1)`: `the memory allocated here for a is never freed` at the call
 - an owner received from a `Channel` and then grown or walked: what goes through a channel is not followed, so for it the owner has no memory, `this call cannot grow got, it may have no memory to grow in`, and the elements of a list received may be freed already
 - a struct of more than 4096 bytes that holds an `Arena`, copied, put in a list or in the heap: past 4096 bytes a copy mixes its words, so freeing its arena after says `free cannot release g.level, it is not on the heap`
 - a function that returns a struct that holds an `Arena` that gave memory or a `Lock` that was taken, when the struct is bigger than 128 bytes or the function has a `defer`, and `append(levels, load(i))` of what it returns: the return is a copy for it, `this copies the Arena mem in l, that may have given memory`
@@ -1286,7 +1291,7 @@ These mistakes give no warning yet, so keep them in mind where they can happen
 - a block of an earlier round of a loop freed through a variable that keeps it for the next round, `free(prev)` and then `prev = j`, while the thread of that round may still use it: the `free` says nothing, and the block of the last round may be said to be never freed
 - a view of a key of a `&map[&str, V]` kept in a list after the map frees its keys
 - a pointer that may point to either of two variables, given in an `if` and an `else` or kept as the best so far, when one of them is of a block that ended: one variable it follows, two it takes as any place of the stack
-- a variable narrowed by `is` and changed through a pointer taken before it: what it frees or reads as the member it was narrowed to may be the other one (see [Unions and narrowing](#unions-and-narrowing))
+- a copy of an arena that gave memory, made in a function that got the arena from outside, `copy := a.*` with `a: *Arena`, or in the copy of an `inherited context` that a thread of such a function starts: the copy gives out the same blocks
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked

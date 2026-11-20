@@ -584,8 +584,8 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
         field_at := comp.tokens[comp.nodes[c].tok].at
         ft := try resolve(c + 1)
         f := comp.types[ft]
-        if f.align == 0 and f.decl == decl and f.name != view(key): # another instance of it, which is being made because this one is
-            return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", field_at)
+        if f.align == 0 and f.decl == decl and f.name != view(key) and contains(view(key), f.name): # a smaller instance of it, which is being made because it holds this one
+            return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", comp.tokens[comp.nodes[decl].tok].at)
         if f.align == 0:
             return fail("type " + key + " contains itself, hold it through a pointer", field_at)
         if f.kind == Bytes:

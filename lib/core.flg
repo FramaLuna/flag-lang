@@ -116,7 +116,9 @@ func abs(x: $T) -> $T where $T is f64:
     return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
 
 func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
-    return a * (1.0 - t) + b * t # a at 0 and b at 1 exactly
+    if t == 1.0:
+        return b
+    return a + (b - a) * t # a at 0, and when b is a
 
 func heap(v: $T) -> *$T:
     p := malloc(@sizeof($T)) as *$T
@@ -1551,7 +1553,6 @@ priv type Streams:
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
 priv shared context io:
     table: Lock[Streams]
-    code: atomic[i32] # 1 more than what main or exit end the program with, and 0 in a library, whose exit is of the program
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1597,20 +1598,30 @@ func flush():
                     drain(s)
 
 priv export func flag_exit():
+    if io.table.value.streams.len > 0: # a library that never wrote has nothing to say at its close
+        _ = said()
+
+# what the standard output could not write goes out and is said, once
+priv func said() -> bool:
     flush()
     s := stream(stdout)
-    if try_lock(s.writing) and s.writing.value.failed != 0: # never let go, the program ends
-        eprint("flag: ", FsError{s.writing.value.failed, "write", s.path})
-        if get(io.code) == 1: # a failed standard output turns an end with 0 into 1
-            _exit(1)
+    failed: i32 = 0
+    if try_lock(s.writing):
+        with Locked{ptr(s.writing) as *Lock[null]}:
+            failed = s.writing.value.failed
+            s.writing.value.failed = 0
+    if failed != 0:
+        eprint("flag: ", FsError{failed, "write", s.path})
+    return failed != 0
 
 func exit(code: i32) -> never:
-    ending(code)
-    quit(code)
+    quit(ending(code))
 
-# the return of main gives its code here too
-priv func ending(code: i32):
-    set(io.code, code + 1)
+# what main and exit end the program with: a failed standard output turns an end with 0 into 1
+priv func ending(code: i32) -> i32:
+    if said() and (code and 255) == 0:
+        return 1
+    return code
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
     f := File{fd}
