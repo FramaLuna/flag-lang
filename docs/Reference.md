@@ -224,7 +224,7 @@ An enum that gets no value starts as the first variant you wrote, also when anot
 
 The members are flattened, repeated ones removed and sorted, so `(i32|null)|f64?` is `null|i32|f64`, and that's how the errors write it. A union inside a pointer or inside the other kind of union is written in parentheses, `*(null|i32)` and `i64||(i32|f32)`.
 
-An untagged union (`i32||f32`) is as big as its biggest member and has no tag. It starts at zero, and a member that holds a union without `null` is not a value until you assign it.
+An untagged union (`i32||f32`) is as big as its biggest member and has no tag. It starts at zero, and a member that holds a union without `null` is not a value until you assign it. A member is read by converting to it, `f32(u)` or `x: f32 = u`, and nothing tells which one it holds, so printing it is an error: `i32||f32 has no tag that says which member it holds, so it cannot be written: write the member you mean, i32(u)`.
 
 ### Fat pointers
 A fat pointer is the address of the data and then its fields
@@ -542,7 +542,7 @@ func main():
 
 `$$n` is a number, it comes from an array size (`array[$T, $$n]`) or from a type with a number parameter, and inside the function it's an integer literal.
 
-Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`), and it cannot have a nested field, its `$T` would not reach the inner type: declare that type on its own. A generic that makes bigger types with every call doesn't compile: `f(x: $T)` calling `f(ptr(x))` gives `instancing f never ends, each call builds a bigger type than the last`, and a type that grows the same way gives `type Pair never ends, each instance builds a bigger one than the last`.
+Every different set of types makes a new instance of the function, and the same set reuses it. A generic type works the same way (`type Pair[$A, $B]`), and it cannot have a nested field, its `$T` would not reach the inner type: declare that type on its own. A generic that makes bigger types with every call doesn't compile: `f(x: $T)` calling `f(ptr(x))` gives `instancing f never ends, each call builds a bigger type than the last`, and a type that grows the same way gives `type Pair never ends, each instance builds a bigger one than the last`, or `array[...] is too large` when it grows inside an array.
 
 An instance is checked when a call makes it, so an error inside it comes with a note at that call: `the find that fails was made for this call, with $T = Mark`. When the generic is in the library the error points at your call instead, the one that led into the library, and a note shows the line inside it: `it fails here, inside less, with $T = P`.
 
@@ -1132,7 +1132,7 @@ Where it cannot be sure that a program is right it warns, so a right program can
 - an owner that may grow without memory: `append cannot grow names, it may have no memory to grow in: give it heap([])`. The compiler stops one that no path gave memory (see [Fat pointers](#fat-pointers)), and this is one that some path left without it, in a variable, a field of one, a context or memory a function was given, also a field of a type parameter at zero, `Box[&str]{}`. The elements of a list and the values of a map are seen as one, so there it warns only when none of them got memory, like `append(groups[k], v)` with no `groups[k] = heap([])`: a new key among keys that have memory is not seen, and it stops the program when it runs (see [Runtime errors](#runtime-errors))
 - temporaries used after their `with scratch():` ended: `kept points to memory that may be freed already`
 - a pointer to a variable or a temporary of a block that ended, kept and used after it, also in the next round of a loop, whose body is a block that ends every round: `keep points to pair, whose block has ended: copy it to the heap, or declare pair before the block`, and for the temporary of `ptr([...])`, of a `*T` parameter or of the `..items` of a call, `keep points to a temporary whose block has ended: copy it to the heap, or keep it in a variable declared before the block`
-- a pointer to the stack that a function returns, through a variable or a struct, which the compiler doesn't see in one expression: `cannot return a pointer to the stack as it will be cleared at return`, the text of the error of `return ptr(x)`. One that it leaves in a context or in memory it was given, like its `..items` kept in a field, leaves without a return: `a pointer into the stack of fill cannot leave fill`
+- a pointer to the stack that a function returns, through a variable or a struct, which the compiler doesn't see in one expression: `cannot return a pointer to the stack as it will be cleared at return`, the text of the error of `return ptr(x)`. One that it leaves in a context or in memory it was given leaves without a return: `a pointer into the stack of fill cannot leave fill`, and its `..items` kept in a field is the array in the frame of the caller, so the warning names the caller
 - the element of a `for` that `is` narrowed, read after the body changed the list it is in, with `u[i] = v` or a call that changes `u`: `v may not be i32 now, the list it is in changed it after it was narrowed: test it again with is`. If the change grew the list, the element is in freed memory: `v points to memory that may be freed already`
 - a view read in its turn before a call that frees its memory, `show(l, grow(ptr(l)))` with a `show` that reads its view: `l points to memory that may be freed already`, with a note at `grow` (see [Order](#order))
 - a function that frees one argument and reads another that may be the same memory, like one of yours that appends to a list a view of it: `add_view may free memory that it also reads through another argument`, or `this call may free...` when the call doesn't name it, through a function value or an operator. The `+=` of text, `append` of a view and the `=` of a view to an owner copy the view first when it is of the same memory, so `t += t` and `l = l[1:]` are fine
@@ -1266,6 +1266,11 @@ Where it cannot be sure it warns, and these warnings come from right programs. `
 - a list of lists emptied with `pop` or `remove`: the elements of the element taken may be freed already and may never be freed for it
 - threads that another function starts into a list, which it returns or fills through a pointer, each giving a block that you free as you wait them: `the memory that start allocates here may never be freed`. Started in the function that waits them, they are clean
 - threads of a list that each get a block allocated in their round and give it back, `parallel double(heap(i))`, waited one by one and used: for it another thread of the list may still change that block, `this memory is changed by a thread that may run at the same time as this`
+- an owner received from a `Channel` and then grown or walked: what goes through a channel is not followed, so for it the owner has no memory, `this call cannot grow got, it may have no memory to grow in`, and the elements of a list received may be freed already
+- a struct of more than 4096 bytes that holds an `Arena`, copied, put in a list or in the heap: past 4096 bytes a copy mixes its words, so freeing its arena after says `free cannot release g.level, it is not on the heap`
+- a function that returns a struct that holds an `Arena` that gave memory or a `Lock` that was taken, when the struct is bigger than 128 bytes or the function has a `defer`, and `append(levels, load(i))` of what it returns: the return is a copy for it, `this copies the Arena mem in l, that may have given memory`
+- a walk by index that reads what the arena of an element gave and then frees that arena, `free(levels[i].mem)`: for it the arenas of the other elements may be freed already
+- a walk that frees the elements of a list inside the loop that fills it, before the append of that round, and then returns: `the memory that heap allocates here is never freed`
 
 ### What it misses
 These mistakes give no warning yet, so keep them in mind where they can happen
@@ -1281,6 +1286,7 @@ These mistakes give no warning yet, so keep them in mind where they can happen
 - a block of an earlier round of a loop freed through a variable that keeps it for the next round, `free(prev)` and then `prev = j`, while the thread of that round may still use it: the `free` says nothing, and the block of the last round may be said to be never freed
 - a view of a key of a `&map[&str, V]` kept in a list after the map frees its keys
 - a pointer that may point to either of two variables, given in an `if` and an `else` or kept as the best so far, when one of them is of a block that ended: one variable it follows, two it takes as any place of the stack
+- a variable narrowed by `is` and changed through a pointer taken before it: what it frees or reads as the member it was narrowed to may be the other one (see [Unions and narrowing](#unions-and-narrowing))
 
 ### @trust and @check
 `@trust` hides the warnings of code you already checked
@@ -1403,7 +1409,7 @@ When the name of a variable of C is one of core, like `stderr`, which is a `File
 `.c`, `.o` and `.a` files go to the C compiler after `-cc`: `flagc game.flg -cc vec.c`.
 
 ### export
-`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`. Its name is a value of its C function type, the callback you give to C
+`export func` is a function that C can call: it keeps its plain name as the symbol, uses the C calling convention and is built even if nothing in Flag calls it. It cannot be generic, overloaded, `inline` or `main`, and its name cannot be one of the functions of C that the library calls: `close is a symbol of C that the library uses already, an export function needs a name of its own`. Its name is a value of its C function type, the callback you give to C
 ```flag
 extern "c":
     func qsort(base: *bytes, count: i64, size: i64, compare: extern func(*i32, *i32) -> i32)

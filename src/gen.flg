@@ -137,7 +137,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 given := node_end(c + 1)
                 for i in given..node_end(given):
                     for j in p..params(f):
-                        if comp.nodes[i].kind == Name and text(i) == text(kid(f, j)) and first_sym(text(i)) == 0:
+                        if comp.nodes[i].kind == Name and text(i) == text(kid(f, j)): # a later parameter, also with the name of a function
                             return fail("the default of " + text(c) + " cannot read " + text(i) + ", a default value reads only the parameters before it", at_of(i))
     done := try gen_from(0)
     reached := comp.types.len
@@ -587,6 +587,7 @@ func gen_from(from: i64) -> i64|Fail:
                 return fail("this function returns never, and a path reaches its end: end each path with a call that never returns, like exit", comp.at)
             if comp.ret != VOID:
                 return fail("not every path of this function returns a value", comp.at)
+            try ending(literal(false, 0), comp.at)
             terminate("ret", Arg{})
         try forget(0)
         back: u32 = 0
@@ -807,17 +808,9 @@ func gen(n: i64, want: i64) -> Value|Fail:
                 c := source + 1
                 p := left
                 while c < node_end(source):
-                    typed := VOID # the declared type of a variable or of a field of one, so the value reads as it would alone
-                    head := p
-                    while p < source and comp.nodes[head].kind == Field:
-                        head += 1
-                    if tok.text == "=" and p < source and comp.nodes[head].kind == Name and lookup(text(head)) != 0:
-                        typed = comp.vars[lookup(text(head)) - 1].type
-                        while head > p:
-                            head -= 1
-                            if comp.types[typed].kind == Ptr:
-                                typed = comp.types[typed].elem
-                            typed = field_of(typed, text(head)).type
+                    typed := VOID # the type its place declares, so the value reads as it would alone
+                    if tok.text == "=" and p < source:
+                        typed = try place_type(p)
                     try read_in_turn(values, c, typed)
                     c = node_end(c)
                     p = node_end(p)
@@ -907,6 +900,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             if comp.ret != VOID:
                 return fail("return expects a value, this function returns " + comp.types[comp.ret].name, tok.at)
             try unwind(0, 0)
+            try ending(literal(false, 0), tok.at)
             terminate("ret", Arg{})
             return none
         if comp.ret == VOID:
@@ -921,6 +915,9 @@ func gen(n: i64, want: i64) -> Value|Fail:
         given := comp.given.len
         ends: &list[Local] = heap([])
         lives := 0
+        merged := marks(before) # after the if, a local keeps the mark that a branch that goes on left
+        for k in 0..before:
+            merged[k] = 0
         l_end := label()
         part := n
         while part < node_end(n) and comp.nodes[part].kind == If:
@@ -932,13 +929,16 @@ func gen(n: i64, want: i64) -> Value|Fail:
             l_no := label()
             branch(c.at, l_yes, l_no)
             open_block(l_yes)
+            start := marks(before)
             narrowed := comp.vars.len
             try narrow(cond, true)
             try statements(yes)
             regive(given, before, false)
             if try keep(before, narrowed, ends):
                 lives += 1
+                absorb(merged)
                 jump(l_end)
+            remark(start)
             open_block(l_no)
             try narrow(cond, false)
             part = node_end(yes)
@@ -947,7 +947,9 @@ func gen(n: i64, want: i64) -> Value|Fail:
         regive(given, before, true)
         if try keep(before, before, ends):
             lives += 1
+            absorb(merged)
             jump(l_end)
+        remark(merged)
         if lives > 0:
             open_block(l_end)
             try join(ends, lives, tok.at)
@@ -960,6 +962,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         jump(l_head)
         open_block(l_head)
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, comp.slots.len, 0, 0, false})
+        since := comp.read.len
         c := try condition(cond)
         forever := c.lit and c.n == 1
         if not forever:
@@ -971,6 +974,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         jump(l_head)
         broke := comp.loops[-1].broke
         comp.loops.len -= 1
+        reread(since, before)
         try forget(before)
         if not forever or broke:
             open_block(l_exit)
@@ -1071,8 +1075,6 @@ func gen(n: i64, want: i64) -> Value|Fail:
         for i in n + 1..node_end(n):
             if comp.nodes[i].tok > last:
                 last = comp.nodes[i].tok
-            if comp.nodes[i - 1].kind != Assign:
-                reads(i)
         for t in comp.tokens[node.tok + 1:last + 1]:
             if t.kind == Name and (t.text == "return" or t.text == "break" or t.text == "continue" or t.text == "try"):
                 return fail("a deferred statement runs on the way out, it cannot hold " + t.text, t.at)
@@ -1742,6 +1744,7 @@ func iterate(n: i64) -> Fail?:
         mention(tok.text, place, item, node.tok)
         append(comp.vars, Local{tok.text, item, place, comp.loops.len, node.tok, 0, view(heap(fixed)), 0, true, false})
         append(comp.loops, Loop{l_exit, l_head, comp.defers.len, round, 0, 0, false})
+    since := comp.read.len
     try statements(node_end(subject))
     if range: # a walk by index when the body reads x[i], for -memory
         ends := node_end(subject + 1)
@@ -1768,6 +1771,7 @@ func iterate(n: i64) -> Fail?:
     close_scope(round)
     every = every and not comp.loops[-1].broke
     comp.loops.len -= 1
+    reread(since, before)
     try forget(before)
     open_block(l_exit)
     if rounds:
@@ -1807,6 +1811,10 @@ func cases(n: i64) -> Fail?:
     l_fallback: u32 = 0
     before := comp.vars.len
     given := comp.given.len
+    start := marks(before)
+    merged := marks(before)
+    for k in 0..before:
+        merged[k] = 0
     ends: &list[Local] = heap([])
     lives := 0
     truths := 0
@@ -1896,10 +1904,12 @@ func cases(n: i64) -> Fail?:
         open_block(l_body)
         if union and local_of(n + 1) != 0:
             try confine(n + 1, handled, at_of(c))
+        remark(start)
         try statements(c + 1)
         regive(given, before, false)
         if try keep(before, before, ends):
             lives += 1
+            absorb(merged)
             jump(l_end)
         if not union:
             open_block(l_next)
@@ -1954,7 +1964,10 @@ func cases(n: i64) -> Fail?:
         terminate("hlt", Arg{})
     else:
         lives += 1
+        remark(start)
+        absorb(merged)
         jump(l_end)
+    remark(merged)
     if lives > 0:
         open_block(l_end)
         try join(ends, lives, tok.at)
@@ -3184,8 +3197,10 @@ func update(spot: Value, n: i64, first: i64) -> Fail?:
             append(comp.vars, Local{decl.name, outside.type, outside.addr, comp.loops.len, decl.tok, 0, outside.fixed, 0, true, outside.inside})
             place = Value{type = outside.type, at = outside.addr}
     try assign(place.at, place.type, v, at, given)
-    if local_of(left) != 0 and fails(v.type) and comp.vars[d].depth == comp.loops.len: # an error given again is read again, in a loop the next round may read it
-        if comp.vars[d].unread != 0:
+    if local_of(left) != 0 and must_read(v.type): # what it got is read before it gets another, and in a loop the next round may read it
+        if comp.vars[d].unread != 0 and comp.vars[d].depth == comp.loops.len and comp.types[v.type].kind == Thread:
+            return fail(comp.vars[d].name + " keeps a thread and nothing reads it before it gets another: wait for it first", comp.tokens[comp.vars[d].unread].at)
+        if comp.vars[d].unread != 0 and comp.vars[d].depth == comp.loops.len:
             return fail(comp.vars[d].name + " can hold an error and nothing reads it before it gets another value: test it with is, pass it up with try or drop it with _ =", comp.tokens[comp.vars[d].unread].at)
         comp.vars[d].unread = comp.nodes[left].tok
     if not given:
@@ -3280,6 +3295,16 @@ func code_of(n: i64) -> &strview:
 func reads(n: i64):
     if local_of(n) != 0:
         comp.vars[declaration(text(n))].unread = 0
+    if local_of(n) != 0 and comp.loops.len > 0:
+        append(comp.read, declaration(text(n)))
+
+# a local declared before a loop that the loop reads reads in the next round what a round gave it
+func reread(since: i64, before: i64):
+    for k in comp.read[since:]:
+        if k < before:
+            comp.vars[k].unread = 0
+    if comp.loops.len == 0:
+        comp.read.len = 0
 
 # the type that argument n names, read again as a type when the parser read a value: Box[i32], Car.motor
 func spelled_type(n: i64) -> i64|Fail:
@@ -3312,6 +3337,8 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
         return put_text(place, try invoke("get", one, at), at)
     if t.name == "&str": # text goes as text, a += of a union that holds &str would take it back
         return put_text(place, try convert(v, try fat_type("strview", VOID, at), Arg{}, at), at)
+    if t.kind == Untagged:
+        return fail(t.name + " has no tag that says which member it holds, so it cannot be written: write the member you mean, " + comp.types[comp.items[t.first].type].name + "(u)", at)
     if v.type == EMPTYARRAY or v.type == EMPTYMAP: # an empty literal, as it is written
         return put_words(place, "[]" if v.type == EMPTYARRAY else "{}", at)
     if t.kind == Simd:
@@ -3644,6 +3671,49 @@ func regive(since: i64, before: i64, given: bool):
     for k in comp.given[since:]:
         if k < before:
             comp.vars[k].given = given
+
+# the type that the declarations give the place n, or VOID: a variable or a context, a field, what a pointer points to, an element of an array, a list or a map
+func place_type(n: i64) -> i64|Fail:
+    k := comp.nodes[n].kind
+    if k == Name and local_of(n) != 0:
+        return comp.vars[local_of(n) - 1].type
+    if k == Name:
+        s := try named(text(n), comp.nodes[n].module, at_of(n))
+        if s != 0 and comp.nodes[comp.syms[s].node].kind == Context:
+            return make_type(s, [], false, at_of(n))
+        return VOID
+    if k != Field and not (k == Index and kids(n) == 2) and not (k == Unary and text(n) == ".*"):
+        return VOID
+    t := try place_type(n + 1)
+    if comp.types[t].kind == Ptr:
+        t = comp.types[t].elem
+    ty := comp.types[t]
+    if k == Field:
+        return field_of(t, text(n)).type
+    if k == Unary or ty.kind == Array or ty.kind == Simd:
+        return t if k == Unary else ty.elem
+    if ty.kind == Fat and (text(ty.decl) == "list" or text(ty.decl) == "listview"):
+        return element(t)
+    if ty.decl != 0 and (ty.kind == Fat and text(ty.decl) == "map" or ty.kind == Struct and text(ty.decl) == "fixmap"):
+        return comp.items[ty.args + 1].type
+    return VOID
+
+# the mark of what each local before a branch got and nothing read since, which each branch starts from
+func marks(before: i64) -> &list[i64]:
+    out: &list[i64] = heap([])
+    for v in comp.vars[:before]:
+        append(out, v.unread)
+    return out
+
+func remark(given: &listview[i64]):
+    for k, m in given:
+        comp.vars[k].unread = m
+
+# a mark that this branch, which goes on, left stays after the branches
+func absorb(merged: *&list[i64]):
+    for k in 0..merged.len:
+        if merged.*[k] == 0:
+            merged.*[k] = comp.vars[k].unread
 
 # the empty value of t for a message, heap([]) for a list or "" for a text view, or nothing when it has none
 # an owner inside the struct t that starts without memory, by its path, as a field of a type parameter does
@@ -3992,11 +4062,16 @@ func leave(v: Value, at: i64) -> Fail?:
             result = alloc(comp.ret)
             store(comp.ret, back, result)
     try unwind(0, 0)
-    if comp.inst == comp.entry and comp.ret != VOID: # C ends the program with it, and core keeps it past a failed standard output
-        code: &list[Value] = heap([])
-        append(code, try convert_number(Value{type = comp.ret, at = result}, I32, at))
-        try runtime("ending", code, at)
+    try ending(Value{type = comp.ret, at = result}, at)
     terminate("ret", result)
+    return null
+
+# main gives C its exit code through ending of core, which keeps it past a failed standard output
+func ending(code: Value, at: i64) -> Fail?:
+    if comp.inst == comp.entry:
+        given: &list[Value] = heap([])
+        append(given, try convert_number(code, I32, at))
+        try runtime("ending", given, at)
     return null
 
 func unwind(from: i64, staying: i64) -> Fail?:

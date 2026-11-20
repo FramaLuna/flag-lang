@@ -1387,7 +1387,7 @@ func visit(block: i64):
                             found := lockable(Target{}, t, true)
                             if mine and found.type != VOID:
                                 text: &str = heap("")
-                                text += mem.fn.names[given.temp] + " goes by value to " + who + ", a copy of "
+                                text += (mem.fn.names[given.temp] if mem.fn.names[given.temp].len > 0 else "this argument") + " goes by value to " + who + ", a copy of "
                                 if found.name.len == 0:
                                     text += kind_of(found.type)
                                 else:
@@ -1547,13 +1547,17 @@ func visit(block: i64):
             sweep()
         case Take:
             touch_args(o)
+            access(plus(target_of(mem.args[o.first]), ANY, 0, 0), true, 0) # the counts and the blocks of the arena
             k := chunk(target_of(mem.args[o.first]), named(mem.args[o.first].temp, i64(o.callee) - 1, 0), (u64(i) << 16) or SITE, Obj{kind = Heap, site = i64(i), born = i64(i), pos = o.pos, from = "arena"})
             define(o.to, Target{live = bit(k), must = bit(k)})
         case Reclaim:
+            touch_args(o)
             arena := target_of(mem.args[o.first])
+            access(plus(arena, ANY, 0, 0), true, 0)
             held := fetch(arena)
             blocks := objects(held.live)
             chunks := objects(fetch(Target{live = blocks, off = ANY}).live) and (mem.fn.arenas or mem.fn.outer - mem.fn.roots)
+            access(Target{live = chunks, off = ANY}, true, 0) # what it gave goes, also for a thread that reads it
             for h in chunks:
                 mem.fn.objs[h].pool = true
                 condemn(h, true, false)
@@ -1570,6 +1574,7 @@ func visit(block: i64):
             arena := number(0)
             if o.code == Resize:
                 arena = target_of(mem.args[o.first])
+                access(plus(arena, ANY, 0, 0), true, 0)
             given := mem.args[o.first + u32(o.code == Resize)]
             first := target_of(given)
             access(plus(first, ANY, 0, 0), true, 0) # it may move all of it
@@ -1661,9 +1666,13 @@ func visit(block: i64):
                     blocks = blocks or word.live
                     sure = sure or word.must
             blocks = freeable(blocks)
+            held := freeable(reach(Target{live = blocks}, FromValue)) - blocks # what they own goes with them
+            surely := reach(Target{live = blocks and sure}, FromValue)
             for h in blocks:
                 condemn(h, sure[h], true)
-            vanish(blocks and sure)
+            for h in held:
+                condemn(h, surely[h], true)
+            vanish(blocks and sure or held and surely)
             sweep()
         case Copy, Fill:
             touch_args(o)
@@ -3261,6 +3270,8 @@ func binding(x: i64) -> Target:
                 h = mem.fn.cells[h - 1].next
             stamper := mem.ids["$flag.stamp"]
             if declared(comp.types[t].decl) == "inherited":
+                if mem.speak:
+                    copied(out, t, text(comp.types[t].decl))
                 transfer(Target{live = bit(c), must = bit(c)}, out, comp.types[t].size, layout(t, false))
             elif stamper is i64: # the others start with what $flag.stamp writes when the thread enters
                 sum := mem.fns[stamper].sum

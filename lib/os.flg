@@ -163,7 +163,7 @@ func args() -> &listview[&strview] where not @windows():
 
 func args() -> &listview[&strview] where @windows():
     with lock(startup.given):
-        if startup.given.value.args.len == 0:
+        if startup.given.value.args.len == 0 and @argc() > 0: # a library has none, its main of C gives it no argc
             count: i32 = 0
             given := CommandLineToArgvW(GetCommandLineW(), ptr(count))
             for i in 0..count:
@@ -424,14 +424,17 @@ priv func spawn(launched: &listview[&strview]|&strview, given: array[i32, 3], fo
         program = launched
     with scratch():
         if program.len > 0:
-            dot := program[0].len
-            for i in reverse 0..program[0].len:
-                c := program[0][i]
+            name := program[0]
+            while name.len > 0 and (name[-1] == '.' or name[-1] == ' '): # Windows drops them, x.bat. is x.bat
+                name = name[:name.len - 1]
+            dot := name.len
+            for i in reverse 0..name.len:
+                c := name[i]
                 if c == '.':
                     dot = i
                 if c == '.' or c == '/' or c == '\\':
                     break
-            extension := lower(program[0][dot:])
+            extension := lower(name[dot:])
             if extension == ".bat" or extension == ".cmd":
                 return FsError{22, "run", program[0]} # cmd.exe would read the arguments again, a batch file goes with run(command)
             for i, word in program:
@@ -647,7 +650,7 @@ func sleep(seconds: f64) where @windows():
         part := left
         if part > 1000000.0:
             part = 1000000.0 # Sleep counts milliseconds in 32 bits
-        Sleep(u32(part * 1000.0))
+        Sleep(u32(part * 1000.0 + 0.999)) # whole milliseconds, rounded up so a short sleep still waits
         left -= part
 
 extern "dl" where @linux():
@@ -660,7 +663,8 @@ type error LoadError:
     reason: &strview
 
 operator +=(s: *&str, e: LoadError):
-    s.* += "cannot load " + e.path + ": " + e.reason
+    with scratch():
+        s.* += "cannot load " + e.path + ": " + e.reason
 
 # a type that a program or a library made, in the table that each one carries sorted by tag, which flagc writes
 priv type Shape:
@@ -726,6 +730,9 @@ func symbol(library: Library, name: &strview) -> *bytes?:
     return found
 
 func close(library: Library):
+    done := symbol(library, "flag_exit") # what a library of Flag printed goes out now, macOS keeps a library with thread data loaded
+    if done is *bytes:
+        (done as extern func())()
     dlclose(library.handle)
 
 operator with(library: Library):

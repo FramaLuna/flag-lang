@@ -1300,7 +1300,7 @@ A library that a program loads is built with `-shared`, and the program loads it
 
 ## Memory safety
 ### The flag
-Compiling with `-memory` checks the memory of your program at compile time. Outside `@trust`, a program that it passes without warnings doesn't lose memory, doesn't free it twice or free what is not on the heap, doesn't use it after it was freed, and has no two threads that use the same memory at once while one of them changes it: its border is `trust`, `as`, moving a `*bytes` and what C does (see [The memory checker](Reference.md#the-memory-checker)). It warns about:
+Compiling with `-memory` checks the memory of your program at compile time. Outside `@trust`, a program that it passes without warnings doesn't lose memory, doesn't free it twice or free what is not on the heap, doesn't use it after it was freed, and has no two threads that use the same memory at once while one of them changes it: its border is `trust`, `as`, moving a `*bytes`, a narrowed variable changed through a pointer and what C does (see [The memory checker](Reference.md#the-memory-checker)). It warns about:
 - memory that is never freed
 - memory freed twice
 - memory used after it was freed or after a list grew and moved it

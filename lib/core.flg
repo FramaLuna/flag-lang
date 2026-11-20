@@ -116,7 +116,7 @@ func abs(x: $T) -> $T where $T is f64:
     return (x as u64 and 0x7fff_ffff_ffff_ffff) as f64
 
 func lerp(a: $T, b: $T, t: $T) -> $T where $T is f32|f64:
-    return a + (b - a) * t
+    return a * (1.0 - t) + b * t # a at 0 and b at 1 exactly
 
 func heap(v: $T) -> *$T:
     p := malloc(@sizeof($T)) as *$T
@@ -1518,13 +1518,14 @@ type error FsError:
     path: &strview
 
 operator +=(s: *&str, e: FsError):
-    s.* += "cannot " + e.action
-    if e.path.len > 0:
-        s.* += " " + e.path
-    if e.code == TIMED_OUT:
-        s.* += ": the timeout ran out"
-    else:
-        s.* += ": " + reason(e.code)
+    with scratch():
+        s.* += "cannot " + e.action
+        if e.path.len > 0:
+            s.* += " " + e.path
+        if e.code == TIMED_OUT:
+            s.* += ": the timeout ran out"
+        else:
+            s.* += ": " + reason(e.code)
 
 priv type Stream:
     writing: Lock[Outbox]
@@ -1550,7 +1551,7 @@ priv type Streams:
 # a stream is locked for reading before it is locked for writing, and nothing else is locked while the table is
 priv shared context io:
     table: Lock[Streams]
-    code: atomic[i32] # what the program ends with, which a failed standard output turns from 0 to 1
+    code: atomic[i32] # 1 more than what main or exit end the program with, and 0 in a library, whose exit is of the program
 
 priv standard_paths: array[&strview, 3] = ["the standard input", "the standard output", "the error output"]
 
@@ -1600,7 +1601,7 @@ priv export func flag_exit():
     s := stream(stdout)
     if try_lock(s.writing) and s.writing.value.failed != 0: # never let go, the program ends
         eprint("flag: ", FsError{s.writing.value.failed, "write", s.path})
-        if get(io.code) == 0:
+        if get(io.code) == 1: # a failed standard output turns an end with 0 into 1
             _exit(1)
 
 func exit(code: i32) -> never:
@@ -1609,7 +1610,7 @@ func exit(code: i32) -> never:
 
 # the return of main gives its code here too
 priv func ending(code: i32):
-    set(io.code, code)
+    set(io.code, code + 1)
 
 func file(fd: i32, path: &strview, place: &strview = @here()) -> File:
     f := File{fd}
@@ -2008,8 +2009,12 @@ operator []=(m: *&map[&str, $V], key: &strview) -> *$V:
     return put(m, key)
 
 priv func put(m: *&map[$K, $V], key: $Q) -> *$V:
-    reserve(m, m.len + 1)
-    i := locate(m.*, key)
+    i := 0
+    if m.cap > 0:
+        i = locate(m.*, key)
+    if m.cap == 0 or slots(m.*)[i].hash == 0: # only a new key grows the table, so a key that is there keeps its place
+        reserve(m, m.len + 1)
+        i = locate(m.*, key)
     table := slots(m.*)
     if table[i].hash == 0:
         where $K == &str:

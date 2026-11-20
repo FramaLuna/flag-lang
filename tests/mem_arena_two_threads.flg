@@ -1,0 +1,20 @@
+type Node:
+    tag: i64
+
+func fill(a: *Arena, tag: i64, n: i64) -> i64:
+    nodes: &list[*Node] = heap([])
+    defer free(nodes)
+    for i in 0..n:
+        append(nodes, arena(a, Node{tag}))
+    bad: i64 = 0
+    for p in nodes:
+        if p.tag != tag:
+            bad += 1
+    return bad
+
+func main():
+    a: Arena
+    defer free(a)
+    t := parallel fill(a, 1, 200000)
+    bad := fill(a, 2, 200000)
+    print("overwritten: ", bad + wait(t))

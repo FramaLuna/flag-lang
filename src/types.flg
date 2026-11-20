@@ -464,8 +464,9 @@ func instance(n: i64, fat: bool) -> i64|Fail:
             return fail(NO_USIZE, tok.at)
         if node.module.len == 0 and tok.text == "slice":
             return fail("&slice is called &listview now", tok.at)
-        if node.module.len == 0 and lookup(tok.text) != 0:
-            return fail(tok.text + " is a variable, not a type, and a count in a type is one the compiler knows: a literal or a constant", tok.at)
+        f := comp.insts[comp.inst].node if comp.inst < comp.insts.len else 0
+        if node.module.len == 0 and lookup(tok.text) != 0 and n > f and n < node_end(f): # a variable of the function that this type is written in
+            return fail(tok.text + " is a variable, and a type is made of types and of counts that the compiler knows: literals and constants", tok.at)
         return fail("no type named " + tok.text + " is visible here", tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
@@ -583,6 +584,8 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
         field_at := comp.tokens[comp.nodes[c].tok].at
         ft := try resolve(c + 1)
         f := comp.types[ft]
+        if f.align == 0 and f.decl == decl and f.name != view(key): # another instance of it, which is being made because this one is
+            return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", field_at)
         if f.align == 0:
             return fail("type " + key + " contains itself, hold it through a pointer", field_at)
         if f.kind == Bytes:
