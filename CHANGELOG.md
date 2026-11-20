@@ -2,7 +2,7 @@
 
 ## 0.6.0
 
-A release about making the language one piece: the 149 decisions of its design, applied at once. Lengths and indexes are `i64` and `usize` is gone, what the threads share lives in a `shared context`, a `Lock[T]` wraps what it guards, and `-memory` keeps a promise: outside `@trust`, a program that passes it without warnings doesn't lose memory, doesn't use memory after it was freed and has no two threads that change the same memory at once. An owner starts without memory and takes it from `heap` or `arena`, so no literal asks for any. New are tuples and several return values, `a if c else b`, `..=`, `atomic[T]`, types given by hand with `type $T`, default values of fields, `..items`, a `simd` of 32 bytes and `use "path"`.
+Many changes to the language. Lengths and indexes are `i64` and `usize` is gone, what the threads share lives in a `shared context`, a `Lock[T]` wraps what it guards, and `-memory` keeps a promise: outside `@trust`, a program that passes it without warnings doesn't lose memory, doesn't use memory after it was freed and has no two threads that change the same memory at once. An owner starts without memory and takes it from `heap` or `arena`, so no literal asks for any. New are tuples and several return values, `a if c else b`, `..=`, `atomic[T]`, types given by hand with `type $T`, default values of fields, `..items`, a `simd` of 32 bytes and `use "path"`.
 
 Code of 0.5 needs changes. The compiler names almost every one and says what to write, like `temp is called tmp now`, and the few that compile and work differently say *With no error*. The Reference explains each rule.
 
