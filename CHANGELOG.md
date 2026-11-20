@@ -2,6 +2,8 @@
 
 ## 0.6.0 (not released yet)
 
+A release about making the language one piece: the 149 decisions of its design, applied at once. Lengths and indexes are `i64` and `usize` is gone, what the threads share lives in a `shared context`, a `Lock[T]` wraps what it guards, and `-memory` keeps a promise: outside `@trust`, a program that passes it without warnings doesn't lose memory, doesn't use memory after it was freed and has no two threads that change the same memory at once. An owner starts without memory and takes it from `heap` or `arena`, so no literal asks for any. New are tuples and several return values, `a if c else b`, `..=`, `atomic[T]`, types given by hand with `type $T`, default values of fields, `..items`, a `simd` of 32 bytes and `use "path"`.
+
 Changed
 - `x[i] = v` writes through the pointer that `operator []=(x, i)` gives when the type has one, like `x[i] += v` already did, and calls `operator []=(x, i, v)` only when it has none, so a type with only the form of two parameters can be assigned. A map has only that form now, and a type of yours with both uses the pointer for `=` too
 - What goes to the C compiler goes after `-cc`, until the `--` of `run` or `test`: `flagc game.flg -cc vec.c -lm`. An argument that flagc doesn't know is an error that gives the command line it expected, `run has to be the first argument: flagc run -memory hi.flg`, where before it went to the C compiler and `flagc -memory run hi.flg` ended in `ld: cannot find run`
