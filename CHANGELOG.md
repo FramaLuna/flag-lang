@@ -2,94 +2,135 @@
 
 ## 0.6.0
 
-Many changes to the language. Lengths and indexes are `i64` and `usize` is gone, what the threads share lives in a `shared context`, a `Lock[T]` wraps what it guards, and `-memory` keeps a promise: outside `@trust`, a program that passes it without warnings doesn't lose memory, doesn't use memory after it was freed and has no two threads that change the same memory at once. An owner starts without memory and takes it from `heap` or `arena`, so no literal asks for any. New are tuples and several return values, `a if c else b`, `..=`, `atomic[T]`, types given by hand with `type $T`, default values of fields, `..items`, a `simd` of 32 bytes and `use "path"`.
+This is a major release with broad improvements across the language, memory model, and tooling. Lengths and indexes are now `i64` (`usize` has been removed), shared thread state lives in `shared context`, `Lock[T]` wraps the data it protects, and `-memory` now delivers a concrete safety guarantee: outside `@trust`, any program that passes `-memory` without warnings will not leak memory, will not use memory after free, and will not have data races.
 
-Code of 0.5 needs changes. The compiler names almost every one and says what to write, like `temp is called tmp now`, and the few that compile and work differently say *With no error*. The Reference explains each rule.
+Owners now start unallocated and acquire memory explicitly via `heap` or `arena`, meaning literals never allocate. On the language side, 0.6 adds tuples and multiple return values, `a if c else b`, inclusive ranges (`..=`), `atomic[T]`, explicit type parameters (`type $T`), field default values, variadic `..items`, 32-byte `simd`, and directory imports with `use "path"`.
 
-Changed
-- Lengths, indexes, counts and sizes are `i64`, and there is no `usize`: an address is a `*bytes` and the `size_t` of C is an `i64`
-- An integer literal that its place doesn't type is an `i64`, where it was an `i32`, so `n := 5` is an `i64`
-- Two integers of different types mix when one holds every value of the other, comparisons take any two integers, and an integer argument grows into a wider parameter or a union
-- An overload is chosen argument by argument, so a call that one overload won on the sum of its arguments can be ambiguous now
-- Only a negative index that the compiler knows counts from the end, `l[-1]`. One computed when the program runs is out of bounds, and so is a negative position given to `insert`, `remove` or `swap`
-- `not` goes between `and` and `is`, like in Python, and comparisons don't chain
-- `assert c, message` is a statement that narrows what follows and says what was false, and `wait(t)` is a function: a type of yours is waited by declaring a `wait` for it
-- `reverse` goes only after the `in` of a `for`, where its counter is the index of each element, and `flip(l)` turns a list around
-- A call writes its `(` right after what it calls, and a keyword takes a space after it
-- What the compiler answers takes `@`: `@sizeof`, `@offset_of` and `@can_assign`. `@linux()` and the others are a `bool` in any expression, not only in a `where`
-- `inf` and `nan` are keywords, and a variable cannot take the name of a constant or a context that it sees
-- The indentation can mix tabs and spaces when the blocks don't depend on how wide a tab is, and a text literal can cross lines
+> **Migrating from 0.5:** Existing code will require updates. The compiler catches nearly all breaking changes and tells you how to fix them (for example, `temp` is now `tmp`). The few changes that compile without an error but behave differently are called out in Silent Breaking Changes below. See the Reference for the full specification of each rule.
 
-- Indexing, slicing, `for`, `with` and the hash of a key call operators: `operator []`, `operator []=`, `operator [:]`, `operator for`, `operator next`, `operator with` and `operator hash`, where they called `at`, `put`, `slice`, `iter`, `next`, `close` and `hash`
-- There are no file variables. At the root `name: T = value` is a constant, and what changes goes in a `context`, or in a `shared context` for all the threads
-- `Lock[T]` holds what it guards, `with lock(count): count.value += 1`, and `Lock[null]` guards code
-- An owner starts without memory: `heap([])`, `heap("")` and `heap({})` are empty and ask for none, and an owner or a view used before it gets a value is an error
-- No literal asks for memory: `[1, 2]` is an array and `{1: 2}` a `fixmap`. An owner comes from `heap(...)` or `arena(a, ...)`, which copy, and a view becomes an owner only through them
-- A `&map` with `&str` keys owns its keys, and `ptr(m[k])` points into the map
-- A `&strview` only reads, and a text literal is in read-only memory
-- The element of a `for` over an array, a list or a listview is the element in place, not a copy
-- Each part of an expression is read in its turn, left to right
-- `cstr` and `wstr` are types of the language: a `&str` goes to C with `cstr(s)` or `c_text(s)`, and `print` of a `cstr` shows its text
-- A mask names the width of its lanes, `simd[bool32, 4]`
-- A parameter whose default is `@here()` takes a value only by its name
+### New Features
 
-- Renamed: `temp` is `tmp`, `&slice` is `&listview`, `reverse(l)` is `flip(l)`, `complement(b)` is `not b`, and `join` of a `Process` is `wait`. `open` and `create` of core are `open_file` and `create_file` of `fs`, where `remove`, `rename`, `walk` and `modified` are `remove_file`, `rename_file`, `walk_dir` and `modified_time`. `load` of `os` is `load_library`, `parse` of `json` is `parse_json`, and `count`, `valid` and `code` of `utf8` are `count_chars`, `valid_utf8` and `first_code`
-- `min`, `max`, `clamp`, `abs` and `lerp` moved from `math` to core, and `cores` from core to `os`
-- A name of a module that the file doesn't use is an error that names the module, and a module of yours with the name of one of the library hides it only from your files
-- `ptr`, `print` and `eprint` belong to the language and cannot be declared again
-- The checks that the compiler writes always call the `panic` of core, and `on_panic(f)` runs a function before the program stops
-- What goes to the C compiler goes after `-cc`: `flagc game.flg -cc vec.c -lm`
-- A test is a `func test_name()` with no parameters and no result, and the others with that name are helpers
-- `output` of `os` takes the error output too, like `2>&1`, and the random numbers of `math` are one sequence for the whole program
-- The messages say `expects` and not `takes`, and are in color only in a terminal, never with `NO_COLOR`
+#### Language & Type System
 
-- With no error, data that goes to C as bytes has the size of the new types: `values := [5, 3, 9, 1, 7]` is `i64` now, so give it the type C reads, `values: array[i32, 5] = [5, 3, 9, 1, 7]`
-- With no error, `l[(i - 1) % n]` with `i` at 0 stops the program, where it read the last element
-- With no error, `z += f()` and `z = z + f()` give different results when `f` changes `z`
-- With no error, writing into a text literal stops the program, and so does an owner that grows without memory, like the value of a new key of a map
-- With no error, a program that freed the keys of a `&map[&str, V]` itself frees them twice
-- With no error, the tags of the builtin types moved, so a union that holds an `f32`, an `f64` or `IterationEnd` doesn't cross between a program of 0.6 and a library of 0.5
+- **Tuples & multiple return values:** Support for tuple types like `(i32, bool)`, multiple returns (`return a, b`), destructuring (`lo, hi := f()`), and parallel assignment (`a, b = b, a`).
+- **Conditional expressions & inclusive ranges:** Added `a if c else b` and the inclusive range `a..=b` (ending at `b`).
+- **Control flow with `ifnull` / `iferror`:** `return`, `break`, and `continue` can now appear at the end after `ifnull` and `iferror`, and assignments are allowed there in statement position.
+- **Expanded type narrowing:** `x == null`, `x != null`, and `==` with a void type now narrow types just like `is`.
+- **Explicit type parameters:** Added `type $T` to accept a type as an argument (e.g., `make(Point)`).
+- **Default values:** Struct fields can now have default values, and parameter defaults can reference earlier parameters.
+- **Variadic parameters:** `..items: T` collects trailing arguments as a view, supporting both `sum(1, 2, 3)` and spreading with `sum(..values)`.
+- **Conditional compilation blocks:** Added `where c:` blocks—usable at file root for OS/architecture targets, and inside functions for any compile-time `where` condition.
+- **Bitwise & low-level additions:** Added `noinline func`, `operator not`, bitwise negation via `not` on integers, pointer arithmetic (`+`, `-`) on `*bytes`, and `as` to reinterpret between any two same-sized types without a tag.
+- **Directory packages:** `use "vendor/vec"` now loads a folder as a package.
 
-New
-- Tuples and several return values: `(i32, bool)`, `return a, b`, `lo, hi := f()` and `a, b = b, a`
-- `a if c else b`, and the range `a..=b` that ends at `b`
-- `return`, `break` and `continue` go last after `ifnull` and `iferror`, and in a statement an assignment can go there
-- `x == null`, `x != null` and `==` with a void type narrow like `is`
-- `atomic[T]`, with `get`, `set`, `add`, `swap` and `compare_swap` as instructions of the processor, through five new instructions of QBE
-- A parameter `kind: type $T` takes a type, `make(Point)`, and a call can take a type as an argument
-- Default values of fields, and default values of parameters that read the parameters before them
-- `..items: T` gathers the extra arguments as a view: `sum(1, 2, 3)` and `sum(..values)`
-- `where c:` blocks, at the root for each system and processor, and inside a function for anything a `where` reads
-- `shared context` is one value for all the threads, and `inherited context` is copied into each thread that `parallel` starts
-- `use "vendor/vec"` loads a folder as a package
-- A `simd` of 32 bytes, and a `simd` read from a slice of its length
-- A `*bytes` moves with `+` and `-`, and `as` reads any two types of one size without a tag
-- `noinline func`, `operator not`, and `not` of an integer flips its bits
-- An `extern` block declares a variable of C by its address, `index: *i32 = "optind"`, and its text can name a framework or a file to link
-- `load_library` refuses a library that made a type of the program with another shape
-- `-memory` keeps a promise, which the Reference states with its border and the limits that remain. It finds races between threads, follows the elements of lists, arrays and maps, pointers to the stack after their block, owners without memory and calls through function values, and names the variable that holds what leaks
-- The Reference says what one thread sees of what another one wrote
-- In the library: `file(fd, path)`, `hex(value, digits)`, `ring(i32)`, `l = items` for lists, `listen(port, host)`, the `peer` of a `Socket`, and the `folder` where `run`, `output` and `start` start a program
-- `./build.sh cross` builds flagc, the tests and the examples for the targets of the second class, and CI runs it
+#### Memory Safety & Concurrency
 
-Faster
-- Checking the compiler takes 5 % fewer instructions, and a chain of `elif` is checked in time proportional to its length
-- A division or a remainder of a signed integer by a power of two that the compiler knows is shifts: a loop of them over `i64` is 13 times as fast
+- **`-memory` safety guarantee:** `-memory` now enforces a documented guarantee (with its exact boundaries and remaining limits detailed in the Reference). It detects data races, tracks elements inside lists, arrays, and maps, catches dangling stack pointers after their block ends, flags unallocated owners, traces calls through function values, and names the specific variable holding a leak.
+- **Memory model:** The Reference now formally specifies what one thread is guaranteed to see of another thread's writes.
+- **Thread contexts:** Added `shared context` (a single value shared across all threads) and `inherited context` (copied into each thread spawned by `parallel`).
+- **Hardware atomics:** Added `atomic[T]` with `get`, `set`, `add`, `swap`, and `compare_swap`, compiled directly to CPU instructions via five new QBE instructions.
 
-Fixed
-- A generic function called with its type parameters in swapped order reused the instance of the first call, and a type with a `$T` inside matched other types
-- Updating a key that a map has could move its table, so a walk that updated each key lost updates
-- Two `extern` functions with one symbol and different parameters passed C the wrong types
-- Two parameters with one name compiled, a default value was checked only when a call used it, and the size of a huge type wrapped around to 0
-- Assigning to a narrowed variable read the right side with the narrowed type
-- Some programs made the compiler stop with an index out of bounds, and QBE stopped with an assertion on rv64 in big functions
-- The program ends with the right code and writes what it printed after a failed standard output, an `exit` from a thread of C, an abort of the C library, `out_of_memory` and in a `-shared` library
-- A thread that holds a `Lock` takes it again across a library, and a thread of C that calls an `export func` frees what core gave it when it ends
-- UDP on macOS sends and receives datagrams of up to 65507 bytes, `close` of a `Socket` ends a read waiting in another thread, `timeout(s, inf)` waits forever, and on Linux `write_file` no longer gives its file to the programs that another thread starts
-- On Windows `run` of `x.bat.` no longer goes through `cmd.exe`, `ready` of no files no longer spins the processor, and `sleep` of less than a millisecond waits
-- Floats print with the digits they need, `fixed` rounds right, and `add_char` writes UTF-8 for any code
-- `-memory` had many false warnings and missed bugs
-- Clearer messages in many places
+#### SIMD, C Interop & Standard Library
+
+- **32-byte SIMD:** Added 32-byte `simd` vectors and support for reading a `simd` vector directly from a slice of matching length.
+- **`extern` enhancements:** `extern` blocks can now bind C global variables by address (`index: *i32 = "optind"`) and specify frameworks or files to link.
+- **Library layout checks:** `load_library` now rejects dynamic libraries that define a program type with a different layout.
+- **Standard library additions:** Added `file(fd, path)`, `hex(value, digits)`, `ring(i32)`, list assignment (`l = items`), `listen(port, host)`, `Socket.peer`, and working-directory support for `run`, `output`, and `start`.
+- **Cross-compilation:** `./build.sh cross` builds flagc, tests, and examples for second-class targets and runs in CI.
+
+### Changed
+
+#### Types, Integers & Overloading
+
+- **`i64` everywhere (`usize` removed):** Lengths, indexes, counts, and sizes are now `i64`. Addresses use `*bytes`, and C's `size_t` maps to `i64`.
+- **Integer literals default to `i64`:** Untyped integer literals are now `i64` instead of `i32` (so `n := 5` is `i64`).
+- **Integer conversions & comparisons:** Mixed integer types are allowed when one type can represent every value of the other. Comparisons accept any two integer types, and integer arguments automatically widen to wider parameters or unions.
+- **Overload resolution:** Overloads are now resolved argument-by-argument rather than by total argument score, which may make some previously accepted calls ambiguous.
+- **SIMD masks:** Masks now specify lane width explicitly (e.g., `simd[bool32, 4]`).
+
+#### Memory, Ownership & Concurrency
+
+- **No file-level mutable variables:** Top-level `name: T = value` is always a constant. Mutable state belongs in a `context`, or a `shared context` when shared across threads.
+- **`Lock[T]` wraps protected data:** Locks now own what they guard (`with lock(count): count.value += 1`). Use `Lock[null]` to guard a section of code without a value.
+- **Explicit allocation only:** No literal allocates memory—`[1, 2]` is an array and `{1: 2}` is a `fixmap`. Owners start empty with no allocation (`heap([])`, `heap("")`, `heap({})`), and using an uninitialized owner or view is an error. Creating an owner (or converting a view into one) always goes through `heap(...)` or `arena(a, ...)`, which copy.
+- **Map key ownership & pointers:** A `&map` with `&str` keys now owns its keys, and `ptr(m[k])` points directly into the map.
+- **Read-only strings:** `&strview` is strictly read-only, and text literals live in read-only memory.
+- **In-place iteration:** Iterating with `for` over an array, list, or listview yields each element in place rather than a copy.
+
+#### Syntax, Operators & Semantics
+
+- **Negative indexing:** Only compile-time known negative indexes count from the end (`l[-1]`). Runtime negative indexes are out of bounds, as are negative positions passed to `insert`, `remove`, or `swap`.
+- **Operator hooks:** Indexing, slicing, `for`, `with`, and key hashing now dispatch to `operator []`, `operator []=`, `operator [:]`, `operator for`, `operator next`, `operator with`, and `operator hash` (replacing `at`, `put`, `slice`, `iter`, `next`, `close`, and `hash`).
+- **Operator precedence & evaluation order:** `not` now sits between `and` and `is` (as in Python), comparisons no longer chain, and subexpressions evaluate left to right, except that `+=` reads its target after the right side.
+- **`assert` & `wait`:** `assert c, message` is now a statement that narrows types for subsequent code and reports what evaluated to false. `wait(t)` is now a function—custom types opt in by declaring a `wait` for themselves.
+- **`reverse` vs. `flip`:** `reverse` is only valid after `in` in a `for` loop (where the loop counter tracks each element's index). Use `flip(l)` to reverse a list.
+- **Whitespace & formatting:** Function calls must place `(` directly after the callee with no space, while keywords require a space after them. Indentation may mix tabs and spaces when block structure doesn't depend on tab width, and text literals can span multiple lines.
+- **Compiler queries (`@`):** Compiler intrinsics now use `@`: `@sizeof`, `@offset_of`, and `@can_assign`. Target checks like `@linux()` evaluate to a `bool` in any expression, not just `where`.
+- **Keywords & shadowing:** `inf` and `nan` are now keywords. Variables cannot shadow visible constants or contexts. `ptr`, `print`, and `eprint` are built-in and cannot be redeclared.
+- **`@here()` parameters:** Parameters defaulting to `@here()` can only be passed by name.
+
+#### C Interop, Modules & Tooling
+
+- **C strings:** `cstr` and `wstr` are now built-in types. Convert a `&str` for C using `cstr(s)` or `c_text(s)`; printing a `cstr` prints its text.
+- **Module resolution:** Using an unimported module name now reports an error naming that module. Defining a local module with the same name as a standard library module only shadows it within your own files.
+- **Panics:** Compiler-inserted runtime checks always call `core.panic`. Use `on_panic(f)` to run a handler before termination.
+- **Compiler flags:** Flags intended for the C compiler now follow `-cc` (e.g., `flagc game.flg -cc vec.c -lm`).
+- **Tests:** Only `func test_name()` with no parameters and no return value is treated as a test; other functions matching that name are treated as helpers.
+- **Standard library behavior:** `os.output` now captures stderr alongside stdout (like `2>&1`), and `math` random numbers now share a single sequence across the entire program.
+- **Diagnostics:** Compiler messages now say `expects` instead of `takes`, and color output is only enabled in a terminal (and always disabled when `NO_COLOR` is set).
+
+### Renames & Moves
+
+| 0.5 | 0.6 | Notes |
+|---|---|---|
+| `temp` | `tmp` | — |
+| `&slice` | `&listview` | — |
+| `reverse(l)` | `flip(l)` | `reverse` is now `for ... in reverse` only |
+| `complement(b)` | `not b` | — |
+| `Process.join` | `wait` | — |
+| `core.open`, `core.create` | `fs.open_file`, `fs.create_file` | Moved to `fs` |
+| `fs.remove`, `fs.rename`, `fs.walk`, `fs.modified` | `remove_file`, `rename_file`, `walk_dir`, `modified_time` | In `fs` |
+| `os.load` | `os.load_library` | — |
+| `json.parse` | `json.parse_json` | — |
+| `utf8.count`, `utf8.valid`, `utf8.code` | `count_chars`, `valid_utf8`, `first_code` | In `utf8` |
+| `math.min`, `max`, `clamp`, `abs`, `lerp` | core | Moved from `math` to core |
+| `core.cores` | `os.cores` | Moved from core to `os` |
+
+### Silent Breaking Changes
+
+> The following changes compile without error in 0.6, so review existing code carefully when upgrading:
+
+- **Raw byte layouts passed to C:** Because untyped integer literals are now `i64`, `values := [5, 3, 9, 1, 7]` has a different byte size than in 0.5. Annotate the type C expects explicitly: `values: array[i32, 5] = [5, 3, 9, 1, 7]`.
+- **Runtime negative indexing:** Expressions like `l[(i - 1) % n]` when `i == 0` now halt the program instead of wrapping to the last element.
+- **Compound assignment evaluation:** `z += f()` and `z = z + f()` now produce different results when `f` modifies `z`.
+- **Read-only literals & unallocated owners:** Writing into a text literal now halts the program, as does growing an unallocated owner (such as the value of a newly inserted map key).
+- **Double-free on `&map[&str, V]` keys:** Maps now own their `&str` keys. Code that previously freed those keys manually will now double-free them.
+- **Union ABI compatibility:** Built-in type tags shifted, so unions containing `f32`, `f64`, or `IterationEnd` cannot cross boundaries between a 0.6 program and a 0.5 library.
+
+### Performance
+
+- **Faster compiler checks:** Type-checking the compiler itself uses 5% fewer instructions, and long `elif` chains now type-check in linear time.
+- **Faster signed integer math:** Signed integer division and remainder by compile-time powers of two now lower to bit shifts—a loop of such divisions over `i64` runs 13× faster.
+
+### Bug Fixes
+
+- **Generics & type checking:**
+  - Fixed generic functions called with swapped type parameters reusing the first instantiation, and fixed types containing `$T` falsely matching other types.
+  - Fixed duplicate parameter names compiling, default values only being checked at call sites, and huge type sizes overflowing to 0.
+  - Fixed assigning to a narrowed variable checking the right-hand side against the narrowed type.
+  - Fixed two `extern` functions sharing a C symbol with different signatures passing the wrong types to C.
+- **Collections & strings:**
+  - Fixed updating an existing map key potentially rehashing the table and causing iterations that updated keys to lose updates.
+  - Fixed float formatting to print only the necessary digits, fixed rounding in `fixed`, and fixed `add_char` to encode UTF-8 for any code point.
+- **Compiler & backend:**
+  - Fixed compiler index-out-of-bounds crashes and a QBE assertion failure on rv64 in large functions.
+  - Fixed numerous false positives and missed bugs in `-memory`.
+  - Improved error messages across the compiler.
+- **Runtime, threading & OS:**
+  - Programs now exit with the correct exit code and flush output after stdout failures, exits from C threads, C library aborts, `out_of_memory`, and inside `-shared` libraries.
+  - Threads holding a `Lock` can now re-acquire it across library boundaries, and C threads calling an `export func` now clean up core allocations on exit.
+  - **Networking & POSIX:** UDP on macOS now supports datagrams up to 65,507 bytes; closing a `Socket` unblocks reads waiting on other threads; `timeout(s, inf)` waits indefinitely; on Linux, `write_file` no longer leaks its file descriptor to child processes spawned on other threads.
+  - **Windows:** `run` on `x.bat.` no longer goes through `cmd.exe`; `ready` with no files no longer spins the CPU; `sleep` under 1 ms now waits properly.
 
 ## 0.5.0
 
