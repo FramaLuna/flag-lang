@@ -15,7 +15,10 @@ read as if the same person wrote it and lex is the base.
 - The fewest concepts, names and variables that can do the job.
 - A compiler that is stable and simple, with no edge cases.
 - Never write a function that is used only once; it goes inline in its caller.
-- Diagnostics follow the `compiler-errors` skill.
+- A diagnostic says what failed first, then the rule or the fix after `;`:
+  `cannot reinterpret i32 as i64; types have different byte sizes`. A `-memory` warning
+  starts with the kind of bug when it has one: `data race:`, `memory leak:`,
+  `use after free:`, `dangling pointer:`.
 
 You can redesign anything when the result is simpler: the data, the passes, the library,
 the language itself. Removing a feature is a valid fix. Keep what is useful.
