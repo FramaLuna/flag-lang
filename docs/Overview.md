@@ -42,7 +42,7 @@ You can't declare a name that is already visible, not even inside an inner scope
 N = 3
 
 func main():
-    N := 5 # error: N is a constant, a variable cannot take its name
+    N := 5 # error: cannot declare variable N because it shadows an existing constant
 ```
 A function or a type can share its name with a variable: `twice := 4` leaves `twice(3)` to the function.
 
@@ -62,7 +62,7 @@ n: i64 = small # smaller integers grow to bigger ones
 maybe: i64|null = a # a value goes into a union that has its type
 l: &list[i64] = heap([1, 2]) # a list in the heap with a copy of the array
 ```
-A new owner, like `text`, gets its memory from `heap` or from an [arena](#arenas), so `text: &str = view` is an error that says so: `this &str is new and has no memory to copy &strview into: write heap(...) or arena(a, ...) around the value`.
+A new owner, like `text`, gets its memory from `heap` or from an [arena](#arenas), so `text: &str = view` is an error that says so: `new &str has no allocated memory to copy &strview into; wrap the value in heap(...) or arena(a, ...)`.
 The other conversions are written like a call to the type
 ```flag
 c := f64(a) / 2.0
@@ -166,7 +166,7 @@ You can build them with all the fields in order, or naming them. The fields you 
 a := User{heap("ana"), 30} # a &str field owns its text, so heap gives it one
 b := User{age = 30, name = heap("bo")}
 ```
-or at their default value, when they have one. A fat pointer is not a value at zero (see [Fat pointers](#fat-pointers)), so `User{age = 30}` is an error, `User expects a value for name, &str starts without one: give it in the literal, or give the field a default`. A default is written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
+or at their default value, when they have one. A fat pointer is not a value at zero (see [Fat pointers](#fat-pointers)), so `User{age = 30}` is an error, `missing required field name in User (&str has no default zero value); set it in the literal or add a field default`. A default is written every time a value is born, and it's one the compiler knows: literals and constants, or an empty owner, `heap([])`, `heap("")` or `heap({})`
 ```flag
 type Window:
     title: &strview = "untitled"
@@ -335,7 +335,7 @@ A fat pointer gets its memory before you use it: one you own from `heap` or `are
 a: &list[i32] = heap([])
 append(a, 1)
 ```
-Using one that no path gave a value is an error, `a is used before it gets a value, and &list[i32] starts without one: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`. `-memory` warns about it before: `append cannot grow a, it may have no memory to grow in: give it heap([])`.
+Using one that no path gave a value is an error, `a is used before being initialized (&list[i32] has no default zero value); initialize it: a: &list[i32] = heap([])`, and one you own that grows without memory, because only some path gave it one, stops the program: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`. `-memory` warns about it before: `append cannot grow a; it may not have allocated memory to grow (initialize with heap([]))`.
 The ones you own (`&str`, `&list` and `&map`) must be released with `free` when you don't need them anymore, `defer` helps with that, or they live in an [arena](#arenas) that releases them all at once. A `&str` can be used where a `&strview` is expected, and a `&list` where a `&listview` is expected. The other way is a copy: `heap(v)` or `arena(a, v)` makes a new owner with the text or the elements of a view, and assigning a view to an owner that has memory copies it there, `t = v`. A call doesn't copy, so a view doesn't go to a `&str` or a `&list` parameter.
 
 You can declare your own fat pointers with `type fatptr`, like the `&ring` of the module `ring`
@@ -459,7 +459,7 @@ for p in players:
 for s in names:
     free(s) # frees each text, and the list keeps them empty
 ```
-Where there is nothing to change it's an error that says what to write: a character of a text is a piece of it, and an entry of a map is a copy, `e is a copy that next gives, assigning it does not change ages: write ages[e.key] = v`. Growing the list in its own `for` moves the elements, so don't.
+Where there is nothing to change it's an error that says what to write: a character of a text is a piece of it, and an entry of a map is a copy, `cannot assign to map loop variable e; it is a copy and would not update ages (assign directly via ages[e.key] = v)`. Growing the list in its own `for` moves the elements, so don't.
 
 You can make your own types iterable. `for` calls `operator for` with your value and then `operator next` with a pointer to what it gave, until `operator next` gives `IterationEnd`. `reverse` calls `operator reverse` instead of `operator for`
 ```flag
@@ -1131,7 +1131,7 @@ for text in texts:
 ### When the program fails
 Some errors stop the program, like an index out of bounds, a division by zero, `assert` or `panic`. They print what happened, where, and the functions of yours that led there
 ```
-flag: index 5 is out of bounds, length 3
+flag: index 5 out of bounds for length 3
   --> main.flg:12:11
   in parse_line, main.flg:9
   in load, main.flg:20
@@ -1183,12 +1183,12 @@ func main():
     a := vec.V2{3.0, 4.0}
     print(dot(a, a))
 ```
-Two modules that you use can have a function with the same name, the arguments choose which one runs, and when both fit the same the error says to name the module: `ambiguous call to size, several overloads match (i32) equally: name the module, a.size or b.size`. A module of yours with the name of one of the library, like your own `math`, is the one your files see, and the library keeps using its own.
+Two modules that you use can have a function with the same name, the arguments choose which one runs, and when both fit the same the error says to name the module: `ambiguous call to size with (i32): multiple overloads match equally; qualify with a module name: a.size or b.size`. A module of yours with the name of one of the library, like your own `math`, is the one your files see, and the library keeps using its own.
 
 A type brings its functions: a call sees the functions of the modules that declare the types of its arguments, and the types inside them, like `b.Door` in `a.Table[b.Door]`, without `use`. So a generic function of one module can call a function declared next to the type it was made for.
 
 ## The standard library
-The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`, and `get`, `add`... of an `atomic`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt is in the module math: add use math`
+The functions of text, lists, maps, numbers (`min`, `max`, `abs`...), files (`read_line`, `write`...) and threads (`Lock`, `Channel`, and `get`, `add`... of an `atomic`) are always there. The rest comes in modules that you get with `use`, without adding files, and a name of a module that a file uses without its `use` is an error that names it: `sqrt belongs to module math; add: use math`
 - `fs`, opening files, whole files, folders and paths
 - `os`, the arguments, the environment, other programs, libraries, the processors and the time
 - `json`, reading and writing JSON

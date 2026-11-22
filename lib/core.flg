@@ -116,7 +116,7 @@ func clamp(x: simd[$T, $$n], low: $T, high: $T) -> simd[$T, $$n]:
 # the lanes of a simd from as many elements, v: simd[f32, 4] = values[i:i + 4]
 operator =(dest: simd[$T, $$n], src: &listview[$T], place: &strview = @here()) -> simd[$T, $$n]:
     if src.len != $$n:
-        panic("a simd of " + $$n + " lanes expects a slice of " + $$n + ", this one has " + src.len, place = place)
+        panic("simd with " + $$n + " lanes requires a slice of length " + $$n + ", got " + src.len, place = place)
     return (ptr(src[0]) as *simd[$T, $$n]).*
 
 func abs(x: $T) -> $T where $T is i8|i16|i32|i64:
@@ -256,10 +256,10 @@ func out_of_memory() -> never:
     _exit(9)
 
 func out_of_bounds(i: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
-    panic("index " + i + " is out of bounds, length " + len, place = place)
+    panic("index " + i + " out of bounds for length " + len, place = place)
 
 func out_of_bounds(from: $I, to: $I, len: i64, place: &strview = @here()) -> never where $I is Integer:
-    panic("slice " + from + ":" + to + " is out of bounds, length " + len, place = place)
+    panic("slice " + from + ":" + to + " out of bounds for length " + len, place = place)
 
 type fatptr listview[$T]:
     len: i64
@@ -1326,7 +1326,7 @@ priv func pause(c: *Condition, l: *Lock[$T]) where $T != null:
 
 priv func pause(c: *Condition, l: *Lock[null]):
     if l.depth > 1:
-        panic("a channel waits inside a with lock of its queue, where no other thread can take the lock to change it", place = "") # no place, the chain shows the with
+        panic("deadlock: channel blocked while holding its own queue lock ('with lock(c.queue)'), preventing other threads from making progress", place = "") # no place, the chain shows the with
     set(l.owner, 0)
     l.depth = 0
     rest(c, l)
@@ -1372,7 +1372,7 @@ priv func launch(block: *bytes, run: *bytes, place: &strview):
     with lock(threads.running):
         threads.running.value += 1
     if not started(block as *Started, run):
-        panic("cannot start a thread, the system refuses one more", place = place)
+        panic("failed to start thread: OS refused thread creation", place = place)
 
 priv func started(t: *Started, run: *bytes) -> bool where not @windows():
     attributes: array[u64, 8]
@@ -1426,7 +1426,7 @@ priv export func flag_ended(unused: *bytes):
 # the blocks of the temporaries of the thread go to the scratch of this one, as if a call had made them
 priv func reap(block: *bytes, place: &strview):
     if block as u64 == 0:
-        panic("wait of a thread that was never started", place = place)
+        panic("'wait' called on an uninitialized (never started) Thread", place = place)
     t := block as *Started
     flush() # what you wrote goes out before the thread waits for another
     wait_for(t.handle)
@@ -1480,7 +1480,7 @@ func wait(t: Thread[$T], place: &strview = @here()) -> $T:
 
 func done(t: Thread[$T], place: &strview = @here()) -> bool:
     if t as u64 == 0:
-        panic("done of a thread that was never started", place = place)
+        panic("'done' called on an uninitialized (never started) Thread", place = place)
     with lock(threads.running):
         return (t as *Started).done
 
@@ -1504,7 +1504,7 @@ func send(c: *Channel[$T, $$size], v: $T, place: &strview = @here()) where $$siz
         while q.len == $$size and not q.closed:
             pause(c.emptied, c.queue)
         if q.closed:
-            panic("send on a closed channel", place = place)
+            panic("cannot send on a closed channel", place = place)
         q.items[(q.first + q.len) % $$size] = v
         q.len += 1
         wake(c.filled)
@@ -1746,7 +1746,7 @@ priv func drain(s: *Stream):
 
 func read(f: File, into: *&str, size: i64, place: &strview = @here()) -> i64|FsError:
     if size < 0:
-        panic("read takes a size of 0 or more, and this one is " + size, place = place)
+        panic("'read' size must be non-negative, got " + size, place = place)
     if size == 0:
         return 0
     s := stream(f, place = place)
@@ -1908,7 +1908,7 @@ priv func buffered(f: File) -> bool:
 
 priv func valid(f: File, place: &strview):
     if f.fd < 0:
-        panic("File{" + f.fd + "} is not an open file", place = place)
+        panic("File{" + f.fd + "} is not an open file descriptor", place = place)
 
 func close(f: File, place: &strview = @here()):
     s := stream(f, place = place)

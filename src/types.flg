@@ -23,8 +23,8 @@ BOOL64 = 23
 
 HEAD = 64 # core's Started, then the result of a thread
 HEAP = 1 # the arena of an owner whose memory is in the heap, the mark that core reads: 0 is an owner with no memory
-BARE_THREAD = "Thread expects the type its function returns: Thread[i32], or Thread[null] when it returns nothing"
-NO_USIZE = "there is no usize: a length or a count is i64, an address is *bytes, and the size_t of C is i64"
+BARE_THREAD = "Thread requires one type argument for its return type: Thread[i32], or Thread[null] if it returns nothing"
+NO_USIZE = "Flag has no 'usize' type; use i64 for lengths, counts, and C's size_t, or *bytes for raw addresses"
 DEEP = 500
 LONG = 64000000
 HUGE = 1 << 61 # the most bytes of a type: a multiple of every alignment, and a sum of two never wraps
@@ -99,7 +99,7 @@ func named(name: &strview, module: &strview, at: i64) -> i64|Fail:
     if global != 0:
         return global
     if clash != 0:
-        return fail(name + " is declared in both " + comp.syms[clash].module + " and " + comp.syms[found].module + ", name the module: " + comp.syms[found].module + "." + name, at)
+        return fail(name + " is declared in both " + comp.syms[clash].module + " and " + comp.syms[found].module + "; qualify it with the module name: " + comp.syms[found].module + "." + name, at)
     return found
 
 func hidden(name: &strview, function: bool, at: i64) -> Fail?:
@@ -113,13 +113,13 @@ func hidden(name: &strview, function: bool, at: i64) -> Fail?:
                 if u.file == file and u.module == sym.module:
                     alias = u.alias
             if sym.priv and not sym.library:
-                return fail(name + " is priv to the module " + sym.module + ", only the files of " + sym.module + " see it", at)
+                return fail(name + " is private to module " + sym.module + " and only visible within " + sym.module, at)
             if not sym.priv and sym.module != written(sym.module):
-                return fail(name + " is in the module " + written(sym.module) + " of the library, and the module " + written(sym.module) + " of this program hides it", at)
+                return fail(name + " is in standard library module " + written(sym.module) + ", which is shadowed by this program's own module " + written(sym.module), at)
             if alias.len > 0:
-                return fail(name + " is in the module " + sym.module + ": reach it as " + alias + "." + name, at)
+                return fail(name + " belongs to module " + sym.module + "; access it through its alias: " + alias + "." + name, at)
             if not sym.priv:
-                return fail(name + " is in the module " + sym.module + ": add use " + sym.module, at)
+                return fail(name + " belongs to module " + sym.module + "; add: use " + sym.module, at)
         s = sym.next
     # the rest of the library is loaded, so a module that no file uses is named too
     more := false
@@ -161,7 +161,7 @@ func core_type(name: &strview, args: &listview[Item], at: i64) -> i64|Fail:
     while s != 0 and (comp.syms[s].module.len > 0 or not comp.syms[s].library or comp.nodes[comp.syms[s].node].kind != Fat and comp.nodes[comp.syms[s].node].kind != Struct):
         s = comp.syms[s].next
     if s == 0:
-        return fail("the language needs the type " + name + ", and the library does not declare it", at)
+        return fail("required built-in library type " + name + " is missing from the standard library", at)
     return make_type(s, args, comp.nodes[comp.syms[s].node].kind == Fat, at)
 
 # the tag of a builtin is its place among them, so null is 0, and any other tag is a hash of the type, the same in every program and library that has it
@@ -271,7 +271,7 @@ func union_of(parts: &listview[i64], kind: TypeKind, at: i64) -> i64|Fail:
             for m in flat:
                 if comp.types[m].tag == tags[i]:
                     append(same, comp.types[m].name)
-            return fail(same[0] + " and " + same[1] + " have the same tag, so a union of them cannot tell which one it holds: rename one of them", at)
+            return fail(same[0] + " and " + same[1] + " hash to the same union tag and cannot be distinguished in a union; rename one of them", at)
     first := comp.items.len
     for m in flat:
         append(comp.items, Item{type = m})
@@ -284,7 +284,7 @@ func concrete(t: i64, at: i64) -> i64|Fail:
         example: &strview = "x: &list[i32] = heap([])"
         if t == EMPTYMAP:
             example = "x: fixmap[&strview, i32, 4] = {}"
-        return fail("no type can be made from " + comp.types[t].name + ", an empty literal has no type of its own: give it one first, like " + example, at)
+        return fail("cannot construct a type from " + comp.types[t].name + "; an empty literal needs an explicit type first, like: " + example, at)
     return t
 
 func lay_out(t: i64, at: i64) -> Fail?:
@@ -311,7 +311,7 @@ func lay_out(t: i64, at: i64) -> Fail?:
     return null
 
 func too_large(name: &strview, at: i64) -> Fail:
-    return fail(name + " is too large, a type holds at most " + HUGE + " bytes", at)
+    return fail("type " + name + " exceeds the maximum size of " + HUGE + " bytes", at)
 
 func align_up(n: i64, a: i64) -> i64:
     return (n + a - 1) / a * a
@@ -346,7 +346,7 @@ func resolve(n: i64) -> i64|Fail:
         return make_type(s, [], false, tok.at)
     if node.kind == TUnary and tok.text == "&":
         if comp.nodes[n + 1].kind != TName:
-            return fail("'&' expects the name of a fat pointer type after it", tok.at)
+            return fail("'&' must be followed by a fat pointer type name, like &str or &list[i32]", tok.at)
         return instance(n + 1, true)
     if node.kind == TUnary and tok.text == "*":
         return pointer(try resolve(n + 1))
@@ -389,9 +389,9 @@ func resolve(n: i64) -> i64|Fail:
     if tok.kind == Generic:
         b := bound(tok.text)
         if b == 0:
-            return fail(tok.text + " is not bound here, a generic gets its type from a parameter", tok.at)
+            return fail("unbound type parameter " + tok.text + "; type parameters must be bound by a function parameter", tok.at)
         if comp.binds[b - 1].type == VOID:
-            return fail(tok.text + " is a number, not a type", tok.at)
+            return fail(tok.text + " is a count parameter (a number), not a type", tok.at)
         return comp.binds[b - 1].type
     return instance(n, false)
 
@@ -417,35 +417,35 @@ func instance(n: i64, fat: bool) -> i64|Fail:
     if node.module.len == 0 and args.len == 0:
         id := comp.type_ids[tok.text]
         if id is i64 and id == NEVER:
-            return fail("never is what a function that never returns gives, a value cannot be never", tok.at)
+            return fail("'never' can only be a function return type, not a value type", tok.at)
         if id is i64 and id >= NULL and id < NEVER:
             return id
         if id is i64 and id >= BOOL8 and id <= BOOL64:
             if comp.nodes[n - 1].kind == TName and comp.nodes[n - 1].size > 1 and text(n - 1) == "simd": # its first argument
                 return id
-            return fail(tok.text + " is a lane of a mask, it goes only inside a simd: simd[" + tok.text + ", " + 16 / comp.types[id].size + "]", tok.at)
+            return fail(tok.text + " is a simd mask lane type and can only appear inside simd: simd[" + tok.text + ", " + 16 / comp.types[id].size + "]", tok.at)
     if node.module.len == 0 and tok.text == "Thread" and args.len > 0:
         if args.len != 1 or args[0].type == VOID:
             return fail(BARE_THREAD, tok.at)
         return thread_of(try concrete(args[0].type, tok.at))
     if node.module.len == 0 and tok.text == "array":
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
-            return fail("array expects an element type and a count: array[i32, 4]", tok.at)
+            return fail("array requires an element type and a length: array[i32, 4]", tok.at)
         if comp.types[args[0].type].align == 0:
-            return fail("type " + comp.types[args[0].type].name + " contains itself, hold it through a pointer", tok.at)
+            return fail("type " + comp.types[args[0].type].name + " contains itself recursively; store it behind a pointer", tok.at)
         if comp.types[args[0].type].kind == Bytes:
-            return fail("an array needs elements with a size, bytes is a run of unknown length: array[u8, " + args[1].n + "] holds that many bytes", tok.at)
+            return fail("array elements must have a known size, and 'bytes' has unknown length; use array[u8, " + args[1].n + "] for fixed-size bytes", tok.at)
         return array_of(try concrete(args[0].type, tok.at), args[1].n, tok.at)
     if node.module.len == 0 and tok.text == "simd":
         if args.len != 2 or args[0].type == VOID or args[1].type != VOID:
-            return fail("simd expects a lane type and a count: simd[f32, 4]", tok.at)
+            return fail("simd requires a lane type and a lane count: simd[f32, 4]", tok.at)
         return simd_of(args[0].type, args[1].n, tok.at)
     if node.module.len == 0 and tok.text == "atomic":
         if args.len != 1 or args[0].type == VOID:
-            return fail("atomic expects the type it holds: atomic[i64]", tok.at)
+            return fail("atomic requires one type argument: atomic[i64]", tok.at)
         held := comp.types[args[0].type]
         if not (integer(args[0].type) and held.size >= 4 or held.kind == Ptr):
-            return fail("atomic holds i32, u32, i64, u64 or a pointer, and " + held.name + " is none of them", tok.at)
+            return fail("atomic only supports i32, u32, i64, u64, and pointers, not " + held.name, tok.at)
         key: &str = heap("atomic[")
         key += held.name + "]"
         id := comp.type_ids[view(key)]
@@ -463,11 +463,11 @@ func instance(n: i64, fat: bool) -> i64|Fail:
         if node.module.len == 0 and tok.text == "usize":
             return fail(NO_USIZE, tok.at)
         if node.module.len == 0 and tok.text == "slice":
-            return fail("&slice is called &listview now", tok.at)
+            return fail("'&slice' has been renamed to '&listview'", tok.at)
         f := comp.insts[comp.inst].node if comp.inst < comp.insts.len else 0
         if node.module.len == 0 and lookup(tok.text) != 0 and n > f and n < node_end(f): # a variable of the function that this type is written in
-            return fail(tok.text + " is a variable, and a type is made of types and of counts that the compiler knows: literals and constants", tok.at)
-        return fail("no type named " + tok.text + " is visible here", tok.at)
+            return fail("variable " + tok.text + " cannot be used in a type; type arguments must be compile-time types or constant counts", tok.at)
+        return fail("unknown type " + tok.text, tok.at)
     if noted(tok.at):
         mark(comp.nodes[comp.syms[s].node].tok)
     return make_type(s, args, fat, tok.at)
@@ -491,10 +491,10 @@ func count_of(n: i64) -> i64|null|Fail:
             return null
         v := try constant(s, VOID, tok.at)
         if not integer(v.type) or v.at.kind != Const or comp.types[v.type].kind == Int and v.at.n < 0:
-            return fail(tok.text + " is a constant that is not a count, a type expects a number here", tok.at)
+            return fail("constant " + tok.text + " is not a compile-time non-negative integer and cannot be used as a count in a type", tok.at)
         count = u64(v.at.n)
     if count > largest(I64):
-        return fail("" + count + " does not fit in i64, the largest i64 is " + largest(I64), tok.at)
+        return fail("count " + count + " exceeds the maximum i64 value (" + largest(I64) + ")", tok.at)
     return i64(count)
 
 func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
@@ -516,25 +516,25 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
         key += "]"
     id := comp.type_ids[view(key)]
     if id is i64 and kind != Alias and comp.types[id].decl != decl:
-        failed := fail("two types are named " + key + ", one of a module and one inside a type: rename one of them", at)
-        note("the other " + key + " is declared here", comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
+        failed := fail("type name " + key + " conflicts between a module type and a nested struct field type; rename one of them", at)
+        note("conflicting declaration of " + key + " is here", comp.tokens[comp.nodes[comp.types[id].decl].tok].at)
         return failed
     if id is i64:
         return id
     if kind == Fat and not fat:
-        return fail(sym.name + " is a fat pointer, write &" + sym.name, at)
+        return fail(sym.name + " is a fat pointer type; write &" + sym.name, at)
     if fat and kind != Fat:
-        return fail(sym.name + " is not a fat pointer, &" + sym.name + " has no meaning", at)
+        return fail(sym.name + " is not a fat pointer type; '&" + sym.name + "' is invalid", at)
     if comp.types.len > 100000 or comp.resolving.len > DEEP or comp.spelled > LONG:
-        return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", at)
+        return fail("recursive generic type " + sym.name + " expands infinitely with larger type arguments", at)
     generics := type_params(decl)
     c := kid(decl, generics)
     if kind == Void and generics > 0:
-        return fail("void type " + sym.name + " cannot have parameters, it carries no data to shape", at)
+        return fail("empty type " + sym.name + " cannot have type parameters; it carries no data", at)
     if generics != args.len and args.len == 0 and sym.name == "Lock" and sym.library and sym.module.len == 0:
-        return fail("Lock expects the type it guards: Lock[i64], or Lock[null] when it guards code and no value", at)
+        return fail("Lock requires one type argument for the guarded value: Lock[i64], or Lock[null] when guarding code only", at)
     if generics != args.len:
-        return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + " but got " + args.len, at)
+        return fail(sym.name + " expects " + counted(generics, "type parameter", "type parameters") + ", but got " + args.len, at)
     for a in args:
         try concrete(a.type, at)
     if kind == Void:
@@ -549,7 +549,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
             seen = seen or r == decl
             through = through or seen and comp.nodes[r].kind != Alias
         if seen and not through:
-            return fail("type " + sym.name + " refers to itself, an alias cannot: give it a struct to hold the pointer", at)
+            return fail("type alias " + sym.name + " cannot refer to itself; wrap the recursive pointer in a struct instead", at)
         append(comp.resolving, decl)
         target := try resolve(c)
         comp.resolving.len -= 1
@@ -557,7 +557,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
         union := comp.types[target]
         if comp.tokens[comp.nodes[decl].tok - 1].text == "enum" and union.kind == Union:
             if union.decl != 0:
-                failed := fail("enum " + sym.name + " has the same variants as " + text(union.decl) + ", so the two would be one type: to give it a second name write type " + sym.name + " = " + text(union.decl), comp.tokens[comp.nodes[decl].tok].at)
+                failed := fail("enum " + sym.name + " has the exact same variants as " + text(union.decl) + "; write a type alias instead: type " + sym.name + " = " + text(union.decl), comp.tokens[comp.nodes[decl].tok].at)
                 note(text(union.decl) + " is declared here", comp.tokens[comp.nodes[union.decl].tok].at)
                 return failed
             comp.types[target].decl = decl
@@ -585,14 +585,14 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
         ft := try resolve(c + 1)
         f := comp.types[ft]
         if f.align == 0 and f.decl == decl and f.name != view(key) and contains(view(key), f.name): # a smaller instance of it, which is being made because it holds this one
-            return fail("type " + sym.name + " never ends, each instance builds a bigger one than the last", comp.tokens[comp.nodes[decl].tok].at)
+            return fail("recursive generic type " + sym.name + " expands infinitely with larger type arguments", comp.tokens[comp.nodes[decl].tok].at)
         if f.align == 0:
-            return fail("type " + key + " contains itself, hold it through a pointer", field_at)
+            return fail("type " + key + " contains itself recursively; store it behind a pointer", field_at)
         if f.kind == Bytes:
-            return fail("field " + name + " needs a size, bytes is a run of unknown length", field_at)
+            return fail("field " + name + " must have a known size; 'bytes' has unknown length", field_at)
         for g in fields:
             if g.name == name:
-                return fail("type " + key + " declares the field " + name + " twice", field_at)
+                return fail("duplicate field " + name + " in type " + key, field_at)
         given := kid(c, 1) # its default value, or the @other whose storage it shares
         if given == node_end(c):
             given = 0
@@ -603,11 +603,11 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
             while owner < fields.len and fields[owner].name != other:
                 owner += 1
             if kind == Fat:
-                return fail("field " + name + " cannot share storage, a fat pointer keeps every field beside its address", field_at)
+                return fail("field " + name + " cannot share storage; fat pointer types cannot have overlapping fields", field_at)
             if owner == fields.len:
-                return fail(name + " cannot share the storage of " + other + ", only of a field declared above it", field_at)
+                return fail("field " + name + " cannot share storage with " + other + "; it must reference a field declared earlier in the same type", field_at)
             if f.size > comp.types[fields[owner].type].size:
-                return fail(name + " cannot share the storage of " + other + ", it is " + f.size + " bytes and " + other + " holds " + comp.types[fields[owner].type].size + ": declare the larger field first", field_at)
+                return fail("field " + name + " cannot share storage with smaller field " + other + " (" + f.size + " vs " + comp.types[fields[owner].type].size + " bytes); declare the larger field first", field_at)
             append(fields, Item{name = name, type = ft, n = fields[owner].n, shared = true})
         else:
             if not sym.packed:
@@ -641,7 +641,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
             for i in f.default..node_end(f.default):
                 for g in fields:
                     if comp.nodes[i].kind == Name and text(i) == g.name and first_sym(g.name) == 0:
-                        return fail("the default of " + f.name + " cannot read the field " + g.name + ", " + KNOWN, at_of(i))
+                        return fail("default value of field " + f.name + " cannot read field " + g.name + "; " + KNOWN, at_of(i))
     if not defaulted:
         return made
     body := comp.body.len # a value of it is born here to check the defaults, and the code is dropped
@@ -654,9 +654,9 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
     if born is null:
         unknown = try image(made, 0, known)
     if unknown != 0:
-        born = fail(KNOWN + ", and this one is computed when the program runs", at_of(unknown))
+        born = fail("field default value must be a compile-time constant (literals, constants, or empty heap([]), heap(\"\"), heap({})), not a runtime expression", at_of(unknown))
     if born is Fail and generics > 0:
-        note(key + " is made here", at)
+        note(key + " is instantiated here", at)
     if born is Fail:
         return Fail
     drop(body, slots, held)
@@ -698,9 +698,9 @@ func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
                 forms += "simd[bool" + 8 * size / count + ", " + count + "]"
         if forms.len == 0:
             forms += "bool8, bool16, bool32 or bool64"
-        return fail(key + " cannot hold bool, a mask names the width of its lanes: " + forms, at)
+        return fail(key + " cannot use 'bool' lanes; a simd mask must specify lane width: " + forms, at)
     if not numeric(elem) and e.kind != Bool:
-        return fail("the lanes of a simd hold numbers, or the bool8 to bool64 of a mask, and " + e.name + " is neither", at)
+        return fail("simd lanes must be numeric or mask types (bool8 to bool64), not " + e.name, at)
     size := e.size * count
     if size != 16 and size != 32:
         fewer := 16 / e.size
@@ -708,7 +708,7 @@ func simd_of(elem: i64, count: i64, at: i64) -> i64|Fail:
         if size > 32:
             fewer = 32 / e.size
             more = ", or an array of them"
-        return fail(key + " is " + size + " bytes, and a simd fills one or two registers of 16: use simd[" + e.name + ", " + fewer + "]" + more, at)
+        return fail(key + " has size " + size + ", but simd must be 16 or 32 bytes (one or two 16-byte registers); use simd[" + e.name + ", " + fewer + "]" + more, at)
     return add_type(Type{kind = Simd, name = view(key), size = size, align = 16, elem = elem, count = count})
 
 # the mask of a simd, with lanes as wide as its own
@@ -807,11 +807,11 @@ func tuple_of(parts: &listview[i64], at: i64) -> i64|Fail:
                 values = "(" + values + ")"
             if values.len > 0:
                 values += "|"
-            return fail("a tuple cannot hold an error, a function returns its error beside the values: -> " + values + comp.types[try union_of(errors, Union, at)].name, at)
+            return fail("tuples cannot contain error types; return errors in a union alongside the values: -> " + values + comp.types[try union_of(errors, Union, at)].name, at)
         if t.kind == Bytes:
-            return fail("a tuple needs elements with a size, bytes is a run of unknown length", at)
+            return fail("tuple elements must have a known size; 'bytes' has unknown length", at)
         if t.align == 0:
-            return fail("type " + t.name + " contains itself, hold it through a pointer", at)
+            return fail("type " + t.name + " contains itself recursively; store it behind a pointer", at)
         size = align_up(size, t.align)
         name: &str = heap("")
         name += i
@@ -870,7 +870,7 @@ func int_value(digits: &strview, at: i64) -> u64|Fail:
         elif b >= 'A':
             d = u64(b) - 'A' + 10
         if value > (0xffff_ffff_ffff_ffff - d) / base:
-            return fail(digits + " is too large, the largest number is 18446744073709551615", at)
+            return fail("integer literal " + digits + " exceeds maximum u64 value (18446744073709551615)", at)
         value = value * base + d
     return value
 

@@ -40,7 +40,7 @@ func lex(file: i64) -> Fail?:
                     append(widths, width)
                     append(columns, column)
                 elif width != widths[-1] or column != columns[-1]:
-                    return fail("this indentation mixes tabs and spaces, and its block depends on how wide a tab is", base + at)
+                    return fail("mixed tabs and spaces in indentation make block nesting depend on tab width", base + at)
                 while limits.len > 0 and width < limits[-1]:
                     comp.trusted[trust pop(scopes)].to = base + at
                     limits.len -= 1
@@ -59,7 +59,7 @@ func lex(file: i64) -> Fail?:
         elif b == '\r':
             at += 1
             if at >= code.len or bytes[at] != '\n':
-                return fail("this \\r is not followed by \\n, a line ends with \\n or with \\r\\n", base + start)
+                return fail("stray \\r not followed by \\n; line endings must be \\n or \\r\\n", base + start)
         elif b == '#':
             while at < code.len and bytes[at] != '\n':
                 at += 1
@@ -72,7 +72,7 @@ func lex(file: i64) -> Fail?:
             if b == '$' and at < code.len and bytes[at] == '$':
                 at += 1
             if at >= code.len or not is_letter(bytes[at]):
-                return fail("'" + code[start:at] + "' expects a name after it", base + start)
+                return fail("'" + code[start:at] + "' must be followed by a name", base + start)
             while at < code.len and (is_letter(bytes[at]) or is_digit(bytes[at])):
                 at += 1
             rest := at
@@ -80,9 +80,9 @@ func lex(file: i64) -> Fail?:
                 rest += 1
             marker := code[start:at] == "@trust" or code[start:at] == "@check"
             if marker and (opens.len > 0 or rest < code.len and bytes[rest] != '\n' and bytes[rest] != '#'):
-                what: &strview = " goes at the end of a line or on a line of its own"
+                what: &strview = " must appear at the end of a line or on its own line"
                 if opens.len > 0:
-                    what = " marks whole lines, it goes after the last bracket closes and not inside"
+                    what = " applies to whole lines and cannot appear inside brackets"
                 return fail(code[start:at] + what, base + start)
             if marker:
                 limit := width + 1
@@ -107,12 +107,12 @@ func lex(file: i64) -> Fail?:
                         at += 1
                         continue
                     if hex and not is_hex(c):
-                        return fail("invalid character '" + code[at:at + 1] + "' in the hexadecimal number " + code[start:at + 1], base + at)
+                        return fail("invalid character '" + code[at:at + 1] + "' in hexadecimal literal " + code[start:at + 1], base + at)
                     if not hex and c != '0' and c != '1':
-                        return fail("invalid character '" + code[at:at + 1] + "' in the binary number " + code[start:at + 1], base + at)
+                        return fail("invalid character '" + code[at:at + 1] + "' in binary literal " + code[start:at + 1], base + at)
                     at += 1
                 if at == start + 2:
-                    return fail("'" + code[start:at] + "' expects digits after it", base + start)
+                    return fail("'" + code[start:at] + "' must be followed by digits", base + start)
             else:
                 exponent := false
                 element := start > 1 and bytes[start - 1] == '.' and bytes[start - 2] != '.' # t.0.1 reads element 1 of element 0
@@ -132,9 +132,9 @@ func lex(file: i64) -> Fail?:
                         if at < code.len and (bytes[at] == '+' or bytes[at] == '-'):
                             at += 1
                         if at >= code.len or not is_digit(bytes[at]):
-                            return fail("the exponent of " + code[start:at] + " expects digits after it", base + at)
+                            return fail("missing digits in exponent of " + code[start:at], base + at)
                     elif is_letter(c) or c == '.' and at + 1 < code.len and is_digit(bytes[at + 1]):
-                        return fail("invalid character '" + code[at:at + 1] + "' in the number " + code[start:at + 1], base + at)
+                        return fail("invalid character '" + code[at:at + 1] + "' in number literal " + code[start:at + 1], base + at)
                     else:
                         break
             append(comp.tokens, Token{kind, code[start:at], base + start, line})
@@ -143,9 +143,9 @@ func lex(file: i64) -> Fail?:
             if at < code.len and bytes[at] == '\\':
                 at = try escape_end(code, at, base)
             if at + 1 < code.len and bytes[at] < ' ' and bytes[at + 1] == '\'':
-                return fail("a character literal cannot hold the raw byte " + printable(code, at) + ", write it as an escape: '" + printable(code, at) + "'", base + start)
+                return fail("raw control byte " + printable(code, at) + " is not allowed in a character literal; write it as an escape: '" + printable(code, at) + "'", base + start)
             if at + 1 >= code.len or bytes[at] < ' ' or bytes[at] > '~' or bytes[at + 1] != '\'':
-                return fail("a character literal holds one ASCII character: 'a'", base + start)
+                return fail("character literal must contain exactly one ASCII character or escape, like 'a'", base + start)
             at += 2
             append(comp.tokens, Token{Int, code[start:at], base + start, line})
         elif b == '"':
@@ -158,7 +158,7 @@ func lex(file: i64) -> Fail?:
                     at = try escape_end(code, at, base)
                 at += 1
             if at >= code.len:
-                return fail("this text literal never closes, it expects a '\"' before the end of the file", base + start)
+                return fail("unterminated text literal; expected closing '\"' before end of file", base + start)
             at += 1
             append(comp.tokens, Token{Str, code[start:at], base + start, first})
         elif b == '[' and comp.tokens[-1].text == "operator" and (starts_with(code[start:], "[](") or starts_with(code[start:], "[]=(") or starts_with(code[start:], "[:](")):
@@ -175,14 +175,14 @@ func lex(file: i64) -> Fail?:
                 if pair == ".." and at < code.len and bytes[at] == '=':
                     at += 1
             case "&&":
-                return fail("'&&' is not an operator, write: and", base + start)
+                return fail("'&&' is not an operator; use 'and'", base + start)
             case:
                 one := code[start:start + 1]
                 switch one:
                 case "+", "-", "*", "/", "%", "=", "<", ">", "&", "|", "?", ":", ".", ",", "(", ")", "{", "}", "[", "]":
                     at += 1
                 case "!":
-                    return fail("'!' is not an operator, write: not", base + start)
+                    return fail("'!' is not an operator; use 'not'", base + start)
                 case:
                     return fail("invalid character '" + printable(code, start) + "'", base + start)
             append(comp.tokens, Token{Symbol, code[start:at], base + start, line})
@@ -190,13 +190,13 @@ func lex(file: i64) -> Fail?:
                 append(opens, start)
             elif b == ')' or b == ']' or b == '}':
                 if opens.len == 0:
-                    return fail("unexpected '" + code[start:at] + "' with nothing open to close", base + start)
+                    return fail("unmatched closing '" + code[start:at] + "'", base + start)
                 opener := opens[-1]
                 opens.len -= 1
                 if b == ')' and bytes[opener] != '(' or b == ']' and bytes[opener] != '[' or b == '}' and bytes[opener] != '{':
-                    return fail("unexpected '" + code[start:at] + "', the bracket open here is '" + code[opener:opener + 1] + "'", base + start)
+                    return fail("mismatched closing '" + code[start:at] + "'; expected to close '" + code[opener:opener + 1] + "'", base + start)
     if opens.len > 0:
-        return fail("this bracket never closes", base + opens[-1])
+        return fail("unclosed bracket; reached end of file before closing it", base + opens[-1])
     append(comp.tokens, Token{Line, "", base + code.len, line})
     append(comp.tokens, Token{End, "", base + code.len, line})
     append(comp.tokens, Token{End, "", base + code.len, line})
@@ -221,13 +221,13 @@ func escape_end(code: &strview, slash: i64, base: i64) -> i64|Fail:
         return slash
     b := bytes[last]
     if b == '\n' or b == '\r':
-        return fail("'\\' cannot continue a line, a text literal keeps its line breaks", base + slash)
+        return fail("'\\' cannot continue a line; text literals preserve line breaks directly", base + slash)
     if b == 'x':
         last += 2
         if last >= code.len or not is_hex(bytes[last - 1]) or not is_hex(bytes[last]):
-            return fail("\\x expects two hexadecimal digits: \\x41", base + slash)
+            return fail("\\x escape requires two hexadecimal digits, like \\x41", base + slash)
     elif not (b == 'n' or b == 't' or b == 'r' or b == '0' or b == 'e' or b == '\\' or b == '"' or b == '\''):
-        return fail("unknown escape sequence '\\" + printable(code, last) + "', the escapes are \\n \\t \\r \\0 \\e \\\\ \\\" \\' and \\x41", base + slash)
+        return fail("unknown escape sequence '\\" + printable(code, last) + "'; valid escapes are \\n, \\t, \\r, \\0, \\e, \\\\, \\\", \\', and \\xNN", base + slash)
     return last
 
 func printable(code: &strview, at: i64) -> &strview:

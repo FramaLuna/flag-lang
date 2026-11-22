@@ -316,7 +316,7 @@ func main() -> i32:
         elif a == "-o" or a == "-overlay" or a == "-at" or a == "-target" or a == "-timeout":
             i += 1
             if i == arguments.len:
-                eprint(comp.err, a, " expects a value after it")
+                eprint(comp.err, "option ", a, " requires a value")
                 return 2
             if a == "-o":
                 output = arguments[i]
@@ -327,7 +327,7 @@ func main() -> i32:
             elif a == "-timeout":
                 seconds = parse_int(arguments[i]) ifnull 0
                 if seconds < 1 or seconds > 2000000:
-                    eprint(comp.err, "-timeout expects the seconds a test can take, from 1 to 2000000, but got ", arguments[i])
+                    eprint(comp.err, "-timeout expects an integer between 1 and 2000000 seconds, got ", arguments[i])
                     return 2
             else:
                 query = arguments[i]
@@ -354,20 +354,20 @@ func main() -> i32:
                     if ends_with(path, ".flg"):
                         append(inputs, path)
             if inputs.len == before:
-                eprint(comp.err, "the folder ", a, " has no .flg file to compile")
+                eprint(comp.err, "directory ", a, " contains no .flg files")
                 return 2
         elif a == "run" or a == "test":
             line: &str = heap("flagc " + a)
             for j in 1..arguments.len:
                 if j != i:
                     line += " " + arguments[j]
-            eprint(comp.err, a, " has to be the first argument: ", line)
+            eprint(comp.err, "'", a, "' must be the first argument: ", line)
             return 2
         elif a == "--":
             line: &str = heap("flagc run")
             for b in arguments[1:]:
                 line += " " + b
-            eprint(comp.err, "-- passes what follows it to the program, so it goes after run or test: ", line)
+            eprint(comp.err, "'--' passes arguments to 'run' or test filters to 'test', so it requires 'run' or 'test' first: ", line)
             return 2
         elif starts_with(a, "-") or exists(a):
             line: &str = heap("flagc")
@@ -386,24 +386,24 @@ func main() -> i32:
             if not moved:
                 line += " -cc " + a
             if starts_with(a, "-"):
-                eprint(comp.err, a, " is not an option of flagc, and an option of the C compiler goes after -cc: ", line)
+                eprint(comp.err, "unknown flagc option ", a, "; pass C compiler options after -cc: ", line)
             else:
-                eprint(comp.err, a, " goes to the C compiler, after -cc: ", line)
+                eprint(comp.err, "non-Flag file ", a, " must be passed to the C compiler after -cc: ", line)
             return 2
         else:
-            eprint(comp.err, a, " is not an option of flagc, a .flg file or a folder")
+            eprint(comp.err, "unrecognized argument ", a, " (not a flagc option, .flg file, or directory)")
             return 2
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-cc anything for the C compiler] [-- arguments for run, or names for test]")
+        eprint("usage: flagc [run|test] file.flg dir ... [-o output] [-shared] [-keep] [-check] [-memory] [-debug] [-target os-arch] [-overlay file] [-at file:line:col] [-timeout seconds] [-version] [-cc cc-args...] [-- run-args | test-filters]")
         return 2
     if running and comp.shared:
-        eprint(comp.err, arguments[1], " starts a program, and -shared builds a library that a program loads: build it with -o and load it")
+        eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
         return 2
     backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
     backend := backends[target]
     if backend is null:
-        eprint(comp.err, "there is no target named ", target, ", the targets are linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64 and windows-x86_64")
+        eprint(comp.err, "unknown target ", target, "; supported targets are: linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64, windows-x86_64")
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
@@ -423,7 +423,7 @@ func main() -> i32:
             if path_end is i64 and size_end is i64:
                 size = parse_int(rest_of[path_end + 1:path_end + 1 + size_end])
             if path_end is null or size_end is null or size is null or size < 0 or size > rest_of.len - path_end - size_end - 2:
-                eprint(comp.err, overlay, " is not an overlay: each entry is a path line, a length line and that many bytes")
+                eprint(comp.err, "invalid overlay file ", overlay, "; each entry must be a path line, a byte-length line, and that many bytes of content")
                 return 1
             from := path_end + size_end + 2
             put(texts, real_path(rest_of[:path_end]), rest_of[from:from + size])
@@ -513,7 +513,7 @@ func main() -> i32:
             _ = rename_file(view(part), comp.library[:-1])
             _ = remove_file(view(part))
         if not exists(join_path(comp.library, "core.flg")):
-            eprint(comp.err, "cannot unpack the library into ", comp.library)
+            eprint(comp.err, "failed to unpack standard library into ", comp.library)
             return 1
     core: &str = heap(join_path(comp.library, "core.flg"))
     loaded: &map[&strview, i64] = heap({}) # the files of the program by their real path, and core
@@ -532,14 +532,14 @@ func main() -> i32:
             continue
         if not is_dir(u.path):
             if exists(join_path(comp.library, u.module + ".flg")):
-                _ = fail("there is no folder " + u.path + ", and the module " + u.module + " of the library is used without quotes: use " + u.module, u.at)
+                _ = fail("directory " + u.path + " not found; standard library module " + u.module + " is imported without quotes: use " + u.module, u.at)
             else:
-                _ = fail("there is no folder " + u.path + ", the path of a use is from the folder of its file", u.at)
+                _ = fail("directory " + u.path + " not found; relative 'use' paths are resolved from this file's directory", u.at)
             return 1
         again := false
         for v in comp.uses[:done - 1]:
             if v.path.len > 0 and v.module == u.module and real_path(v.path) != real_path(u.path):
-                _ = fail(v.path + " and " + u.path + " both hold module " + u.module + ", a program has one module of each name", u.at)
+                _ = fail("module name conflict: both " + v.path + " and " + u.path + " provide module " + u.module + "; module names must be unique", u.at)
                 return 1
             again = again or v.path.len > 0 and v.module == u.module
         if again:
@@ -551,7 +551,7 @@ func main() -> i32:
                 if ends_with(name, ".flg"):
                     append(found, join_path(u.path, name))
         if found.len == 0:
-            _ = fail("the folder " + u.path + " has no .flg file to compile", u.at)
+            _ = fail("directory " + u.path + " contains no .flg files", u.at)
             return 1
         sort(found)
         holds := false
@@ -561,7 +561,7 @@ func main() -> i32:
                 return 1
             holds = holds or comp.files[k].module == u.module
         if not holds:
-            _ = fail(u.path + " has no file that says module " + u.module + ", the last folder of a use names its module", u.at)
+            _ = fail("directory " + u.path + " has no file declaring 'module " + u.module + "'; the directory name must match the module name", u.at)
             return 1
     done = 0
     while done < comp.uses.len:
@@ -580,7 +580,7 @@ func main() -> i32:
                 return 1
             known = comp.files[-1].module == u.module
         if not known:
-            _ = fail("no module named " + u.module + " is loaded, and the library has no " + u.module + ".flg that declares it", u.at)
+            _ = fail("module " + u.module + " not found in project files or standard library (" + u.module + ".flg)", u.at)
             return 1
     if query is &strview:
         parts := split(query, ":")
@@ -590,7 +590,7 @@ func main() -> i32:
             line = parse_int(parts[-2])
             column = parse_int(parts[-1])
         if line is null or column is null or line < 1 or column < 1:
-            eprint(comp.err, "-at expects file:line:column but got ", query)
+            eprint(comp.err, "-at expects 'file:line:column', got ", query)
             return 2
         path := query[:query.len - parts[-2].len - parts[-1].len - 2]
         wanted := real_path(path)
@@ -598,7 +598,7 @@ func main() -> i32:
         while f < comp.files.len and real_path(view(comp.files[f].path)) != wanted:
             f += 1
         if f == comp.files.len:
-            eprint(comp.err, "-at names ", path, ", which is not one of the files compiled")
+            eprint(comp.err, "-at file ", path, " is not among the compiled files")
             return 2
         code := comp.files[f].code
         first := 0
@@ -611,10 +611,10 @@ func main() -> i32:
         while last < code.len and items(code)[last] != '\n':
             last += 1
         if row < line:
-            eprint(comp.err, "-at ", query, " is past the end of the file, its last line is ", row)
+            eprint(comp.err, "-at ", query, " is past end of file (last line is ", row, ")")
             return 2
         if first + column - 1 > last:
-            eprint(comp.err, "-at ", query, " is past the end of the line, its last column is ", last - first + 1)
+            eprint(comp.err, "-at ", query, " is past end of line (last column is ", last - first + 1, ")")
             return 2
         at := comp.files[f].start + first + column - 1
         for t in 0..comp.tokens.len:
@@ -642,7 +642,7 @@ func main() -> i32:
     asm: &str = heap(output)
     asm += ".s"
     if write_file(view(ssa), listing()) is FsError:
-        eprint(comp.err, "cannot write ", ssa)
+        eprint(comp.err, "failed to write QBE IR file ", ssa)
         return 1
     args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm), c_text(ssa), 0 as cstr, 0 as cstr}
     if comp.debug:
@@ -653,7 +653,7 @@ func main() -> i32:
     if comp.debug:
         comp.assembly += dwarf()
     if append_file(view(asm), comp.assembly) is FsError:
-        eprint(comp.err, "cannot write ", asm)
+        eprint(comp.err, "failed to write assembly file ", asm)
         return 1
     cc: &list[&strview] = heap([])
     compiler: &strview = "cc"
@@ -663,7 +663,7 @@ func main() -> i32:
     for part in split(compiler, " "):
         if part.len > 0:
             append(cc, part)
-    linking: &strview = ", flagc links with a C compiler and the CC variable chooses which"
+    linking: &strview = "; flagc links using a C compiler (set the CC environment variable to choose one)"
     source := view(asm)
     object: &str = heap(output)
     object += ".o"
@@ -705,7 +705,7 @@ func main() -> i32:
                 if path.len == 0 and exists(join_path(f, l)):
                     path = join_path(f, l)
             if path.len == 0:
-                eprint(comp.err, "cannot find ", l, " in the folders of -L: ", join(folders, ", "))
+                eprint(comp.err, "library file ", l, " not found in search directories: ", join(folders, ", "))
                 return 1
             append(link, path)
     if comp.shared:
@@ -743,7 +743,7 @@ func main() -> i32:
                 if words.len > 0:
                     words += " or "
                 words += word
-            eprint(comp.err, "no test has ", words, " in its name")
+            eprint(comp.err, "no test name matches ", words)
             code = 2
         commands: &list[&list[&strview]] = heap([])
         codes: &list[i32|FsError] = heap([])
@@ -876,7 +876,7 @@ func show(at: i64):
     comp.blame = 0
     if blamed != 0 and comp.insts[comp.inst].library and blamed != at:
         show(blamed)
-        eprint(comp.note, "it fails here, inside ", text(comp.insts[comp.inst].node), ", with ", made(comp.inst))
+        eprint(comp.note, "failed here inside library generic ", text(comp.insts[comp.inst].node), " with ", made(comp.inst))
     f := comp.files[file_of(at)]
     bytes := items(f.code)
     local := at - f.start
@@ -900,7 +900,7 @@ func show(at: i64):
     free(line)
     free(pad)
     if blamed != 0 and not comp.insts[comp.inst].library:
-        note("the " + text(comp.insts[comp.inst].node) + " that fails was made for this call, with " + made(comp.inst), blamed)
+        note("while instantiating " + text(comp.insts[comp.inst].node) + " for this call with " + made(comp.inst), blamed)
 
 func location(at: i64) -> &str:
     f := comp.files[file_of(at)]
