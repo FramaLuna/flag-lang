@@ -145,7 +145,7 @@ if [ "${1:-}" = package ]; then
     rm -rf "build/$name"
     mkdir -p "build/$name/bin"
     cp build/flagc$exe "build/$name/bin/"
-    cp README.md LICENSE "build/$name/"
+    cp README.md LICENSE lib/flag-gdb.py "build/$name/"
     cp vendor/qbe/LICENSE "build/$name/LICENSE.qbe"
     cp lib/raylib.license "build/$name/LICENSE.raylib"
     tar -czf "build/$name.tar.gz" -C build "$name"
