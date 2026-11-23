@@ -211,6 +211,68 @@ maxrpo(Blk *hd, Blk *b)
 		hd->loop = b->id;
 }
 
+/* the slot of each call that returns an aggregate,
+ * made before coalesce so that calls can share them
+ */
+void
+callpads(Fn *fn)
+{
+	Blk *b;
+	Ins *i, *pads;
+	Use *u;
+	Typ *ty;
+	Ref to, pad;
+	uint n, nuse;
+	int np;
+
+	pads = vnew(0, sizeof pads[0], PFn);
+	np = 0;
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			to = i->to;
+			if (i->op != Ocall || req(i->arg[1], R) || req(to, R) || !fn->tmp[to.val].nuse)
+				continue;
+			ty = &typ[i->arg[1].val];
+			pad = newtmp("pad", Kl, fn);
+			vgrow(&pads, ++np);
+			pads[np-1] = (Ins){Oalloc + (ty->align > 3 ? 2 : 1), Kl, pad, {getcon((ty->size + 7) & ~7, fn)}};
+			fn->tmp[to.val].pad = pad;
+			nuse = fn->tmp[to.val].nuse;
+			for (u=fn->tmp[to.val].use; u<&fn->tmp[to.val].use[nuse]; u++)
+				switch (u->type) {
+				case UIns:
+					for (n=0; n<2; n++)
+						if (req(u->u.ins->arg[n], to))
+							u->u.ins->arg[n] = pad;
+					break;
+				case UPhi:
+					for (n=0; n<u->u.phi->narg; n++)
+						if (req(u->u.phi->arg[n], to))
+							u->u.phi->arg[n] = pad;
+					break;
+				case UJmp:
+					fn->rpo[u->bid]->jmp.arg = pad;
+					break;
+				default:
+					die("unreachable");
+				}
+		}
+	if (!np)
+		return;
+	b = fn->start;
+	for (i=b->ins; i<&b->ins[b->nins] && ispar(i->op); i++)
+		;
+	n = i - b->ins;
+	curi = &insb[NIns];
+	for (i=&b->ins[b->nins]; i!=&b->ins[n];)
+		emiti(*--i);
+	while (np)
+		emiti(pads[--np]);
+	while (i != b->ins)
+		emiti(*--i);
+	idup(b, curi, &insb[NIns]-curi);
+}
+
 void
 coalesce(Fn *fn)
 {
@@ -220,7 +282,7 @@ coalesce(Fn *fn)
 	Ins *i, **bl;
 	Use *u;
 	Tmp *t, *ts;
-	Ref *arg;
+	Ref *arg, pad;
 	bits x;
 	int64_t off0, off1;
 	int n, m, ip, sz, nsl, nbl, *stk;
@@ -276,9 +338,12 @@ coalesce(Fn *fn)
 		}
 		if (b->jmp.type == Jretc)
 			load(b->jmp.arg, -1, --ip, fn, sl);
+		pad = R;
 		for (i=&b->ins[b->nins]; i!=b->ins;) {
 			--i;
 			arg = i->arg;
+			if (i->op == Ocall)
+				pad = fn->tmp[i->to.val].pad;
 			if (i->op == Oargc) {
 				load(arg[1], -1, --ip, fn, sl);
 			}
@@ -299,6 +364,16 @@ coalesce(Fn *fn)
 				load(arg[0], x, ip, fn, sl);
 				vgrow(&bl, ++nbl);
 				bl[nbl-1] = i;
+			}
+			/* a call writes all of its pad, below
+			 * the arguments it must not share it with */
+			if (!req(pad, R) && (i == b->ins || !isarg((i-1)->op))) {
+				--ip;
+				if (slot(&s, &off0, pad, fn, sl) && s->l) {
+					radd(&s->r, ip);
+					s->l = 0;
+				}
+				pad = R;
 			}
 		}
 		for (s=sl; s<&sl[nsl]; s++)
@@ -335,6 +410,7 @@ coalesce(Fn *fn)
 			vgrow(&stk, ++n);
 			stk[n-1] = s->t;
 			freed += s->sz;
+			fn->tmp[s->t].visit = -2;
 		} else
 			*s0++ = *s;
 	}
@@ -449,6 +525,15 @@ coalesce(Fn *fn)
 					arg[n] = TMP(s->s->t);
 		}
 	}
+
+	for (t=&fn->tmp[Tmp0]; t<&fn->tmp[fn->ntmp]; t++)
+		if (!req(t->pad, R)) {
+			m = fn->tmp[t->pad.val].visit;
+			if (m == -2)
+				t->pad = R;
+			else if (m >= 0)
+				t->pad = TMP(sl[m].s->t);
+		}
 
 	/* fix newly overlapping blits */
 	for (n=0; n<nbl; n++) {

@@ -394,7 +394,10 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 
 	if (!req(i1->arg[1], R)) {
 		typclass(&cr, &typ[i1->arg[1].val], gpreg, fpreg);
-		stkblob(i1->to, &cr, fn, ilp);
+		if (req(fn->tmp[i1->to.val].pad, R))
+			stkblob(i1->to, &cr, fn, ilp);
+		else
+			i1->to = fn->tmp[i1->to.val].pad;
 		cty |= (cr.nfp << 2) | cr.ngp;
 		if (cr.class & Cptr) {
 			/* spill & rega expect calls to be

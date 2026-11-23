@@ -370,7 +370,10 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 		emit(Osalloc, Kl, R, getcon(-stk, fn), R);
 
 	if (!req(i1->arg[1], R)) {
-		stkblob(i1->to, cr.type, fn, ilp);
+		if (req(fn->tmp[i1->to.val].pad, R))
+			stkblob(i1->to, cr.type, fn, ilp);
+		else
+			i1->to = fn->tmp[i1->to.val].pad;
 		cty |= (cr.nfp << 2) | cr.ngp;
 		if (cr.class & Cptr)
 			/* spill & rega expect calls to be

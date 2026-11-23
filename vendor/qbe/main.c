@@ -77,6 +77,8 @@ func(Fn *fn)
 	fillalias(fn);
 	loadopt(fn);
 	filluse(fn);
+	callpads(fn);
+	filluse(fn);
 	fillalias(fn);
 	coalesce(fn);
 	filluse(fn);

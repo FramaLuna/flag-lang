@@ -330,11 +330,14 @@ static Ins* lower_call(Fn* func,
   ExtraAlloc* return_pad = NULL;
   if (is_struct_return) {
     return_pad = alloc(sizeof(ExtraAlloc));
-    Ref ret_pad_ref = newtmp("abi.ret_pad", Kl, func);
+    Ref ret_pad_ref = func->tmp[call_instr->to.val].pad;
+    if (req(ret_pad_ref, R)) {
+      ret_pad_ref = newtmp("abi.ret_pad", Kl, func);
+      return_pad->link = (*pextra_alloc);
+      *pextra_alloc = return_pad;
+    }
     return_pad->instr =
         (Ins){Oalloc8, Kl, ret_pad_ref, {getcon(ret_arg_class.size, func)}};
-    return_pad->link = (*pextra_alloc);
-    *pextra_alloc = return_pad;
     reg_usage.rax_returned = true;
     emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
   } else {
@@ -343,13 +346,17 @@ static Ins* lower_call(Fn* func,
       // far as the calling convention is concerned it's not actually by
       // pointer, we need to store the return value into an alloca because
       // subsequent IL will still be treating the function return as a pointer.
-      ExtraAlloc* return_copy = alloc(sizeof(ExtraAlloc));
-      return_copy->instr =
-          (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
-      return_copy->link = (*pextra_alloc);
-      *pextra_alloc = return_copy;
+      Ref pad = func->tmp[call_instr->to.val].pad;
+      if (req(pad, R)) {
+        ExtraAlloc* return_copy = alloc(sizeof(ExtraAlloc));
+        return_copy->instr =
+            (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
+        return_copy->link = (*pextra_alloc);
+        *pextra_alloc = return_copy;
+        pad = call_instr->to;
+      }
       Ref copy = newtmp("abi.copy", Kl, func);
-      emit(Ostorel, 0, R, copy, call_instr->to);
+      emit(Ostorel, 0, R, copy, pad);
       emit(Ocopy, Kl, copy, TMP(RAX), R);
       reg_usage.rax_returned = true;
     } else if (is_integer_type(call_instr->cls)) {

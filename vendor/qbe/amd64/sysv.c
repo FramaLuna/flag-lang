@@ -306,10 +306,11 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	AClass *ac, *a, aret;
 	int ca, ni, ns, al;
 	uint stk, off;
-	Ref r, r1, r2, reg[2], env;
+	Ref r, r1, r2, reg[2], env, pad;
 	RAlloc *ra;
 
 	env = R;
+	pad = fn->tmp[i1->to.val].pad;
 	ac = alloc((i1-i0) * sizeof ac[0]);
 
 	if (!req(i1->arg[1], R)) {
@@ -337,7 +338,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 		if (aret.inmem) {
 			/* get the return location from eax
 			 * it saves one callee-save reg */
-			r1 = newtmp("abi", Kl, fn);
+			r1 = req(pad, R) ? newtmp("abi", Kl, fn) : pad;
 			emit(Ocopy, Kl, i1->to, TMP(RAX), R);
 			ca += 1;
 		} else {
@@ -345,27 +346,29 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 			 * gcc did this up until 5.2, but
 			 * this should still be fixed.
 			 */
+			r1 = req(pad, R) ? i1->to : pad;
 			if (aret.size > 8) {
 				r = newtmp("abi", Kl, fn);
 				aret.ref[1] = newtmp("abi", aret.cls[1], fn);
 				emit(Ostorel, 0, R, aret.ref[1], r);
-				emit(Oadd, Kl, r, i1->to, getcon(8, fn));
+				emit(Oadd, Kl, r, r1, getcon(8, fn));
 			}
 			aret.ref[0] = newtmp("abi", aret.cls[0], fn);
-			emit(Ostorel, 0, R, aret.ref[0], i1->to);
+			emit(Ostorel, 0, R, aret.ref[0], r1);
 			ca += retr(reg, &aret);
 			if (aret.size > 8)
 				emit(Ocopy, aret.cls[1], aret.ref[1], reg[1], R);
 			emit(Ocopy, aret.cls[0], aret.ref[0], reg[0], R);
-			r1 = i1->to;
 		}
 		/* allocate return pad */
 		ra = alloc(sizeof *ra);
 		/* specific to NAlign == 3 */
 		al = aret.align >= 2 ? aret.align - 2 : 0;
 		ra->i = (Ins){Oalloc+al, Kl, r1, {getcon(aret.size, fn)}};
-		ra->link = (*rap);
-		*rap = ra;
+		if (req(pad, R)) {
+			ra->link = (*rap);
+			*rap = ra;
+		}
 	} else {
 		ra = 0;
 		if (KBASE(i1->cls) == 0) {
