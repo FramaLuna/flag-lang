@@ -3,6 +3,7 @@ compiler=${1:-build/flagc0}
 target=${2:+-target $2}
 case ${2:-} in windows-*) exe=.exe ;; *) exe= ;; esac
 out=build/tests
+[ -n "$target" ] && out=$PWD/$out # zig cc -shared fails on a relative -o
 mkdir -p "$out/bin"
 [ -f "$compiler.exe" ] && compiler=$compiler.exe
 cp "$compiler" "$out/bin/"
@@ -32,7 +33,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         files=$(ls -d "tests/$name/"* | grep -v '\.c$')
         ls "tests/$name/"*.c > /dev/null 2>&1 && cc="-cc $(ls "tests/$name/"*.c)"
     fi
-    [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc' "tests/$name.flg" && continue # it would start this compiler, which the target cannot run
+    [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc|: flagc ' $files "tests/$name.err" < /dev/null && continue # it starts this compiler, or its error repeats the command line
     args=$target
     [ -f "tests/$name.args" ] && args="$target $(cat "tests/$name.args")"
     flagc=$compiler

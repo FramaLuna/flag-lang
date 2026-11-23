@@ -2155,7 +2155,7 @@ error: unexpected end of line; expected ':'
 
 `./test.sh` also type-checks every file in `examples/`.
 
-`./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it, which under WSL starts each `.exe` through interop. It skips the tests that start `flagc` itself and the `gdb` ones. From a WSL folder a few tests cannot pass: `cmd.exe` refuses a UNC folder, Unix tools like `printf` are missing, and the standard output and error arrive through separate pipes, out of order.
+`./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it, which under WSL starts each `.exe` through interop. It skips the tests that start `flagc` itself, those whose error repeats the command line, and the `gdb` ones. From a WSL folder a few tests cannot pass: `cmd.exe` refuses a UNC folder, Unix tools like `printf` are missing, and the standard output and error arrive through separate pipes, out of order.
 
 #### Modifications to QBE (`vendor/qbe`)
 
