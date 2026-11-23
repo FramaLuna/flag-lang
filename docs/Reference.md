@@ -111,12 +111,12 @@ error: no test name matches parse or lex
 `flagc` invokes `cc` by default, or the command in the `CC` environment variable split on spaces (so `CC="zig cc"` works). Linking runs:
 
 ```text
-cc -o program program.s -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
+cc -o program program.s -L<each -L after -cc> -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
 ```
 
 Each `extern` library entry becomes `-lname`, `-framework X`, or a library file path (see [extern](#extern)). With `-shared`, `flagc` adds `-shared` before the `-cc` arguments, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
 
-Because every input file's directory (including directories loaded by quoted `use`) is passed with `-L`, you can place `libsomething.a` next to your code or package and link it via `extern "something"` or `extern "libsomething.a"`.
+Because every input file's directory (including directories loaded by quoted `use`) is passed with `-L`, you can place `libsomething.a` next to your code or package and link it via `extern "something"` or `extern "libsomething.a"`. A `-L` after `-cc` is searched first, so its library wins over one of the same name in the library folder.
 
 If the C compiler cannot be executed:
 
@@ -2083,7 +2083,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Paths, command-line arguments, and environment variables convert to/from UTF-16 at the Win32 boundary, so Flag always sees UTF-8 regardless of the system code page: a path with `ñ` or `字` works.
 - `run(command)` and `output(command, into)` invoke `cmd.exe`. `run(program)` and `start(program)` quote arguments directly without a shell, treating extensionless names as `.exe` and rejecting `.bat`/`.cmd` (which `cmd.exe` would re-parse). Child processes inherit only stdin/stdout/stderr and do not spawn a console window from GUI programs. With a `folder` argument, relative executables like `./tool` resolve relative to the caller's current directory on Windows (unlike Linux and macOS, which resolve relative to `folder`).
 - `net` uses Winsock; listening on a non-loopback address (other than `127.0.0.1`) may trigger a Windows Firewall prompt on first run.
-- Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, place your own `libraylib.a` in `lib/`.
+- Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, pass the folder of your own after `-cc`: `flagc game.flg -cc -Lfolder`.
 - The Windows console displays text using its active code page; run `chcp 65001` for UTF-8 output.
 
 ## Editor support

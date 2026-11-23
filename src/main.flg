@@ -685,17 +685,17 @@ func main() -> i32:
     append(link, output)
     append(link, source)
     folders: &list[&strview] = heap([]) # where the linker looks for a library, and flagc for a file that an extern names
+    for k, r in rest:
+        if starts_with(r, "-L") and r.len > 2:
+            append(folders, r[2:])
+        elif r == "-L" and k + 1 < rest.len:
+            append(folders, rest[k + 1])
     append(folders, comp.library)
     for f in comp.files:
         if not f.library:
             append(folders, dir_of(view(f.path)))
     for f in folders:
         append(link, "-L" + f)
-    for k, r in rest:
-        if starts_with(r, "-L") and r.len > 2:
-            append(folders, r[2:])
-        elif r == "-L" and k + 1 < rest.len:
-            append(folders, rest[k + 1])
     for l in comp.libs:
         if ends_with(l, ".framework"):
             append(link, ptr(["-framework", l[:-10]]))

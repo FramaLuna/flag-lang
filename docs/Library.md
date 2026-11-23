@@ -944,7 +944,7 @@ func main():
 
 Windows, 2D and 3D drawing, input, textures, and audio via [raylib](https://www.raylib.com).
 
-The standard library bundles a prebuilt `libraylib.a` for Linux x86_64; on other systems, place your own `libraylib.a` in the `lib` folder. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
+The standard library bundles a prebuilt `libraylib.a` for Linux x86_64; on other systems, pass the folder of your own `libraylib.a` after `-cc`: `flagc game.flg -cc -Lfolder`. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
 
 Functions keep raylib's names and parameter order, so the [raylib cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) applies directly. String parameters take `cstr` (pass text literals directly, or wrap a `&str` with `c_text(label)`).
 
