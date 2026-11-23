@@ -345,6 +345,17 @@ func main() -> i32:
         elif a == "-version":
             print("flag ", view(flag_version()))
             return 0
+        elif a == "-docs":
+            folder: &str = heap(dir_of(executable()))
+            folder += "../docs"
+            if not exists(join_path(folder, "Reference.md")): # a docs folder beside bin that lacks it is someone else's
+                library := cached_library()
+                folder = join_path(library, "docs")
+                if not exists(join_path(library, "core.flg")) or make_dir(view(folder)) is FsError or not unpack(view(folder), true):
+                    eprint(comp.err, "failed to unpack documentation into ", folder)
+                    return 1
+            print(real_path(view(folder)))
+            return 0
         elif ends_with(a, ".flg"):
             append(inputs, a)
         elif is_dir(a):
@@ -396,7 +407,7 @@ func main() -> i32:
             return 2
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg dir ... [-o output] [-shared] [-keep] [-check] [-memory] [-debug] [-target os-arch] [-overlay file] [-at file:line:col] [-timeout seconds] [-version] [-cc cc-args...] [-- run-args | test-filters]")
+        eprint("usage: flagc [run|test] file.flg dir ... [-o output] [-shared] [-keep] [-check] [-memory] [-debug] [-target os-arch] [-overlay file] [-at file:line:col] [-timeout seconds] [-version] [-docs] [-cc cc-args...] [-- run-args | test-filters]")
         return 2
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
@@ -484,36 +495,7 @@ func main() -> i32:
     if starts_with(view(comp.library), here):
         comp.library = comp.library[here.len:]
     if not exists(join_path(comp.library, "core.flg")):
-        root: &str = heap("/tmp")
-        cache := env("XDG_CACHE_HOME")
-        local := env("LOCALAPPDATA")
-        home := env("HOME")
-        if cache is &strview and cache.len > 0:
-            root = cache
-        elif local is &strview and local.len > 0:
-            root = local
-        elif home is &strview and home.len > 0:
-            root = home
-            root += "/.cache"
-        comp.library = join_path(root, "flag/")
-        comp.library += view(flag_stamp()) + "/"
-        if not exists(join_path(comp.library, "core.flg")):
-            part: &str = heap(comp.library[:-1])
-            part += ".part" + getpid()
-            _ = make_dir(view(part))
-            name: cstr
-            size := 0
-            data := flag_embedded(0, ptr(name), ptr(size))
-            k := 0
-            while data as u64 != 0:
-                file: &strview
-                file = data
-                file.len = size
-                _ = write_file(join_path(part, view(name)), file)
-                k += 1
-                data = flag_embedded(k, ptr(name), ptr(size))
-            _ = rename_file(view(part), comp.library[:-1])
-            _ = remove_file(view(part))
+        comp.library = cached_library()
         if not exists(join_path(comp.library, "core.flg")):
             eprint(comp.err, "failed to unpack standard library into ", comp.library)
             return 1
@@ -809,6 +791,56 @@ func run_tests(queue: *Channel[i64, 64], commands: &listview[&list[&strview]], c
             got = read(p.output, ptr(said[j]), 65536) iferror 0
         close(p.output)
         codes[j] = wait(p)
+
+# the folder of this version in the cache, which holds its library from the moment it exists
+func cached_library() -> &str:
+    root: &str = heap("/tmp")
+    cache := env("XDG_CACHE_HOME")
+    local := env("LOCALAPPDATA")
+    home := env("HOME")
+    if cache is &strview and cache.len > 0:
+        root = cache
+    elif local is &strview and local.len > 0:
+        root = local
+    elif home is &strview and home.len > 0:
+        root = home
+        root += "/.cache"
+    folder: &str = heap(join_path(root, "flag/"))
+    folder += view(flag_stamp()) + "/"
+    if not exists(join_path(folder, "core.flg")):
+        part: &str = heap(folder[:-1])
+        part += ".part" + getpid()
+        _ = make_dir(view(part))
+        if unpack(view(part), false):
+            _ = rename_file(view(part), folder[:-1])
+        left := list_dir(view(part)) # another flagc got there first
+        if left is &listview[&strview]:
+            for name in left:
+                _ = remove_file(join_path(part, name))
+        _ = remove_file(view(part))
+    return folder
+
+# writes each embedded file that folder lacks, of the docs or of the library, whole: another flagc may be reading it
+func unpack(folder: &strview, docs: bool) -> bool:
+    whole := true
+    name: cstr
+    size := 0
+    k := 0
+    data := flag_embedded(k, ptr(name), ptr(size))
+    while data as u64 != 0:
+        if starts_with(view(name), "docs/") == docs:
+            path: &str = heap(join_path(folder, base_name(view(name))))
+            if not exists(view(path)):
+                part: &str = heap(path)
+                part += ".part" + getpid()
+                file: &strview
+                file = data
+                file.len = size
+                whole = write_file(view(part), file) is null and rename_file(view(part), view(path)) is null and whole
+                _ = remove_file(view(part))
+        k += 1
+        data = flag_embedded(k, ptr(name), ptr(size))
+    return whole
 
 func ran(command: &listview[&strview], why: &strview) -> bool:
     code := run(command)

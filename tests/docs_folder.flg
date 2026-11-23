@@ -1,0 +1,33 @@
+use fs
+use os
+
+func docs(program: &listview[&strview]) -> &strview:
+    said: &str = heap("")
+    code := output(program, said)
+    if code is FsError or code != 0:
+        panic("flagc -docs failed: " + said)
+    return trim(said)
+
+func same(folder: &strview) -> bool:
+    for name in ["Overview.md", "Reference.md", "Library.md"]:
+        given := read_file(join_path(folder, name))
+        written := read_file("docs/" + name)
+        if given is FsError or written is FsError or given != written:
+            return false
+    return true
+
+func main():
+    compiler := env("FLAGC") ifnull "build/flagc"
+    beside := docs(ptr([compiler, "-docs"]))
+    print("beside the compiler: ", base_name(beside), " ", same(beside))
+    installed := dir_of(args()[0]) + "bin/" + base_name(compiler)
+    setting := "XDG_CACHE_HOME=" + dir_of(args()[0]) + "docs_cache"
+    command := ["env", setting, installed, "-docs"]
+    cached := docs(ptr(command))
+    print("in the cache: ", contains(cached, "docs_cache"), " ", same(cached), " ", exists(join_path(dir_of(cached), "core.flg")))
+    _ = remove_file(join_path(cached, "Library.md"))
+    print("one file deleted: ", docs(ptr(command)) == cached, " ", same(cached))
+    for name in ["Overview.md", "Reference.md", "Library.md"]:
+        _ = remove_file(join_path(cached, name))
+    _ = remove_file(cached)
+    print("folder deleted: ", is_dir(cached), " ", docs(ptr(command)) == cached, " ", same(cached))

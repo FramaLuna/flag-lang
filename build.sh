@@ -40,12 +40,12 @@ for src in vendor/qbe/*.c vendor/qbe/*/*.c; do
 done
 printf 'int qbe_main(int, char **);\nint main(int argc, char **argv) { return qbe_main(argc, argv); }\n' > build/embed/qbe.c
 $cc -o build/qbe build/embed/qbe.c $objects
-stamp=$(cat lib/* | cksum | cut -d' ' -f1)
+stamp=$(cat lib/* docs/*.md | cksum | cut -d' ' -f1)
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 {
     echo ".section $section"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo ".globl ${symbol}flag_file_$i"
         echo ".globl ${symbol}flag_file_${i}_end"
         echo ".p2align 3"
@@ -58,13 +58,13 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 {
     echo "#include <stddef.h>"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo "extern const unsigned char flag_file_$i[], flag_file_${i}_end[];"
         i=$((i + 1))
     done
     echo "static const struct { const char *name; const unsigned char *start, *end; } files[] = {"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo "    {\"${f#lib/}\", flag_file_$i, flag_file_${i}_end},"
         i=$((i + 1))
     done

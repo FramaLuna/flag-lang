@@ -67,6 +67,12 @@ there is no ada
 - [Library](docs/Library.md): every function of the standard library
 - [Examples](examples): small programs showing language features
 
+The compiler carries the documentation of its version. `flagc -docs` prints the folder that holds it, so it works offline and always matches what you installed:
+
+```sh
+grep -n '^## ' "$(flagc -docs)/Reference.md"
+```
+
 ## Installation
 
 Download the archive for your system from [releases](https://github.com/FramaLuna/flag-lang/releases):

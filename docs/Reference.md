@@ -66,7 +66,7 @@ Intermediate files (`program.ssa` and `program.s`) are written next to the outpu
 ## The command line
 
 ```text
-flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-cc anything for the C compiler] [-- arguments for run, or names for test]
+flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-memory] [-debug] [-target system-machine] [-overlay file] [-at file:line:column] [-timeout seconds] [-version] [-docs] [-cc anything for the C compiler] [-- arguments for run, or names for test]
 ```
 
 | Argument / Option | Meaning |
@@ -85,6 +85,7 @@ flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-m
 | `-overlay file`, `-at file:line:column` | Editor and tooling support (see [Editor support](#editor-support)). |
 | `-timeout seconds` | Per-test timeout for `flagc test`, from `1` to `2000000` seconds (about 23 days). Default is `10`. |
 | `-version` | Prints the compiler version and the commit it was built from. |
+| `-docs` | Prints the folder that holds the documentation of this version (`Overview.md`, `Reference.md`, `Library.md`) and exits, with no input file. In a clone of the repository that is `bin/../docs`. Otherwise it is the `docs` folder inside the cache folder of the library (see [Standard library location](#files-folders-and-the-library)), written from the `flagc` binary the first time and again if it is deleted. Search it with your own tools: `grep -n '^## ' "$(flagc -docs)/Reference.md"`. |
 | `-cc ...` | Forwards every following argument verbatim to the C compiler until the `--` of `run` or `test` (`.c`, `.o`, `.a`, `-l`, `-static`, and so on). A second `-cc` is forwarded too. |
 
 Colors on `error:`, `warning:`, and `note:` are emitted only when stderr is a terminal, and never when the `NO_COLOR` environment variable is set.
@@ -133,7 +134,7 @@ error: cannot run cc: No such file or directory; flagc links using a C compiler 
   - `$HOME/.cache/flag/<version>-<number>`
   - `/tmp/flag/<version>-<number>`
 
-  The `<number>` hash changes whenever the library changes. A standalone `flagc` binary therefore works on its own, while keeping `lib/` next to it lets you inspect or edit the library.
+  The `<number>` hash changes whenever the library or the documentation changes. A standalone `flagc` binary therefore works on its own, while keeping `lib/` next to it lets you inspect or edit the library.
 - **Quoted `use` (local packages)**: `use "vendor/vec"` loads every `.flg` file directly inside that directory (not subdirectories) as part of the program. Paths use `/` and are resolved relative to the file containing the `use` (or may be absolute). The last directory segment names the module, so one of its files must declare `module vec` (see [Modules](#modules)). A directory referenced from multiple files, or also passed on the command line, is loaded once. Naming a file (`use "vendor/vec.flg"`) is an error explaining where the file belongs. `flagc` never downloads packages; external code is a local folder or git submodule.
 - **Load order**: `flagc` loads `core`, the command-line files and folders, the folders from quoted `use` declarations (transitively), and finally standard library modules. When a program file writes `use something` and no program file declares `module something`, `flagc` loads `something.flg` from the standard library. Standard library files always resolve standard library modules even when the program defines a module of the same name (see [Modules](#modules)).
 - **Encoding and paths**: a leading UTF-8 BOM is skipped. A file passed twice is loaded once. Diagnostics show the paths you passed (joined with quoted `use` paths for imported folders), and display standard library paths relative to the current directory when inside it.
