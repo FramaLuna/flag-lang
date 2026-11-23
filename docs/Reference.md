@@ -1203,7 +1203,7 @@ func main():
 
 #### Out of memory and stdout errors
 
-`flag: out of memory` prints no location or call chain, flushes buffered output without allocating, and exits with `9`. Negative sizes (such as `reserve(l, -1)`) also trigger it. Use `try_reserve` to receive `NoMemory` instead of aborting (see [Memory](Library.md#memory)).
+`flag: out of memory` prints no location or call chain, flushes Flag's buffered output without allocating, and exits with `9`. It ends the process at once, so C `atexit` functions do not run and C `stdio` buffers are not flushed. Negative sizes (such as `reserve(l, -1)`) also trigger it. Use `try_reserve` to receive `NoMemory` instead of aborting (see [Memory](Library.md#memory)).
 
 `flag: cannot write the standard output: ...` is printed at exit if buffered stdout writes failed and no `flush(stdout)` already reported the error.
 
