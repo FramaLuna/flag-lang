@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.6.1
+
+A patch release with clearer compiler messages, rewritten documentation that now ships inside the compiler, faster generated code, and a more precise `-memory`.
+
+> **Upgrading from 0.6.0:** Correct programs keep compiling. Two forms that only compiled by mistake are now errors, a `-L` folder now wins over the library folder when both hold a file of the same name (see Changed), and any script that matches the text of a compiler message needs its new wording.
+
+### New Features
+
+- **`flagc -docs`:** Prints the folder with the documentation of the installed version, so it works offline and always matches your compiler: `grep -n '^## ' "$(flagc -docs)/Reference.md"`.
+- **Text and lists in gdb:** `lib/flag-gdb.py`, also in the release package, shows a `&str` as text and a `&list` with its elements.
+- **Constant pointers into a `shared context`:** `ptr` of a field or of a constant-index element is now a compile-time value, usable in typed constants and field defaults.
+
+### Changed
+
+- **Compiler messages:** Every message of the compiler, `-memory`, and the runtime was rewritten. Each one says what failed first and then the rule or the fix, and `-memory` warnings start with the kind of bug (`data race:`, `memory leak:`, `use after free:`, `dangling pointer:`).
+- **Documentation:** The README, Overview, Reference, and Library were rewritten to read more clearly.
+- **Stricter syntax:** A space before the `(` of a function or operator declaration or of a function type is now an error, and so is `&` before a type that is not a fat pointer, like `&i32`.
+- **`-L` goes first:** A `-L` folder after `-cc` is searched before the folder of the library, so your own `libraylib.a` links on Windows and macOS.
+- **`print` of an `Arena`:** Shows its `count` and `used` instead of the raw contents of its blocks.
+
+### `-memory`
+
+- **New warnings:** A pointer inside a struct read as an integer, a block held by a context that a call replaces without freeing it, a kept pointer to a loop element read after that element was freed, a known index read after a free at an unknown index, and a function that frees the elements of a slice with a literal bound that leaves out part of a list.
+- **Fewer false warnings:** A failed `realloc`, the distance between two pointers into one block, a reused temporary, `pop` inside a `for`, a walk over a whole slice, a lock reached through a pointer to one element, a local function value, and a call that replaces a block of a context while a variable keeps the old one.
+
+### Performance
+
+- **Floats on x86_64:** Copies and conversions no longer wait on the old value of their register. A physics kernel takes 30% fewer cycles, and 48% fewer with `inline`.
+- **Returned structs:** A struct of up to 48 bytes that a function returns stays in registers, so returning a copy is no longer needed.
+- **Long `switch`:** A `switch` on an integer with more than 32 cases finds its literal values by halves. With 256 random cases it takes 28% fewer cycles.
+- **Smaller frames:** Calls that return structs share their stack slots.
+
+### Bug Fixes
+
+- Deeply nested calls no longer overflow the stack of `flagc`: it now takes 16 MiB on Linux and macOS, as it did on Windows, so the 500 levels of nesting hold on arm64.
+- `make_dir` no longer fails when another program makes the same folder at the same moment.
+- An `-overlay` with an empty `core.flg` gives a compiler error instead of a crash, and `-overlay` sees a new unsaved file in the folder of a quoted `use`.
+- A `return` in a function declared `-> atomic[T]` has its own error, and the error for a literal of enum variants passed to a generic says how to name the enum.
+- riscv64: the address of a C function assembles with clang 14.
+- macOS: constants and text views go in `__DATA,__const`, and `-debug` without a linked program no longer fails in `dsymutil`.
+
 ## 0.6.0
 
 This is a major release with broad improvements across the language, memory model, and tooling. Lengths and indexes are now `i64` (`usize` has been removed), shared thread state lives in `shared context`, `Lock[T]` wraps the data it protects, and `-memory` now delivers a concrete safety guarantee: outside `@trust`, any program that passes `-memory` without warnings will not leak memory, will not use memory after free, and will not have data races.
