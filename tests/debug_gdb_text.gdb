@@ -1,3 +1,4 @@
+set host-charset UTF-8
 set pagination off
 set print address off
 set print thread-events off
