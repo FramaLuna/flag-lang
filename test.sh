@@ -1,5 +1,7 @@
 #!/bin/sh
 compiler=${1:-build/flagc0}
+target=${2:+-target $2}
+case ${2:-} in windows-*) exe=.exe ;; *) exe= ;; esac
 out=build/tests
 mkdir -p "$out/bin"
 [ -f "$compiler.exe" ] && compiler=$compiler.exe
@@ -30,8 +32,9 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         files=$(ls -d "tests/$name/"* | grep -v '\.c$')
         ls "tests/$name/"*.c > /dev/null 2>&1 && cc="-cc $(ls "tests/$name/"*.c)"
     fi
-    args=
-    [ -f "tests/$name.args" ] && args=$(cat "tests/$name.args")
+    [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc' "tests/$name.flg" && continue # it would start this compiler, which the target cannot run
+    args=$target
+    [ -f "tests/$name.args" ] && args="$target $(cat "tests/$name.args")"
     flagc=$compiler
     vars=
     if [ -f "tests/$name.env" ]; then
@@ -39,7 +42,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         vars=$(cat "tests/$name.env")
     fi
     if [ -f "tests/$name.err" ]; then
-        if within env $vars "$flagc" $files -o "$out/$name" $args $cc > "$out/$name.got" 2>&1; then
+        if within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
             echo "FAIL $name: compiled, expected an error"
             fail=$((fail + 1))
         elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
@@ -52,7 +55,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         continue
     fi
     if [ -f "tests/$name.warn" ]; then
-        if ! within env $vars "$flagc" $files -o "$out/$name" -memory $args $cc > "$out/$name.got" 2>&1; then
+        if ! within env $vars "$flagc" $files -o "$out/$name$exe" -memory $args $cc > "$out/$name.got" 2>&1; then
             echo "FAIL $name: does not compile"
             cat "$out/$name.got"
             fail=$((fail + 1))
@@ -69,7 +72,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         fi
         continue
     fi
-    if ! within env $vars "$flagc" $files -o "$out/$name" $args $cc > "$out/$name.got" 2>&1; then
+    if ! within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
         echo "FAIL $name: does not compile"
         cat "$out/$name.got"
         fail=$((fail + 1))
@@ -94,8 +97,8 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         continue
     fi
     if [ ! -f "tests/$name.gdb" ]; then
-        within env FLAGC="$compiler" "$out/$name" < /dev/null > "$out/$name.got" 2>&1
-    elif command -v gdb > /dev/null; then
+        within env FLAGC="$compiler" "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
+    elif [ -z "$target" ] && command -v gdb > /dev/null; then
         within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | sed -e /libthread_db/d -e 's/^Thread [0-9]* hit //' > "$out/$name.got"
     else
         continue # without gdb there is nothing to read the DWARF
@@ -110,7 +113,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
 done
 for src in examples/*.flg; do
     name=$src
-    if within "$compiler" "$src" -check > "$out/example.got" 2>&1; then
+    if within "$compiler" "$src" -check $target > "$out/example.got" 2>&1; then
         pass=$((pass + 1))
     else
         echo "FAIL $src: does not compile"
