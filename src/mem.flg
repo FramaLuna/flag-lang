@@ -495,6 +495,7 @@ func check_memory():
                     o.code = Scale
                 case "sub", "and", "or", "xor", "shl", "shr", "sar", "udiv", "div", "rem", "urem", "neg", "extsw", "extuw", "extsb", "extub", "extsh", "extuh":
                     o.code = Mix
+                    o.size = u32(name == "sub")
                     if i.number:
                         o.code = Plain
                 case "jmp":
@@ -504,6 +505,10 @@ func check_memory():
                     o.code = Fork
                     o.a.n = i64(block_of(labels, blocks, u32(i.b.n)))
                     o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
+                    test := comp.code[k - 1]
+                    if test.to == i.a.n and (test.op == "ceql" or test.op == "cnel") and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
+                        o.from = u32(test.a.n) + 1 - func.temps
+                        o.size = 1 if test.op == "ceql" else 2
                 case "ret":
                     o.code = Leave
                     if f.blob: # the value goes back like a blit into the caller's place
@@ -1055,13 +1060,42 @@ func analyze(f: i64) -> bool:
                 hold(mem.pool[v].slot)
             for v in out.temps:
                 hold(mem.pool[v].slot)
+            failed := out
+            null_side := NONE
+            ending := mem.ops[spans[b].end - 1] if spans[b].end > spans[b].first else Op{}
+            tested := mem.temps[ending.from] if ending.code == Fork and ending.size != 0 else blank
+            if tested.killer != 0 and empty(tested.dead) and not empty(objects(tested.live)): # realloc gave null: it moved nothing and made nothing
+                held := objects(tested.live)
+                made := held and mem.fn.heaps
+                for id in mem.present:
+                    v := cell_value(id)
+                    if mem.ticked[id] == mem.tick and v.killer == tested.killer and not empty(v.dead and held):
+                        back := v.dead and held
+                        made = made - back
+                        v.must = v.must or back - v.live
+                        v.live = v.live or back
+                        v.dead = v.dead - back
+                        rewrite(i64(id), v)
+                for t in mem.fn.crossing:
+                    v := mem.temps[t]
+                    if v.killer == tested.killer and not empty(v.dead and held):
+                        back := v.dead and held
+                        v.must = v.must or back - v.live
+                        v.live = v.live or back
+                        v.dead = v.dead - back
+                        mem.temps[t] = v
+                        mem.interned[t] = 0
+                mem.marks.sure = mem.marks.sure - held
+                vanish(made)
+                null_side = i64(ending.size) - 1
+                failed = snapshot()
             for side in 0..2:
                 s := spans[b].yes
                 if side == 1:
                     s = spans[b].no
                 if s != 0:
                     old := mem.ins[s - 1]
-                    joined := merge(old, out, s - 1)
+                    joined := merge(old, failed if side == null_side else out, s - 1)
                     if old.seen and joined == old:
                         release(joined)
                     else:
@@ -1070,6 +1104,8 @@ func analyze(f: i64) -> bool:
                         queued[s - 1] = true
                         if s - 1 < low:
                             low = s - 1
+            if null_side != NONE:
+                release(failed)
             release(out)
     mem.final = true
     mem.speak = true
@@ -1307,7 +1343,12 @@ func visit(block: i64):
                 v = Target{live = bit(NOWHERE), stride = i32(n)}
             define(o.to, v)
         case Mix:
-            define(o.to, blur(target_of(o.a), target_of(o.b)))
+            x := target_of(o.a)
+            y := target_of(o.b)
+            if o.size != 0 and pointing(x) and objects(x.live) == objects(y.live) and x.slot == y.slot and x.slot != ALL: # the distance between two places of one block is a number
+                define(o.to, number(ANY))
+            else:
+                define(o.to, blur(x, y))
         case Count:
             if mem.speak:
                 counted(target_of(o.a), mem.fn.names[o.a.temp])
@@ -1675,7 +1716,7 @@ func visit(block: i64):
                 mem.fn.objs[h].home = home_of(arena)
             mem.marks.made = mem.marks.made or blocks and (mem.fn.outer or mem.fn.focus)
             sweep()
-            out := Target{live = objects(first.live), must = first.must}
+            out := Target{live = objects(first.live), must = first.must, killer = o.pos if o.code == Grow else 0}
             reborn(first, blocks, ptr(out), arena, (u64(i) << 16) or SITE, Obj{kind = Heap, pos = o.pos, from = "realloc"})
             if empty(out.live):
                 out.live = bit(NOWHERE)

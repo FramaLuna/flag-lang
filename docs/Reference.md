@@ -1584,7 +1584,7 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 #### Untrackable pointers and checker limits
 
 - **Untrackable pointers** (subsequently reported as leaks):
-  - Cast to integer, alone or inside a struct (`W{p} as u64`): `-memory cannot track x after converting it to an integer; keep it in a pointer type`.
+  - Cast to integer, alone or inside a struct (`W{p} as u64`): `-memory cannot track x after converting it to an integer; keep it in a pointer type`. The distance between two places of one block (`ptr(p.b) as i64 - p as i64`) is a plain number and does not warn.
   - Stored into C-allocated memory (directly or via a helper): `-memory cannot track a pointer after it is stored into C-allocated memory`.
 - **Complexity limits**: a function exceeding **512 tracked blocks** (~500 user allocations, temporaries, and parameter targets) or failing to converge stops analysis for that function (still reporting findings so far):
   - `-memory stopped checking f because it has more than 512 blocks of memory to follow; checks for this function are incomplete`
@@ -1683,7 +1683,7 @@ Clean concurrent patterns: writes before `parallel` and reads after `wait`; per-
 
 ### Paths and unions
 
-`-memory` explores all control-flow paths (ignoring general boolean conditions, and branching over every function taken as a value of the callee's type for indirect calls), but **does** follow `is` checks (after `if node is *Node:` it knows the other path has no node to free) and tracks each union member's fields separately, even when two members store pointers at the same byte offset (`Shape` and `Bad` below), when the paths that made the union meet, or when only one member writes a field (`&str|null`):
+`-memory` explores all control-flow paths (ignoring general boolean conditions, and branching over every function taken as a value of the callee's type for indirect calls), but **does** follow `is` checks (after `if node is *Node:` it knows the other path has no node to free) and a test of what `realloc` returned against null (on that path the old block is still yours) and tracks each union member's fields separately, even when two members store pointers at the same byte offset (`Shape` and `Bad` below), when the paths that made the union meet, or when only one member writes a field (`&str|null`):
 
 ```flag
 type Shape:
