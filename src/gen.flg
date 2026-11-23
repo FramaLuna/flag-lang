@@ -57,7 +57,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         s = comp.syms[s].next
     if testing:
         s = first_sym("run_test")
-        while not comp.syms[s].library:
+        while s != 0 and not comp.syms[s].library:
             s = comp.syms[s].next
     if s == 0 and not check and not comp.shared:
         eprint(comp.err, "missing entry point: expected a top-level 'func main()' with no parameters")
@@ -2102,7 +2102,10 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             file: &strview = "stdout"
             if name == "eprint":
                 file = "stderr"
-            to := try constant(try named(file, "", 0), VOID, tok.at) # the one core sees
+            stream := try named(file, "", 0) # the one core sees
+            if stream == 0:
+                return fail("required built-in library constant " + file + " is missing from the standard library", tok.at)
+            to := try constant(stream, VOID, tok.at)
             parts: &list[Value] = heap([])
             c = n + 1
             while c < node_end(n):
