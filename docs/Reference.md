@@ -1279,7 +1279,7 @@ origin: Point = {0, 0}
 handler: func(i32) -> i32 = twice
 ```
 
-- **Allowed compile-time values**: numbers, `bool`, characters, text literals (`&strview` or `cstr`), other constants, `null`, enum variants, function names, `ptr` of a `shared context`, empty owners `heap([])`/`heap("")`/`heap({})` (stored with the heap mark), struct/array literals of the above, `{}`, and compile-time `a if c else b`.
+- **Allowed compile-time values**: numbers, `bool`, characters, text literals (`&strview` or `cstr`), other constants, `null`, enum variants, function names, `ptr` of a `shared context` or of a field or constant-index element in it, empty owners `heap([])`/`heap("")`/`heap({})` (stored with the heap mark), struct/array literals of the above, `{}`, and compile-time `a if c else b`.
 - **Disallowed values**: map literals (`fixmap` runs `put` at runtime to deduplicate equal keys, so write untyped `AGES = {"ana": 30}`), text literals into `&str` (use `&strview` or a context field filled in `main`), and any runtime expression. These are checked even if the constant is unused:
 
 ```text

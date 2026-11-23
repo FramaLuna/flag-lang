@@ -3937,7 +3937,17 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         return 0
     if ty.size == 0:
         return 0
+    first := comp.body.len
     v := try convert(try value(n, t), t, Arg{}, at_of(n))
+    base := v.at
+    past := 0 # what ptr(context.field) adds to the address of a shared context
+    last := comp.body.len
+    while last > first and base.kind == Temp and comp.body[last - 1].op == "add" and comp.body[last - 1].to == u32(base.n) and comp.body[last - 1].b.kind == Const and comp.body[last - 1].b.n >= 0:
+        last -= 1
+        past += comp.body[last].b.n
+        base = comp.body[last].a
+    if last == first and base.kind == Global and starts_with(comp.globals[base.n], "$ctx."):
+        v.at = base
     if aggregate(t) or not immediate(v):
         return n
     letter: &strview = "l"
@@ -3953,6 +3963,8 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         letter = "w"
     out.* += letter + " "
     put_arg(out, v.at, 0)
+    if past > 0:
+        out.* += " + " + past
     out.* += ", "
     return 0
 
