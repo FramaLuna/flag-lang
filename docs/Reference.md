@@ -111,12 +111,12 @@ error: no test name matches parse or lex
 `flagc` invokes `cc` by default, or the command in the `CC` environment variable split on spaces (so `CC="zig cc"` works). Linking runs:
 
 ```text
-cc -o program program.s -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
+cc -o program program.s -L<each -L after -cc> -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
 ```
 
 Each `extern` library entry becomes `-lname`, `-framework X`, or a library file path (see [extern](#extern)). With `-shared`, `flagc` adds `-shared` before the `-cc` arguments, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
 
-Because every input file's directory (including directories loaded by quoted `use`) is passed with `-L`, you can place `libsomething.a` next to your code or package and link it via `extern "something"` or `extern "libsomething.a"`.
+Because every input file's directory (including directories loaded by quoted `use`) is passed with `-L`, you can place `libsomething.a` next to your code or package and link it via `extern "something"` or `extern "libsomething.a"`. A `-L` after `-cc` is searched first, so its library wins over one of the same name in the library folder.
 
 If the C compiler cannot be executed:
 
@@ -1251,7 +1251,7 @@ func main():
 ```
 
 - **Macro-like re-evaluation**: any non-literal expression is re-evaluated at each use site (`NOW = now()` calls `now()` every time). Untyped expressions without a fixed type (`PAIR = {3, 4}`, `SHOW = show`) adopt each use site's target type (`PAIR` becomes a tuple when standalone). Names inside a constant resolve in the constant's file-root scope, unaffected by local variables of the same name at the use site. An error triggered at a specific use adds a note: `constant PAIR is referenced here`.
-- **Static read-only storage**: a constant evaluating to a compile-time array or struct (`TABLE = [3, 1, 4, 1, 5]`, `ORIGIN = Point{0, 0}`, the same values permitted in [Constants with a type](#constants-with-a-type)) is placed once in static data and read from there rather than rebuilt at each use. Distinct target types or generic values (`PAIR` read as `Point` vs `Size`, or a constant using `@sizeof($T)` in two instances) each get their own static copy. Taking `ptr(TABLE)`, passing to `*T`, or slicing (`TABLE[1:3]`) operates on a copy; mutating an element fails with `cannot assign to an element of a temporary value; assigning would only mutate a copy`. Static data resides in `.data.rel.ro` on Linux, `.rdata` on Windows, and writable data on macOS (because Mach-O `__TEXT,__const` rejects loader relocations; pure text literal bytes have none and stay in `__TEXT,__const`).
+- **Static read-only storage**: a constant evaluating to a compile-time array or struct (`TABLE = [3, 1, 4, 1, 5]`, `ORIGIN = Point{0, 0}`, the same values permitted in [Constants with a type](#constants-with-a-type)) is placed once in static data and read from there rather than rebuilt at each use. Distinct target types or generic values (`PAIR` read as `Point` vs `Size`, or a constant using `@sizeof($T)` in two instances) each get their own static copy. Taking `ptr(TABLE)`, passing to `*T`, or slicing (`TABLE[1:3]`) operates on a copy; mutating an element fails with `cannot assign to an element of a temporary value; assigning would only mutate a copy`. Static data resides in `.data.rel.ro` on Linux, `.rdata` on Windows, and `__DATA,__const` on macOS (because Mach-O `__TEXT,__const` rejects loader relocations; pure text literal bytes have none and stay in `__TEXT,__const`). Whether a write to `__DATA,__const` stops the program depends on the linker.
 - **Array lengths and cycles**: any compile-time integer constant works as an array length: literals, compile-time `a if c else b` (`NAME_AT = 19 if @linux() else 8`), array `.len` (`COUNT = NAMES.len`), and typed integer constants. Cyclic definitions fail: `cyclic constant definition: A depends on itself`.
 - **Target typing through `ptr`**: array literal constants adopt element types from `array[T, N]`, `*array[T, N]`, or `&listview[T]` targets, so `words: &listview[u32] = ptr(SHADER)` stores `SHADER = [0x0723_0203, 3]` as `u32` words (out-of-range literals report at the constant with a note at the use). Function call arguments do not propagate element types (`f(ptr(SHADER))` passes `*array[i64, 2]`; bind to a typed variable first; see [Rough edges](#rough-edges)).
 
@@ -2086,7 +2086,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Paths, command-line arguments, and environment variables convert to/from UTF-16 at the Win32 boundary, so Flag always sees UTF-8 regardless of the system code page: a path with `ñ` or `字` works.
 - `run(command)` and `output(command, into)` invoke `cmd.exe`. `run(program)` and `start(program)` quote arguments directly without a shell, treating extensionless names as `.exe` and rejecting `.bat`/`.cmd` (which `cmd.exe` would re-parse). Child processes inherit only stdin/stdout/stderr and do not spawn a console window from GUI programs. With a `folder` argument, relative executables like `./tool` resolve relative to the caller's current directory on Windows (unlike Linux and macOS, which resolve relative to `folder`).
 - `net` uses Winsock; listening on a non-loopback address (other than `127.0.0.1`) may trigger a Windows Firewall prompt on first run.
-- Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, place your own `libraylib.a` in `lib/`.
+- Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, pass the folder of your own after `-cc`: `flagc game.flg -cc -Lfolder`.
 - The Windows console displays text using its active code page; run `chcp 65001` for UTF-8 output.
 
 ## Editor support
@@ -2094,7 +2094,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 These flags serve editors and language servers without producing a binary:
 
 - **`-check`**: checks code and prints diagnostics quickly.
-- **`-overlay file`**: substitutes unsaved buffer contents for existing files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. New files inside a quoted `use` directory appear once saved to disk.
+- **`-overlay file`**: substitutes unsaved buffer contents for the files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. A listed `.flg` file that is not on disk yet counts as part of the folder of a quoted `use` it sits in, when that folder exists.
 - **`-at file:line:column`**: queries symbol information at a 1-based line and byte column, printing a `definition` line with where the symbol is declared and `hover` lines with its type or declaration. Out-of-range positions exit with code `2`: `error: -at main.flg:1:18 is past end of line (last column is 13)`.
 
 ```sh
@@ -2158,9 +2158,11 @@ error: unexpected end of line; expected ':'
 
 `./test.sh` also type-checks every file in `examples/`.
 
+`./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it, which under WSL starts each `.exe` through interop. It skips the tests that start `flagc` itself, those whose error repeats the command line, and the `gdb` ones. From a WSL folder a few tests cannot pass: `cmd.exe` refuses a UNC folder, Unix tools like `printf` are missing, and the standard output and error arrive through separate pipes, out of order.
+
 #### Modifications to QBE (`vendor/qbe`)
 
-The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by purpose:
+The embedded QBE in `vendor/qbe` has **55 changes** over upstream, grouped by purpose:
 
 1. **Embedding, stack probes, and constants (6 changes)**:
    - `main` returns instead of calling `exit`, so `flagc` can call it in-process.
@@ -2189,7 +2191,7 @@ The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by pu
    - A copy out of a stack slot whose size is not a multiple of 8 (a struct without 8-byte fields) goes 4 bytes at a time: its fields were written 4 bytes or less at a time, and an 8-byte load that takes two of those stores waits until they reach the cache. That is how a `Mat3` of nine `f32`, which does not fit in 32 bytes, is copied; a copy from the heap, whose stores are long done, still goes 8 bytes at a time. The integration of bodies that copies them got 7% faster, and the poses of a skeleton 17%.
    - Division by a power of two the compiler knows uses shifts for signed numbers too, as QBE did only for unsigned ones: `x / 8` adds 7 to a negative `x` and shifts it right by 3, and `x % 8` keeps the low 3 bits of that sum and takes the 7 away again, so both round toward zero like the processor's division, also for the most negative number, and `x / 1` is `x`. Lengths are `i64`, so every `len / 2` was a division of tens of cycles: a loop of `i / 2 + i % 8 + i / 64` over 100 million `i64` took 7.8 G cycles and takes 0.58 G, with 14% more instructions. The compiler checks itself with 0.06% more instructions, in the same time.
    - On macOS a section name is written without quotes, `.section __TEXT,__const`, as Mach-O reads it: QBE wrote `section "name"` as `.section "name"`, which ELF and COFF accept and Mach-O does not. That is how the bytes of a text literal are read-only there too.
-5. **Fixes to QBE itself (11 changes)**:
+5. **Fixes to QBE itself (12 changes)**:
    - `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign.
    - Store-to-load forwarding kept the bits above a narrow store when a load that starts inside it took them shifted down. This and the previous one happen in more slots since small slots are cut.
    - GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion.
@@ -2201,6 +2203,7 @@ The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by pu
    - With more floats alive than registers, `arm64` copied a float from one stack slot to another through an integer register and stopped with `invalid class`; it goes through `v31` now.
    - `rv64` wrote a shift of a `w` by a constant of 32 or more as it came, which the assembler refuses; the constant is cut to 5 bits for `w` and 6 for `l`, as the processor cuts a count in a register.
    - `rv64` stopped with an assertion when a `jnz` read its condition from a stack slot more than 2 KiB below the frame pointer, a condition spilled in a big function; the address goes through `t6`, as for a load.
+   - `rv64` reads the address of a C symbol from the GOT with `auipc` and `ld`, the two instructions of `lga`, a name that clang 14 does not assemble.
 6. **Call chains and debugging (6 changes)**:
    - On `x86_64` every function keeps its frame pointer, as on `arm64` and `rv64`.
    - On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set (`[rbp]` is the caller's `rbp` and `[rbp+8]` the return address), so they are found from `rbp` wherever the body moves `rsp`.

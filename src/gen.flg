@@ -4581,14 +4581,14 @@ func text_data(text: &strview) -> Arg:
     put(comp.stored, view(key), made.n)
     return made
 
-# the section of the data that the program only reads, where a write stops it: on macOS __TEXT takes no address that the loader fixes, so what holds one stays in data
+# the section of the data that the program only reads, where a write stops it: on macOS __TEXT takes no address that the loader fixes, so what holds one goes in __DATA,__const
 func read_only(addresses: bool) -> &strview:
     if comp.system == "linux":
         return "section \".data.rel.ro\" "
     if comp.system == "windows":
         return "section \".rdata\" \"dr\" "
     if addresses:
-        return ""
+        return "section \"__DATA,__const\" "
     return "section \"__TEXT,__const\" "
 
 func text_bytes(into: *&str, text: &strview) -> i64:
