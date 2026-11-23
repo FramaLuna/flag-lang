@@ -292,7 +292,7 @@ An `Arena` carves allocations from large heap blocks and frees them all at once.
 - `reserve(a: *Arena, size: i64)`: ensures room for `size` bytes so subsequent allocations up to that size do not request a new heap block. Each allocation is rounded up to the arena's alignment.
 - `try_reserve(a: *Arena, size: i64) -> NoMemory?`: same as `reserve`, returning `NoMemory` if the OS is out of memory.
 
-`Arena` fields: `count` (blocks currently in use), `used` (bytes used in the active block), and `blocks` (all allocated blocks).
+`Arena` fields: `count` (blocks currently in use), `used` (bytes used in the active block), and `blocks` (all allocated blocks). Printing an `Arena` shows `count` and `used`, never the contents of its blocks.
 
 An `Arena` is not thread-safe without synchronization: give each thread its own arena, or guard shared access with a `Lock`.
 
