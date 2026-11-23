@@ -2091,7 +2091,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 These flags serve editors and language servers without producing a binary:
 
 - **`-check`**: checks code and prints diagnostics quickly.
-- **`-overlay file`**: substitutes unsaved buffer contents for existing files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. New files inside a quoted `use` directory appear once saved to disk.
+- **`-overlay file`**: substitutes unsaved buffer contents for the files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. A listed `.flg` file that is not on disk yet counts as part of the folder of a quoted `use` it sits in, when that folder exists.
 - **`-at file:line:column`**: queries symbol information at a 1-based line and byte column, printing a `definition` line with where the symbol is declared and `hover` lines with its type or declaration. Out-of-range positions exit with code `2`: `error: -at main.flg:1:18 is past end of line (last column is 13)`.
 
 ```sh

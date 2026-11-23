@@ -550,6 +550,10 @@ func main() -> i32:
             for name in names:
                 if ends_with(name, ".flg"):
                     append(found, join_path(u.path, name))
+        for e in texts:
+            unsaved := join_path(u.path, base_name(e.key))
+            if ends_with(unsaved, ".flg") and real_path(unsaved) == e.key:
+                append(found, unsaved)
         if found.len == 0:
             _ = fail("directory " + u.path + " contains no .flg files", u.at)
             return 1
@@ -813,9 +817,12 @@ func ran(command: &listview[&strview], why: &strview) -> bool:
 
 func real_path(path: &strview) -> &strview where not @windows():
     found := realpath(cstr(path), 0 as *u8)
-    if found as u64 == 0:
+    if found as u64 != 0:
+        return view(found)
+    folder := realpath(cstr(dir_of(path)), 0 as *u8)
+    if folder as u64 == 0:
         return path
-    return view(found)
+    return heap(join_path(view(folder), base_name(path)))
 
 func real_path(path: &strview) -> &strview where @windows():
     found := _wfullpath(0 as wstr, wstr(path), 0)
