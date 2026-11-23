@@ -1530,7 +1530,7 @@ name += " final"                         # grows in level too
 
 **Trust boundaries** (where safety is your responsibility):
 - `@trust` regions (see [@trust and @check](#trust-and-check)).
-- `trust` and `as`: `as` reads a union member without checking its tag, and casting a struct containing a pointer to an integer silently drops tracking.
+- `trust` and `as`: `as` reads a union member without checking its tag.
 - `*bytes` arithmetic: offset pointers remain tracked to their backing block for use-after-free, but bounds are not checked.
 - Mutating a narrowed variable through a pointer taken before `is`: what is then freed or read as the narrowed member may be the other one (see [Unions and narrowing](#unions-and-narrowing)).
 - C code: `extern` functions and `extern func` calls are assumed read-only, and C-spawned threads are unseen (synchronize `export func`s called from C threads).
@@ -1543,6 +1543,7 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 #### Heap, stack, and owner lifetime
 
 - **Leaks** (never freed, or leaked on some path): `memory leak: the memory allocated here for names is never freed`, `memory leak: the memory that make allocates here may never be freed`.
+- **Replaced context memory**: a call that overwrites a block a context surely holds, without freeing it: `memory leak: keep replaces cache.last while it still holds memory; free it first`.
 - **Double free**: `free cannot release p; it may already be freed (possible double free)`.
 - **Use after free or reallocation**: `use after free: first points to memory that may already be freed` (including after a list grows and moves, or after `with scratch():` exits).
 - **Freeing or growing non-heap memory**:
@@ -1586,7 +1587,7 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 #### Untrackable pointers and checker limits
 
 - **Untrackable pointers** (subsequently reported as leaks):
-  - Cast to integer: `-memory cannot track x after converting it to an integer; keep it in a pointer type`.
+  - Cast to integer, alone or inside a struct (`W{p} as u64`): `-memory cannot track x after converting it to an integer; keep it in a pointer type`. The distance between two places of one block (`ptr(p.b) as i64 - p as i64`) is a plain number and does not warn.
   - Stored into C-allocated memory (directly or via a helper): `-memory cannot track a pointer after it is stored into C-allocated memory`.
 - **Complexity limits**: a function exceeding **512 tracked blocks** (~500 user allocations, temporaries, and parameter targets) or failing to converge stops analysis for that function (still reporting findings so far):
   - `-memory stopped checking f because it has more than 512 blocks of memory to follow; checks for this function are incomplete`
@@ -1624,7 +1625,7 @@ note: it may be freed here
 
 Elements of a list, array, or map allocated at one source line are tracked collectively as **none**, **some**, or **all** freed.
 
-A **full walk** gives each iteration a distinct element: `for x in l`, `for i in 0..l.len` indexing `l[i]`, `for i in 0..n` over `array[T, n]`, and `for e in m`. Freeing the element on every path of the body without `break` transitions the elements to **all freed**, provided every pointer-bearing list/array indexed by `i` in the loop is the walked container (indexing `names[i]` under `0..other.len` or `for i, x in other` marks only *some* freed):
+A **full walk** gives each iteration a distinct element: `for x in l`, `for x in l[:]` or `l[0:l.len]` of a list or an array, `for i in 0..l.len` indexing `l[i]`, `for i in 0..n` over `array[T, n]`, and `for e in m`. Freeing the element on every path of the body without `break` transitions the elements to **all freed**, provided every pointer-bearing list/array indexed by `i` in the loop is the walked container (indexing `names[i]` under `0..other.len` or `for i, x in other` marks only *some* freed):
 
 ```flag
 for s in names:
@@ -1685,7 +1686,7 @@ Clean concurrent patterns: writes before `parallel` and reads after `wait`; per-
 
 ### Paths and unions
 
-`-memory` explores all control-flow paths (ignoring general boolean conditions, and branching over every function taken as a value of the callee's type for indirect calls), but **does** follow `is` checks (after `if node is *Node:` it knows the other path has no node to free) and tracks each union member's fields separately, even when two members store pointers at the same byte offset (`Shape` and `Bad` below), when the paths that made the union meet, or when only one member writes a field (`&str|null`):
+`-memory` explores all control-flow paths (ignoring general boolean conditions, and branching over every function taken as a value of the callee's type for indirect calls), but **does** follow `is` checks (after `if node is *Node:` it knows the other path has no node to free) and a test of what `realloc` returned against null (on that path the old block is still yours) and tracks each union member's fields separately, even when two members store pointers at the same byte offset (`Shape` and `Bad` below), when the paths that made the union meet, or when only one member writes a field (`&str|null`):
 
 ```flag
 type Shape:
@@ -1716,8 +1717,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 #### Control flow, pointers, and aliasing
 
 - Freeing in `if c:` and again in `if not c:` (warns both double free and possible leak).
-- Freeing one element at a constant index (`free(names[0])`) and reading another through the list.
-- Walking a slice (`for s in names[0:names.len]`) to free elements (treated as *some* freed, not *all*).
+- Freeing one element at a constant index (`free(names[0])`) and reading or freeing another through the list, also when the list holds a union and each element is narrowed first.
 - Linked lists and trees built in loops or recursively (all allocations from one line collapse into two blocks: newest vs rest, so freeing a node via a pointer that may be either is not proven to free all).
 - Recursive tree `release` walking children first, when the nodes own memory (`release may free or reallocate memory that it also reads`; a tree of plain `*Tree?` nodes gives no warning).
 - Pointers that may refer to one of several struct fields when storing or freeing through them.
@@ -1726,8 +1726,6 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 
 #### Collections, unions, and structs
 
-- Unions copied through a generic (such as `append` into a list): inside the generic the value is opaque `$T`, merging member states so `free(t)` after `if t is &str:` can warn non-heap.
-- A function allocating on one branch of a union return (`&strview|&str`) and returning a view on another (caller warns possible leak).
 - A function freeing partial allocations on an error return (`-> &list[&str]|Bad` or `-> *User|Bad`), making the caller think the success path may also be freed.
 - A function initializing a list/map element (`items[k] = heap([])`) and then growing it (`append(items.*[k], v)`): caller does not see the element initialization and warns it may lack memory.
 - Joining a `pop`/`remove` result with a fresh allocation (`a := remove(l, 0) if l.len > 0 else heap("")`), or conditionally appending a variable and later reassigning it (freeing it counts as freeing the list's elements).
@@ -1735,6 +1733,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 - Splitting allocations from one loop line across two lists (`append(good, s)` vs `append(bad, s)`): both lists appear to alias the same block, causing double-free warnings (`free cannot release n; it may already be freed (possible double free)`), view invalidations, and cross-list race warnings.
 - Rebuilding a list in a loop and reading `v` after `append(next, v)` (`use after free: v points to memory that may already be freed`).
 - Emptying a list of lists with `pop`/`remove` (inner elements warn double free and leak).
+- `append` to a zeroed list (from `calloc`) whose capacity was reserved by hand: the checker does not see the capacity and warns `this call cannot grow data; it may not have allocated memory to grow`.
 - Returning owners nested two levels deep built in an inner loop (list of rows or map of lists: `memory leak: the memory that heap allocates here may never be freed` with note at `return`).
 - Calling `args()` in two places (checker thinks the list may reallocate between calls, invalidating earlier views).
 - Assigning to keys while walking a map (`scores[e.key] = e.value * 2`, which could rehash in general).
@@ -1754,7 +1753,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 
 - Temporaries passed to a thread awaited after `with scratch():` (even if read earlier), temporaries sent via `send` while any thread runs, or stack pointers sent on a non-local `Channel` (even if receivers exit before the function returns).
 - Non-atomic data published through an `atomic` flag (`set(ready, 1)` / `get(ready) == 1`) or ordered indirectly by a `Channel` message without being sent through the channel.
-- Dynamic lock selection (`with lock(locks[i])` with runtime `i`), or memory written under one lock and read under a different lock with external ordering.
+- A lock picked at a runtime index in the function that uses it (`with lock(locks[i])`; a function that takes `ptr(locks[i])` and locks its parameter is clean), or memory written under one lock and read under a different lock with external ordering.
 - Threads stored in a list and awaited via a helper function or `pop` loop (treated as potentially still running).
 - Threads given disjoint slices of one list (`fill(values[0:4], 1)` and `fill(values[4:8], 2)`), or updating distinct runtime indexes received from a `Channel` (`results[j]`): only a walk proves per-thread element disjointness.
 - Threads launched into a list by a helper function returning or filling the list, where each thread returns an allocation freed on `wait` (`memory leak: the memory that start allocates here may never be freed`; clean when launched in the awaiting function).
@@ -1767,7 +1766,8 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 #### C interop, function values, and indirection depth
 
 - Memory passed to a C function or `extern func` that retains or frees it (assumed read-only, so reported as leaked).
-- Calling through a function value `g(p)` when *any* function of that type taken as a value frees its argument.
+- Walking a value by reflection, recursing through `*bytes` at offsets read from a table: two offsets may be the same place, so each call seems to free what the last one freed.
+- Calling a function value that came through a parameter, a field or another variable (`g(p)`) when *any* function of that type taken as a value frees its argument. A local assigned only named functions calls just those.
 - Modifying or dereferencing deeper than **3 pointer indirections** from a function's parameters (`free(p.a.b.c.d.e)`, `append(p.a.b.c.names, x)`): past 3 hops a block represents everything reachable from it, so frees/reads taint all deeper memory, and mutations/allocations stop tracking at the call (`-memory stopped checking grow because it modifies memory more than three pointer indirections from its parameters; this call is not checked`). `core`'s internal contexts (`print`, files) are exempt.
 
 ### What it misses
@@ -1776,13 +1776,12 @@ These real bugs currently produce **no** `-memory` warning:
 
 #### Collections and loops
 
-- Two elements of a list aliasing one block from a loop allocation via a carried variable (double-freed in a walk or raced on by per-element threads; single-line non-loop allocations and same-round duplicates *are* caught).
 - Copying one element onto another slot in the same list (`l[0] = l[1]`): two elements then hold one block, and a walk that frees them frees it twice. The checker takes it as the first half of a swap (`t := l[0]`, `l[0] = l[1]`, `l[1] = t`), which is right.
 - A walk freeing elements from a loop allocation when some rounds never stored the block (`if keep: append(names, s)`), an element was copied to another list (`append(other, names[0])`), or only some elements reach the block (`free(b.value)` in `for b in boxes`): the walk marks the whole allocation line freed, hiding leaks of unstored blocks.
-- Freeing an element at an unknown runtime index outside a walk (e.g., a map value) marks all elements freed, hiding subsequent UAF and double frees.
+- Freeing an element at an unknown runtime index outside a walk (e.g., a map value) marks all elements freed: reading one at a known index warns, but another read or free at an unknown index does not.
 - Keeping a pointer into a list's buffer or an arena inside a list or map at a runtime index: stays marked live after list growth or arena `clear`/`free`.
 - Moving only *some* elements to another list in a walk (`if` or `break`) before freeing the original list leaks the unmoved elements.
-- Keeping `p = ptr(x)` of a loop element across iterations.
+- Keeping `ptr(x)` of a loop element across iterations in a field or a list instead of a variable.
 - Overwriting (`l[i] = v`, `m[k] = v`), `clear`ing, or dropping `pop`/`remove`d owner elements without freeing them when a later walk frees the container's elements.
 - Rearranging a list of structs with multiple owners via `sort`, `insert`, view `append`, `heap(l[:])`, or `l = items` merges fields across elements (freeing one owner hides leaks of the others and warns double-free if you free them too).
 - Freeing a list after freeing only *some* elements via `pop`/`remove` (hides leaks of remaining elements).
@@ -1792,7 +1791,7 @@ These real bugs currently produce **no** `-memory` warning:
 #### Trees, contexts, channels, stack, and arenas
 
 - Leaking deeper levels of a recursively built tree when only the first level is freed (2-block summary).
-- Overwriting a heap block stored in a context without freeing it across repeated calls to a function, or leaking elements a helper appends to a context list (values stored in contexts are not considered leaked).
+- Overwriting a heap block stored in a context by a call in a loop or on only some paths, or leaking elements a helper appends to a context list (values stored in contexts are not considered leaked). Two calls in a row do warn.
 - Anything sent through a `Channel`: `receive` and `for v in c` are untracked, missing leaks, double frees, UAF, and races through sent pointers.
 - Freeing an earlier iteration's block through a carried variable (`free(prev); prev = j`) while that iteration's thread may still use it: the `free` gets no warning, and the last iteration's block may be reported as never freed.
 - A pointer conditionally pointing to one of two local variables (`if`/`else` or running best) where one variable's block ended (only single-variable block pointers are tracked precisely).

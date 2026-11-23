@@ -1569,6 +1569,7 @@ func iterate(n: i64) -> Fail?:
         if start.lit and not start.neg and end.lit and not end.neg:
             limit = end.n + u64(inclusive)
     else:
+        comp.sliced = 0
         walked = try value(subject, VOID)
         pointee := comp.types[walked.type].elem
         if comp.types[walked.type].kind == Ptr and (comp.types[pointee].kind == Array or sequence(pointee) or textual(pointee)):
@@ -1576,7 +1577,7 @@ func iterate(n: i64) -> Fail?:
         seq := walked.type
         addr = walked.at
         t = field_of(try fat_type("strview", VOID, tok.at), "len").type # a for counts in the type of a length
-        every = comp.types[seq].kind == Array or owner(seq)
+        every = comp.types[seq].kind == Array or owner(seq) or comp.sliced == subject
         if comp.types[seq].kind == Array:
             elem = comp.types[seq].elem
             end = literal(false, u64(comp.types[seq].count))
@@ -2410,6 +2411,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
         if from.size != dest.size:
             return fail("cannot reinterpret " + from.name + " as " + dest.name + "; types have different byte sizes", tok.at)
         if aggregate(v.type):
+            if (integer(to) or dest.kind == Float) and holds_pointer(v.type):
+                add(Ins{op = "counted", a = v.at, ghost = true})
             return Value{type = to, at = v.at, mem = true, place = v.place, lit = v.lit and aggregate(to)}
         if aggregate(to):
             slot := alloc(to)
@@ -3047,6 +3050,9 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         else:
             append(args, base)
         if kids(n) == 3:
+            high := kid(n, 2)
+            if (array or owner(t)) and (comp.nodes[kid(n, 1)].kind == Block or index.lit and index.n == 0 and not index.neg) and (comp.nodes[high].kind == Block or comp.nodes[high].kind == Field and text(high) == "len" and code_of(high + 1) == code_of(kid(n, 0))):
+                comp.sliced = n
             ends := [index, none]
             if comp.nodes[kid(n, 2)].kind != Block:
                 ends[1] = try value(kid(n, 2), VOID)
@@ -4535,6 +4541,7 @@ func alloc(t: i64, variable: bool = false) -> Arg:
             if comp.slots[s].a.n == size and comp.slots[s].op == name:
                 remove(comp.spare, i)
                 append(comp.held, s)
+                add(Ins{op = "reused", a = Arg{Temp, i64(comp.slots[s].to)}, ghost = true})
                 return Arg{Temp, i64(comp.slots[s].to)}
         append(comp.held, comp.slots.len)
     slot := temp()

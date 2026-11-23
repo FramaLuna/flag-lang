@@ -1,0 +1,10 @@
+func bump(a: *Lock[i64], b: *Lock[i64]):
+    with lock(a.*):
+        b.value += 1
+func main():
+    locks: array[Lock[i64], 3]
+    i := @argc() - 1
+    x := parallel bump(ptr(locks[i]), ptr(locks[2]))
+    y := parallel bump(ptr(locks[i + 1]), ptr(locks[2]))
+    wait(x)
+    wait(y)
