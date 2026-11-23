@@ -138,11 +138,12 @@ func make_dir(path: &strview) -> FsError?:
                     above = FsError{code, "make", path[:i]}
     if is_dir(path):
         return null
-    failed := false
+    code: i32 = 0
     with scratch():
-        failed = make_one(path) != 0
-    if failed:
-        return above ifnull FsError{errno(), "make", path}
+        if make_one(path) != 0:
+            code = errno()
+    if code != 0 and not is_dir(path): # another program may have just made it
+        return above ifnull FsError{code, "make", path}
     return null
 
 func list_dir(path: &strview) -> &listview[&strview]|FsError where not @windows():
