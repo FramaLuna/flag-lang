@@ -350,6 +350,7 @@ struct Tmp {
 	uint bid; /* id of a defining block */
 	uint cost;
 	int slot; /* -1 for unset */
+	Ref pad;  /* the slot a call that returns an aggregate writes */
 	short cls;
 	struct {
 		int r;  /* register or -1 */
@@ -571,6 +572,7 @@ void simplcfg(Fn *);
 
 /* mem.c */
 void promote(Fn *);
+void callpads(Fn *);
 void coalesce(Fn *);
 void chop(Fn *);
 

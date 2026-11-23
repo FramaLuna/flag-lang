@@ -6,6 +6,7 @@ KNOWN = "defaults must be compile-time constants (literals, constants, or empty 
 ENTRY = "'main' is the program entry point and cannot be called or used as a value"
 VIEW = "&strview is read-only; mutate the owning &str instead"
 STACK = "cannot return a pointer to stack memory; it becomes invalid when this function returns"
+STRAIGHT = 32 # cases tested in order: one mispredicted jump, where each halving costs half of one
 
 func gen_program(check: bool, testing: bool) -> Fail?:
     comp.entry = NONE # a type checks its defaults when it is made, and they can call functions before main is found
@@ -751,7 +752,7 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
 
-# split by kind: QBE gives each call that returns a struct its own stack slot
+# split by kind: each level of nesting takes a whole frame of gen, and 500 levels fit the stack
 func gen(n: i64, want: i64) -> Value|Fail:
     node := comp.nodes[n]
     tok := comp.tokens[node.tok]
@@ -1814,6 +1815,9 @@ func cases(n: i64) -> Fail?:
     ends: &list[Local] = heap([])
     lives := 0
     truths := 0
+    gathering := not union and not subject.lit and integer(subject.type) and kids(n) > STRAIGHT + 1
+    targets: &map[u64, u32] = heap({})
+    defer free(targets)
     c := node_end(n + 1)
     while c < node_end(n):
         at := comp.tokens[comp.nodes[c].tok].at
@@ -1870,6 +1874,8 @@ func cases(n: i64) -> Fail?:
                 last = not peek(",")
                 if last and not peek(":"):
                     return expect(":")
+                test := comp.body.len
+                comp.live = comp.live or gathering
                 eq: Value
                 if comp.nodes[l].kind == Binary and (text(l) == ".." or text(l) == "..="):
                     below: &strview = "<"
@@ -1882,9 +1888,25 @@ func cases(n: i64) -> Fail?:
                     label := try value(l, subject.type)
                     if label.lit and subject.type == BOOL:
                         truths = truths or i64(1) << label.n
+                    if gathering and label.lit and integer(label.type):
+                        key := u64((try convert(label, subject.type, Arg{}, first.at)).at.n)
+                        if cls(subject.type) == W:
+                            key = key and 0xffff_ffff
+                        if not contains(targets, key):
+                            put(targets, key, l_body)
+                        comp.live = false
+                        comp.nodes.len = l
+                        comp.pos += 1
+                        continue
                     eq = try binary("==", subject, label, first.at)
                 if eq.type != BOOL:
                     return fail("'switch' compares case labels using '==', which returns " + comp.types[eq.type].name + " instead of bool", first.at)
+                if gathering:
+                    gathering = false
+                    l_rest := label()
+                    insert(comp.body, test, Ins{op = "@", a = int_arg(i64(l_rest)), pos = comp.at})
+                    search(subject.at, cls(subject.type), targets, l_rest, bodies, comp.body.len)
+                    comp.live = true
                 l_more := l_next
                 if not last:
                     l_more = label()
@@ -1905,55 +1927,23 @@ func cases(n: i64) -> Fail?:
         if try keep(before, before, ends):
             lives += 1
             jump(l_end)
-        if not union:
+        if not union and not gathering:
             open_block(l_next)
         c = node_end(c)
     if union and fallback == 0 and left.len > 0:
         return fail("non-exhaustive 'switch': unhandled " + comp.types[try union_of(left, Union, tok.at)].name + " and no default 'case:'", tok.at)
     regive(given, before, true)
+    if gathering:
+        l_rest := label()
+        search(subject.at, cls(subject.type), targets, l_fallback if fallback != 0 else l_rest, bodies, comp.body.len)
+        open_block(l_rest)
     if union:
         middle := comp.body.len
         comp.at = tok.at
-        named: &list[u64] = heap([]) # the tag of each member a case names, with its place in all below it
-        defer free(named)
         for k in 0..all.len:
             if owner[k] != 0:
-                append(named, u64(tag_of(all[k]).n) << 32 or u64(k))
-        sort(named)
-        current := tag(subject)
-        ranges: &list[i64] = heap([])
-        defer free(ranges)
-        heads: &list[u32] = heap([])
-        defer free(heads)
-        low := 0
-        high := named.len
-        while true:
-            if high - low > 8: # a short run is tested in order: one mispredicted jump, where each halving costs half of one
-                half := (low + high) / 2
-                l_low := label()
-                l_high := label()
-                branch(op(W, "cultw", current, int_arg(i64(named[half] >> 32))), l_low, l_high)
-                append(ranges, half)
-                append(ranges, high)
-                append(heads, l_high)
-                high = half
-                open_block(l_low)
-                continue
-            for x in named[low:high]:
-                k := i64(x and 0xffff_ffff)
-                l_other := label()
-                branch(op(W, "ceqw", current, int_arg(i64(x >> 32))), owner[k], l_other)
-                open_block(l_other)
-            if fallback != 0:
-                jump(l_fallback)
-            else:
-                terminate("hlt", Arg{})
-            if heads.len == 0:
-                break
-            open_block(trust pop(heads))
-            high = trust pop(ranges)
-            low = trust pop(ranges)
-        postpone(bodies, middle) # the search goes before the bodies
+                put(targets, u64(tag_of(all[k]).n), owner[k])
+        search(tag(subject), W, targets, l_fallback, bodies, middle)
     elif fallback != 0 or truths == 3:
         terminate("hlt", Arg{})
     else:
@@ -1963,6 +1953,49 @@ func cases(n: i64) -> Fail?:
         open_block(l_end)
         try join(ends, lives, tok.at)
     return null
+
+# jumps to the target of the key in current, by halves over the keys in order, or to miss, a hlt without one, and puts this search before the code from first to middle
+func search(current: Arg, class: u32, targets: &map[u64, u32], miss: u32, first: i64, middle: i64):
+    keys: &list[u64] = heap([])
+    defer free(keys)
+    for pair in targets:
+        append(keys, pair.key)
+    sort(keys)
+    below: &strview = "cultw" if class == W else "cultl"
+    same: &strview = "ceqw" if class == W else "ceql"
+    ranges: &list[i64] = heap([])
+    defer free(ranges)
+    heads: &list[u32] = heap([])
+    defer free(heads)
+    low := 0
+    high := keys.len
+    comp.live = true
+    while true:
+        if high - low > STRAIGHT:
+            half := (low + high) / 2
+            l_low := label()
+            l_high := label()
+            branch(op(W, below, current, int_arg(i64(keys[half]))), l_low, l_high)
+            append(ranges, half)
+            append(ranges, high)
+            append(heads, l_high)
+            high = half
+            open_block(l_low)
+            continue
+        for key in keys[low:high]:
+            l_other := label()
+            branch(op(W, same, current, int_arg(i64(key))), trust targets[key], l_other)
+            open_block(l_other)
+        if miss != 0:
+            jump(miss)
+        else:
+            terminate("hlt", Arg{})
+        if heads.len == 0:
+            break
+        open_block(trust pop(heads))
+        high = trust pop(ranges)
+        low = trust pop(ranges)
+    postpone(first, middle)
 
 func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
     node := comp.nodes[n]

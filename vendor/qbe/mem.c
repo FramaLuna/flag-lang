@@ -211,6 +211,68 @@ maxrpo(Blk *hd, Blk *b)
 		hd->loop = b->id;
 }
 
+/* the slot of each call that returns an aggregate,
+ * made before coalesce so that calls can share them
+ */
+void
+callpads(Fn *fn)
+{
+	Blk *b;
+	Ins *i, *pads;
+	Use *u;
+	Typ *ty;
+	Ref to, pad;
+	uint n, nuse;
+	int np;
+
+	pads = vnew(0, sizeof pads[0], PFn);
+	np = 0;
+	for (b=fn->start; b; b=b->link)
+		for (i=b->ins; i<&b->ins[b->nins]; i++) {
+			to = i->to;
+			if (i->op != Ocall || req(i->arg[1], R) || req(to, R) || !fn->tmp[to.val].nuse)
+				continue;
+			ty = &typ[i->arg[1].val];
+			pad = newtmp("pad", Kl, fn);
+			vgrow(&pads, ++np);
+			pads[np-1] = (Ins){Oalloc + (ty->align > 3 ? 2 : 1), Kl, pad, {getcon((ty->size + 7) & ~7, fn)}};
+			fn->tmp[to.val].pad = pad;
+			nuse = fn->tmp[to.val].nuse;
+			for (u=fn->tmp[to.val].use; u<&fn->tmp[to.val].use[nuse]; u++)
+				switch (u->type) {
+				case UIns:
+					for (n=0; n<2; n++)
+						if (req(u->u.ins->arg[n], to))
+							u->u.ins->arg[n] = pad;
+					break;
+				case UPhi:
+					for (n=0; n<u->u.phi->narg; n++)
+						if (req(u->u.phi->arg[n], to))
+							u->u.phi->arg[n] = pad;
+					break;
+				case UJmp:
+					fn->rpo[u->bid]->jmp.arg = pad;
+					break;
+				default:
+					die("unreachable");
+				}
+		}
+	if (!np)
+		return;
+	b = fn->start;
+	for (i=b->ins; i<&b->ins[b->nins] && ispar(i->op); i++)
+		;
+	n = i - b->ins;
+	curi = &insb[NIns];
+	for (i=&b->ins[b->nins]; i!=&b->ins[n];)
+		emiti(*--i);
+	while (np)
+		emiti(pads[--np]);
+	while (i != b->ins)
+		emiti(*--i);
+	idup(b, curi, &insb[NIns]-curi);
+}
+
 void
 coalesce(Fn *fn)
 {
@@ -220,7 +282,7 @@ coalesce(Fn *fn)
 	Ins *i, **bl;
 	Use *u;
 	Tmp *t, *ts;
-	Ref *arg;
+	Ref *arg, pad;
 	bits x;
 	int64_t off0, off1;
 	int n, m, ip, sz, nsl, nbl, *stk;
@@ -276,9 +338,12 @@ coalesce(Fn *fn)
 		}
 		if (b->jmp.type == Jretc)
 			load(b->jmp.arg, -1, --ip, fn, sl);
+		pad = R;
 		for (i=&b->ins[b->nins]; i!=b->ins;) {
 			--i;
 			arg = i->arg;
+			if (i->op == Ocall)
+				pad = fn->tmp[i->to.val].pad;
 			if (i->op == Oargc) {
 				load(arg[1], -1, --ip, fn, sl);
 			}
@@ -299,6 +364,16 @@ coalesce(Fn *fn)
 				load(arg[0], x, ip, fn, sl);
 				vgrow(&bl, ++nbl);
 				bl[nbl-1] = i;
+			}
+			/* a call writes all of its pad, below
+			 * the arguments it must not share it with */
+			if (!req(pad, R) && (i == b->ins || !isarg((i-1)->op))) {
+				--ip;
+				if (slot(&s, &off0, pad, fn, sl) && s->l) {
+					radd(&s->r, ip);
+					s->l = 0;
+				}
+				pad = R;
 			}
 		}
 		for (s=sl; s<&sl[nsl]; s++)
@@ -335,6 +410,7 @@ coalesce(Fn *fn)
 			vgrow(&stk, ++n);
 			stk[n-1] = s->t;
 			freed += s->sz;
+			fn->tmp[s->t].visit = -2;
 		} else
 			*s0++ = *s;
 	}
@@ -450,6 +526,15 @@ coalesce(Fn *fn)
 		}
 	}
 
+	for (t=&fn->tmp[Tmp0]; t<&fn->tmp[fn->ntmp]; t++)
+		if (!req(t->pad, R)) {
+			m = fn->tmp[t->pad.val].visit;
+			if (m == -2)
+				t->pad = R;
+			else if (m >= 0)
+				t->pad = TMP(sl[m].s->t);
+		}
+
 	/* fix newly overlapping blits */
 	for (n=0; n<nbl; n++) {
 		i = bl[n];
@@ -502,7 +587,7 @@ coalesce(Fn *fn)
  * turn the pieces into temporaries
  */
 
-enum { ChopMax = 32 };
+enum { ChopMax = 48 };
 
 typedef struct Chop Chop;
 typedef struct Blit Blit;
@@ -510,6 +595,7 @@ typedef struct Blit Blit;
 struct Chop {
 	int sz;
 	int bad;
+	int ret;   /* returned, so its pieces go back to it before the ret */
 	char *cut; /* a piece starts or ends here, 2 marks a v piece, 4 a cut a v piece can hold */
 	char *rd;
 	char *wr;
@@ -540,6 +626,8 @@ reach(int t, int c, int64_t off, Fn *fn)
 	chopof[t] = c + 1;
 	offof[t] = off;
 	for (u=fn->tmp[t].use; u<&fn->tmp[t].use[fn->tmp[t].nuse]; u++) {
+		if (u->type == UJmp && fn->rpo[u->bid]->jmp.type == Jretc && isalloc(fn->tmp[t].def->op))
+			continue;
 		if (u->type != UIns)
 			return 0;
 		i = u->u.ins;
@@ -783,6 +871,7 @@ chop(Fn *fn)
 		c->to = vnew(s, sizeof c->to[0], PFn);
 		c->blits = vnew(0, sizeof c->blits[0], PFn);
 		c->nblit = 0;
+		c->ret = 0;
 		memset(c->cut, 0, s + 1);
 		memset(c->rd, 0, s);
 		memset(c->wr, 0, s);
@@ -794,7 +883,14 @@ chop(Fn *fn)
 		return;
 	blits = vnew(0, sizeof blits[0], PFn);
 	nblit = 0;
-	for (b=fn->start; b; b=b->link)
+	for (b=fn->start; b; b=b->link) {
+		if (b->jmp.type == Jretc && (k = chopat(b->jmp.arg, &o)) >= 0) {
+			c = &chops[k];
+			c->ret = 1;
+			c->bad |= typ[fn->retty].size != c->sz;
+			c->cut[0] |= 1;
+			c->cut[c->sz] |= 1;
+		}
 		for (i=b->ins; i<&b->ins[b->nins]; i++) {
 			n = chopuse(i, r, sz, wr);
 			for (m=0; m<n; m++) {
@@ -821,6 +917,7 @@ chop(Fn *fn)
 				blits[nblit-1] = (Blit){k, m, {off[0], off[1]}, sz[0]};
 			}
 		}
+	}
 	for (n=0; n<nblit; n++)
 		for (m=0; m<2; m++) {
 			c = &chops[m ? blits[n].m : blits[n].k];
@@ -895,6 +992,7 @@ chop(Fn *fn)
 		if (!c->bad)
 			for (p=0; p<c->sz; p++)
 				if (c->cut[p] && (c->rd[p] || c->wr[p])) {
+					c->rd[p] |= c->ret;
 					c->to[p] = newtmp("chop", Kl, fn);
 					good = 1;
 				}
@@ -904,6 +1002,20 @@ chop(Fn *fn)
 		for (first=b->ins; first<&b->ins[b->nins] && ispar(first->op); first++)
 			;
 		curi = &insb[NIns];
+		if (b->jmp.type == Jretc && (k = chopat(b->jmp.arg, &o)) >= 0) {
+			c = &chops[k];
+			for (p=0; p<c->sz; p++)
+				if (c->cut[p] && c->rd[p]) {
+					s = chopnext(c, p) - p;
+					cl = piececls(c, p);
+					v = newtmp("chop", cl, fn);
+					dst = p ? newtmp("chop", Kl, fn) : b->jmp.arg;
+					emit(chopst(cl, s), 0, R, v, dst);
+					if (p)
+						emit(Oadd, Kl, dst, b->jmp.arg, getcon(p, fn));
+					emit(s == 1 ? Oloadub : s == 2 ? Oloaduh : Oload, cl, v, c->to[p], R);
+				}
+		}
 		for (i=&b->ins[b->nins]; i!=first;) {
 			--i;
 			if (i->op == Oblit1) {
@@ -936,8 +1048,11 @@ chop(Fn *fn)
 				}
 				continue;
 			}
-			if ((isalloc(i->op) || i->op == Oadd) && chopat(i->to, &o) >= 0)
+			if ((isalloc(i->op) || i->op == Oadd) && (k = chopat(i->to, &o)) >= 0) {
+				if (isalloc(i->op) && chops[k].ret)
+					emiti(*i);
 				continue;
+			}
 			if (isload(i->op) && (k = chopat(i->arg[0], &o)) >= 0) {
 				c = &chops[k];
 				s = loadsz(i);
