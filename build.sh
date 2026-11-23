@@ -133,7 +133,6 @@ if [ "${1:-}" = cross ]; then
             case " $flags " in
             *" -check "*|*" -o "*|*" -target "*|*" -overlay "*|*" -timeout "*|*" -at "*|*" tests/"*) continue ;;
             esac
-            [ "$system" = macos ] && flags=$(echo " $flags " | sed 's/ -debug / /') # dsymutil reads a linked program, and the C compiler here is true
             CC=true build/flagc $files -target "$target" -o "$out/$name" -keep $flags > "$out/$name.log" 2>&1 || { echo "cross: $source does not compile for $target"; cat "$out/$name.log"; exit 1; }
             clang --target="${pair#*=}" -c "$out/$name.s" -o "$out/$name.o" || { echo "cross: $source does not assemble for $target"; exit 1; }
         done
