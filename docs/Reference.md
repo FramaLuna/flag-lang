@@ -1540,6 +1540,7 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 #### Heap, stack, and owner lifetime
 
 - **Leaks** (never freed, or leaked on some path): `memory leak: the memory allocated here for names is never freed`, `memory leak: the memory that make allocates here may never be freed`.
+- **Replaced context memory**: a call that overwrites a block a context surely holds, without freeing it: `memory leak: keep replaces cache.last while it still holds memory; free it first`.
 - **Double free**: `free cannot release p; it may already be freed (possible double free)`.
 - **Use after free or reallocation**: `use after free: first points to memory that may already be freed` (including after a list grows and moves, or after `with scratch():` exits).
 - **Freeing or growing non-heap memory**:
@@ -1713,7 +1714,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 #### Control flow, pointers, and aliasing
 
 - Freeing in `if c:` and again in `if not c:` (warns both double free and possible leak).
-- Freeing one element at a constant index (`free(names[0])`) and reading another through the list.
+- Freeing one element at a constant index (`free(names[0])`) and reading or freeing another through the list, also when the list holds a union and each element is narrowed first.
 - Linked lists and trees built in loops or recursively (all allocations from one line collapse into two blocks: newest vs rest, so freeing a node via a pointer that may be either is not proven to free all).
 - Recursive tree `release` walking children first, when the nodes own memory (`release may free or reallocate memory that it also reads`; a tree of plain `*Tree?` nodes gives no warning).
 - Pointers that may refer to one of several struct fields when storing or freeing through them.
@@ -1722,7 +1723,6 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 
 #### Collections, unions, and structs
 
-- Unions copied through a generic (such as `append` into a list): inside the generic the value is opaque `$T`, merging member states so `free(t)` after `if t is &str:` can warn non-heap.
 - A function freeing partial allocations on an error return (`-> &list[&str]|Bad` or `-> *User|Bad`), making the caller think the success path may also be freed.
 - A function initializing a list/map element (`items[k] = heap([])`) and then growing it (`append(items.*[k], v)`): caller does not see the element initialization and warns it may lack memory.
 - Joining a `pop`/`remove` result with a fresh allocation (`a := remove(l, 0) if l.len > 0 else heap("")`), or conditionally appending a variable and later reassigning it (freeing it counts as freeing the list's elements).
@@ -1786,7 +1786,7 @@ These real bugs currently produce **no** `-memory` warning:
 #### Trees, contexts, channels, stack, and arenas
 
 - Leaking deeper levels of a recursively built tree when only the first level is freed (2-block summary).
-- Overwriting a heap block stored in a context without freeing it across repeated calls to a function, or leaking elements a helper appends to a context list (values stored in contexts are not considered leaked).
+- Overwriting a heap block stored in a context by a call in a loop or on only some paths, or leaking elements a helper appends to a context list (values stored in contexts are not considered leaked). Two calls in a row do warn.
 - Anything sent through a `Channel`: `receive` and `for v in c` are untracked, missing leaks, double frees, UAF, and races through sent pointers.
 - Freeing an earlier iteration's block through a carried variable (`free(prev); prev = j`) while that iteration's thread may still use it: the `free` gets no warning, and the last iteration's block may be reported as never freed.
 - A pointer conditionally pointing to one of two local variables (`if`/`else` or running best) where one variable's block ended (only single-variable block pointers are tracked precisely).

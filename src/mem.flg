@@ -1539,6 +1539,9 @@ func visit(block: i64):
                 if o.blob:
                     wipe(SLOTS + i64(o.slot))
                 mem.writes.len = 0
+                kept := marks.killed or mem.fns[g].ret.live or mem.fns[g].ret.dead # what it freed, gave back or left somewhere
+                for a in sum.aims:
+                    kept = kept or a.live or a.dead
                 for k in 0..sum.ids.len:
                     c: Cell
                     if g == mem.f:
@@ -1546,6 +1549,24 @@ func visit(block: i64):
                     else:
                         c = mem.fns[g].cells[sum.ids[k]]
                     x := i64(c.owner)
+                    if mem.speak and not o.ghost and x < SLOTS and c.off != ANY and c.stride == 0 and c.member == 0 and obj_of(g, x).kind == Shared and not obj_of(g, x).core:
+                        lost := true
+                        for y in kept and outer:
+                            lost = lost and not (obj_of(g, y).parent == x and obj_of(g, y).off == c.off and obj_of(g, y).stride == 0)
+                        place := sole(binding(x))
+                        w := mem.fn.heads[place] if lost and place != NONE else 0
+                        while w != 0:
+                            d := mem.fn.cells[w - 1]
+                            if d.off == c.off and d.stride == 0 and d.member == 0 and mem.ticked[w - 1] == mem.tick and single(cell_value(w - 1).live): # surely this block, so not a first call
+                                for b in (cell_value(w - 1).live - cell_value(w - 1).dead) and mem.fn.heaps and mem.marks.live:
+                                    elsewhere := (mem.fn.keys[b] and 0xff) != GLOBAL
+                                    for id in mem.refs[b]:
+                                        elsewhere = elsewhere or i64(id) != i64(w) - 1 and mem.ticked[id] == mem.tick and cell_value(id).live[b]
+                                    if not elsewhere:
+                                        text: &str = heap("memory leak: ")
+                                        text += (mem.who if mem.who.len > 0 else "this call") + " replaces " + spelled(place, c.off, 8).name + " while it still holds memory; free it first"
+                                        warn(view(text), o.pos, "", 0, mem.fns[g].strict)
+                            w = d.next
                     if x == RETURNED and o.blob:
                         append(mem.writes, Write{taken(translate(sum.aims[k]), g), cell_at(SLOTS + i64(o.slot), c.off, c.stride, c.count, c.member), true})
                     ob := obj_of(g, x)
