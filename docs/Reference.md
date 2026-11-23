@@ -165,7 +165,7 @@ error: cannot run cc: No such file or directory; flagc links using a C compiler 
 - **Call spacing**: `(` immediately following a callee with no intervening space forms a call: `twice(3)`, `@here()`, `u8(x)`, `steps[i](x)`, `pick(true)(x)`. After a keyword, `(` must be preceded by a space: `not (x)`, `if (a) and (b)`, `return (x)`. Breaking either rule is a syntax error showing the right form:
   - `twice (3)` -> `no space allowed before '(' in a call; write: twice(3)`
   - `for x in reverse(l)` -> `'reverse' is a keyword, not a function; put a space after it: reverse l`
-  - In declarations, operator names keep `(` attached (`operator and(a: Set, b: Set)`, `operator for(t: Tree)`, `operator [](g: Grid, c: Cell)`), as does `func` in function types (`func(i32) -> bool`). In operator declarations, `[]`, `[]=`, and `[:]` are single tokens.
+  - In declarations, function and operator names keep `(` attached (`func twice(x: i32)`, `operator and(a: Set, b: Set)`, `operator for(t: Tree)`, `operator [](g: Grid, c: Cell)`), as does `func` in function types (`func(i32) -> bool`). A space there fails: `no space allowed before '(' in a declaration; write: func twice(x: i32)`. In operator declarations, `[]`, `[]=`, and `[:]` are single tokens.
 - **Disallowed C operators**: `!` and `&&` are rejected (`'!' is not an operator; use 'not'`), and `||` is only for untagged unions (`i32||f32`; see [Unions](#unions)). Address-of and dereference are `ptr(x)` and `p.*`, not `&x` and `*p`: `'&' is not an address-of operator; use: ptr(x)` and `'*' is not a prefix dereference operator; write: p.*`.
 
 ### Builtins
@@ -329,6 +329,8 @@ A fat pointer stores a data pointer followed by metadata fields:
 | `&strview`, `&listview[T]` | `data`, `len` | 16 |
 | `&str`, `&list[T]` | `data`, `len`, `cap`, `arena` | 32 |
 | `&map[K, V]` | `data`, `len`, `cap`, `arena` | 32 |
+
+`&` applies only to fat pointer types: `x: &i32` fails with `i32 is not a fat pointer type; '&i32' is invalid`.
 
 `len` and `cap` are `i64` (so `l.len - 3` with 2 elements is `-1`). A `&map` is an open-addressing hash table of `cap` slots (hash, key, value), where hash `0` marks an empty slot and `cap` is a power of two of at least `16`.
 
