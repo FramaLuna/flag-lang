@@ -49,7 +49,7 @@ UNSETTLED = "its memory state did not converge"
 UNFOLLOWED = "-memory cannot track a pointer after it is stored into C-allocated memory"
 
 type enum Code:
-    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Counted, Reused, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Counted, Reused, Part, Parse, Stop, Extern, Goto, Fork, Leave, Halt
 
 type enum Kind:
     Pinned, Heap, Entry, Shared, Slot, Focus
@@ -102,6 +102,7 @@ type Target:
     writer: u32
     killer: i64
     element: bool
+    part: bool # through a slice that leaves out some of a list
 
 type Cell:
     owner: u32
@@ -138,6 +139,7 @@ type Obj:
     alone: bool
     core: bool # in a context of core
     taken: bool # pop or remove took it out of its list
+    part: bool # freed through a slice that leaves out some of a list
     shape: u32 # the layout of the element of a round
 
 type Marks:
@@ -533,6 +535,8 @@ func check_memory():
                     o.code = Counted
                 case "reused":
                     o.code = Reused
+                case "part":
+                    o.code = Part
                 case "aload", "aadd", "aswap", "acas": # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
                     o.code = Word
                     o.atomic = true
@@ -1353,6 +1357,11 @@ func visit(block: i64):
             define(o.to, number(ANY))
         case Reused:
             wipe(SLOTS + i64(target_of(o.a).slot) - 1)
+        case Part:
+            shown := target_of(o.a)
+            data := fetch(shown)
+            data.part = true
+            stash(shown, data)
         case Counted:
             if mem.speak:
                 counted(fetch(target_of(o.a)), "")
@@ -1411,11 +1420,12 @@ func visit(block: i64):
                     h := 0
                     replace := true
                     if mem.fns[g].global[x]:
-                        key := (u64(g) << 24) or (u64(x) << 8) or GLOBAL # one for each block that g keeps in a context, the same through every call
+                        key := (u64(g) << 24) or (u64(x) << 8) or GLOBAL # the line of a block that g keeps in a context, the same through every call
                         if (ob.key and 0xff) == GLOBAL:
-                            key = ob.key
-                        h = object(key, Obj{kind = Heap, many = true, born = born, pos = ob.pos, from = ob.from, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone})
-                        replace = false
+                            key = ob.key and (AGED - 1)
+                        made := Obj{kind = Heap, many = true, born = born, pos = ob.pos, from = ob.from, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone, core = ob.core or mem.fns[g].node == 0 or file_of(comp.tokens[comp.nodes[mem.fns[g].node].tok].at) == 0}
+                        replace = not inner and not made.core # the blocks core keeps stay one per line, which costs less
+                        h = birth(key, made) if replace else object(key, made)
                     elif inner and recursive != NONE:
                         h = recursive
                         replace = false
@@ -1553,6 +1563,7 @@ func visit(block: i64):
                         for h in killed:
                             condemn(h, marks.sure[x] and b.must[h], marks.freed[x])
                             mem.fn.objs[h].element = mem.fn.objs[h].element or marks.freed[x] and b.element
+                            mem.fn.objs[h].part = mem.fn.objs[h].part or marks.freed[x] and not inner and (b.part or ob.part) # a function that calls itself on the rest of a list walks it
                         for h in passed:
                             mem.fn.objs[h].pool = mem.fn.objs[h].pool or ob.pool
                             mem.fn.objs[h].loose = mem.fn.objs[h].loose or ob.loose
@@ -1771,6 +1782,7 @@ func visit(block: i64):
             for h in blocks:
                 condemn(h, first.must[h], true)
                 mem.fn.objs[h].element = mem.fn.objs[h].element or first.element
+                mem.fn.objs[h].part = mem.fn.objs[h].part or first.part
                 mem.fn.objs[h].loose = mem.fn.objs[h].loose or o.code == Discard
             vanish(blocks and first.must)
             sweep()
@@ -1973,7 +1985,7 @@ func visit(block: i64):
                 may := reach(given, ByLive)
                 for h in (mem.fn.heaps and mem.marks.live) - must - mem.fn.arenas:
                     x := mem.fn.objs[h]
-                    if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]) or x.home != 0 or x.alone:
+                    if (x.key and 0xff) == GLOBAL or x.element and not x.part and (mem.marks.freed[h] or may[h]) or x.home != 0 or x.alone:
                         continue
                     text: &str = heap("memory leak: ")
                     if x.name.len > 0:
@@ -2528,6 +2540,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out.dead = a.dead or b.dead
     out.must = (a.must or not la) and (b.must or not lb) and out.live
     out.element = a.element and (b.element or not followable(b)) or b.element and not followable(a)
+    out.part = a.part or b.part
     if a.writer != b.writer:
         out.writer = 0
     out.killer = max(a.killer, b.killer)
@@ -2588,6 +2601,7 @@ func fetch(a: Target) -> Target:
         out.must = Set{}
     if not exact:
         out.element = true
+    out.part = out.part or a.part
     return out
 
 func gather(out: Target, owner: i64, off: i32, stride: i32, count: u32, member: u32, live: Set) -> Target:
@@ -2943,6 +2957,7 @@ func absorb(r: i64, into: Set, within: bool):
     for t in into:
         mem.fn.objs[t].element = mem.fn.objs[t].element or mem.fn.objs[r].element
         mem.fn.objs[t].twice = mem.fn.objs[t].twice or mem.fn.objs[r].twice
+        mem.fn.objs[t].part = mem.fn.objs[t].part or mem.fn.objs[r].part
         mem.fn.objs[t].loose = mem.fn.objs[t].loose or mem.fn.objs[r].loose
     m := mem.marks
     mem.marks = Marks{shift(m.live, r, into), shift(m.freed, r, into), shift(m.killed, r, into), m.sure - pair, m.gone - pair, shift(m.used, r, into), shift(m.made, r, into), shift(m.waited, r, into)}

@@ -3084,11 +3084,13 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             append(args, base)
         if kids(n) == 3:
             high := kid(n, 2)
-            if (array or owner(t)) and (comp.nodes[kid(n, 1)].kind == Block or index.lit and index.n == 0 and not index.neg) and (comp.nodes[high].kind == Block or comp.nodes[high].kind == Field and text(high) == "len" and code_of(high + 1) == code_of(kid(n, 0))):
-                comp.sliced = n
             ends := [index, none]
-            if comp.nodes[kid(n, 2)].kind != Block:
-                ends[1] = try value(kid(n, 2), VOID)
+            if comp.nodes[high].kind != Block:
+                ends[1] = try value(high, VOID)
+            whole := index.lit and index.n == 0 and (comp.nodes[high].kind == Block or comp.nodes[high].kind == Field and text(high) == "len" and code_of(high + 1) == code_of(kid(n, 0)) or array and ends[1].lit and not ends[1].neg and ends[1].n == u64(comp.types[t].count))
+            if whole and (array or owner(t)):
+                comp.sliced = n
+            cut := not whole and (index.lit and index.n != 0 or ends[1].lit) # bounds known only when it runs may be a split that frees the rest
             own := not array and not sequence(t) and not textual(t) # a type of yours, its slice gets a negative end as written
             if ends[1].type == VOID or not own and (from_end(ends[0]) or from_end(ends[1])):
                 length := literal(false, u64(comp.types[t].count))
@@ -3115,7 +3117,10 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                     if signed and integer(e.type) and not e.lit:
                         ends[k] = try convert_number(e, I64, tok.at)
             append(args, ends[:])
-            return invoke("[:]", args, tok.at)
+            shown := try invoke("[:]", args, tok.at)
+            if cut and sequence(shown.type) and holds_pointer(element(shown.type)):
+                add(Ins{op = "part", a = shown.at, ghost = true})
+            return shown
         append(args, index)
         read := try returned("[]", args, tok.at)
         under := comp.target

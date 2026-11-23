@@ -1739,6 +1739,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 - Calling `args()` in two places (checker thinks the list may reallocate between calls, invalidating earlier views).
 - Assigning to keys while walking a map (`scores[e.key] = e.value * 2`, which could rehash in general).
 - Walking `for i in 0..names.len` to free `names[i]` while also indexing another pointer list/array (`labels[i]`): counts as only *some* freed.
+- Freeing a list through slices with a literal bound (`drop(names[0:1])` and `drop(names[1:2])`, or `drop(names[0:2])` on a list of two): the checker neither adds up the pieces nor knows the length (`memory leak: the memory that heap allocates here may never be freed`).
 - Freeing a list's elements in an inner walk inside the loop that fills it, before the round's `append`, then returning (`memory leak: the memory that heap allocates here is never freed`).
 - Growing an owner field with default `heap([])` inside an array of more than **16** structs (`append cannot grow bs; it may not have allocated memory to grow (initialize with heap([]))`), because arrays over 16 initialize defaults in a loop the checker assumes might run zero times.
 
@@ -1782,6 +1783,7 @@ These real bugs currently produce **no** `-memory` warning:
 - Freeing an element at an unknown runtime index outside a walk (e.g., a map value) marks all elements freed: reading one at a known index warns, but another read or free at an unknown index does not.
 - Keeping a pointer into a list's buffer or an arena inside a list or map at a runtime index: stays marked live after list growth or arena `clear`/`free`.
 - Moving only *some* elements to another list in a walk (`if` or `break`) before freeing the original list leaks the unmoved elements.
+- Freeing part of a list through a function, when the slice has only bounds known at run time (`drop(names[:n])`, which may be half of a valid split with `names[n:]`), or when a function calls itself on a slice that skips elements (`release(v[2:])`): it counts as freeing every element.
 - Keeping `ptr(x)` of a loop element across iterations in a field or a list instead of a variable.
 - Overwriting (`l[i] = v`, `m[k] = v`), `clear`ing, or dropping `pop`/`remove`d owner elements without freeing them when a later walk frees the container's elements.
 - Rearranging a list of structs with multiple owners via `sort`, `insert`, view `append`, `heap(l[:])`, or `l = items` merges fields across elements (freeing one owner hides leaks of the others and warns double-free if you free them too).
