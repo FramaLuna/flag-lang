@@ -1527,7 +1527,7 @@ name += " final"                         # grows in level too
 
 **Trust boundaries** (where safety is your responsibility):
 - `@trust` regions (see [@trust and @check](#trust-and-check)).
-- `trust` and `as`: `as` reads a union member without checking its tag, and casting a struct containing a pointer to an integer silently drops tracking.
+- `trust` and `as`: `as` reads a union member without checking its tag.
 - `*bytes` arithmetic: offset pointers remain tracked to their backing block for use-after-free, but bounds are not checked.
 - Mutating a narrowed variable through a pointer taken before `is`: what is then freed or read as the narrowed member may be the other one (see [Unions and narrowing](#unions-and-narrowing)).
 - C code: `extern` functions and `extern func` calls are assumed read-only, and C-spawned threads are unseen (synchronize `export func`s called from C threads).
@@ -1583,7 +1583,7 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 #### Untrackable pointers and checker limits
 
 - **Untrackable pointers** (subsequently reported as leaks):
-  - Cast to integer: `-memory cannot track x after converting it to an integer; keep it in a pointer type`.
+  - Cast to integer, alone or inside a struct (`W{p} as u64`): `-memory cannot track x after converting it to an integer; keep it in a pointer type`.
   - Stored into C-allocated memory (directly or via a helper): `-memory cannot track a pointer after it is stored into C-allocated memory`.
 - **Complexity limits**: a function exceeding **512 tracked blocks** (~500 user allocations, temporaries, and parameter targets) or failing to converge stops analysis for that function (still reporting findings so far):
   - `-memory stopped checking f because it has more than 512 blocks of memory to follow; checks for this function are incomplete`

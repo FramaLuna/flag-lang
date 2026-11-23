@@ -49,7 +49,7 @@ UNSETTLED = "its memory state did not converge"
 UNFOLLOWED = "-memory cannot track a pointer after it is stored into C-allocated memory"
 
 type enum Code:
-    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Counted, Reused, Parse, Stop, Extern, Goto, Fork, Leave, Halt
 
 type enum Kind:
     Pinned, Heap, Entry, Shared, Slot, Focus
@@ -498,6 +498,10 @@ func check_memory():
                     o.size = u32(i.c.n)
                 case "narrowed":
                     o.code = Narrowed
+                case "counted":
+                    o.code = Counted
+                case "reused":
+                    o.code = Reused
                 case "aload", "aadd", "aswap", "acas": # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
                     o.code = Word
                     o.atomic = true
@@ -1278,16 +1282,14 @@ func visit(block: i64):
         case Mix:
             define(o.to, blur(target_of(o.a), target_of(o.b)))
         case Count:
-            given := target_of(o.a)
-            if mem.speak and followable(given):
-                name := mem.fn.names[o.a.temp]
-                text: &str = heap("")
-                if name.len > 0:
-                    text += "-memory cannot track " + name + " after converting it to an integer; keep it in a pointer type"
-                else:
-                    text += "-memory cannot track a pointer after converting it to an integer; keep it in a pointer type"
-                warn(view(text), o.pos, "", 0, false)
+            if mem.speak:
+                counted(target_of(o.a), mem.fn.names[o.a.temp])
             define(o.to, number(ANY))
+        case Reused:
+            wipe(SLOTS + i64(target_of(o.a).slot) - 1)
+        case Counted:
+            if mem.speak:
+                counted(fetch(target_of(o.a)), "")
         case Plain:
             define(o.to, number(ANY))
         case Call, Locks, Unlocks, Emptied:
@@ -3199,6 +3201,12 @@ func immovable(who: &strview, name: &strview, why: &strview, strict: bool):
     else:
         text += who + " cannot grow this memory" + why
     warn(view(text), mem.ops[mem.here].pos, "", 0, strict)
+
+func counted(v: Target, name: &strview):
+    if followable(v):
+        text: &str = heap("")
+        text += "-memory cannot track " + (name if name.len > 0 else "a pointer") + " after converting it to an integer; keep it in a pointer type"
+        warn(view(text), mem.ops[mem.here].pos, "", 0, false)
 
 func touch_args(o: Op):
     for k in o.first..o.first + o.count:

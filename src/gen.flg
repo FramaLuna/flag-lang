@@ -2405,6 +2405,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
         if from.size != dest.size:
             return fail("cannot reinterpret " + from.name + " as " + dest.name + "; types have different byte sizes", tok.at)
         if aggregate(v.type):
+            if (integer(to) or dest.kind == Float) and holds_pointer(v.type):
+                add(Ins{op = "counted", a = v.at, ghost = true})
             return Value{type = to, at = v.at, mem = true, place = v.place, lit = v.lit and aggregate(to)}
         if aggregate(to):
             slot := alloc(to)
@@ -4518,6 +4520,7 @@ func alloc(t: i64, variable: bool = false) -> Arg:
             if comp.slots[s].a.n == size and comp.slots[s].op == name:
                 remove(comp.spare, i)
                 append(comp.held, s)
+                add(Ins{op = "reused", a = Arg{Temp, i64(comp.slots[s].to)}, ghost = true})
                 return Arg{Temp, i64(comp.slots[s].to)}
         append(comp.held, comp.slots.len)
     slot := temp()
