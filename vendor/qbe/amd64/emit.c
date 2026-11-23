@@ -452,8 +452,8 @@ static struct {
 	{ Ovsplath, 'b', "movd %W0, %=\n\tpshuflw $0, %=, %=\n\tpshufd $0, %=, %=" },
 	{ Ovsplatw, 'b', "movd %W0, %=\n\tpshufd $0, %=, %=" },
 	{ Ovsplatl, 'b', "movq %L0, %=\n\tpunpcklqdq %=, %=" },
-	{ Ovsplats, 'f', "movss %0, %=\n\tshufps $0, %=, %=" },
-	{ Ovsplatd, 'f', "movsd %0, %=\n\tunpcklpd %=, %=" },
+	{ Ovsplats, 'f', "movaps %0, %=\n\tshufps $0, %=, %=" },
+	{ Ovsplatd, 'f', "movaps %0, %=\n\tunpcklpd %=, %=" },
 	{ NOp, 0, 0 }
 };
 
@@ -587,9 +587,16 @@ emitins(Ins i, E *e)
 			break;
 		}
 		goto Table;
-	case Oneg:
+	case Oswtof:
+	case Osltof:
+	case Oexts:
+	case Otruncd:
+		/* these keep the old upper bits too */
 		if (!req(i.to, i.arg[0]))
-			emitf("mov%k %0, %=", &i, e);
+			emitf("xorps %=, %=", &i, e);
+		goto Table;
+	case Oneg:
+		emitcopy(i.to, i.arg[0], i.cls, e);
 		if (KBASE(i.cls) == 0)
 			emitf("neg%k %=", &i, e);
 		else
@@ -606,8 +613,8 @@ emitins(Ins i, E *e)
 		 * conversion to 2-address in emitf() would fail */
 		if (req(i.to, i.arg[1])) {
 			i.arg[1] = TMP(XMM0+15);
-			emitf("mov%k %=, %1", &i, e);
-			emitf("mov%k %0, %=", &i, e);
+			emitcopy(i.arg[1], i.to, i.cls, e);
+			emitcopy(i.to, i.arg[0], i.cls, e);
 			i.arg[0] = i.to;
 		}
 		goto Table;
@@ -621,10 +628,13 @@ emitins(Ins i, E *e)
 		if (req(i.to, i.arg[0]))
 			break;
 		t0 = rtype(i.arg[0]);
+		/* movss between registers keeps the old upper bits, so it waits for them */
+		if (KBASE(i.cls) != 0 && isreg(i.to) && isreg(i.arg[0])) {
+			emitf("movaps %0, %=", &i, e);
+			break;
+		}
 		if (i.cls == Kv) {
-			if (isreg(i.to) && isreg(i.arg[0]))
-				emitf("movaps %0, %=", &i, e);
-			else if (isreg(i.to))
+			if (isreg(i.to))
 				emitf("movups %M0, %=", &i, e);
 			else if (isreg(i.arg[0]))
 				emitf("movups %0, %M=", &i, e);
