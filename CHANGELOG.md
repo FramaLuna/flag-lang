@@ -2,44 +2,60 @@
 
 ## 0.6.1
 
-A patch release with clearer compiler messages, rewritten documentation that now ships inside the compiler, faster generated code, and a more precise `-memory`.
+A patch release with clearer compiler messages, rewritten documentation that now ships inside `flagc`, faster generated code, and a more precise `-memory` checker.
 
-> **Upgrading from 0.6.0:** Correct programs keep compiling. Two forms that only compiled by mistake are now errors, a `-L` folder now wins over the library folder when both hold a file of the same name (see Changed), and any script that matches the text of a compiler message needs its new wording.
+> **Upgrading from 0.6.0:** Correct programs keep compiling. Two syntax forms that only compiled by mistake are now errors, and a `-L` folder now takes priority over the library folder when both hold a file of the same name (see Changed). Any script that matches compiler message text will need to update to the new wording.
 
 ### New Features
 
-- **`flagc -docs`:** Prints the folder with the documentation of the installed version, so it works offline and always matches your compiler: `grep -n '^## ' "$(flagc -docs)/Reference.md"`.
-- **Text and lists in gdb:** `lib/flag-gdb.py`, also in the release package, shows a `&str` as text and a `&list` with its elements.
-- **Constant pointers into a `shared context`:** `ptr` of a field or of a constant-index element is now a compile-time value, usable in typed constants and field defaults.
+- **`flagc -docs`:** Prints the folder containing the documentation for your installed compiler. It works offline and always matches your version, for example: `grep -n '^## ' "$(flagc -docs)/Reference.md"`.
+- **Text and lists in gdb:** `lib/flag-gdb.py` (also included in the release package) shows `&str` as text and `&list` with its elements.
+- **Constant pointers into a `shared context`:** `ptr` of a field or constant-index element of a `shared context` is now a compile-time value, usable in typed constants and field defaults.
 
 ### Changed
 
-- **Compiler messages:** Every message of the compiler, `-memory`, and the runtime was rewritten. Each one says what failed first and then the rule or the fix, and `-memory` warnings start with the kind of bug (`data race:`, `memory leak:`, `use after free:`, `dangling pointer:`).
-- **Documentation:** The README, Overview, Reference, and Library were rewritten to read more clearly.
-- **Stricter syntax:** A space before the `(` of a function or operator declaration or of a function type is now an error, and so is `&` before a type that is not a fat pointer, like `&i32`.
-- **`-L` goes first:** A `-L` folder after `-cc` is searched before the folder of the library, so your own `libraylib.a` links on Windows and macOS.
-- **`print` of an `Arena`:** Shows its `count` and `used` instead of the raw contents of its blocks.
+- **Compiler messages:** Every message from the compiler, `-memory`, and the runtime was rewritten. Each message says what failed first, followed by the rule or the fix. Warnings from `-memory` now start with the bug kind (`data race:`, `memory leak:`, `use after free:`, `dangling pointer:`).
+- **Documentation:** The README, Overview, Reference, and Library were rewritten for clarity.
+- **Stricter syntax:** Putting a space before `(` in a function declaration, operator declaration, or function type is now an error. Writing `&` before a type that is not a fat pointer (like `&i32`) is now an error too.
+- **`-L` search order:** `-L` folders passed after `-cc` are now searched before the library folder, so your own `libraylib.a` links on Windows and macOS.
+- **`print` on an `Arena`:** Shows `count` and `used` instead of the raw contents of its blocks.
 
 ### `-memory`
 
-- **New warnings:** A pointer inside a struct read as an integer, a block held by a context that a call replaces without freeing it, a kept pointer to a loop element read after that element was freed, a known index read after a free at an unknown index, and a function that frees the elements of a slice with a literal bound that leaves out part of a list.
-- **Fewer false warnings:** A failed `realloc`, the distance between two pointers into one block, a reused temporary, `pop` inside a `for`, a walk over a whole slice, a lock reached through a pointer to one element, a local function value, and a call that replaces a block of a context while a variable keeps the old one.
+#### New warnings
+
+- Reading a pointer inside a struct as an integer.
+- A call that replaces a memory block in a context without freeing the old one.
+- Reading a saved pointer to a loop element after that element was freed.
+- Reading an element at a known index after freeing an element at an unknown index.
+- A function that frees elements of a slice whose literal bound leaves out part of a list.
+
+#### Fewer false warnings
+
+- Handling a failed `realloc`.
+- Computing the distance between two pointers into the same block.
+- Reusing a temporary.
+- Calling `pop` inside a `for` loop.
+- Looping over a whole slice.
+- Using a lock reached through a pointer to one element.
+- Calling a local function value.
+- A call that replaces a memory block in a context while a variable still holds the old one.
 
 ### Performance
 
-- **Floats on x86_64:** Copies and conversions no longer wait on the old value of their register. A physics kernel takes 30% fewer cycles, and 48% fewer with `inline`.
-- **Returned structs:** A struct of up to 48 bytes that a function returns stays in registers, so returning a copy is no longer needed.
-- **Long `switch`:** A `switch` on an integer with more than 32 cases finds its literal values by halves. With 256 random cases it takes 28% fewer cycles.
-- **Smaller frames:** Calls that return structs share their stack slots.
+- **Floats on x86_64:** Float copies and conversions no longer stall on the previous register value. A physics kernel takes 30% fewer cycles, and 48% fewer with `inline`.
+- **Returned structs:** Structs of up to 48 bytes returned by a function now stay in registers, so returning a copy is no longer needed.
+- **Long `switch`:** An integer `switch` with more than 32 cases now uses binary search for its literal values. With 256 random cases, it takes 28% fewer cycles.
+- **Smaller stack frames:** Calls that return structs now share stack slots.
 
 ### Bug Fixes
 
-- Deeply nested calls no longer overflow the stack of `flagc`: it now takes 16 MiB on Linux and macOS, as it did on Windows, so the 500 levels of nesting hold on arm64.
-- `make_dir` no longer fails when another program makes the same folder at the same moment.
-- An `-overlay` with an empty `core.flg` gives a compiler error instead of a crash, and `-overlay` sees a new unsaved file in the folder of a quoted `use`.
-- A `return` in a function declared `-> atomic[T]` has its own error, and the error for a literal of enum variants passed to a generic says how to name the enum.
-- riscv64: the address of a C function assembles with clang 14.
-- macOS: constants and text views go in `__DATA,__const`, and `-debug` without a linked program no longer fails in `dsymutil`.
+- Deeply nested calls no longer overflow `flagc`'s stack. On Linux and macOS, `flagc` now uses a 16 MiB stack (matching Windows), so the 500 levels of nesting hold on arm64.
+- `make_dir` no longer fails when another program creates the same folder at the same time.
+- An `-overlay` with an empty `core.flg` now reports a compiler error instead of crashing. `-overlay` also now sees new unsaved files in the folder of a quoted `use`.
+- A `return` in a function declared `-> atomic[T]` now has its own error. The error for passing a literal of enum variants to a generic now explains how to name the enum.
+- **riscv64:** Taking the address of a C function now assembles with clang 14.
+- **macOS:** Constants and text views now go in `__DATA,__const`. Running `-debug` without a linked program no longer fails in `dsymutil`.
 
 ## 0.6.0
 
