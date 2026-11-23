@@ -1,0 +1,51 @@
+use os
+use raylib
+
+func measures_font() where @linux() and @x86_64():
+    recs := [Rectangle{0, 0, 10, 10}, Rectangle{10, 0, 7, 10}]
+    glyphs := [GlyphInfo{value = 'A', advance_x = 10}, GlyphInfo{value = 'B', offset_x = 3}]
+    font := Font{base_size = 10, glyph_count = 2, recs = ptr(recs[0]), glyphs = ptr(glyphs[0])}
+    size := MeasureTextEx(font, "AB", 20, 2)
+    if size.x != 42 or size.y != 20:
+        panic("MeasureTextEx read the wrong Font layout")
+    if args().len > 99:
+        target := LoadRenderTexture(1, 1)
+        BeginTextureMode(target)
+        EndTextureMode()
+        UnloadRenderTexture(target)
+        GenTextureMipmaps(ptr(target.texture))
+        SetTextureFilter(target.texture, TEXTURE_FILTER_TRILINEAR)
+        loaded := LoadFontEx("font.ttf", 20, 0 as *i32, 0)
+        DrawTextEx(loaded, "text", Vector2{0, 0}, 20, 1, BLACK)
+        UnloadFont(loaded)
+        UnloadFont(LoadFont("font.ttf"))
+        UnloadFont(LoadFontFromMemory(".ttf", 0 as *bytes, 0, 20, 0 as *i32, 0))
+        DrawTextEx(GetFontDefault(), "text", GetWindowScaleDPI(), 20, 1, BLACK)
+        EnableEventWaiting()
+        DisableEventWaiting()
+        PollInputEvents()
+        WaitTime(0.1)
+        SetWindowMinSize(1, 1)
+        print(IsWindowResized(), IsKeyPressedRepeat(KEY_BACKSPACE), IsCursorOnScreen(), GetMouseWheelMoveV().y)
+        BeginScissorMode(0, 0, 1, 1)
+        EndScissorMode()
+        DrawRectangleRoundedLines(recs[0], 0.5, 4, BLACK)
+        DrawRectangleRoundedLinesEx(recs[0], 0.5, 4, 2, BLACK)
+        DrawRectanglePro(recs[0], Vector2{0, 0}, 0, BLACK)
+        DrawRectangleGradientV(0, 0, 10, 10, BLACK, WHITE)
+        DrawRectangleGradientH(0, 0, 10, 10, BLACK, WHITE)
+        DrawRectangleGradientEx(recs[0], BLACK, BLACK, WHITE, WHITE)
+        DrawCircleSector(Vector2{0, 0}, 5, 0, 90, 8, BLACK)
+        DrawRing(Vector2{0, 0}, 2, 5, 0, 90, 8, BLACK)
+        SetMouseCursor(MOUSE_CURSOR_IBEAM)
+        SetClipboardText(GetClipboardText())
+
+func measures_font() where not (@linux() and @x86_64()):
+    pass
+
+func main():
+    print(@sizeof(GlyphInfo), " ", @offset_of(GlyphInfo, image))
+    print(@sizeof(Font), " ", @offset_of(Font, texture), " ", @offset_of(Font, recs), " ", @offset_of(Font, glyphs))
+    print(@sizeof(RenderTexture), " ", @offset_of(RenderTexture, texture), " ", @offset_of(RenderTexture, depth))
+    print(FLAG_WINDOW_HIGHDPI, " ", MOUSE_CURSOR_NOT_ALLOWED, " ", TEXTURE_FILTER_TRILINEAR, " ", KEY_DELETE, " ", KEY_RIGHT_SUPER)
+    measures_font()
