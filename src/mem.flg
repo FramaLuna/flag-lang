@@ -1061,33 +1061,23 @@ func analyze(f: i64) -> bool:
             for v in out.temps:
                 hold(mem.pool[v].slot)
             failed := out
-            null_side := NONE
-            ending := mem.ops[spans[b].end - 1] if spans[b].end > spans[b].first else Op{}
-            tested := mem.temps[ending.from] if ending.code == Fork and ending.size != 0 else blank
-            if tested.killer != 0 and empty(tested.dead) and not empty(objects(tested.live)): # realloc gave null: it moved nothing and made nothing
+            nulled := NONE
+            last := spans[b].end - 1
+            if spans[b].end > spans[b].first and mem.ops[last].code == Fork and mem.ops[last].size != 0 and mem.temps[mem.ops[last].from].killer != 0 and empty(mem.temps[mem.ops[last].from].dead): # realloc gave null: it moved nothing and made nothing
+                tested := mem.temps[mem.ops[last].from]
                 held := objects(tested.live)
                 made := held and mem.fn.heaps
                 for id in mem.present:
-                    v := cell_value(id)
-                    if mem.ticked[id] == mem.tick and v.killer == tested.killer and not empty(v.dead and held):
-                        back := v.dead and held
-                        made = made - back
-                        v.must = v.must or back - v.live
-                        v.live = v.live or back
-                        v.dead = v.dead - back
-                        rewrite(i64(id), v)
+                    if mem.ticked[id] == mem.tick and cell_value(id).killer == tested.killer and not empty(cell_value(id).dead and held):
+                        made = made - cell_value(id).dead
+                        rewrite(i64(id), unmoved(cell_value(id), held))
                 for t in mem.fn.crossing:
-                    v := mem.temps[t]
-                    if v.killer == tested.killer and not empty(v.dead and held):
-                        back := v.dead and held
-                        v.must = v.must or back - v.live
-                        v.live = v.live or back
-                        v.dead = v.dead - back
-                        mem.temps[t] = v
+                    if mem.temps[t].killer == tested.killer and not empty(mem.temps[t].dead and held):
+                        mem.temps[t] = unmoved(mem.temps[t], held)
                         mem.interned[t] = 0
                 mem.marks.sure = mem.marks.sure - held
                 vanish(made)
-                null_side = i64(ending.size) - 1
+                nulled = i64(mem.ops[last].size) - 1
                 failed = snapshot()
             for side in 0..2:
                 s := spans[b].yes
@@ -1095,7 +1085,7 @@ func analyze(f: i64) -> bool:
                     s = spans[b].no
                 if s != 0:
                     old := mem.ins[s - 1]
-                    joined := merge(old, failed if side == null_side else out, s - 1)
+                    joined := merge(old, failed if side == nulled else out, s - 1)
                     if old.seen and joined == old:
                         release(joined)
                     else:
@@ -1104,7 +1094,7 @@ func analyze(f: i64) -> bool:
                         queued[s - 1] = true
                         if s - 1 < low:
                             low = s - 1
-            if null_side != NONE:
+            if nulled != NONE:
                 release(failed)
             release(out)
     mem.final = true
@@ -1226,6 +1216,14 @@ func analyze(f: i64) -> bool:
     mem.fns[f] = mem.fn
     free(old.touches)
     return changed
+
+# v as it was before a realloc that gave null
+func unmoved(v: Target, blocks: Set) -> Target:
+    back := v.dead and blocks
+    v.must = v.must or back - v.live
+    v.live = v.live or back
+    v.dead = v.dead - back
+    return v
 
 func hold(slot: u32):
     if slot == ALL:
@@ -1580,9 +1578,11 @@ func visit(block: i64):
                 if o.blob:
                     wipe(SLOTS + i64(o.slot))
                 mem.writes.len = 0
-                kept := marks.killed or mem.fns[g].ret.live or mem.fns[g].ret.dead # what it freed, gave back or left somewhere
-                for a in sum.aims:
-                    kept = kept or a.live or a.dead
+                kept: Set # what it freed, gave back or left somewhere
+                if mem.speak:
+                    kept = marks.killed or mem.fns[g].ret.live or mem.fns[g].ret.dead
+                    for a in sum.aims:
+                        kept = kept or a.live or a.dead
                 for k in 0..sum.ids.len:
                     c: Cell
                     if g == mem.f:
@@ -1609,7 +1609,10 @@ func visit(block: i64):
                                         warn(view(text), o.pos, "", 0, mem.fns[g].strict)
                             w = d.next
                     if x == RETURNED and o.blob:
-                        append(mem.writes, Write{taken(translate(sum.aims[k]), g), cell_at(SLOTS + i64(o.slot), c.off, c.stride, c.count, c.member), true})
+                        v := translate(sum.aims[k])
+                        if mem.fns[g].takes:
+                            v = taken(v)
+                        append(mem.writes, Write{v, cell_at(SLOTS + i64(o.slot), c.off, c.stride, c.count, c.member), true})
                     ob := obj_of(g, x)
                     if x != RETURNED and not (ob.kind == Entry and ob.depth == 0 and ob.root > 0 and mem.fns[g].copies[ob.root - 1]):
                         t := binding(x)
@@ -1652,7 +1655,7 @@ func visit(block: i64):
                 if o.to != 0 and o.blob:
                     define(o.to, Target{slot = o.slot + 1})
                 elif o.to != 0:
-                    define(o.to, taken(translate(mem.fns[g].ret), g))
+                    define(o.to, taken(translate(mem.fns[g].ret)) if mem.fns[g].takes else translate(mem.fns[g].ret))
                 if o.code == Emptied: # the elements are not in the list any more
                     data := fetch(target_of(mem.args[o.first]))
                     d := sole(data)
@@ -2967,8 +2970,10 @@ func visited(walk: u64):
                 drop(i64(k) - 1)
                 k = c.next
             for id in mem.refs[r]: # a variable that points to the element in place now points to where it is
+                if mem.ticked[id] != mem.tick or mem.fn.cells[id].owner < SLOTS:
+                    continue
                 was := cell_value(id)
-                if mem.ticked[id] == mem.tick and mem.fn.cells[id].owner >= SLOTS and (was.live[r] or was.dead[r]):
+                if was.live[r] or was.dead[r]:
                     at := plus(element, was.off, was.stride, was.count)
                     if was.dead[r]:
                         at.dead = at.dead or at.live
@@ -3531,10 +3536,8 @@ func binding(x: i64) -> Target:
     mem.bound = mem.bound or bit(x)
     return out
 
-# what g gives back, when it took an element out of a list: the block, no longer the element of a walk that visited it
-func taken(v: Target, g: i64) -> Target:
-    if not mem.fns[g].takes:
-        return v
+# what pop or remove gives back: the block, no longer the element of a walk that visited it
+func taken(v: Target) -> Target:
     for f in v.live and mem.fn.focus:
         if mem.fn.objs[f].parent != NONE and (mem.fn.keys[f] and 0xff) == VISITED:
             v.live[f] = false

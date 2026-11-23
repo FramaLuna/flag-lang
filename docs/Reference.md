@@ -1730,6 +1730,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 - Splitting allocations from one loop line across two lists (`append(good, s)` vs `append(bad, s)`): both lists appear to alias the same block, causing double-free warnings (`free cannot release n; it may already be freed (possible double free)`), view invalidations, and cross-list race warnings.
 - Rebuilding a list in a loop and reading `v` after `append(next, v)` (`use after free: v points to memory that may already be freed`).
 - Emptying a list of lists with `pop`/`remove` (inner elements warn double free and leak).
+- `append` to a zeroed list (from `calloc`) whose capacity was reserved by hand: the checker does not see the capacity and warns `this call cannot grow data; it may not have allocated memory to grow`.
 - Returning owners nested two levels deep built in an inner loop (list of rows or map of lists: `memory leak: the memory that heap allocates here may never be freed` with note at `return`).
 - Calling `args()` in two places (checker thinks the list may reallocate between calls, invalidating earlier views).
 - Assigning to keys while walking a map (`scores[e.key] = e.value * 2`, which could rehash in general).
@@ -1762,6 +1763,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 #### C interop, function values, and indirection depth
 
 - Memory passed to a C function or `extern func` that retains or frees it (assumed read-only, so reported as leaked).
+- Walking a value by reflection, recursing through `*bytes` at offsets read from a table: two offsets may be the same place, so each call seems to free what the last one freed.
 - Calling a function value that came through a parameter, a field or another variable (`g(p)`) when *any* function of that type taken as a value frees its argument. A local assigned only named functions calls just those.
 - Modifying or dereferencing deeper than **3 pointer indirections** from a function's parameters (`free(p.a.b.c.d.e)`, `append(p.a.b.c.names, x)`): past 3 hops a block represents everything reachable from it, so frees/reads taint all deeper memory, and mutations/allocations stop tracking at the call (`-memory stopped checking grow because it modifies memory more than three pointer indirections from its parameters; this call is not checked`). `core`'s internal contexts (`print`, files) are exempt.
 
