@@ -10,6 +10,7 @@ linking=
 case $(uname) in
 Darwin)
     system=macos
+    linking="-Wl,-stack_size,0x1000000"
     case $machine in arm64) target=T_arm64_apple ;; *) target=T_amd64_apple ;; esac
     section="__TEXT,__const"
     symbol=_

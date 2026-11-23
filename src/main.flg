@@ -283,7 +283,16 @@ extern "c":
     func flag_target() -> cstr
     func isatty(fd: i32) -> i32
 
+extern "c" where @linux():
+    func getrlimit(what: i32, limits: *array[u64, 2]) -> i32
+    func setrlimit(what: i32, limits: *array[u64, 2]) -> i32
+
 func main() -> i32:
+    where @linux(): # 500 levels of nesting take more than 8 MiB of stack on arm64
+        stack: array[u64, 2]
+        _ = getrlimit(3, ptr(stack))
+        stack[0] = max(stack[0], min(u64(16 << 20), stack[1]))
+        _ = setrlimit(3, ptr(stack))
     plain := env("NO_COLOR") ifnull ""
     if isatty(2) != 0 and plain.len == 0:
         comp.err = "\e[1;31merror:\e[0m "
