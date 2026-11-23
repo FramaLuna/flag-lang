@@ -2157,7 +2157,7 @@ error: unexpected end of line; expected ':'
 
 #### Modifications to QBE (`vendor/qbe`)
 
-The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by purpose:
+The embedded QBE in `vendor/qbe` has **55 changes** over upstream, grouped by purpose:
 
 1. **Embedding, stack probes, and constants (6 changes)**:
    - `main` returns instead of calling `exit`, so `flagc` can call it in-process.
@@ -2186,7 +2186,7 @@ The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by pu
    - A copy out of a stack slot whose size is not a multiple of 8 (a struct without 8-byte fields) goes 4 bytes at a time: its fields were written 4 bytes or less at a time, and an 8-byte load that takes two of those stores waits until they reach the cache. That is how a `Mat3` of nine `f32`, which does not fit in 32 bytes, is copied; a copy from the heap, whose stores are long done, still goes 8 bytes at a time. The integration of bodies that copies them got 7% faster, and the poses of a skeleton 17%.
    - Division by a power of two the compiler knows uses shifts for signed numbers too, as QBE did only for unsigned ones: `x / 8` adds 7 to a negative `x` and shifts it right by 3, and `x % 8` keeps the low 3 bits of that sum and takes the 7 away again, so both round toward zero like the processor's division, also for the most negative number, and `x / 1` is `x`. Lengths are `i64`, so every `len / 2` was a division of tens of cycles: a loop of `i / 2 + i % 8 + i / 64` over 100 million `i64` took 7.8 G cycles and takes 0.58 G, with 14% more instructions. The compiler checks itself with 0.06% more instructions, in the same time.
    - On macOS a section name is written without quotes, `.section __TEXT,__const`, as Mach-O reads it: QBE wrote `section "name"` as `.section "name"`, which ELF and COFF accept and Mach-O does not. That is how the bytes of a text literal are read-only there too.
-5. **Fixes to QBE itself (11 changes)**:
+5. **Fixes to QBE itself (12 changes)**:
    - `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign.
    - Store-to-load forwarding kept the bits above a narrow store when a load that starts inside it took them shifted down. This and the previous one happen in more slots since small slots are cut.
    - GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion.
@@ -2198,6 +2198,7 @@ The embedded QBE in `vendor/qbe` has **54 changes** over upstream, grouped by pu
    - With more floats alive than registers, `arm64` copied a float from one stack slot to another through an integer register and stopped with `invalid class`; it goes through `v31` now.
    - `rv64` wrote a shift of a `w` by a constant of 32 or more as it came, which the assembler refuses; the constant is cut to 5 bits for `w` and 6 for `l`, as the processor cuts a count in a register.
    - `rv64` stopped with an assertion when a `jnz` read its condition from a stack slot more than 2 KiB below the frame pointer, a condition spilled in a big function; the address goes through `t6`, as for a load.
+   - `rv64` reads the address of a C symbol from the GOT with `auipc` and `ld`, the two instructions of `lga`, a name that clang 14 does not assemble.
 6. **Call chains and debugging (6 changes)**:
    - On `x86_64` every function keeps its frame pointer, as on `arm64` and `rv64`.
    - On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set (`[rbp]` is the caller's `rbp` and `[rbp+8]` the return address), so they are found from `rbp` wherever the body moves `rsp`.
