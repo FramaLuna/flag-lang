@@ -1217,7 +1217,7 @@ The four crash rows (`invalid memory access`, `stack overflow`, `illegal instruc
 Call chain behavior:
 - Shows only user functions (library functions are omitted because the location already points to your call).
 - Collapses repeated recursive frames: `in walk, tree.flg:3, 52341 times`.
-- For crashes inside C (e.g., `strlen` on a bad `cstr`), unwinds from the return address or frame pointers back to your caller (C libraries built without frame pointers, such as Ubuntu 22.04's libc, yield no chain for crashes deep inside `malloc`).
+- For crashes inside C (e.g., `strlen` on a bad `cstr`), unwinds from the return address or frame pointers back to your caller (C libraries built without frame pointers, such as Ubuntu 22.04's libc, yield no chain for crashes deep inside functions like `malloc` or `printf`).
 - Stops at any C frame above your functions (such as C callbacks).
 - Prints at most **20 lines**, summarizing the rest as `  ... and 12 more`.
 - Omits inlined functions (declare `noinline` to preserve them; see [Inlining](#inlining)).
@@ -1515,7 +1515,7 @@ name += " final"                         # grows in level too
 
 - **Alignment and overloads**: `arena(a, v)` copies `v` into `a` with **16-byte alignment** (the maximum alignment, needed for `simd`) and returns `*T`. Overloads for text, arrays, listviews, `fixmap`s, and maps return arena-backed `&str`, `&list`, or `&map` (literals keep their own types, e.g., `bytes: &list[u8] = arena(a, [u8(1), 2])`). Empty `arena(a, [])` (`&list[never]`) and `arena(a, {})` (`&map[never, never]`) require a target type (`cannot infer type of x from an empty literal; specify its type explicitly: x: &list[i32]`). `a` may be `Arena` or `*Arena`; other types fail (`no overload of arena matches (i64, array[i64, 2])`).
 - **`clear(a)` vs `free(a)`**: `clear(a)` invalidates all allocations while retaining blocks for reuse (ideal for per-frame game memory); `free(a)` returns all blocks to the heap. Both leave `a` empty and reusable.
-- **Growth and `free` of arena-backed owners**: arena-backed `&str`, `&list`, and `&map` store `a` in their `arena` field. When growing, `&str` and `&list` expand in place if they occupy the end of the current block, otherwise copy into a new slice; `&map` always allocates a new table. Old slices are reclaimed when the arena is cleared or freed. Calling `free` on an arena-backed owner empties it without freeing memory while preserving its `arena` field so it can grow again in the same arena. Assigning a raw pointer (`text = ptr(buf) as *bytes`) updates only the address.
+- **Growth and `free` of arena-backed owners**: arena-backed `&str`, `&list`, and `&map` store `a` in their `arena` field. When growing, `&str` and `&list` expand in place if they occupy the end of the current block, otherwise copy into a new slice; `&map` always allocates a new table, and a `for` over the map keeps reading the old one. Old slices are reclaimed when the arena is cleared or freed, and `reserve(m, n)` before filling a map avoids its old tables. Calling `free` on an arena-backed owner empties it without freeing memory while preserving its `arena` field so it can grow again in the same arena. Assigning a raw pointer (`text = ptr(buf) as *bytes`) updates only the address.
 - **Cautions**:
   - A `*T` from `arena(a, v)` does not track its arena; calling `free` on it is an error caught by `-memory`.
   - `&ring` from module `ring` is always heap-allocated.
