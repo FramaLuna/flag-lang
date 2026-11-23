@@ -899,6 +899,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
     case Return:
         if comp.ret == NEVER:
             return fail("function returning 'never' cannot contain a 'return' statement", tok.at)
+        if comp.types[comp.ret].kind == Atomic:
+            return fail("cannot return " + comp.types[comp.ret].name + " by value; atomics cannot be copied, so return '*" + comp.types[comp.ret].name + "'", tok.at)
         if node.size == 1:
             if comp.ret != VOID:
                 return fail("missing return value; this function returns " + comp.types[comp.ret].name, tok.at)

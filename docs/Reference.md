@@ -378,6 +378,7 @@ Character literals (`'a'`), `@sizeof`, `@offset_of`, array `.len`, `$$n`, and th
 
 - **Exact literal arithmetic**: arithmetic on untyped integer literals is evaluated at compile time with exact values (no wrapping): `x: u8 = 300 - 100` is `200`, and `0x7fff_ffff_ffff_ffff + 1` is `u64` literal `0x8000_0000_0000_0000`. Division by literal `0` or results exceeding 64 bits are compile errors.
 - **Target type preference**: float literals default to `f64` and fit `f32` or `f64`. An integer literal can target a float type, but integers win over floats: `x: i32|f64 = 3` is `i32`, and `f(3)` picks `f(i32)` over `f(f64)`. Among integer union members, `i64` wins if present, then the first fitting type in union order (`i8`, `i16`, `i32`, `u8`, `u16`, `u32`, `u64`), so `x: u8|i8 = 5` is `i8` and `w: u16|u64 = 70000` is `u64`.
+- **Ties**: a literal that fits two union members equally is an error. Only an untagged union inside a tagged one can tie, because it fits as well as its best member: `x: (u8||f32)|u8 = 5` fails with `literal 5 matches multiple members of u8|(u8||f32) equally; specify the type explicitly: u8(5)`.
 - **`inf` and `nan`**: reserved float literals matching `print` and `parse_float` (`LOW = -inf`, `x: f32 = inf`). Arithmetic on finite literals must produce a finite float (`1.0 / 0.0` fails with `constant floating-point expression is not finite; write 'inf' or 'nan' explicitly`, and overflowing literals fail with `float literal 1e999 overflows f64 (maximum is 1.7976931348623157e+308); write 'inf' for infinity`). Operations involving `inf` or `nan` follow IEEE 754 (`inf - inf` is `nan`).
 
 ### Arithmetic
@@ -1421,7 +1422,7 @@ func main():
 - **No direct value reads or writes**:
   - Reading directly (`x := hits`, `print(hits)`, `hits + 1`): `cannot read atomic hits (atomic[i64]) directly as a value; read it with: get(hits)`.
   - Assigning or initializing directly (`hits = 5`, `hits += 1`, `hits: atomic[i64] = 0`): `cannot assign directly to atomic[i64]; atomics start at 0 and must be updated with set, add, swap, or compare_swap`.
-- **Passing to functions**: pass by pointer (`func bump(hits: *atomic[i64])`, accessed as `add(hits.*, 1)`; `bump(hits)` auto-addresses like any `*T`, and generics accept `*atomic[$T]`). Passing by value fails: `parameter hits cannot take atomic[i64] by value; atomics cannot be copied, so take '*atomic[i64]'`.
+- **Passing to functions**: pass by pointer (`func bump(hits: *atomic[i64])`, accessed as `add(hits.*, 1)`; `bump(hits)` auto-addresses like any `*T`, and generics accept `*atomic[$T]`). Passing by value fails: `parameter hits cannot take atomic[i64] by value; atomics cannot be copied, so take '*atomic[i64]'`. So does a `return` in a function declared `-> atomic[i64]`: `cannot return atomic[i64] by value; atomics cannot be copied, so return '*atomic[i64]'`.
 - **Inside structs**: a struct containing an atomic remains a value type. Copying it reads the 4- or 8-byte atomic whole without a race (`-memory` does not warn), and `print` reads the field via `get`. `core`'s `Lock` stores its owning thread ID in an `atomic[u64]` read this way.
 - **Pointer atomics in `-memory`**: pointers stored in `atomic[*T]` (and returned by `swap`/`compare_swap`) are tracked like struct fields.
 
@@ -2231,6 +2232,7 @@ Behaviors that are easy to trip over:
 
 - **Mutating text literals**: writing into a text literal via `items`, `ptr`, `as`, or C compiles and crashes at runtime (`flag: invalid memory access`; see [Fat pointers](#fat-pointers)). Copy to a `&str` first.
 - **Overloaded/generic function values as arguments**: function call arguments do not propagate target types to function values, array literals, or untyped struct literals. `f(ptr([1, 2]))` passes `*array[i64, 2]` even when `f` expects `&listview[i32]`, and `f({1, 2})` passes a tuple even when `f` expects `Point`. Bind to a typed variable first, or name the type (`f(Point{1, 2})`).
+- **Enum variants in a literal**: `[Hidden, Local]` is an array of the union `Local|Hidden`, not of their enum, so a generic that takes it makes `Set[Local|Hidden]`, which does not go where `Set[Flag]` goes. Name the enum on the first element: `[Flag(Hidden), Local]`.
 - **`trust` on a real error**: skips the tag check, producing garbage or a crash.
 - **Stale views in argument lists**: views evaluate left to right, so `show(l, grow(ptr(l)))` passes `l`'s pre-`grow` buffer to `show` (see [Order](#order)). Compute `grow` on a separate line (`-memory` warns if `show` reads it).
 - **Ambiguous `null` on `T?` collections**: `Channel` `receive`, list `pop`, and map `m[k]` / `remove` flatten `null|T?` into `T?` (see [Unions](#unions)), so a stored `null` looks identical to empty/closed/missing. Use `for v in channel`, check `l.len` before `pop`, or check `contains(m, k)` before `m[k]`.

@@ -1700,6 +1700,12 @@ func convert(v: Value, to: i64, dest: Arg, at: i64) -> Value|Fail:
     crossing := text_of_c(v, to)
     if crossing.len > 0:
         return fail(crossing, at)
+    if from.decl != 0 and from.decl == target.decl:
+        for i in 0..type_params(from.decl):
+            part := comp.items[from.args + i].type
+            whole := comp.items[target.args + i].type
+            if part != whole and comp.types[whole].kind == Union and comp.types[whole].decl != 0 and within(part, whole):
+                return fail("cannot assign " + from.name + " to " + target.name + ", and no 'operator =' converts between them; a literal of variants has the union of those variants as its type, so name the enum on its first element: [" + text(comp.types[whole].decl) + "(" + comp.types[members(part)[0]].name + "), ...]", at)
     return fail("cannot assign " + from.name + " to " + target.name + ", and no 'operator =' converts between them", at)
 
 func member_for(to: i64, v: Value, at: i64) -> i64|Fail:
