@@ -502,7 +502,7 @@ coalesce(Fn *fn)
  * turn the pieces into temporaries
  */
 
-enum { ChopMax = 32 };
+enum { ChopMax = 48 };
 
 typedef struct Chop Chop;
 typedef struct Blit Blit;

@@ -1,0 +1,96 @@
+type Vec3:
+    x: f32
+    y: f32
+    z: f32
+
+type Mat3:
+    r0: Vec3
+    r1: Vec3
+    r2: Vec3
+
+type Mixed:
+    a: i64
+    b: f64
+    c: i32
+    d: u8
+    e: i16
+    f: f32
+    g: i64
+    h: u8
+
+type Lanes:
+    p: simd[f32, 4]
+    q: simd[i32, 4]
+    r: simd[f64, 2]
+
+type Past:
+    words: array[i32, 13]
+
+operator +(a: Vec3, b: Vec3) -> Vec3:
+    return {a.x + b.x, a.y + b.y, a.z + b.z}
+
+operator *(s: f32, a: Vec3) -> Vec3:
+    return {s * a.x, s * a.y, s * a.z}
+
+operator *(a: Mat3, b: Mat3) -> Mat3:
+    return {a.r0.x * b.r0 + a.r0.y * b.r1 + a.r0.z * b.r2, a.r1.x * b.r0 + a.r1.y * b.r1 + a.r1.z * b.r2, a.r2.x * b.r0 + a.r2.y * b.r1 + a.r2.z * b.r2}
+
+noinline func powers(m: Mat3, n: i32) -> Mat3:
+    r := m
+    for i in 0..n:
+        r = r * m
+    return r
+
+noinline func filled(n: i64) -> Mixed:
+    m: Mixed
+    for i in 0..n:
+        m.a += i
+        m.b += 0.5
+        m.c -= 1
+        if i % 2 == 0:
+            m.d += 3
+            m.e -= 7
+        m.f += 0.25
+        m.g = m.a * 2
+        m.h = u8(i)
+    return m
+
+noinline func lanes(n: i32, l: Lanes) -> Lanes:
+    r := l
+    for i in 0..n:
+        r.p = r.p + l.p
+        r.q[2] = r.q[2] + i
+        r.r[1] = r.r[1] * 2.0
+    return r
+
+noinline func partly(first: bool) -> Mat3:
+    m: Mat3
+    if first:
+        m.r1.y = 5.0
+    else:
+        m.r2 = Vec3{1.0, 2.0, 3.0}
+    return m
+
+noinline func through(m: *Mat3) -> Mat3:
+    c := m.*
+    c.r0.x += 1.0
+    m.r2.z = c.r0.x
+    return c
+
+noinline func past(n: i32) -> Past:
+    p: Past
+    for i in 0..13:
+        p.words[i] = n + i32(i)
+    return p
+
+func main():
+    m := Mat3{{1.0, 1.0, 0.0}, {0.0, 1.0, 1.0}, {1.0, 0.0, 1.0}}
+    print(powers(m, 3), "\n")
+    print(filled(7), "\n")
+    l := Lanes{[1.0, 2.0, 3.0, 4.0], [5, 6, 7, 8], [0.5, 1.5]}
+    t := lanes(3, l)
+    print(t.p, " ", t.q, " ", t.r, "\n")
+    print(partly(true), " ", partly(false), "\n")
+    c := through(ptr(m))
+    print(c.r0.x, " ", m.r0.x, " ", m.r2.z, "\n")
+    print(past(10).words, "\n")
