@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2
+
+A patch release that expands the `raylib` module so desktop UI applications can use it without their own `extern` declarations. The compiler is unchanged, and existing programs keep compiling.
+
+### New Features
+
+- **Fonts:** New `Font` and `GlyphInfo` types, with `GetFontDefault`, `LoadFont`, `LoadFontEx`, `LoadFontFromMemory`, `UnloadFont`, `DrawTextEx`, and `MeasureTextEx`.
+- **Textures:** `GenTextureMipmaps`, `SetTextureFilter`, and the `TEXTURE_FILTER_*` constants.
+- **Render targets and clipping:** A new `RenderTexture` type, with `LoadRenderTexture`, `UnloadRenderTexture`, `BeginTextureMode`, `EndTextureMode`, `BeginScissorMode`, and `EndScissorMode`.
+- **Window and events:** `EnableEventWaiting`, `DisableEventWaiting`, `PollInputEvents`, `WaitTime`, `SetWindowMinSize`, `IsWindowResized`, `GetWindowScaleDPI`, and new `FLAG_WINDOW_*` flags, including `FLAG_WINDOW_HIGHDPI`.
+- **Input:** `SetExitKey`, `IsKeyPressedRepeat`, `GetMouseWheelMoveV`, `IsCursorOnScreen`, `SetMouseCursor`, the `MOUSE_CURSOR_*` constants, and keys for navigation, `Delete`, and the right and left modifiers.
+- **Clipboard:** `GetClipboardText` and `SetClipboardText`.
+- **Shapes:** Gradients with `DrawRectangleGradientV`, `DrawRectangleGradientH`, and `DrawRectangleGradientEx`, rounded borders with `DrawRectangleRoundedLines` and `DrawRectangleRoundedLinesEx`, plus `DrawRectanglePro`, `DrawCircleSector`, and `DrawRing`.
+
 ## 0.6.1
 
 A patch release with clearer compiler messages, rewritten documentation that now ships inside `flagc`, faster generated code, and a more precise `-memory` checker.
