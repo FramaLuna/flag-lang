@@ -441,6 +441,8 @@ func func_decl(external: bool) -> Fail?:
             return fail("operator " + name.text + problem, name.at)
     n := begin(Func, comp.pos)
     comp.pos += 1
+    if peek("("):
+        try paren(comp.pos - 2, "a declaration")
     try expect("(")
     count := 0
     while not peek(")"):
@@ -1080,11 +1082,11 @@ func unary() -> Fail?:
     return null
 
 # here() is a (, and callee up to it is what it calls, nothing for a group
-func paren(callee: i64) -> Fail?:
+func paren(callee: i64, what: &strview = "a call") -> Fail?:
     open := comp.pos
     last := comp.tokens[open - 1]
     glued := last.at + last.text.len == here().at
-    keyword := glued and last.kind == Name and reserved(last.text)
+    keyword := glued and last.kind == Name and reserved(last.text) and what == "a call" # operator and(a, b) names an operator
     if not keyword and (glued or callee == open):
         return null
     close := open
@@ -1093,7 +1095,7 @@ func paren(callee: i64) -> Fail?:
         close += 1
         depth += unclosed(close, close)
     if not keyword:
-        return fail("no space allowed before '(' in a call; write: " + excerpt(callee, open - 1) + excerpt(open, close), here().at)
+        return fail("no space allowed before '(' in " + what + "; write: " + excerpt(callee, open - 1) + excerpt(open, close), here().at)
     inside := excerpt(open, close)
     if close == open + 2:
         inside = excerpt(open + 1, open + 1)
@@ -1143,7 +1145,9 @@ func type_expr() -> Fail?:
         foreign := t.text == "extern" and comp.tokens[comp.pos + 1].text == "func" and comp.tokens[comp.pos + 2].text == "("
         if foreign or t.text == "func" and comp.tokens[comp.pos + 1].text == "(":
             n := begin(TFunc, comp.pos)
-            comp.pos += 2 + i64(foreign)
+            comp.pos += 1 + i64(foreign)
+            try paren(comp.nodes[n].tok, "a function type")
+            comp.pos += 1
             while not peek(")"):
                 if here().kind == Name and comp.tokens[comp.pos + 1].text == ":":
                     return unexpected("function types list parameter types without names: func(i32, i32) -> bool")

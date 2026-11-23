@@ -211,6 +211,8 @@ fillalias(Fn *fn)
 			}
 			if (isstore(i->op))
 				store(i->arg[1], storesz(i), fn);
+			if (i->op == Ocall && !req(fn->tmp[i->to.val].pad, R))
+				store(fn->tmp[i->to.val].pad, NBit, fn);
 		}
 		if (b->jmp.type != Jretc)
 			esc(b->jmp.arg, fn);

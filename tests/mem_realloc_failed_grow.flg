@@ -1,0 +1,17 @@
+type error NoMemory
+func grow(l: *&list[i64], want: i64) -> NoMemory?:
+    grown := realloc(ptr(l.*.*), want * 8)
+    if grown as i64 == 0:
+        return NoMemory
+    l.* = grown
+    l.cap = want
+    return null
+func main():
+    l: &list[i64] = heap([])
+    if grow(ptr(l), 4) is NoMemory:
+        free(l)
+        return
+    l.len = 1
+    l[0] = 5
+    print(l[0], "\n")
+    free(l)

@@ -1,0 +1,125 @@
+type Small:
+    a: i32
+    b: i32
+
+type Pair:
+    x: i64
+    y: i64
+
+type Wide:
+    p: i64
+    q: i64
+    r: i64
+
+type Big:
+    v: array[i64, 7]
+
+type Huge:
+    v: array[i64, 13]
+
+type error Oops:
+    code: i64
+
+noinline func small(n: i32) -> Small:
+    return Small{n, n + 1}
+
+noinline func pair(n: i64) -> Pair:
+    return Pair{n, n * 2}
+
+noinline func wide(n: i64) -> Wide:
+    return Wide{n, n + 1, n + 2}
+
+noinline func big(n: i64) -> Big:
+    b: Big
+    for i in 0..7:
+        b.v[i] = n + i
+    return b
+
+noinline func huge(n: i64) -> Huge:
+    h: Huge
+    for i in 0..13:
+        h.v[i] = n * i
+    return h
+
+noinline func add(a: Wide, b: Wide) -> Wide:
+    return Wide{a.p + b.p, a.q + b.q, a.r + b.r}
+
+noinline func grown(b: Big) -> Big:
+    r: Big
+    for i in 0..7:
+        r.v[i] = b.v[6 - i] + 1
+    return r
+
+noinline func swapped(h: Huge) -> Huge:
+    r: Huge
+    for i in 0..13:
+        r.v[i] = h.v[12 - i]
+    return r
+
+noinline func maybe(n: i64) -> Wide|Oops:
+    if n < 0:
+        return Oops{n}
+    return wide(n)
+
+noinline func chained(n: i64) -> i64|Oops:
+    a := try maybe(n)
+    b := try maybe(n - 5)
+    c := try maybe(a.p + b.r)
+    return a.p + b.q + c.r
+
+noinline func alive_together(n: i64) -> i64:
+    a := wide(n)
+    b := wide(n + 10)
+    c := big(n + 20)
+    d := wide(n + 30)
+    return a.p + b.q + c.v[6] + d.r
+
+noinline func nested(n: i64) -> Wide:
+    return add(add(wide(n), wide(n + 1)), add(wide(n + 2), add(wide(n + 3), wide(n + 4))))
+
+noinline func in_place(n: i64) -> i64:
+    b := big(n)
+    b = grown(b)
+    b = grown(grown(b))
+    h := swapped(swapped(huge(n)))
+    h = swapped(h)
+    return b.v[0] * 100 + b.v[6] + h.v[0] + h.v[12]
+
+noinline func looped(n: i64) -> i64:
+    total := 0
+    keep := wide(1)
+    for i in 0..n:
+        w := wide(i)
+        if i % 3 == 0:
+            keep = w
+        s := small(i32(i))
+        p := pair(i)
+        total += w.q + i64(s.b) + p.y + keep.p
+    return total
+
+noinline func branches(n: i64) -> i64:
+    if n % 2 == 0:
+        a := big(n)
+        b := big(n + 1)
+        return a.v[3] + b.v[4]
+    c := huge(n)
+    d := pair(n)
+    return c.v[12] + d.y
+
+noinline func field_of_call(n: i64) -> i64:
+    return wide(n).q + big(n).v[5] + huge(n).v[2] + pair(n).y + i64(small(i32(n)).a)
+
+noinline func kept_pointer(n: i64) -> i64:
+    a := wide(n)
+    p := ptr(a)
+    b := wide(n + 100)
+    c := wide(n + 200)
+    p.q += b.p
+    return a.q + c.r
+
+func main():
+    print(chained(7), " ", chained(3), " ", chained(-1), "\n")
+    print(alive_together(1), " ", nested(1), "\n")
+    print(in_place(2), " ", looped(10), "\n")
+    print(branches(4), " ", branches(5), "\n")
+    print(field_of_call(3), " ", kept_pointer(1), "\n")

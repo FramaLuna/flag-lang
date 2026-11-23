@@ -1,0 +1,25 @@
+use fs
+use os
+
+func make_all(root: &strview) -> i64:
+    failed := 0
+    for i in 0..400:
+        if make_dir(join_path(root, "" + i)) is FsError:
+            failed += 1
+    return failed
+
+func main():
+    root := args()[0] + "_folder"
+    _ = make_dir(root)
+    for i in 0..400:
+        _ = remove_file(join_path(root, "" + i))
+    makers: &list[Thread[i64]] = heap([])
+    for k in 0..4:
+        append(makers, parallel make_all(root))
+    failed := 0
+    for m in makers:
+        failed += wait(m)
+    print(failed)
+    for i in 0..400:
+        _ = remove_file(join_path(root, "" + i))
+    _ = remove_file(root)

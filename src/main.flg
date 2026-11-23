@@ -247,6 +247,7 @@ context comp:
     given: &list[i64] = heap([]) # the locals that got their first value, in order, so a branch takes back what the one before it gave
     defers: &list[Deferred] = heap([])
     loops: &list[Loop] = heap([])
+    sliced: i64 # the last slice that shows a whole list or array, for -memory
     leaving: i64
     staying: i64
     ret: i64
@@ -282,7 +283,16 @@ extern "c":
     func flag_target() -> cstr
     func isatty(fd: i32) -> i32
 
+extern "c" where @linux():
+    func getrlimit(what: i32, limits: *array[u64, 2]) -> i32
+    func setrlimit(what: i32, limits: *array[u64, 2]) -> i32
+
 func main() -> i32:
+    where @linux(): # 500 levels of nesting take more than 8 MiB of stack on arm64
+        stack: array[u64, 2]
+        _ = getrlimit(3, ptr(stack))
+        stack[0] = max(stack[0], min(u64(16 << 20), stack[1]))
+        _ = setrlimit(3, ptr(stack))
     plain := env("NO_COLOR") ifnull ""
     if isatty(2) != 0 and plain.len == 0:
         comp.err = "\e[1;31merror:\e[0m "
@@ -344,6 +354,17 @@ func main() -> i32:
         elif a == "-version":
             print("flag ", view(flag_version()))
             return 0
+        elif a == "-docs":
+            folder: &str = heap(dir_of(executable()))
+            folder += "../docs"
+            if not exists(join_path(folder, "Reference.md")): # a docs folder beside bin that lacks it is someone else's
+                library := cached_library()
+                folder = join_path(library, "docs")
+                if not exists(join_path(library, "core.flg")) or make_dir(view(folder)) is FsError or not unpack(view(folder), true):
+                    eprint(comp.err, "failed to unpack documentation into ", folder)
+                    return 1
+            print(real_path(view(folder)))
+            return 0
         elif ends_with(a, ".flg"):
             append(inputs, a)
         elif is_dir(a):
@@ -395,7 +416,7 @@ func main() -> i32:
             return 2
         i += 1
     if inputs.len == 0:
-        eprint("usage: flagc [run|test] file.flg dir ... [-o output] [-shared] [-keep] [-check] [-memory] [-debug] [-target os-arch] [-overlay file] [-at file:line:col] [-timeout seconds] [-version] [-cc cc-args...] [-- run-args | test-filters]")
+        eprint("usage: flagc [run|test] file.flg dir ... [-o output] [-shared] [-keep] [-check] [-memory] [-debug] [-target os-arch] [-overlay file] [-at file:line:col] [-timeout seconds] [-version] [-docs] [-cc cc-args...] [-- run-args | test-filters]")
         return 2
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
@@ -476,42 +497,14 @@ func main() -> i32:
             start = k + 1
     nothing: Sym
     append(comp.syms, nothing)
+    finish(begin(Void, 0)) # node 0 is no node, as symbol 0 is no symbol
     comp.library = dir_of(executable())
     comp.library += "../lib/"
     here := current_dir() + "/"
     if starts_with(view(comp.library), here):
         comp.library = comp.library[here.len:]
     if not exists(join_path(comp.library, "core.flg")):
-        root: &str = heap("/tmp")
-        cache := env("XDG_CACHE_HOME")
-        local := env("LOCALAPPDATA")
-        home := env("HOME")
-        if cache is &strview and cache.len > 0:
-            root = cache
-        elif local is &strview and local.len > 0:
-            root = local
-        elif home is &strview and home.len > 0:
-            root = home
-            root += "/.cache"
-        comp.library = join_path(root, "flag/")
-        comp.library += view(flag_stamp()) + "/"
-        if not exists(join_path(comp.library, "core.flg")):
-            part: &str = heap(comp.library[:-1])
-            part += ".part" + getpid()
-            _ = make_dir(view(part))
-            name: cstr
-            size := 0
-            data := flag_embedded(0, ptr(name), ptr(size))
-            k := 0
-            while data as u64 != 0:
-                file: &strview
-                file = data
-                file.len = size
-                _ = write_file(join_path(part, view(name)), file)
-                k += 1
-                data = flag_embedded(k, ptr(name), ptr(size))
-            _ = rename_file(view(part), comp.library[:-1])
-            _ = remove_file(view(part))
+        comp.library = cached_library()
         if not exists(join_path(comp.library, "core.flg")):
             eprint(comp.err, "failed to unpack standard library into ", comp.library)
             return 1
@@ -550,6 +543,10 @@ func main() -> i32:
             for name in names:
                 if ends_with(name, ".flg"):
                     append(found, join_path(u.path, name))
+        for e in texts:
+            unsaved := join_path(u.path, base_name(e.key))
+            if ends_with(unsaved, ".flg") and real_path(unsaved) == e.key:
+                append(found, unsaved)
         if found.len == 0:
             _ = fail("directory " + u.path + " contains no .flg files", u.at)
             return 1
@@ -681,17 +678,17 @@ func main() -> i32:
     append(link, output)
     append(link, source)
     folders: &list[&strview] = heap([]) # where the linker looks for a library, and flagc for a file that an extern names
+    for k, r in rest:
+        if starts_with(r, "-L") and r.len > 2:
+            append(folders, r[2:])
+        elif r == "-L" and k + 1 < rest.len:
+            append(folders, rest[k + 1])
     append(folders, comp.library)
     for f in comp.files:
         if not f.library:
             append(folders, dir_of(view(f.path)))
     for f in folders:
         append(link, "-L" + f)
-    for k, r in rest:
-        if starts_with(r, "-L") and r.len > 2:
-            append(folders, r[2:])
-        elif r == "-L" and k + 1 < rest.len:
-            append(folders, rest[k + 1])
     for l in comp.libs:
         if ends_with(l, ".framework"):
             append(link, ptr(["-framework", l[:-10]]))
@@ -716,7 +713,7 @@ func main() -> i32:
         append(link, r)
     if not ran(link, linking):
         return 1
-    if apart and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
+    if apart and exists(view(output)) and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
         _ = remove_file(view(ssa))
@@ -804,6 +801,56 @@ func run_tests(queue: *Channel[i64, 64], commands: &listview[&list[&strview]], c
         close(p.output)
         codes[j] = wait(p)
 
+# the folder of this version in the cache, which holds its library from the moment it exists
+func cached_library() -> &str:
+    root: &str = heap("/tmp")
+    cache := env("XDG_CACHE_HOME")
+    local := env("LOCALAPPDATA")
+    home := env("HOME")
+    if cache is &strview and cache.len > 0:
+        root = cache
+    elif local is &strview and local.len > 0:
+        root = local
+    elif home is &strview and home.len > 0:
+        root = home
+        root += "/.cache"
+    folder: &str = heap(join_path(root, "flag/"))
+    folder += view(flag_stamp()) + "/"
+    if not exists(join_path(folder, "core.flg")):
+        part: &str = heap(folder[:-1])
+        part += ".part" + getpid()
+        _ = make_dir(view(part))
+        if unpack(view(part), false):
+            _ = rename_file(view(part), folder[:-1])
+        left := list_dir(view(part)) # another flagc got there first
+        if left is &listview[&strview]:
+            for name in left:
+                _ = remove_file(join_path(part, name))
+        _ = remove_file(view(part))
+    return folder
+
+# writes each embedded file that folder lacks, of the docs or of the library, whole: another flagc may be reading it
+func unpack(folder: &strview, docs: bool) -> bool:
+    whole := true
+    name: cstr
+    size := 0
+    k := 0
+    data := flag_embedded(k, ptr(name), ptr(size))
+    while data as u64 != 0:
+        if starts_with(view(name), "docs/") == docs:
+            path: &str = heap(join_path(folder, base_name(view(name))))
+            if not exists(view(path)):
+                part: &str = heap(path)
+                part += ".part" + getpid()
+                file: &strview
+                file = data
+                file.len = size
+                whole = write_file(view(part), file) is null and rename_file(view(part), view(path)) is null and whole
+                _ = remove_file(view(part))
+        k += 1
+        data = flag_embedded(k, ptr(name), ptr(size))
+    return whole
+
 func ran(command: &listview[&strview], why: &strview) -> bool:
     code := run(command)
     if code is FsError:
@@ -813,9 +860,12 @@ func ran(command: &listview[&strview], why: &strview) -> bool:
 
 func real_path(path: &strview) -> &strview where not @windows():
     found := realpath(cstr(path), 0 as *u8)
-    if found as u64 == 0:
+    if found as u64 != 0:
+        return view(found)
+    folder := realpath(cstr(dir_of(path)), 0 as *u8)
+    if folder as u64 == 0:
         return path
-    return view(found)
+    return heap(join_path(view(folder), base_name(path)))
 
 func real_path(path: &strview) -> &strview where @windows():
     found := _wfullpath(0 as wstr, wstr(path), 0)

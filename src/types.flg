@@ -313,6 +313,9 @@ func lay_out(t: i64, at: i64) -> Fail?:
 func too_large(name: &strview, at: i64) -> Fail:
     return fail("type " + name + " exceeds the maximum size of " + HUGE + " bytes", at)
 
+func not_fat(name: &strview, at: i64) -> Fail:
+    return fail(name + " is not a fat pointer type; '&" + name + "' is invalid", at)
+
 func align_up(n: i64, a: i64) -> i64:
     return (n + a - 1) / a * a
 
@@ -347,7 +350,10 @@ func resolve(n: i64) -> i64|Fail:
     if node.kind == TUnary and tok.text == "&":
         if comp.nodes[n + 1].kind != TName:
             return fail("'&' must be followed by a fat pointer type name, like &str or &list[i32]", tok.at)
-        return instance(n + 1, true)
+        t := try instance(n + 1, true)
+        if comp.types[t].kind != Fat:
+            return not_fat(comp.types[t].name, tok.at)
+        return t
     if node.kind == TUnary and tok.text == "*":
         return pointer(try resolve(n + 1))
     if node.kind == TUnary and tok.text == "type":
@@ -524,7 +530,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
     if kind == Fat and not fat:
         return fail(sym.name + " is a fat pointer type; write &" + sym.name, at)
     if fat and kind != Fat:
-        return fail(sym.name + " is not a fat pointer type; '&" + sym.name + "' is invalid", at)
+        return not_fat(sym.name, at)
     if comp.types.len > 100000 or comp.resolving.len > DEEP or comp.spelled > LONG:
         return fail("recursive generic type " + sym.name + " expands infinitely with larger type arguments", at)
     generics := type_params(decl)

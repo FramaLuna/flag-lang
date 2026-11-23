@@ -249,10 +249,15 @@ loadaddr(Con *c, char *rn, FILE *f)
 
 	switch (c->sym.type) {
 	case SGlo:
-	case SExt:
-		fprintf(f, "\t%s %s, ", c->sym.type == SExt ? "lga" : "lla", rn);
+		fprintf(f, "\tlla %s, ", rn);
 		emitaddr(c, f);
 		fputc('\n', f);
+		break;
+	case SExt:
+		/* lga spelled out: clang 14 lacks it */
+		fprintf(f, "1:\n\tauipc %s, %%got_pcrel_hi(", rn);
+		emitaddr(c, f);
+		fprintf(f, ")\n\tld %s, %%pcrel_lo(1b)(%s)\n", rn, rn);
 		break;
 	case SThr:
 		if (c->bits.i)

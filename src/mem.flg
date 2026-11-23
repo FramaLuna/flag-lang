@@ -49,7 +49,7 @@ UNSETTLED = "its memory state did not converge"
 UNFOLLOWED = "-memory cannot track a pointer after it is stored into C-allocated memory"
 
 type enum Code:
-    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Parse, Stop, Extern, Goto, Fork, Leave, Halt
+    Alloc, Load, Word, Store, Clear, Blit, Offset, Count, Scale, Mix, Plain, Call, Locks, Unlocks, Emptied, Fresh, Arena, Rewind, Take, Reclaim, Grow, Resize, Release, Discard, Launch, Reap, Detach, Settle, Give, Taken, Copy, Fill, Absent, Ended, Round, Walked, Narrowed, Counted, Reused, Part, Parse, Stop, Extern, Goto, Fork, Leave, Halt
 
 type enum Kind:
     Pinned, Heap, Entry, Shared, Slot, Focus
@@ -102,6 +102,7 @@ type Target:
     writer: u32
     killer: i64
     element: bool
+    part: bool # through a slice that leaves out some of a list
 
 type Cell:
     owner: u32
@@ -137,6 +138,8 @@ type Obj:
     thread: bool
     alone: bool
     core: bool # in a context of core
+    taken: bool # pop or remove took it out of its list
+    part: bool # freed through a slice that leaves out some of a list
     shape: u32 # the layout of the element of a round
 
 type Marks:
@@ -248,6 +251,7 @@ type Fn:
     done: bool
     deep: bool # it changes memory past HOPS pointers, which its callers don't follow
     guarded: bool # of core, it copies a view of the memory it grows before it reads it, as the += of text does
+    takes: bool # of core, pop or remove
     stuck: &strview = ""
     stuck_in: i64
     runs: i64
@@ -342,6 +346,8 @@ func check_memory():
     defer free(derived)
     aims: &list[&strview] = heap([])
     defer free(aims)
+    held: &list[&strview] = heap([])
+    defer free(held)
     for func in comp.procs:
         clear(labels)
         blocks.len = 0
@@ -408,6 +414,28 @@ func check_memory():
                     for p in comp.procs:
                         if comp.insts[p.inst].taken_as == i.c.n:
                             append(aims, p.name)
+                    variable := 0 # a local that only ever holds named functions calls one of those
+                    for c in comp.code[func.code:func.end]:
+                        if c.to == i.a.n and c.op == "loadl" and c.a.kind == Temp:
+                            variable = c.a.n
+                    held.len = 0
+                    for c in comp.code[func.code:func.end]:
+                        if variable != 0 and c.op == "storel" and c.b.kind == Temp and c.b.n == variable:
+                            if c.a.kind == Global and contains(aims, comp.globals[c.a.n]):
+                                append(held, comp.globals[c.a.n])
+                            elif c.a.kind != Const or c.a.n != 0:
+                                variable = 0
+                        elif variable != 0 and c.op != "loadl" and (c.a.kind == Temp and c.a.n == variable or c.b.kind == Temp and c.b.n == variable or c.c.kind == Temp and c.c.n == variable):
+                            variable = 0
+                        elif variable != 0 and c.op == "call":
+                            for j in c.first..c.first + c.count:
+                                if comp.passes[j].arg.kind == Temp and comp.passes[j].arg.n == variable:
+                                    variable = 0
+                    if variable != 0 and held.len > 0:
+                        aims.len = 0
+                        for h in held:
+                            if not contains(aims, h):
+                                append(aims, h)
                 if aims.len == 0:
                     append(aims, "")
                 join := u32(blocks.len)
@@ -469,6 +497,7 @@ func check_memory():
                     o.code = Scale
                 case "sub", "and", "or", "xor", "shl", "shr", "sar", "udiv", "div", "rem", "urem", "neg", "extsw", "extuw", "extsb", "extub", "extsh", "extuh":
                     o.code = Mix
+                    o.size = u32(name == "sub")
                     if i.number:
                         o.code = Plain
                 case "jmp":
@@ -478,6 +507,10 @@ func check_memory():
                     o.code = Fork
                     o.a.n = i64(block_of(labels, blocks, u32(i.b.n)))
                     o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
+                    test := comp.code[k - 1]
+                    if test.to == i.a.n and (test.op == "ceql" or test.op == "cnel") and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
+                        o.from = u32(test.a.n) + 1 - func.temps
+                        o.size = 1 if test.op == "ceql" else 2
                 case "ret":
                     o.code = Leave
                     if f.blob: # the value goes back like a blit into the caller's place
@@ -498,6 +531,12 @@ func check_memory():
                     o.size = u32(i.c.n)
                 case "narrowed":
                     o.code = Narrowed
+                case "counted":
+                    o.code = Counted
+                case "reused":
+                    o.code = Reused
+                case "part":
+                    o.code = Part
                 case "aload", "aadd", "aswap", "acas": # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
                     o.code = Word
                     o.atomic = true
@@ -619,6 +658,7 @@ func check_memory():
         if decl != 0 and file_of(comp.tokens[comp.nodes[decl].tok].at) == 0 and (text(decl) == "+=" or text(decl) == "=" or text(decl) == "append") and params(decl) > 1:
             view := kid(decl, 1) + 1 # the type of the second parameter, a &strview or a &listview
             mem.fns[g].guarded = comp.nodes[view].kind == TUnary and text(view) == "&" and (text(view + 1) == "strview" or text(view + 1) == "listview")
+        mem.fns[g].takes = decl != 0 and file_of(comp.tokens[comp.nodes[decl].tok].at) == 0 and (text(decl) == "pop" or text(decl) == "remove")
         for k in spans[0].first..spans[-1].end:
             if mem.ops[k].code == Call:
                 name := mem.callees[mem.ops[k].callee]
@@ -1024,13 +1064,32 @@ func analyze(f: i64) -> bool:
                 hold(mem.pool[v].slot)
             for v in out.temps:
                 hold(mem.pool[v].slot)
+            failed := out
+            nulled := NONE
+            last := spans[b].end - 1
+            if spans[b].end > spans[b].first and mem.ops[last].code == Fork and mem.ops[last].size != 0 and mem.temps[mem.ops[last].from].killer != 0 and empty(mem.temps[mem.ops[last].from].dead): # realloc gave null: it moved nothing and made nothing
+                tested := mem.temps[mem.ops[last].from]
+                held := objects(tested.live)
+                made := held and mem.fn.heaps
+                for id in mem.present:
+                    if mem.ticked[id] == mem.tick and cell_value(id).killer == tested.killer and not empty(cell_value(id).dead and held):
+                        made = made - cell_value(id).dead
+                        rewrite(i64(id), unmoved(cell_value(id), held))
+                for t in mem.fn.crossing:
+                    if mem.temps[t].killer == tested.killer and not empty(mem.temps[t].dead and held):
+                        mem.temps[t] = unmoved(mem.temps[t], held)
+                        mem.interned[t] = 0
+                mem.marks.sure = mem.marks.sure - held
+                vanish(made)
+                nulled = i64(mem.ops[last].size) - 1
+                failed = snapshot()
             for side in 0..2:
                 s := spans[b].yes
                 if side == 1:
                     s = spans[b].no
                 if s != 0:
                     old := mem.ins[s - 1]
-                    joined := merge(old, out, s - 1)
+                    joined := merge(old, failed if side == nulled else out, s - 1)
                     if old.seen and joined == old:
                         release(joined)
                     else:
@@ -1039,6 +1098,8 @@ func analyze(f: i64) -> bool:
                         queued[s - 1] = true
                         if s - 1 < low:
                             low = s - 1
+            if nulled != NONE:
+                release(failed)
             release(out)
     mem.final = true
     mem.speak = true
@@ -1160,6 +1221,14 @@ func analyze(f: i64) -> bool:
     free(old.touches)
     return changed
 
+# v as it was before a realloc that gave null
+func unmoved(v: Target, blocks: Set) -> Target:
+    back := v.dead and blocks
+    v.must = v.must or back - v.live
+    v.live = v.live or back
+    v.dead = v.dead - back
+    return v
+
 func hold(slot: u32):
     if slot == ALL:
         for w in 0..mem.words:
@@ -1276,18 +1345,26 @@ func visit(block: i64):
                 v = Target{live = bit(NOWHERE), stride = i32(n)}
             define(o.to, v)
         case Mix:
-            define(o.to, blur(target_of(o.a), target_of(o.b)))
+            x := target_of(o.a)
+            y := target_of(o.b)
+            if o.size != 0 and pointing(x) and objects(x.live) == objects(y.live) and x.slot == y.slot and x.slot != ALL: # the distance between two places of one block is a number
+                define(o.to, number(ANY))
+            else:
+                define(o.to, blur(x, y))
         case Count:
-            given := target_of(o.a)
-            if mem.speak and followable(given):
-                name := mem.fn.names[o.a.temp]
-                text: &str = heap("")
-                if name.len > 0:
-                    text += "-memory cannot track " + name + " after converting it to an integer; keep it in a pointer type"
-                else:
-                    text += "-memory cannot track a pointer after converting it to an integer; keep it in a pointer type"
-                warn(view(text), o.pos, "", 0, false)
+            if mem.speak:
+                counted(target_of(o.a), mem.fn.names[o.a.temp])
             define(o.to, number(ANY))
+        case Reused:
+            wipe(SLOTS + i64(target_of(o.a).slot) - 1)
+        case Part:
+            shown := target_of(o.a)
+            data := fetch(shown)
+            data.part = true
+            stash(shown, data)
+        case Counted:
+            if mem.speak:
+                counted(fetch(target_of(o.a)), "")
         case Plain:
             define(o.to, number(ANY))
         case Call, Locks, Unlocks, Emptied:
@@ -1343,11 +1420,12 @@ func visit(block: i64):
                     h := 0
                     replace := true
                     if mem.fns[g].global[x]:
-                        key := (u64(g) << 24) or (u64(x) << 8) or GLOBAL # one for each block that g keeps in a context, the same through every call
+                        key := (u64(g) << 24) or (u64(x) << 8) or GLOBAL # the line of a block that g keeps in a context, the same through every call
                         if (ob.key and 0xff) == GLOBAL:
-                            key = ob.key
-                        h = object(key, Obj{kind = Heap, many = true, born = born, pos = ob.pos, from = ob.from, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone})
-                        replace = false
+                            key = ob.key and (AGED - 1)
+                        made := Obj{kind = Heap, many = true, born = born, pos = ob.pos, from = ob.from, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone, core = ob.core or mem.fns[g].node == 0 or file_of(comp.tokens[comp.nodes[mem.fns[g].node].tok].at) == 0}
+                        replace = not inner and not made.core # the blocks core keeps stay one per line, which costs less
+                        h = birth(key, made) if replace else object(key, made)
                     elif inner and recursive != NONE:
                         h = recursive
                         replace = false
@@ -1371,7 +1449,7 @@ func visit(block: i64):
                     binding(x)
                 again := false # the lock was taken already, so its with lets go of nothing
                 if o.code == Locks:
-                    k := lock_of(target_of(mem.args[o.first]))
+                    k := lock_of(target_of(mem.args[o.first]), false)
                     again = k != NONE and mem.runs.locks[k]
                     if k != NONE:
                         mem.runs.locks[k] = true
@@ -1400,7 +1478,7 @@ func visit(block: i64):
                             append(mem.footprints, Footprint{newest(h), o.pos, t})
                             started(newest(h), t)
                 if o.code == Unlocks:
-                    k := lock_of(fetch(target_of(mem.args[o.first])))
+                    k := lock_of(fetch(target_of(mem.args[o.first])), false)
                     if k != NONE:
                         mem.runs.locks[k] = false
                 if mem.speak:
@@ -1485,9 +1563,13 @@ func visit(block: i64):
                         for h in killed:
                             condemn(h, marks.sure[x] and b.must[h], marks.freed[x])
                             mem.fn.objs[h].element = mem.fn.objs[h].element or marks.freed[x] and b.element
+                            mem.fn.objs[h].part = mem.fn.objs[h].part or marks.freed[x] and not inner and (b.part or ob.part) # a function that calls itself on the rest of a list walks it
                         for h in passed:
                             mem.fn.objs[h].pool = mem.fn.objs[h].pool or ob.pool
                             mem.fn.objs[h].loose = mem.fn.objs[h].loose or ob.loose
+                    if ob.taken:
+                        for h in objects(b.live) and (mem.fn.heaps or mem.fn.outer):
+                            mem.fn.objs[h].taken = true
                     if marks.gone[x]:
                         vanish(freeable(b.must))
                     if marks.used[x]:
@@ -1507,6 +1589,11 @@ func visit(block: i64):
                 if o.blob:
                     wipe(SLOTS + i64(o.slot))
                 mem.writes.len = 0
+                kept: Set # what it freed, gave back or left somewhere
+                if mem.speak:
+                    kept = marks.killed or mem.fns[g].ret.live or mem.fns[g].ret.dead
+                    for a in sum.aims:
+                        kept = kept or a.live or a.dead
                 for k in 0..sum.ids.len:
                     c: Cell
                     if g == mem.f:
@@ -1514,8 +1601,29 @@ func visit(block: i64):
                     else:
                         c = mem.fns[g].cells[sum.ids[k]]
                     x := i64(c.owner)
+                    if mem.speak and not o.ghost and x < SLOTS and c.off != ANY and c.stride == 0 and c.member == 0 and obj_of(g, x).kind == Shared and not obj_of(g, x).core:
+                        lost := true
+                        for y in kept and outer:
+                            lost = lost and not (obj_of(g, y).parent == x and obj_of(g, y).off == c.off and obj_of(g, y).stride == 0)
+                        place := sole(binding(x))
+                        w := mem.fn.heads[place] if lost and place != NONE else 0
+                        while w != 0:
+                            d := mem.fn.cells[w - 1]
+                            if d.off == c.off and d.stride == 0 and d.member == 0 and mem.ticked[w - 1] == mem.tick and single(cell_value(w - 1).live): # surely this block, so not a first call
+                                for b in (cell_value(w - 1).live - cell_value(w - 1).dead) and mem.fn.heaps and mem.marks.live:
+                                    elsewhere := (mem.fn.keys[b] and 0xff) != GLOBAL
+                                    for id in mem.refs[b]:
+                                        elsewhere = elsewhere or i64(id) != i64(w) - 1 and mem.ticked[id] == mem.tick and cell_value(id).live[b]
+                                    if not elsewhere:
+                                        text: &str = heap("memory leak: ")
+                                        text += (mem.who if mem.who.len > 0 else "this call") + " replaces " + spelled(place, c.off, 8).name + " while it still holds memory; free it first"
+                                        warn(view(text), o.pos, "", 0, mem.fns[g].strict)
+                            w = d.next
                     if x == RETURNED and o.blob:
-                        append(mem.writes, Write{translate(sum.aims[k]), cell_at(SLOTS + i64(o.slot), c.off, c.stride, c.count, c.member), true})
+                        v := translate(sum.aims[k])
+                        if mem.fns[g].takes:
+                            v = taken(v)
+                        append(mem.writes, Write{v, cell_at(SLOTS + i64(o.slot), c.off, c.stride, c.count, c.member), true})
                     ob := obj_of(g, x)
                     if x != RETURNED and not (ob.kind == Entry and ob.depth == 0 and ob.root > 0 and mem.fns[g].copies[ob.root - 1]):
                         t := binding(x)
@@ -1558,7 +1666,7 @@ func visit(block: i64):
                 if o.to != 0 and o.blob:
                     define(o.to, Target{slot = o.slot + 1})
                 elif o.to != 0:
-                    define(o.to, translate(mem.fns[g].ret))
+                    define(o.to, taken(translate(mem.fns[g].ret)) if mem.fns[g].takes else translate(mem.fns[g].ret))
                 if o.code == Emptied: # the elements are not in the list any more
                     data := fetch(target_of(mem.args[o.first]))
                     d := sole(data)
@@ -1622,7 +1730,7 @@ func visit(block: i64):
                 mem.fn.objs[h].home = home_of(arena)
             mem.marks.made = mem.marks.made or blocks and (mem.fn.outer or mem.fn.focus)
             sweep()
-            out := Target{live = objects(first.live), must = first.must}
+            out := Target{live = objects(first.live), must = first.must, killer = o.pos if o.code == Grow else 0}
             reborn(first, blocks, ptr(out), arena, (u64(i) << 16) or SITE, Obj{kind = Heap, pos = o.pos, from = "realloc"})
             if empty(out.live):
                 out.live = bit(NOWHERE)
@@ -1674,6 +1782,7 @@ func visit(block: i64):
             for h in blocks:
                 condemn(h, first.must[h], true)
                 mem.fn.objs[h].element = mem.fn.objs[h].element or first.element
+                mem.fn.objs[h].part = mem.fn.objs[h].part or first.part
                 mem.fn.objs[h].loose = mem.fn.objs[h].loose or o.code == Discard
             vanish(blocks and first.must)
             sweep()
@@ -1876,7 +1985,7 @@ func visit(block: i64):
                 may := reach(given, ByLive)
                 for h in (mem.fn.heaps and mem.marks.live) - must - mem.fn.arenas:
                     x := mem.fn.objs[h]
-                    if (x.key and 0xff) == GLOBAL or x.element and (mem.marks.freed[h] or may[h]) or x.home != 0 or x.alone:
+                    if (x.key and 0xff) == GLOBAL or x.element and not x.part and (mem.marks.freed[h] or may[h]) or x.home != 0 or x.alone:
                         continue
                     text: &str = heap("memory leak: ")
                     if x.name.len > 0:
@@ -2128,7 +2237,9 @@ func rebound(g: i64, t: Touch, locks: Set):
     for k in t.locks:
         lock := obj_of(g, k)
         if lock.parent < SLOTS:
-            l := lock_of(plus(binding(lock.parent), lock.off, 0, 0))
+            b := binding(lock.parent)
+            mine := lock.parent == i64(t.owner) and (lock.stride != 0 and t.stride == lock.stride or b.stride != 0 and b.off != ANY and t.off != ANY and t.stride == 0 and i64(b.off) % i64(b.stride) + i64(t.off) + i64(t.size) <= i64(b.stride)) # in the element of the lock, whichever that is
+            l := lock_of(plus(b, lock.off, lock.stride, 0), mine)
             if l != NONE:
                 out.locks[l] = true
     out.after = Set{}
@@ -2139,12 +2250,12 @@ func rebound(g: i64, t: Touch, locks: Set):
     if at.slot != 0 and at.slot != ALL:
         append(mem.passed, moved(out, SLOTS + i64(at.slot) - 1, at))
 
-# the object that stands for the lock that l points to, NONE when it may be in more than one place
-func lock_of(l: Target) -> i64:
+# the object that stands for the lock that l points to, NONE when it may be in more than one place, unless it guards only its own element
+func lock_of(l: Target, element: bool) -> i64:
     owner := sole(l)
-    if owner == NONE or l.off == ANY or l.stride != 0:
+    if owner == NONE or l.off == ANY or l.stride != 0 and not element:
         return NONE
-    k := object((u64(owner) << 40) or (u64(l.off) << 8) or HELD, Obj{kind = Pinned, parent = owner, off = l.off})
+    k := object((child(owner, l.off, l.stride) xor FIELD) or HELD, Obj{kind = Pinned, parent = owner, off = l.off, stride = l.stride})
     if k == OUTSIDE:
         return NONE
     return k
@@ -2429,6 +2540,7 @@ func unite(a: Target, b: Target, la: Set, lb: Set) -> Target:
     out.dead = a.dead or b.dead
     out.must = (a.must or not la) and (b.must or not lb) and out.live
     out.element = a.element and (b.element or not followable(b)) or b.element and not followable(a)
+    out.part = a.part or b.part
     if a.writer != b.writer:
         out.writer = 0
     out.killer = max(a.killer, b.killer)
@@ -2489,6 +2601,7 @@ func fetch(a: Target) -> Target:
         out.must = Set{}
     if not exact:
         out.element = true
+    out.part = out.part or a.part
     return out
 
 func gather(out: Target, owner: i64, off: i32, stride: i32, count: u32, member: u32, live: Set) -> Target:
@@ -2517,7 +2630,12 @@ func gather(out: Target, owner: i64, off: i32, stride: i32, count: u32, member: 
             if fits and mem.ticked[h - 1] != mem.tick and off != ANY: # untouched, a cell that spans more holds what this one does
                 fits = c.off != ANY and (c.stride == 0 or c.stride == stride)
             if fits:
-                out = unite(out, current(i64(h) - 1), live, live)
+                held := current(i64(h) - 1)
+                if c.stride != 0 and stride == 0 and off != ANY:
+                    for b in held.live and mem.marks.freed: # freed at an index it doesn't know, it may be this one
+                        if mem.fn.objs[b].element and not mem.fn.objs[b].taken:
+                            held.dead[b] = true
+                out = unite(out, held, live, live)
         h = c.next
     if view != 0:
         return unite(out, current(i64(view) - 1), live, live)
@@ -2839,6 +2957,7 @@ func absorb(r: i64, into: Set, within: bool):
     for t in into:
         mem.fn.objs[t].element = mem.fn.objs[t].element or mem.fn.objs[r].element
         mem.fn.objs[t].twice = mem.fn.objs[t].twice or mem.fn.objs[r].twice
+        mem.fn.objs[t].part = mem.fn.objs[t].part or mem.fn.objs[r].part
         mem.fn.objs[t].loose = mem.fn.objs[t].loose or mem.fn.objs[r].loose
     m := mem.marks
     mem.marks = Marks{shift(m.live, r, into), shift(m.freed, r, into), shift(m.killed, r, into), m.sure - pair, m.gone - pair, shift(m.used, r, into), shift(m.made, r, into), shift(m.waited, r, into)}
@@ -2861,9 +2980,27 @@ func visited(walk: u64):
                 if mem.ticked[k - 1] == mem.tick and c.member == 0:
                     back := cell_value(k - 1)
                     back.must = Set{} # what it held is in an element already, not one more time
+                    back.dead = back.dead - (mem.fn.focus - mem.marks.freed) # freed through another element, like one that pop took: this one stays
                     stash(plus(element, c.off, 0, 0), back)
                 drop(i64(k) - 1)
                 k = c.next
+            for id in mem.refs[r]: # a variable that points to the element in place now points to where it is
+                if mem.ticked[id] != mem.tick or mem.fn.cells[id].owner < SLOTS:
+                    continue
+                was := cell_value(id)
+                if was.live[r] or was.dead[r]:
+                    at := plus(element, was.off, was.stride, was.count)
+                    if was.dead[r]:
+                        at.dead = at.dead or at.live
+                    rest := was
+                    rest.live = was.live - bit(r)
+                    rest.dead = was.dead - bit(r)
+                    rest.must = was.must - bit(r)
+                    live := alive(mem.marks)
+                    home := unite(rest, at, live, live)
+                    home.must = Set{}
+                    refer(id, at.live or at.dead)
+                    rewrite(i64(id), home)
 
 # the element r of a walk goes back to the blocks of its line, which stay freed when they were, before the walk or in it
 func back(r: i64):
@@ -3200,6 +3337,12 @@ func immovable(who: &strview, name: &strview, why: &strview, strict: bool):
         text += who + " cannot grow this memory" + why
     warn(view(text), mem.ops[mem.here].pos, "", 0, strict)
 
+func counted(v: Target, name: &strview):
+    if followable(v):
+        text: &str = heap("")
+        text += "-memory cannot track " + (name if name.len > 0 else "a pointer") + " after converting it to an integer; keep it in a pointer type"
+        warn(view(text), mem.ops[mem.here].pos, "", 0, false)
+
 func touch_args(o: Op):
     for k in o.first..o.first + o.count:
         touch(target_of(mem.args[k]), mem.fn.names[mem.args[k].temp])
@@ -3407,6 +3550,16 @@ func binding(x: i64) -> Target:
     mem.binds[x] = out
     mem.bound = mem.bound or bit(x)
     return out
+
+# what pop or remove gives back: the block, no longer the element of a walk that visited it
+func taken(v: Target) -> Target:
+    for f in v.live and mem.fn.focus:
+        if mem.fn.objs[f].parent != NONE and (mem.fn.keys[f] and 0xff) == VISITED:
+            v.live[f] = false
+            v.live = v.live or kin(mem.fn.objs[f].parent)
+    for h in objects(v.live) and (mem.fn.heaps or mem.fn.outer):
+        mem.fn.objs[h].taken = true
+    return v
 
 func translate(v: Target) -> Target:
     if plain(v):

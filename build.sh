@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-version=0.6.0
+version=0.6.1
 cc=${CC:-cc}
 mkdir -p build/objects build/embed
 case $(uname -m) in aarch64|arm64) machine=arm64 ;; riscv64) machine=riscv64 ;; *) machine=x86_64 ;; esac
@@ -10,6 +10,7 @@ linking=
 case $(uname) in
 Darwin)
     system=macos
+    linking="-Wl,-stack_size,0x1000000"
     case $machine in arm64) target=T_arm64_apple ;; *) target=T_amd64_apple ;; esac
     section="__TEXT,__const"
     symbol=_
@@ -40,12 +41,12 @@ for src in vendor/qbe/*.c vendor/qbe/*/*.c; do
 done
 printf 'int qbe_main(int, char **);\nint main(int argc, char **argv) { return qbe_main(argc, argv); }\n' > build/embed/qbe.c
 $cc -o build/qbe build/embed/qbe.c $objects
-stamp=$(cat lib/* | cksum | cut -d' ' -f1)
+stamp=$(cat lib/* docs/*.md | cksum | cut -d' ' -f1)
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 {
     echo ".section $section"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo ".globl ${symbol}flag_file_$i"
         echo ".globl ${symbol}flag_file_${i}_end"
         echo ".p2align 3"
@@ -58,13 +59,13 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 {
     echo "#include <stddef.h>"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo "extern const unsigned char flag_file_$i[], flag_file_${i}_end[];"
         i=$((i + 1))
     done
     echo "static const struct { const char *name; const unsigned char *start, *end; } files[] = {"
     i=0
-    for f in lib/*; do
+    for f in lib/* docs/*.md; do
         echo "    {\"${f#lib/}\", flag_file_$i, flag_file_${i}_end},"
         i=$((i + 1))
     done
@@ -133,7 +134,6 @@ if [ "${1:-}" = cross ]; then
             case " $flags " in
             *" -check "*|*" -o "*|*" -target "*|*" -overlay "*|*" -timeout "*|*" -at "*|*" tests/"*) continue ;;
             esac
-            [ "$system" = macos ] && flags=$(echo " $flags " | sed 's/ -debug / /') # dsymutil reads a linked program, and the C compiler here is true
             CC=true build/flagc $files -target "$target" -o "$out/$name" -keep $flags > "$out/$name.log" 2>&1 || { echo "cross: $source does not compile for $target"; cat "$out/$name.log"; exit 1; }
             clang --target="${pair#*=}" -c "$out/$name.s" -o "$out/$name.o" || { echo "cross: $source does not assemble for $target"; exit 1; }
         done
@@ -145,7 +145,7 @@ if [ "${1:-}" = package ]; then
     rm -rf "build/$name"
     mkdir -p "build/$name/bin"
     cp build/flagc$exe "build/$name/bin/"
-    cp README.md LICENSE "build/$name/"
+    cp README.md LICENSE lib/flag-gdb.py "build/$name/"
     cp vendor/qbe/LICENSE "build/$name/LICENSE.qbe"
     cp lib/raylib.license "build/$name/LICENSE.raylib"
     tar -czf "build/$name.tar.gz" -C build "$name"
