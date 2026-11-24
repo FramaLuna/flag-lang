@@ -9,6 +9,7 @@ mkdir -p "$out/bin"
 cp "$compiler" "$out/bin/"
 pass=0
 fail=0
+skipped=0
 limit=120
 # what runs a WebAssembly module: node for wasm32, and for wasm64 a node with 64-bit memory, which before Node 24 takes a
 # flag, or none
@@ -122,7 +123,8 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
             continue
         fi
         if [ "$host" = none ]; then
-            continue # without a node, or one with 64-bit memory for wasm64, there is nothing to run the module
+            skipped=$((skipped + 1)) # without a node, or one with 64-bit memory for wasm64, there is nothing to run the module
+            continue
         elif [ ! -f "tests/$name.gdb" ]; then
             within env FLAGC="$compiler" $host "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
         elif [ -z "$target" ] && command -v gdb > /dev/null; then
@@ -150,5 +152,6 @@ for src in examples/*.flg; do
         fail=$((fail + 1))
     fi
 done
+[ "$skipped" -gt 0 ] && echo "$skipped skipped, with no node to run their WebAssembly module"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
