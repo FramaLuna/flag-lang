@@ -47,7 +47,7 @@ Functions that abort the program on an invalid argument, such as an out-of-bound
 - `on_panic(hook: func(&strview, &strview))`: registers a callback that `panic` runs after printing the message and call stack and before exiting. It receives `(message, place)` for every exit-134 runtime error, including compiler-generated checks. Calling `on_panic` again replaces the previous hook, and the hook may terminate the program with `exit`. A `-shared` library has its own `core`, so the host program's `on_panic` hook does not run for runtime errors inside a loaded library.
 - `exit(code: i32) -> never`: terminates the program with `code`. Pending file output is flushed, but `defer` statements do not run.
 
-Command-line arguments live in `args()` in [os](#os).
+Command-line arguments live in `args()` in [os](#os), or in `@argc()` and `@argv()` on WebAssembly, where `os` does not build.
 
 ### Files
 
@@ -64,7 +64,7 @@ Writes are buffered and sent to the OS in larger chunks so many small writes sta
 - before the program blocks to wait: reading from any file, `ready`, `accept` or `receive` in [net](#net), reading from an empty `Channel`, `wait` on a thread or process, `sleep`, or `main` ending while threads still run, so prompts and logs appear before waiting, even when redirected to a file,
 - at every newline when the file is a terminal or `stderr`.
 
-`stdout` and `stderr` preserve the order of your calls, and both flush before reading from `stdin`. A crash flushes pending output before printing the crash report, whereas a signal such as Ctrl-C discards buffered output. If another thread is actively writing to a file, automatic flushes (`flush()`, waits, exit, runtime errors, and crashes) flush every other file without blocking on that one, so a thread stuck sending to a slow peer cannot stall the rest of the program.
+`stdout` and `stderr` preserve the order of your calls, and both flush before reading from `stdin`. A crash flushes pending output before printing the crash report, whereas a signal such as Ctrl-C discards buffered output. On WebAssembly every file flushes at each newline, and a trap, which ends the module before its code runs again, loses the text written since the last newline. If another thread is actively writing to a file, automatic flushes (`flush()`, waits, exit, runtime errors, and crashes) flush every other file without blocking on that one, so a thread stuck sending to a slow peer cannot stall the rest of the program.
 
 #### File functions
 
@@ -136,9 +136,9 @@ type error FsError:
     path: &strview   # the path, program, or address passed in
 ```
 
-Printing an `FsError` formats all three fields using the OS message for `code`, for example `cannot open notes.txt: No such file or directory`. For a failed `read`, `read_line`, or `flush`, `path` is a **temporary** copy of the path the file was opened or created with, or that `file` gave, or `the standard input`, `the standard output`, or `the error output` for the standard streams. A negative `code` represents an error with no `errno` equivalent (such as a Windows error code that does not map to `errno`).
+Printing an `FsError` formats all three fields using the OS message for `code`, for example `cannot open notes.txt: No such file or directory`. For a failed `read`, `read_line`, or `flush`, `path` is a **temporary** copy of the path the file was opened or created with, or that `file` gave, or `the standard input`, `the standard output`, or `the error output` for the standard streams. A negative `code` represents an error with no `errno` equivalent (such as a Windows error code that does not map to `errno`). On WebAssembly `code` is the error number of WASI, which differs from `errno`, and prints as `WASI error 8`.
 
-- `errno() -> i32`: the error code of the last failed C call. Useful after your own `extern` calls: `eprint(FsError{errno(), "lock", path})`.
+- `errno() -> i32`: the error code of the last failed C call, or on WebAssembly of the last failed call of WASI. Useful after your own `extern` calls: `eprint(FsError{errno(), "lock", path})`.
 - `windows_errno(code: u32) -> i32`: maps a Windows `GetLastError()` code to its C `errno`, or returns `-i32(code)` when no `errno` matches: `FsError{windows_errno(GetLastError()), "lock", path}`.
 
 ### Threads
@@ -510,7 +510,7 @@ operator [](g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Inte
 
 ## fs
 
-Files, folders, and paths. Streaming I/O uses `File` from [core](#files), and failures return `FsError` from `core`.
+Files, folders, and paths. Streaming I/O uses `File` from [core](#files), and failures return `FsError` from `core`. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 All files are opened in binary mode, so bytes are identical across platforms. On Windows, paths accept `/` or `\` and are passed to the OS as UTF-16, so Unicode names like `ñ` or `字` work everywhere.
 
@@ -547,7 +547,7 @@ All files are opened in binary mode, so bytes are identical across platforms. On
 
 ## os
 
-Program environment, child processes, cryptographic random bytes, dynamic libraries, and time.
+Program environment, child processes, cryptographic random bytes, dynamic libraries, and time. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 ### Program and environment
 
@@ -750,7 +750,7 @@ type error NotJson:
 
 ## net
 
-TCP connections, TCP servers, and UDP datagrams. `Socket` (one TCP connection), `Server` (a listening TCP socket), and `Udp` (a UDP port) are distinct types, separate from `File`.
+TCP connections, TCP servers, and UDP datagrams. `Socket` (one TCP connection), `Server` (a listening TCP socket), and `Udp` (a UDP port) are distinct types, separate from `File`. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 #### TCP connections and servers
 

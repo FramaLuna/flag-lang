@@ -58,7 +58,7 @@ there is no ada
 - C ABI FFI to interop with other languages (both ways), with typed C function values, and shared libraries that a program loads and reloads while it runs
 - A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP, UDP and raylib
 - The backend of QBE, ported to Flag, for really fast compilation; for example, the compiler builds itself in about a second and a half
-- Support for Linux, macOS and Windows, and WebAssembly modules (`-target wasm-wasm32` or `wasm-wasm64`) that `flagc` writes without a C compiler, optimized by the same backend
+- Support for Linux, macOS and Windows, and WebAssembly modules (`-target wasm-wasm32` or `wasm-wasm64`) that `flagc` writes without a C compiler, optimized by the same backend, which run on a WASI host such as wasmtime or Node
 
 ## Documentation
 
