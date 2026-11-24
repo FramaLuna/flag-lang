@@ -1,0 +1,20 @@
+# calloc fills with zeros the memory that the heap used before, and leaves alone the memory it never reached
+func zeros(at: *bytes, size: i64) -> bool:
+    for k in 0..size:
+        if ((at + k) as *u8).* != 0:
+            return false
+    return true
+
+func main():
+    a := malloc(4096)
+    memset(a, 0xab, 4096)
+    free(a)
+    b := calloc(512, 8)
+    small := malloc(16)
+    memset(small, 0xcd, 16)
+    grown := realloc(small, 3000)
+    memset(grown, 0xef, 3000)
+    free(grown)
+    c := calloc(3000, 1)
+    d := calloc(1 << 20, 1)
+    print(b == a, " ", zeros(b, 4096), " ", zeros(c, 3000), " ", zeros(d, 1 << 20))

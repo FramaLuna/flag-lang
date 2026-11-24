@@ -81,6 +81,11 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         for n in comp.nodes:
             if n.kind == Unary and comp.tokens[n.tok].text == "parallel":
                 comp.settler = comp.entry
+    if s != 0 and comp.system == "wasm": # what the code of the module calls when the shadow stack runs out
+        handler := first_sym("flag_overflow")
+        while not comp.syms[handler].library:
+            handler = comp.syms[handler].next
+        comp.insts[try instantiate(comp.syms[handler].node, 0)].taken_as = func_of([], VOID, false)
     if s != 0 and comp.insts[comp.entry].ret != VOID and not integer(comp.insts[comp.entry].ret):
         return fail("'main' cannot return " + comp.types[comp.insts[comp.entry].ret].name + "; it must return nothing or an integer exit code", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
     for k in 1..comp.syms.len:
@@ -2315,6 +2320,9 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             v := try value(a, pointee)
             comp.target = assigned
             return address(v)
+        if comp.system == "wasm": # core asks the host the first time
+            asked: &list[Value] = heap([])
+            return try runtime(name[1:], asked, tok.at)
         if name == "@argc":
             return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
         return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}

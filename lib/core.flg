@@ -21,13 +21,20 @@ priv extern "c" where not @wasm():
     func quit(code: i32) -> never = "exit"
     func _exit(code: i32) -> never
 
-# what a WebAssembly host gives: write gives what it wrote or less than 0, and exit ends the program
-priv extern "env" where @wasm():
-    func written(fd: i32, at: *bytes, size: i32) -> i32 = "write"
-    func quit(code: i32) -> never = "exit"
+# what a WebAssembly host gives, WASI preview 1: each call gives 0 or the code of what failed, and a pointer or a size
+# that it takes or finds in memory is a Size, of the width of the memory
+where @wasm32():
+    priv type Size = u32
 
-priv func write(fd: i32, at: *bytes, size: i64) -> i32 where @wasm(): # transfer gives it 1 GiB at most
-    return written(fd, at, i32(size))
+where @wasm64():
+    priv type Size = u64
+
+priv extern "wasi_snapshot_preview1" where @wasm():
+    func fd_write(fd: i32, pieces: *array[Size, 2], count: Size, moved: *Size) -> i32
+    func fd_read(fd: i32, pieces: *array[Size, 2], count: Size, moved: *Size) -> i32
+    func args_sizes_get(count: *Size, size: *Size) -> i32
+    func args_get(starts: *Size, text: *bytes) -> i32
+    func quit(code: i32) -> never = "proc_exit"
 
 priv extern "c" where @wasm(): # what the compiler writes in the module
     func flag_heap_base() -> *bytes
@@ -1845,7 +1852,7 @@ func read_line(f: File, place: &strview = @here()) -> &strview|null|FsError:
                     return null
                 return tmp(view(inbox.received))
 
-priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError:
+priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError where not @wasm():
     flush() # what you wrote goes out before the program waits for an answer
     part := min(size, 1 << 20) # a read gives what is there, so the memory is asked for a part at a time
     reserve(into, into.len + part)
@@ -2000,8 +2007,8 @@ func errno() -> i32 where @macos():
 func errno() -> i32 where @windows():
     return _errno().*
 
-func errno() -> i32 where @wasm(): # the host gives no code
-    return 0
+func errno() -> i32 where @wasm():
+    return host.failed
 
 priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @linux():
     if not writing:
@@ -2024,10 +2031,8 @@ priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @
         return write(s.fd, at, size)
     return read(s.fd, at, size)
 
-priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @wasm(): # the host gives nothing to read
-    if writing:
-        return write(s.fd, at, size)
-    return 0
+priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @wasm(): # only to write, receive reads
+    return write(s.fd, at, size)
 
 priv func failure(s: *Stream, writing: bool) -> i32 where @linux() or @macos():
     code := errno()
@@ -2051,7 +2056,7 @@ priv func failure(s: *Stream, writing: bool) -> i32 where @windows():
     return errno()
 
 priv func failure(s: *Stream, writing: bool) -> i32 where @wasm():
-    return 5 # EIO, the host gives no reason
+    return host.failed
 
 priv func recognize(s: *Stream) where @linux() or @macos():
     address: array[u8, 128]
@@ -2096,7 +2101,7 @@ priv func reason(code: i32) -> &strview where @windows():
     return trim_end(tmp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
 
 priv func reason(code: i32) -> &strview where @wasm():
-    return "the host failed with code " + code
+    return "WASI error " + code
 
 type entry[$K, $V]:
     key: $K
@@ -2434,6 +2439,9 @@ priv func catch_crashes() where @windows():
 priv func catch_crashes() where @wasm(): # a trap ends the module, and the host tells why
     return
 
+priv export func flag_overflow() where @wasm(): # what a frame past the end of the shadow stack calls, with the stack given back
+    crashed("stack overflow", Crash{}, 139)
+
 priv export func flag_abort(number: i32):
     frame := flag_frame()
     crashed("aborted", Crash{frame, 0, frame, 0, 0}, 134)
@@ -2702,6 +2710,54 @@ priv func atexit(callback: *bytes) -> i32 where @wasm(): # main ends the program
 priv func _exit(code: i32) -> never where @wasm():
     quit(code)
 
+priv context host:
+    failed: i32 # the code of the last call that failed
+    argv: *bytes # the arguments, read the first time the program asks for them
+    argc: i32
+
+priv func write(fd: i32, at: *bytes, size: i64) -> i32 where @wasm(): # transfer gives it 1 GiB at most
+    piece := [Size(at as u64), Size(size)]
+    done: Size = 0
+    host.failed = fd_write(fd, ptr(piece), 1, ptr(done))
+    return i32(done) if host.failed == 0 else -1
+
+# apart from transfer, so only a program that reads imports fd_read
+priv func receive(s: *Stream, into: *&str, size: i64) -> i64|FsError where @wasm():
+    flush()
+    part := min(size, 1 << 20)
+    reserve(into, into.len + part)
+    piece := [Size(ptr(into.*.*) as u64 + u64(into.len)), Size(part)]
+    done: Size = 0
+    host.failed = fd_read(s.fd, ptr(piece), 1, ptr(done))
+    if host.failed != 0:
+        return FsError{host.failed, "read", tmp(s.path)}
+    into.len += i64(done)
+    return i64(done)
+
+# what @argv() gives on wasm: WASI writes pointers of the width of memory, which become pointers of 8 bytes in place
+priv func argv() -> *bytes where @wasm():
+    if host.argv as u64 != 0:
+        return host.argv
+    count: Size = 0
+    size: Size = 0
+    if args_sizes_get(ptr(count), ptr(size)) != 0:
+        count = 0
+        size = 0
+    host.argv = malloc(i64(count + 1) * 8 + i64(size))
+    if host.argv as u64 == 0:
+        out_of_memory()
+    if args_get(host.argv as *Size, host.argv + i64(count + 1) * 8) != 0:
+        count = 0
+    for k in reverse 0..i64(count):
+        ((host.argv + 8 * k) as *u64).* = u64(((host.argv + @sizeof(Size) * k) as *Size).*)
+    ((host.argv + i64(count) * 8) as *u64).* = 0
+    host.argc = i32(count)
+    return host.argv
+
+priv func argc() -> i32 where @wasm():
+    _ = argv()
+    return host.argc
+
 priv type Chunk: # of the heap of wasm: a header of 16 bytes before what malloc gives, and in a free one the links of the list
     size: i64 # with the header, a multiple of 16, and 1 more while it is free
     before: i64 # the size of the chunk before it, 0 for the first
@@ -2712,6 +2768,7 @@ priv shared context chunks: # the program has one thread there
     top: *bytes # where the chunks end, and the memory past them starts
     last: i64 # the size of the chunk that ends at top
     free: *Chunk
+    reached: *bytes # the most top ever reached: the memory past it is still zero
 
 export func malloc(size: i64) -> *bytes where @wasm():
     if size < 0 or size > MOST - 31:
@@ -2746,9 +2803,10 @@ export func malloc(size: i64) -> *bytes where @wasm():
 export func calloc(count: i64, size: i64) -> *bytes where @wasm():
     if count < 0 or size < 0 or size > 0 and count > MOST / size:
         return 0 as *bytes
+    dirty := chunks.reached as u64
     at := malloc(count * size)
-    if at as u64 != 0:
-        memset(at, 0, count * size)
+    if at as u64 != 0 and at as u64 < dirty:
+        memset(at, 0, min(count * size, i64(dirty - at as u64)))
     return at
 
 export func realloc(at: *bytes, size: i64) -> *bytes where @wasm():
@@ -2806,11 +2864,15 @@ priv func delist(c: *Chunk) where @wasm():
     if c.next as u64 != 0:
         c.next.back = c.back
 
-# memory reaches end, grown by whole pages of 64 KiB when it is short
+# memory reaches end, grown by whole pages of 64 KiB when it is short, and the chunks end there
 priv func reaches(end: *bytes) -> bool where @wasm():
     have := u64(flag_memory_size()) * 65536
     want := end as u64
-    return want <= have or flag_memory_grow(i64((want - have + 65535) / 65536)) >= 0
+    if want > have and flag_memory_grow(i64((want - have + 65535) / 65536)) < 0:
+        return false
+    if want > chunks.reached as u64:
+        chunks.reached = end
+    return true
 
 export func memcmp(a: *bytes, b: *bytes, size: i64) -> i32 where @wasm():
     for k in 0..size:

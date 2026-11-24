@@ -1,0 +1,18 @@
+# the shadow stack takes a frame of 4 MB, and one bigger than the whole stack overflows it, where the stack pointer
+# less the frame would wrap below 0
+noinline func keep(x: $T) -> $T:
+    return x
+
+noinline func fill(n: i64) -> i64:
+    buffer: array[u8, 4000000]
+    buffer[keep(n)] = 7
+    return i64(buffer[keep(n)])
+
+noinline func huge(n: i64) -> i64:
+    buffer: array[u8, 9000000]
+    buffer[keep(n)] = 9
+    return i64(buffer[keep(n)])
+
+func main():
+    print(fill(keep(3999999)))
+    print(huge(keep(8999999)))

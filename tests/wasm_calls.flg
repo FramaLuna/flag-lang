@@ -1,6 +1,7 @@
-# calls through function values, which wasm makes through its table, recursion, exports and a function of the host
+# calls through function values, which wasm makes through its table, recursion, exports, and a function of the host
+# that calls one back through the table the module exports
 extern "env":
-    func write(fd: i32, at: *bytes, size: i32) -> i32
+    func apply(f: extern func(i64) -> i64, x: i64) -> i64
 
 type Op:
     name: &strview
@@ -33,6 +34,9 @@ func pick(big: bool) -> func(i64, i64) -> i64:
 export func triple(x: i32) -> i32: # an export of a program, beside main
     return x * 3
 
+export func halve(x: i64) -> i64:
+    return x / 2
+
 func greater(a: i64, b: i64) -> bool:
     return a > b
 
@@ -47,5 +51,4 @@ func main():
     print(values)
     empty: func(i64, i64) -> i64
     print(empty as u64 == 0)
-    said := "straight to the host\n"
-    write(1, ptr(said.*), i32(said.len))
+    print(apply(halve, 84), " ", apply(halve, -7))

@@ -2,7 +2,7 @@
 use fs
 
 GUARD = 4096 # the data starts past the first page, which a null pointer points into
-SHADOW = 1 << 20 # the shadow stack, for the slots whose address escapes: wasm keeps its values out of memory
+SHADOW = 8 << 20 # the shadow stack, for the slots whose address escapes: wasm keeps its values out of memory
 PAGE = 65536
 
 type Read: # a temp that an instruction reads: its code goes in a hole, once all that the instruction reads is known
@@ -38,7 +38,6 @@ context wasm:
     frame: i64 # the bytes of the slots in the shadow stack
     fp: i64 # the local that points at them
     base: i64 # the local of the frame pointer as the memory instructions take it, an i32 on wasm32
-    dispatch: i64 # the i32 local that picks the next block, when jumps that are not loops cross into one, or -1
     out: &str = heap("")
     folded: &list[bool] = heap([]) # each temp that is an add of a constant that only the address of a load or a store reads, which takes it as its offset
     reading: i64 # where the code of the instruction being written starts in out, or -1 outside one
@@ -49,7 +48,7 @@ context wasm:
     header: &list[bool] = heap([]) # of each block by its place in fn.rpo: a jump back lands there, so a loop starts there
     merge: &list[bool] = heap([]) # two forward jumps or more land there, so a block ends before it
     merges: &list[&list[i64]] = heap([]) # of each block, the merges it dominates in reverse postorder
-    nest: &list[i64] = heap([]) # what encloses the code, the innermost last: the block a wasm block ends before or a loop starts at, -2 for the dispatch loop, -1 for what no jump leaves
+    nest: &list[i64] = heap([]) # what encloses the code, the innermost last: the block a wasm block ends before or a loop starts at, -1 for what no jump leaves
 
 # the WebAssembly module of the program, with bulk memory, simd and the conversions that saturate: wasm64 with Memory64,
 # or wasm32, whose memory instructions take the low word of an address, and where a host gives and gets a pointer as an i32
@@ -68,6 +67,8 @@ func assemble() -> &str|Fail:
             put(externs, inst.name, inst.node)
     used: &list[Arg] = heap([])
     for p in comp.procs:
+        if p.inst == comp.entry:
+            try uses("$proc_exit", false, externs)
         for i in comp.code[p.code:p.end]:
             for k, a in operands(i, used):
                 if a.kind == Global:
@@ -140,9 +141,6 @@ func assemble() -> &str|Fail:
             append(stubbed, thunk(k, kinds, gives, host, takes))
     exports: &str = heap("")
     shown := 1 # memory
-    for p in comp.procs:
-        shown += i64(exported(p))
-    leb(exports, u64(shown))
     put_name(exports, "memory")
     exports += "\x02\x00"
     for k, p in comp.procs:
@@ -161,14 +159,24 @@ func assemble() -> &str|Fail:
             continue
         host: &list[u8] = heap(kinds[:])
         takes := try hosted(p.node, host, gives)
-        if signature(host, takes) != wasm.typed[-1]:
-            append(wasm.thunks, p.name)
+        name := p.name
+        if p.inst == comp.entry: # what a WASI host runs: main, then proc_exit with what it gives
+            name = "$_start"
+            append(wasm.thunks, name)
+            append(stubs, signature([], 0))
+            append(stubbed, thunk(f, [], 0, [], 0x7f))
+            add_byte(stubbed[-1], 0x10)
+            leb(stubbed[-1], u64(trust wasm.functions["$proc_exit"]))
+            f = thunked + stubs.len - 1
+        elif signature(host, takes) != wasm.typed[-1]:
+            append(wasm.thunks, name)
             append(stubs, signature(host, takes))
             append(stubbed, thunk(f, host, takes, kinds, gives))
             f = thunked + stubs.len - 1
-        put_name(exports, p.name[1:])
+        put_name(exports, name[1:])
         add_byte(exports, 0)
         leb(exports, u64(f))
+        shown += 1
     for k, name in wasm.builtins:
         put(wasm.functions, name, wasm.imports.len + comp.procs.len + k)
         code: &str = heap("")
@@ -299,18 +307,22 @@ func assemble() -> &str|Fail:
                         wasm.frame += size
             wasm.frame = align_up(wasm.frame, 16)
             wasm.fp = wasm.locals.len
-            wasm.dispatch = -1
             wasm.out.len = 0
-            if wasm.frame > 0:
+            if wasm.frame > 0: # a frame that would pass the end of the shadow stack gives the stack back to flag_overflow, or traps in a library
                 append(wasm.locals, 0x7e)
                 wasm.out += "\x23\x00" # global.get of the shadow stack
+                long(wasm.stack + wasm.frame)
+                wasm.out += "\x54\x04\x40" # i64.lt_u, if
+                overflow := wasm.functions["$flag_overflow"]
+                if overflow is i64:
+                    long(wasm.heap_base)
+                    wasm.out += "\x24\x00\x10" # global.set, call
+                    leb(wasm.out, u64(overflow))
+                wasm.out += "\x00\x0b\x23\x00" # unreachable, end, global.get
                 long(wasm.frame)
                 add_byte(wasm.out, 0x7d) # i64.sub
                 local_op(0x22, wasm.fp) # local.tee
                 wasm.out += "\x24\x00" # global.set
-                local_op(0x20, wasm.fp)
-                long(wasm.stack)
-                wasm.out += "\x54\x04\x40\x00\x0b" # if it is below the end of the shadow stack: unreachable
             wasm.base = wasm.fp
             if wasm.frame > 0 and not wasm.wide:
                 wasm.base = wasm.locals.len
@@ -330,14 +342,12 @@ func assemble() -> &str|Fail:
                 if x == wasm.merges.len:
                     append(wasm.merges, heap([]))
                 wasm.merges[x].len = 0
-            reducible := true # each jump back lands on a block that dominates where it jumps from
-            for x in 0..n:
+            for x in 0..n: # Flag has no goto, and the passes keep each jump back landing on a block that dominates where it jumps from
                 pair: array[i64, 2]
                 for s in succs(fn.rpo[x], ptr(pair)):
                     y := fn.blks[s].id
                     if y <= x:
                         wasm.header[y] = true
-                        reducible = reducible and dom(s, fn.rpo[x])
                     else:
                         ahead[y] += 1
                         wasm.merge[y] = ahead[y] > 1
@@ -345,27 +355,7 @@ func assemble() -> &str|Fail:
                 if wasm.merge[y]:
                     append(wasm.merges[fn.blks[fn.blks[fn.rpo[y]].idom].id], y)
             wasm.nest.len = 0
-            if reducible:
-                tree(0)
-            else: # a loop around a block for each block, where br_table goes to the one in the dispatch local
-                wasm.dispatch = wasm.locals.len
-                append(wasm.locals, 0x7f)
-                wasm.out += "\x03\x40" # loop
-                append(wasm.nest, -2)
-                for x in 0..n:
-                    wasm.out += "\x02\x40" # block
-                    append(wasm.nest, -1)
-                local_op(0x20, wasm.dispatch)
-                add_byte(wasm.out, 0x0e) # br_table
-                leb(wasm.out, u64(n))
-                for x in 0..n:
-                    leb(wasm.out, u64(x))
-                add_byte(wasm.out, 0) # and the first by default
-                for x in 0..n:
-                    add_byte(wasm.out, 0x0b)
-                    wasm.nest.len -= 1
-                    enclose(x, 0)
-                add_byte(wasm.out, 0x0b)
+            tree(0)
             add_byte(wasm.out, 0x00) # unreachable, so the end needs no value
             add_byte(wasm.out, 0x0b)
             body: &str = heap("")
@@ -452,12 +442,19 @@ func assemble() -> &str|Fail:
     sleb(global, wasm.heap_base)
     add_byte(global, 0x0b)
     put_section(module, 6, global)
-    put_section(module, 7, exports)
+    if wasm.elements.len > 0 or wasm.indirect: # so the host can call a function value it gets
+        put_name(exports, "__indirect_function_table")
+        exports += "\x01\x00"
+        shown += 1
+    counted: &str = heap("")
+    leb(counted, u64(shown))
+    counted += exports
+    put_section(module, 7, counted)
     if wasm.elements.len > 0:
         put_section(module, 9, elements)
     put_section(module, 10, codes)
     if segments > 0:
-        counted: &str = heap("")
+        counted.len = 0
         leb(counted, u64(segments))
         counted += data
         put_section(module, 11, counted)
@@ -1034,11 +1031,7 @@ func here(reads: &listview[Read], r: i64, b: i64, first: i64, j: i64) -> bool:
 # block a merge follows, or into y when only x jumps there
 func follow(x: i64, y: i64):
     moves(fn.blks[fn.rpo[y]].phi, fn.rpo[x])
-    if wasm.dispatch >= 0:
-        word(y)
-        local_op(0x21, wasm.dispatch)
-        br(-2)
-    elif y <= x or wasm.merge[y]:
+    if y <= x or wasm.merge[y]:
         br(y)
     else:
         tree(y)
