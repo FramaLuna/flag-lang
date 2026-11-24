@@ -695,7 +695,10 @@ emitins(Ins i, E *e)
 			/* the block of this thread is entry
 			 * _tls_index of the table at gs:88,
 			 * one more register is borrowed on
-			 * the stack and the flags are kept
+			 * the stack and the flags are kept;
+			 * the offset is a difference of rip
+			 * addresses, GNU ld relocates SECREL
+			 * in code when the image moves
 			 */
 			br = i.to.val == RAX ? RCX : RAX;
 			fprintf(e->f,
@@ -703,18 +706,29 @@ emitins(Ins i, E *e)
 				"\tmovl _tls_index(%%rip), %%%s\n"
 				"\tmovq %%gs:88, %%%s\n"
 				"\tmovq (%%%s,%%%s,8), %%%s\n"
-				"\tpopq %%%s\n"
-				"\tleaq %s%s@SECREL32(%%%s), %%%s\n",
+				"\tleaq %s%s(%%rip), %%%s\n"
+				"\tleaq (%%%s,%%%s), %%%s\n"
+				"\tleaq _tls_start(%%rip), %%%s\n"
+				"\tnotq %%%s\n"
+				"\tleaq 1(%%%s,%%%s), %%%s\n"
+				"\tpopq %%%s\n",
 				regtoa(br, SLong),
 				regtoa(br, SWord),
 				regtoa(i.to.val, SLong),
 				regtoa(i.to.val, SLong),
 				regtoa(br, SLong),
 				regtoa(i.to.val, SLong),
-				regtoa(br, SLong),
 				sym[0] == '"' ? "" : T.assym, sym,
+				regtoa(br, SLong),
 				regtoa(i.to.val, SLong),
-				regtoa(i.to.val, SLong));
+				regtoa(br, SLong),
+				regtoa(i.to.val, SLong),
+				regtoa(br, SLong),
+				regtoa(br, SLong),
+				regtoa(i.to.val, SLong),
+				regtoa(br, SLong),
+				regtoa(i.to.val, SLong),
+				regtoa(br, SLong));
 			if (con->bits.i)
 				fprintf(e->f, "\tleaq %"PRId64"(%%%s), %%%s\n",
 					con->bits.i,

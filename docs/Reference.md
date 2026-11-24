@@ -987,6 +987,8 @@ Evaluates `c` first, then evaluates only the selected branch (`n := 100 / x if x
 
 `a if c else b` has the lowest precedence (`a or b if c else d` means `(a or b) if c else d`) and associates to the right (`a if c else b if d else e` means `a if c else (b if d else e)`). Omitting `else` fails: `unexpected end of line; inline 'if' requires an 'else' branch: a if c else b`.
 
+Both branches take the type the context expects: a variable, field, return value, or a parameter on which every overload of that call agrees on one number type (`f(1 if x else -1)` passes an `i32` to `f(v: i32)`). With overloads that differ there, the literals stay `i64`. A text conditional assigned to an existing `&str` copies into its buffer like `s = "a"` does; a new `&str` still needs `heap(...)` or `arena(a, ...)`.
+
 #### Result typing
 
 Result types follow the same rules as `ifnull` (see [Errors](#errors)):
@@ -2089,6 +2091,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Paths, command-line arguments, and environment variables convert to/from UTF-16 at the Win32 boundary, so Flag always sees UTF-8 regardless of the system code page: a path with `ñ` or `字` works.
 - `run(command)` and `output(command, into)` invoke `cmd.exe`. `run(program)` and `start(program)` quote arguments directly without a shell, treating extensionless names as `.exe` and rejecting `.bat`/`.cmd` (which `cmd.exe` would re-parse). Child processes inherit only stdin/stdout/stderr and do not spawn a console window from GUI programs. With a `folder` argument, relative executables like `./tool` resolve relative to the caller's current directory on Windows (unlike Linux and macOS, which resolve relative to `folder`).
 - `net` uses Winsock; listening on a non-loopback address (other than `127.0.0.1`) may trigger a Windows Firewall prompt on first run.
+- Any MinGW-w64 GCC works as `cc`, including the one in Strawberry Perl, and programs keep ASLR.
 - Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, pass the folder of your own after `-cc`: `flagc game.flg -cc -Lfolder`.
 - The Windows console displays text using its active code page; run `chcp 65001` for UTF-8 output.
 

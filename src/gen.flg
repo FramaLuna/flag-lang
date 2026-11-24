@@ -2302,9 +2302,43 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         if names_type and types_given:
             append(values, Value{type = given_of(try spelled_type(arg))})
         else:
+            expected := VOID # the number type that every overload gives this a if c else b
+            if comp.nodes[arg].kind == Choice:
+                spelled: &list[&strview] = heap([])
+                d := n + 1
+                while d < node_end(n):
+                    if comp.nodes[d].kind == Named:
+                        append(spelled, text(d))
+                    elif comp.nodes[d].kind == Unary and text(d) == "..":
+                        append(spelled, "..")
+                    else:
+                        append(spelled, "")
+                    d = node_end(d)
+                agreed := true
+                o := first_sym(name)
+                while o != 0:
+                    decl := comp.syms[o].node
+                    if callable(o, node.module, values, tok.at):
+                        order := arrange(decl, spelled.len, spelled)
+                        if order is &list[i64]:
+                            j := 0
+                            while j < order.len and order[j] != values.len:
+                                j += 1
+                            if j >= params(decl) or text(kid(decl, j)) == ".." or gathers(kid(decl, j)) or generic(kid(decl, j)):
+                                agreed = false
+                            else:
+                                p := try resolve(kid(decl, j) + 1)
+                                agreed = agreed and (expected == VOID or expected == p)
+                                expected = p
+                    o = comp.syms[o].next
+                number := false
+                for m in members(expected):
+                    number = number or numeric(m)
+                if not agreed or not number:
+                    expected = VOID
             passed := comp.passed
             comp.passed = arg
-            try read_in_turn(values, arg, VOID)
+            try read_in_turn(values, arg, expected)
             comp.passed = passed
         c = node_end(c)
     if name == "free" and node.module.len == 0 and values.len == 1:
@@ -2646,7 +2680,7 @@ func choice(n: i64, want: i64) -> Value|Fail:
     if a.type == NEVER and b.type == NEVER:
         return a
     result := want
-    if want == VOID:
+    if want == VOID or owner(want) and a.type != want and b.type != want: # an owner copies the text into its own memory after
         result = try either(a, b, at)
     elif comp.types[want].kind == Union: # each side takes the members of the place it fits, so a narrowed variable keeps what both give
         parts: &list[i64] = heap([])

@@ -189,7 +189,7 @@ Constants cannot change; mutable global state belongs in a [context](#contexts).
 - **Comparisons**: `==`, `!=`, `<`, `>`, `<=`, `>=`. Comparisons do not chain: `a < b < c` is an error that tells you to write `a < b and b < c`.
 - **Logic**: `and`, `or`, and `not` on `bool`. `and` and `or` short-circuit and skip the right-hand side when the left-hand side already decides the result.
 - **Bitwise**: `and`, `or`, `xor`, and `not` on integers operate bit by bit, and `<<` and `>>` shift bits. Because `and`, `or`, and `xor` have lower precedence than comparisons, wrap bit tests in parentheses: `(flags and MASK) != 0`. Shifts bind tighter than comparisons.
-- **Conditional**: `a if c else b` evaluates to `a` when `c` is true and `b` otherwise; only the chosen branch runs.
+- **Conditional**: `a if c else b` evaluates to `a` when `c` is true and `b` otherwise; only the chosen branch runs. Both branches take the type the context expects, so `1 if x else -1` works as an `i32` variable, field, return value, or argument.
 - **Assignments**: `=`, `+=`, `-=`, `*=`, `/=`, `%=`.
 
 ```flag

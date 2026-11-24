@@ -952,14 +952,14 @@ Functions keep raylib's names and parameter order, so the [raylib cheatsheet](ht
 
 | Category | Functions |
 |---|---|
-| Window | `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `SetWindowMinSize`, `IsWindowResized`, `GetWindowScaleDPI`, `EnableEventWaiting`, `DisableEventWaiting`, `PollInputEvents`, `WaitTime`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot` |
+| Window | `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `SetWindowMinSize`, `SetWindowSize`, `SetWindowPosition`, `GetWindowPosition`, `MaximizeWindow`, `MinimizeWindow`, `RestoreWindow`, `IsWindowMaximized`, `IsWindowMinimized`, `IsWindowResized`, `GetWindowScaleDPI`, `EnableEventWaiting`, `DisableEventWaiting`, `PollInputEvents`, `SwapScreenBuffer`, `WaitTime`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot` |
 | Drawing | `BeginDrawing`, `EndDrawing`, `ClearBackground`, `BeginMode2D`, `EndMode2D`, `BeginMode3D`, `EndMode3D`, `BeginTextureMode`, `EndTextureMode`, `BeginScissorMode`, `EndScissorMode` |
 | Keyboard & mouse | `IsKeyPressed`, `IsKeyPressedRepeat`, `IsKeyDown`, `IsKeyReleased`, `GetKeyPressed`, `GetCharPressed`, `SetExitKey`, `IsMouseButtonPressed`, `IsMouseButtonDown`, `IsMouseButtonReleased`, `GetMousePosition`, `GetMouseDelta`, `GetMouseWheelMove`, `GetMouseWheelMoveV`, `IsCursorOnScreen`, `SetMouseCursor` |
 | Clipboard | `GetClipboardText`, `SetClipboardText` |
 | 2D shapes | `DrawPixel`, `DrawLine`, `DrawLineV`, `DrawLineEx`, `DrawCircle`, `DrawCircleV`, `DrawCircleLines`, `DrawCircleSector`, `DrawRing`, `DrawRectangle`, `DrawRectangleV`, `DrawRectangleRec`, `DrawRectanglePro`, `DrawRectangleGradientV`, `DrawRectangleGradientH`, `DrawRectangleGradientEx`, `DrawRectangleLines`, `DrawRectangleLinesEx`, `DrawRectangleRounded`, `DrawRectangleRoundedLines`, `DrawRectangleRoundedLinesEx`, `DrawTriangle` |
 | Text & fonts | `DrawText`, `MeasureText`, `DrawFPS`, `GetFontDefault`, `LoadFont`, `LoadFontEx`, `LoadFontFromMemory`, `UnloadFont`, `DrawTextEx`, `MeasureTextEx` |
 | 3D | `DrawCube`, `DrawCubeWires`, `DrawSphere`, `DrawPlane`, `DrawGrid` |
-| Images & textures | `LoadImage`, `GenImageColor`, `UnloadImage`, `LoadTexture`, `LoadTextureFromImage`, `UnloadTexture`, `GenTextureMipmaps`, `SetTextureFilter`, `LoadRenderTexture`, `UnloadRenderTexture`, `DrawTexture`, `DrawTextureV`, `DrawTextureEx`, `DrawTextureRec`, `DrawTexturePro` |
+| Images & textures | `LoadImage`, `LoadImageFromScreen`, `ExportImage`, `GenImageColor`, `UnloadImage`, `LoadTexture`, `LoadTextureFromImage`, `UnloadTexture`, `GenTextureMipmaps`, `SetTextureFilter`, `LoadRenderTexture`, `UnloadRenderTexture`, `DrawTexture`, `DrawTextureV`, `DrawTextureEx`, `DrawTextureRec`, `DrawTexturePro` |
 | Collisions | `CheckCollisionRecs`, `CheckCollisionCircles`, `CheckCollisionCircleRec`, `CheckCollisionPointRec`, `CheckCollisionPointCircle`, `GetCollisionRec` |
 | Colors | `Fade`, `ColorFromHSV` |
 | Audio | `InitAudioDevice`, `CloseAudioDevice`, `LoadSound`, `UnloadSound`, `PlaySound`, `StopSound`, `SetSoundVolume`, `LoadMusicStream`, `UnloadMusicStream`, `PlayMusicStream`, `StopMusicStream`, `UpdateMusicStream` |

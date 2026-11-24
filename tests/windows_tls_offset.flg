@@ -1,0 +1,13 @@
+# GNU ld relocates a SECREL in code when ASLR moves the image, so every thread-local offset breaks
+use fs
+use os
+
+func main():
+    compiler := env("FLAGC") ifnull "build/flagc"
+    made := dir_of(args()[0]) + "windows_tls_offset_target"
+    said: &str = heap("")
+    defer free(said)
+    code := output(ptr(["env", "CC=true", compiler, "tests/conditional_expected.flg", "-target", "windows-x86_64", "-o", made, "-keep"]), said)
+    print(code is i32 and code == 0)
+    assembly := trust read_file(made + ".s")
+    print(contains(assembly, "SECREL32"), " ", contains(assembly, "_tls_start(%rip)"))

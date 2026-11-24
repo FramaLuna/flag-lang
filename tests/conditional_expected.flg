@@ -1,0 +1,50 @@
+# a if c else b takes the type its place expects, and a parameter that every overload agrees on is such a place
+type Point:
+    x: i32
+    y: u8
+    z: f32
+
+func small(v: i32) -> i32:
+    return v * 2
+
+func byte(v: u8) -> u8:
+    return v + 1
+
+func real(v: f32) -> f32:
+    return v * 2
+
+func named(a: i32, b: u8) -> i32:
+    return a + i32(b)
+
+func optional(v: i32?) -> i32:
+    return v ifnull 0
+
+func same(v: i32) -> &strview:
+    return "i32"
+
+func same(v: i32, w: i32) -> &strview:
+    return "i32 i32"
+
+func differs(v: i32) -> &strview:
+    return "i32"
+
+func differs(v: i64) -> &strview:
+    return "i64"
+
+func sign(yes: bool) -> i32:
+    return 1 if yes else -1
+
+func main():
+    yes := true
+    no := false
+    a: i32 = 1 if yes else -1
+    b: u8 = 200 if no else 100
+    c: f32 = 1.5 if no else 2.5
+    print(a, " ", b, " ", c, " ", sign(no))
+    p := Point{7 if yes else 8, 9 if no else 10, 0.5 if yes else 1.5}
+    print(p.x, " ", p.y, " ", p.z)
+    q := Point{x = 1 if no else -1, y = 255 if yes else 0, z = 2 if yes else 3}
+    print(q.x, " ", q.y, " ", q.z)
+    print(small(1 if no else -1), " ", byte(254 if yes else 0), " ", real(1.5 if yes else 2.5), " ", real(2 if yes else 3))
+    print(named(b = 2 if yes else 3, a = 10 if no else 20), " ", optional(5 if yes else 6))
+    print(same(1 if yes else 2), " ", same(1 if yes else 2, 3 if no else 4), " ", differs(1 if yes else 2))
