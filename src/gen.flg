@@ -1232,7 +1232,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             return constant(s, want, tok.at)
         if k == Var: # the address of a variable of C, from a slot of data that the loader fills, which a library takes too
             if comp.system == "wasm":
-                return fail("C variable " + tok.text + " cannot be reached from wasm-wasm64; a WebAssembly module imports only functions", tok.at)
+                return fail("C variable " + tok.text + " cannot be reached from wasm-" + comp.machine + "; a WebAssembly module imports only functions", tok.at)
             symbol := text(d)
             if kids(d) == 2:
                 symbol = text(kid(d, 1))[1:text(kid(d, 1)).len - 1]
@@ -1999,7 +1999,7 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
     comp.live = true
     while true:
         count := high - low
-        if comp.system != "wasm" and count >= TABLED and keys[high - 1] - keys[low] < u64(DENSE * count): # wasm-wasm64 has no form for a table yet
+        if count >= TABLED and keys[high - 1] - keys[low] < u64(DENSE * count):
             least := i64(keys[low] xor flip)
             span := i64(keys[high - 1] - keys[low]) + 1
             index := op(class, "sub", current, int_arg(least))
@@ -2388,7 +2388,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
 # whether the program is built for the system or the processor that a builtin like @linux names, null for any other name
 func platform(name: &strview) -> bool?:
     switch name:
-    case "@linux", "@macos", "@windows", "@wasm", "@x86_64", "@arm64", "@riscv64", "@wasm64":
+    case "@linux", "@macos", "@windows", "@wasm", "@x86_64", "@arm64", "@riscv64", "@wasm32", "@wasm64":
         return name[1:] == comp.system or name[1:] == comp.machine
     return null
 
@@ -2399,7 +2399,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
     if node.kind == Unary:
         o := tok.text
         if o == "parallel" and comp.system == "wasm":
-            return fail("threads ('parallel') are not supported on wasm-wasm64; a WebAssembly module runs on one thread", tok.at)
+            return fail("threads ('parallel') are not supported on wasm-" + comp.machine + "; a WebAssembly module runs on one thread", tok.at)
         if o == "parallel":
             return called(n + 1, VOID, true)
         if o == "..":
@@ -2967,9 +2967,9 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             open_block(l_done)
     return Value{type = to, at = slot, mem = true}
 
-# amd64 and arm64 hold the lanes of a simd in one register, rv64 and wasm64 have none and do each lane
+# amd64, arm64 and wasm hold the lanes of a simd in one register, rv64 has none and does each lane
 func vectors() -> bool:
-    return comp.machine == "x86_64" or comp.machine == "arm64"
+    return comp.machine != "riscv64"
 
 func letter(lane: i64) -> &strview:
     size := comp.types[lane].size

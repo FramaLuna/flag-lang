@@ -23,8 +23,11 @@ priv extern "c" where not @wasm():
 
 # what a WebAssembly host gives: write gives what it wrote or less than 0, and exit ends the program
 priv extern "env" where @wasm():
-    func write(fd: i32, at: *bytes, size: i64) -> i32
+    func written(fd: i32, at: *bytes, size: i32) -> i32 = "write"
     func quit(code: i32) -> never = "exit"
+
+priv func write(fd: i32, at: *bytes, size: i64) -> i32 where @wasm(): # transfer gives it 1 GiB at most
+    return written(fd, at, i32(size))
 
 priv extern "c" where @wasm(): # what the compiler writes in the module
     func flag_heap_base() -> *bytes

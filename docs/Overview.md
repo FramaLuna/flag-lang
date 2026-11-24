@@ -982,7 +982,7 @@ func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
 
-You can also test the target platform with `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, and `@wasm64()`, or check assignability with `@can_assign(&str, $T)`. These builtins evaluate to a compile-time `bool` and work in ordinary expressions too (`if @windows():`), though `if` still type-checks both branches on every platform. By contrast, `a if c else b` with a compile-time `c` only checks and evaluates the chosen side, so `19 if @linux() else 8` remains an integer literal that fits `i32`.
+You can also test the target platform with `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, `@wasm32()`, and `@wasm64()`, or check assignability with `@can_assign(&str, $T)`. These builtins evaluate to a compile-time `bool` and work in ordinary expressions too (`if @windows():`), though `if` still type-checks both branches on every platform. By contrast, `a if c else b` with a compile-time `c` only checks and evaluates the chosen side, so `19 if @linux() else 8` remains an integer literal that fits `i32`.
 
 A `where` at the start of a line opens a conditional block that exists only when its condition holds. Inside a function it wraps statements (such as OS-specific C calls); at the top level it wraps declarations and can test only the OS or CPU:
 
@@ -1809,7 +1809,7 @@ Common flags:
 | `-check` | Type-check without generating a binary |
 | `-memory` | Run the compile-time memory checker (see [Memory safety](#memory-safety)) |
 | `-debug` | Emit debug information for `gdb` and `lldb` (see [Debugging](Reference.md#debugging)) |
-| `-target target` | Cross-compile for another platform, e.g. `-target windows-x86_64`, or make a WebAssembly module with `-target wasm-wasm64` (see [Platforms](Reference.md#platforms)) |
+| `-target target` | Cross-compile for another platform, e.g. `-target windows-x86_64`, or make a WebAssembly module with `-target wasm-wasm32` or `-target wasm-wasm64` (see [Platforms](Reference.md#platforms)) |
 | `-cc ...` | Pass all remaining arguments directly to the C compiler (which assembles and links), e.g. `-cc -lm` or `-cc -static` |
 
 See [The command line](Reference.md#the-command-line) for all flags.

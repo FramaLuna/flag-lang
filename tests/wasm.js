@@ -1,6 +1,6 @@
-// runs a module that flagc -target wasm-wasm64 wrote, in a thread with room for deep recursion:
+// runs a module that flagc -target wasm-wasm32 or wasm-wasm64 wrote, in a thread with room for deep recursion:
 // env.write goes to the descriptor it names, env.exit and main give the exit code, and a trap ends with 134 after its message and the functions it went through.
-// A library, with no main, shows what it imports and exports, and what each function without parameters gives.
+// A library, with no main, shows what it imports and exports, and what each function without parameters gives, with an n after a BigInt.
 const { Worker, isMainThread, workerData, parentPort } = require("worker_threads")
 const fs = require("fs")
 if (isMainThread) {
@@ -31,8 +31,10 @@ if (isMainThread) {
             say("imports " + shown(WebAssembly.Module.imports(module)))
             say("exports " + shown(WebAssembly.Module.exports(module)))
             for (const { name, kind } of WebAssembly.Module.exports(module))
-                if (kind == "function" && instance.exports[name].length == 0)
-                    say(name + "() = " + instance.exports[name]())
+                if (kind == "function" && instance.exports[name].length == 0) {
+                    const given = instance.exports[name]()
+                    say(name + "() = " + given + (typeof given == "bigint" ? "n" : ""))
+                }
             parentPort.postMessage(0)
         }
     } catch (e) {

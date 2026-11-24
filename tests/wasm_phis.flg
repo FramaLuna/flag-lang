@@ -1,0 +1,45 @@
+# values that loops and branches carry: a swap, a rotation of three, and values that a loop keeps and an exit reads
+noinline func fib(n: i64) -> i64:
+    a := 0
+    b := 1
+    for i in 0..n:
+        a, b = b, a + b
+    return a
+
+noinline func rotate(n: i64) -> (i64, i64, i64):
+    x := 1
+    y := 2
+    z := 3
+    for i in 0..n:
+        x, y, z = y, z, x
+        if i % 3 == 0:
+            z += 10
+    return x, y, z
+
+noinline func search(values: &listview[i64], wanted: i64) -> i64:
+    low := 0
+    high := values.len
+    while low < high:
+        middle := (low + high) / 2
+        if values[middle] < wanted:
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+func main():
+    print(fib(10), " ", fib(50), " ", fib(90))
+    x, y, z := rotate(7)
+    print(x, " ", y, " ", z)
+    values: &list[i64] = heap([])
+    defer free(values)
+    for i in 0..100:
+        append(values, i * i)
+    print(search(values, 0), " ", search(values, 50), " ", search(values, 9801), " ", search(values, 99999))
+    count := 0
+    for i in 0..30:
+        j := i
+        while j > 1:
+            j = j / 2 if j % 2 == 0 else 3 * j + 1
+            count += 1
+    print(count)

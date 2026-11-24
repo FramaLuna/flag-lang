@@ -432,14 +432,14 @@ func main() -> i32:
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
         return 2
-    targets := ["linux-x86_64", "linux-arm64", "linux-riscv64", "macos-x86_64", "macos-arm64", "windows-x86_64", "wasm-wasm64"]
+    targets := ["linux-x86_64", "linux-arm64", "linux-riscv64", "macos-x86_64", "macos-arm64", "windows-x86_64", "wasm-wasm32", "wasm-wasm64"]
     if not contains(ptr(targets), target):
         eprint(comp.err, "unknown target ", target, "; supported targets are: ", join(ptr(targets), ", "))
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
     if running and comp.system == "wasm":
-        eprint(comp.err, "'", arguments[1], "' executes a program, but -target wasm-wasm64 builds a WebAssembly module; build with '-o' and load it from a WebAssembly host")
+        eprint(comp.err, "'", arguments[1], "' executes a program, but -target ", target, " builds a WebAssembly module; build with '-o' and load it from a WebAssembly host")
         return 2
     texts: &map[&strview, &strview] = heap({})
     if overlay.len > 0:

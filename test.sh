@@ -10,13 +10,19 @@ cp "$compiler" "$out/bin/"
 pass=0
 fail=0
 limit=120
-# what runs a WebAssembly module: a node with 64-bit memory, which before Node 24 takes a flag, or none
-wasm=none
+# what runs a WebAssembly module: node for wasm32, and for wasm64 a node with 64-bit memory, which before Node 24 takes a
+# flag, or none
+wasm32=none
+command -v node > /dev/null && wasm32="node tests/wasm.js"
+wasm64=none
 for node in "node" "node --experimental-wasm-memory64"; do
-    if [ "$wasm" = none ] && $node -e 'process.exit(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1])) ? 0 : 1)' > /dev/null 2>&1; then
-        wasm="$node tests/wasm.js"
+    if [ "$wasm64" = none ] && $node -e 'process.exit(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1])) ? 0 : 1)' > /dev/null 2>&1; then
+        wasm64="$node tests/wasm.js"
     fi
 done
+line='
+'
+words=$IFS # how the shell splits words, which a line of name.args changes for a moment
 exec 3>&1
 within() {
     "$@" &
@@ -41,89 +47,98 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         ls "tests/$name/"*.c > /dev/null 2>&1 && cc="-cc $(ls "tests/$name/"*.c)"
     fi
     [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc|: flagc ' $files "tests/$name.err" < /dev/null && continue # it starts this compiler, or its error repeats the command line
-    args=$target
-    [ -f "tests/$name.args" ] && args="$target $(cat "tests/$name.args")"
-    host= # what runs the program: nothing for one of this machine, node for a WebAssembly module
-    case " $args " in
-    *" -target wasm-"*) host=$wasm ;;
-    esac
     flagc=$compiler
     vars=
     if [ -f "tests/$name.env" ]; then
         flagc=$out/bin/$(basename "$compiler")
         vars=$(cat "tests/$name.env")
     fi
-    if [ -f "tests/$name.err" ]; then
-        if within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
-            echo "FAIL $name: compiled, expected an error"
-            fail=$((fail + 1))
-        elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
-            pass=$((pass + 1))
-        else
-            echo "FAIL $name: wrong error"
-            cat "$out/$name.got"
-            fail=$((fail + 1))
+    builds=" " # each line of name.args builds the test once more, with what it says
+    [ -f "tests/$name.args" ] && builds=$(cat "tests/$name.args")
+    IFS=$line
+    for build in $builds; do
+        IFS=$words
+        args="$target $build"
+        shown=$name # with the build it failed in, when it has several
+        case $builds in *"$line"*) shown="$name ($build)" ;; esac
+        host= # what runs the program: nothing for one of this machine, node for a WebAssembly module
+        case " $args " in
+        *" -target wasm-wasm32 "*) host=$wasm32 ;;
+        *" -target wasm-wasm64 "*) host=$wasm64 ;;
+        esac
+        if [ -f "tests/$name.err" ]; then
+            if within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
+                echo "FAIL $shown: compiled, expected an error"
+                fail=$((fail + 1))
+            elif grep -qF -e "$(cat "tests/$name.err")" "$out/$name.got"; then
+                pass=$((pass + 1))
+            else
+                echo "FAIL $shown: wrong error"
+                cat "$out/$name.got"
+                fail=$((fail + 1))
+            fi
+            continue
         fi
-        continue
-    fi
-    if [ -f "tests/$name.warn" ]; then
-        if ! within env $vars "$flagc" $files -o "$out/$name$exe" -memory $args $cc > "$out/$name.got" 2>&1; then
-            echo "FAIL $name: does not compile"
-            cat "$out/$name.got"
-            fail=$((fail + 1))
-        elif [ -s "tests/$name.warn" ] && ! grep -qF -e "$(cat "tests/$name.warn")" "$out/$name.got"; then
-            echo "FAIL $name: wrong warning"
-            cat "$out/$name.got"
-            fail=$((fail + 1))
-        elif [ ! -s "tests/$name.warn" ] && grep -q "warning:" "$out/$name.got"; then
-            echo "FAIL $name: unexpected warning"
-            cat "$out/$name.got"
-            fail=$((fail + 1))
-        else
-            pass=$((pass + 1))
+        if [ -f "tests/$name.warn" ]; then
+            if ! within env $vars "$flagc" $files -o "$out/$name$exe" -memory $args $cc > "$out/$name.got" 2>&1; then
+                echo "FAIL $shown: does not compile"
+                cat "$out/$name.got"
+                fail=$((fail + 1))
+            elif [ -s "tests/$name.warn" ] && ! grep -qF -e "$(cat "tests/$name.warn")" "$out/$name.got"; then
+                echo "FAIL $shown: wrong warning"
+                cat "$out/$name.got"
+                fail=$((fail + 1))
+            elif [ ! -s "tests/$name.warn" ] && grep -q "warning:" "$out/$name.got"; then
+                echo "FAIL $shown: unexpected warning"
+                cat "$out/$name.got"
+                fail=$((fail + 1))
+            else
+                pass=$((pass + 1))
+            fi
+            continue
         fi
-        continue
-    fi
-    if ! within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
-        echo "FAIL $name: does not compile"
-        cat "$out/$name.got"
-        fail=$((fail + 1))
-        continue
-    fi
-    case " $args " in
-    *" -check "*)
+        if ! within env $vars "$flagc" $files -o "$out/$name$exe" $args $cc > "$out/$name.got" 2>&1; then
+            echo "FAIL $shown: does not compile"
+            cat "$out/$name.got"
+            fail=$((fail + 1))
+            continue
+        fi
+        case " $args " in
+        *" -check "*)
+            if cmp -s "$out/$name.got" "tests/$name.out"; then
+                pass=$((pass + 1))
+            else
+                echo "FAIL $shown: the compiler printed something else"
+                diff "tests/$name.out" "$out/$name.got" | head -20
+                fail=$((fail + 1))
+            fi
+            continue
+            ;;
+        esac
+        if [ -s "$out/$name.got" ]; then
+            echo "FAIL $shown: compiles, but not in silence"
+            cat "$out/$name.got"
+            fail=$((fail + 1))
+            continue
+        fi
+        if [ "$host" = none ]; then
+            continue # without a node, or one with 64-bit memory for wasm64, there is nothing to run the module
+        elif [ ! -f "tests/$name.gdb" ]; then
+            within env FLAGC="$compiler" $host "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
+        elif [ -z "$target" ] && command -v gdb > /dev/null; then
+            within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | sed -e /libthread_db/d -e 's/^Thread [0-9]* hit //' > "$out/$name.got"
+        else
+            continue # without gdb there is nothing to read the DWARF
+        fi
         if cmp -s "$out/$name.got" "tests/$name.out"; then
             pass=$((pass + 1))
         else
-            echo "FAIL $name: the compiler printed something else"
+            echo "FAIL $shown: wrong output"
             diff "tests/$name.out" "$out/$name.got" | head -20
             fail=$((fail + 1))
         fi
-        continue
-        ;;
-    esac
-    if [ -s "$out/$name.got" ]; then
-        echo "FAIL $name: compiles, but not in silence"
-        cat "$out/$name.got"
-        fail=$((fail + 1))
-        continue
-    fi
-    if [ "$host" = none ]; then
-        continue # without a node that has 64-bit memory there is nothing to run the module
-    elif [ ! -f "tests/$name.gdb" ]; then
-        within env FLAGC="$compiler" $host "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
-    elif [ -z "$target" ] && command -v gdb > /dev/null; then
-        within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | sed -e /libthread_db/d -e 's/^Thread [0-9]* hit //' > "$out/$name.got"
-    else
-        continue # without gdb there is nothing to read the DWARF
-    fi
-    if cmp -s "$out/$name.got" "tests/$name.out"; then
-        pass=$((pass + 1))
-    else
-        echo "FAIL $name: wrong output"
-        diff "tests/$name.out" "$out/$name.got" | head -20
-        fail=$((fail + 1))
-    fi
+    done
+    IFS=$words
 done
 for src in examples/*.flg; do
     name=$src

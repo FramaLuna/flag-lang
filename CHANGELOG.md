@@ -2,23 +2,24 @@
 
 ## 0.7.0
 
-A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` writes a 64-bit WebAssembly module itself, with no C compiler. Existing programs keep compiling.
+A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm32` and `-target wasm-wasm64` write a WebAssembly module themselves, with no C compiler. Existing programs keep compiling.
 
 ### New Features
 
-- **WebAssembly:** `-target wasm-wasm64` builds a `.wasm` module with Memory64 that exports `memory`, `main`, and the `export func`s, and imports only the host functions its code reaches: `env.write` to print, `env.exit` to exit or panic, and those of your `extern` blocks. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
-- **`@wasm()` and `@wasm64()`:** platform builtins for the new target, in expressions and in `where`.
+- **WebAssembly:** `-target wasm-wasm32` builds a `.wasm` module with the 32-bit memory that `node` and Bun run with no flags, and `-target wasm-wasm64` one with Memory64. Flag is the same on both: pointers and lengths take 8 bytes, and only the memory instructions of `wasm32` take the low word of an address. The module exports `memory`, `main`, and the `export func`s, and imports only the host functions its code reaches: `env.write(fd, at, size)` to print, `env.exit` to exit or panic, and those of your `extern` blocks. On `wasm32` a pointer crosses to the host as an `i32`, a number in JavaScript. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
+- **Optimized WebAssembly:** each function goes through the same optimizations as on the native targets, and the module keeps the values in locals and on the stack: a `simd` is a `v128` of SIMD128, a dense `switch` jumps through a `br_table`, and an `if` that only chooses a value is a `select`.
+- **`@wasm()`, `@wasm32()` and `@wasm64()`:** platform builtins for the new targets, in expressions and in `where`.
 - **`math`, `print`, and `parse_float` on WebAssembly:** `math` needs nothing of the host, and floats print and parse with the same digits as on Linux.
 
 ### Changed
 
 - **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets, and the compiler builds itself in the same time.
 - **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds took 27.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
-- **WebAssembly tests on any Node with 64-bit memory:** `./test.sh` passes `--experimental-wasm-memory64` only to a Node that needs it for 64-bit memory, like Node 22, and skips the tests without such a Node instead of failing them.
+- **WebAssembly tests on both widths:** each line of a test's `.args` builds it once more, and the WebAssembly tests build for `wasm32` and `wasm64`. `./test.sh` runs `wasm32` under any `node`, and `wasm64` under one with 64-bit memory, passing `--experimental-wasm-memory64` only to a Node that needs it, like Node 22; without one it skips those tests instead of failing them.
 
 ### Performance
 
-- **Jump tables:** A `switch` on numbers with 8 or more cases whose values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 52% fewer cycles on random values and 41% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The table holds distances within the code, so it needs no relocation, also in a `-shared` library. WebAssembly still finds the cases by halves.
+- **Jump tables:** A `switch` on numbers with 8 or more cases whose values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 52% fewer cycles on random values and 41% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
 - **Spilling by distance:** When more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
 
 ### Fixed

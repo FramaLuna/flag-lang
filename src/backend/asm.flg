@@ -80,47 +80,7 @@ func assembly() -> &str:
             append(places, ptr([Piece{kind = Text, text = shown}, Piece{kind = Number, size = 1}]))
     append(functions, places[:])
     define(Data{name = "$flag.functions"}, functions)
-    for t in 0..comp.types.len:
-        append(asm.typs, -1)
-        append(asm.ctyps, -1)
-    for t in 0..comp.reached:
-        if aggregate(t):
-            al := 0
-            n := comp.types[t].align
-            while n / 2 != 0:
-                n /= 2
-                al += 1
-            asm.typs[t] = asm.typ.len
-            append(asm.typ, Typ{isdark = true, align = al, size = comp.types[t].size})
-    k := 0
-    for t in comp.c_types:
-        ty := Typ{align = -1}
-        first := k
-        while comp.c_fields[k].count != 0:
-            k += 1
-        if comp.types[t].kind == Untagged:
-            ty.isunion = true
-            for f in first..k:
-                parsefields(ptr(ty), comp.c_fields[f:f + 1])
-        else:
-            parsefields(ptr(ty), comp.c_fields[first:k])
-        k += 1
-        asm.ctyps[t] = asm.typ.len
-        append(asm.typ, ty)
-    for name in comp.globals:
-        c := Con{type = CAddr}
-        if comp.shared and comp.system == "linux" and starts_with(name, "thread "):
-            c.symtype = SExt # initial-exec, the place of thread data comes from the GOT
-        while true:
-            if starts_with(name, "extern "):
-                c.symtype = c.symtype or SExt
-            elif starts_with(name, "thread "):
-                c.symtype = c.symtype or SThr
-            else:
-                break
-            name = name[7:]
-        c.sym = i32(intern(name[1:]))
-        append(asm.globals, c)
+    prepare()
     if comp.debug:
         out(".cfi_sections .debug_frame\n")
     if shaped:
@@ -244,6 +204,50 @@ func assembly() -> &str:
         out(dwarf())
     return asm.text
 
+# the types of the aggregates and the globals of comp as the backend reads them
+func prepare():
+    for t in 0..comp.types.len:
+        append(asm.typs, -1)
+        append(asm.ctyps, -1)
+    for t in 0..comp.reached:
+        if aggregate(t):
+            al := 0
+            n := comp.types[t].align
+            while n / 2 != 0:
+                n /= 2
+                al += 1
+            asm.typs[t] = asm.typ.len
+            append(asm.typ, Typ{isdark = true, align = al, size = comp.types[t].size})
+    k := 0
+    for t in comp.c_types:
+        ty := Typ{align = -1}
+        first := k
+        while comp.c_fields[k].count != 0:
+            k += 1
+        if comp.types[t].kind == Untagged:
+            ty.isunion = true
+            for f in first..k:
+                parsefields(ptr(ty), comp.c_fields[f:f + 1])
+        else:
+            parsefields(ptr(ty), comp.c_fields[first:k])
+        k += 1
+        asm.ctyps[t] = asm.typ.len
+        append(asm.typ, ty)
+    for name in comp.globals:
+        c := Con{type = CAddr}
+        if comp.shared and comp.system == "linux" and starts_with(name, "thread "):
+            c.symtype = SExt # initial-exec, the place of thread data comes from the GOT
+        while true:
+            if starts_with(name, "extern "):
+                c.symtype = c.symtype or SExt
+            elif starts_with(name, "thread "):
+                c.symtype = c.symtype or SThr
+            else:
+                break
+            name = name[7:]
+        c.sym = i32(intern(name[1:]))
+        append(asm.globals, c)
+
 # a path as the assembler reads it, in quotes
 func in_quotes(path: &strview) -> &strview:
     return "\"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\""
@@ -311,6 +315,32 @@ func parsefields(ty: *Typ, fields: &listview[CField]):
 func compile():
     m := ptr(asm.machine)
     m.abi0()
+    optimize(m.cansel)
+    thronce()
+    m.abi1()
+    simpl(true)
+    fillcfg()
+    filluse()
+    m.isel()
+    fillcfg()
+    filllive()
+    fillloop()
+    fillcost()
+    spill()
+    rega()
+    fillcfg()
+    simpljmp()
+    fillcfg()
+    # with -debug the blocks keep the order of the input, so a scope is one range of code
+    if not comp.debug:
+        for n in 0..fn.nblk:
+            fn.blks[fn.rpo[n]].link = fn.rpo[n + 1] if n + 1 < fn.nblk else 0
+    m.emitfn()
+    out("/* end function " + fn.name + " */\n\n")
+
+# the passes of QBE that take the function in fn to SSA and optimize it, on every target; with sel, an if that only
+# chooses values becomes sel instructions
+func optimize(sel: bool):
     fillcfg()
     filluse()
     if not comp.debug: # with -debug every stack slot stays whole
@@ -339,33 +369,12 @@ func compile():
     gcm()
     filluse()
     ssacheck()
-    if m.cansel:
+    if sel:
         ifconvert()
         fillcfg()
         filluse()
         filldom()
         ssacheck()
-    thronce()
-    m.abi1()
-    simpl()
-    fillcfg()
-    filluse()
-    m.isel()
-    fillcfg()
-    filllive()
-    fillloop()
-    fillcost()
-    spill()
-    rega()
-    fillcfg()
-    simpljmp()
-    fillcfg()
-    # with -debug the blocks keep the order of the input, so a scope is one range of code
-    if not comp.debug:
-        for n in 0..fn.nblk:
-            fn.blks[fn.rpo[n]].link = fn.rpo[n + 1] if n + 1 < fn.nblk else 0
-    m.emitfn()
-    out("/* end function " + fn.name + " */\n\n")
 
 # the instructions of b, lowered from its end
 func lowerblk(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):

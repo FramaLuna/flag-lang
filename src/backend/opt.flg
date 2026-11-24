@@ -2357,10 +2357,12 @@ func ulog2(pow2: u64) -> i64:
 func ispow2(v: u64) -> bool:
     return v != 0 and (v and v - 1) == 0
 
-func simpl():
+# a division by a power of 2 becomes shifts; with flatten a blit becomes loads and stores, and a jump table loads the
+# address that its entry gives, which wasm leaves to memory.copy and br_table
+func simpl(flatten: bool):
     b := fn.start
     while b != 0:
-        if fn.blks[b].jmp.type == Jjt: # the address of the table plus the distance from it that the entry at the index holds
+        if flatten and fn.blks[b].jmp.type == Jjt: # the address of the table plus the distance from it that the entry at the index holds
             table := newcon(Con{type = CAddr, sym = i32(intern("\"" + jumptable(b) + "\""))}) # quoted, with no prefix of a symbol
             base := newtmp(Kl)
             offset := newtmp(Kl)
@@ -2376,41 +2378,42 @@ func simpl():
             i := fn.blks[b].ins[k]
             switch i.op:
             case Oblit1:
-                if not renewed:
-                    renew(b, k)
-                    renewed = true
-                sd := fn.blks[b].ins[k - 1].arg
-                sz := rsval(i.arg[0])
-                fwd := sz >= 0
-                sz = abs(sz)
-                off := sz if fwd else 0
-                p := 0
-                # a slot with no field of 8 bytes was written by 4 at most, a load of 8 would wait for two stores
-                if sz % 8 != 0 and rtype(sd[0]) == RTmp and (fn.tmp[sd[0]].alias.type and 1) != 0:
-                    p = 1
-                sts := [Ostorel, Ostorew, Ostoreh, Ostoreb]
-                lds := [Oload, Oload, Oloaduh, Oloadub]
-                clss := [Kl, Kw, Kw, Kw]
-                sizes := [8, 4, 2, 1]
-                while sz != 0:
-                    n := sizes[p]
-                    while sz >= n:
-                        if fwd:
-                            off -= n
-                        r := newtmp(Kl)
-                        r1 := newtmp(Kl)
-                        ro := getcon(off)
-                        emit(sts[p], 0, R, r, r1)
-                        emit(Oadd, Kl, r1, sd[1], ro)
-                        r1 = newtmp(Kl)
-                        emit(lds[p], clss[p], r, r1, R)
-                        emit(Oadd, Kl, r1, sd[0], ro)
-                        if not fwd:
-                            off += n
-                        sz -= n
-                    p += 1
-                k -= 1
-                continue
+                if flatten:
+                    if not renewed:
+                        renew(b, k)
+                        renewed = true
+                    sd := fn.blks[b].ins[k - 1].arg
+                    sz := rsval(i.arg[0])
+                    fwd := sz >= 0
+                    sz = abs(sz)
+                    off := sz if fwd else 0
+                    p := 0
+                    # a slot with no field of 8 bytes was written by 4 at most, a load of 8 would wait for two stores
+                    if sz % 8 != 0 and rtype(sd[0]) == RTmp and (fn.tmp[sd[0]].alias.type and 1) != 0:
+                        p = 1
+                    sts := [Ostorel, Ostorew, Ostoreh, Ostoreb]
+                    lds := [Oload, Oload, Oloaduh, Oloadub]
+                    clss := [Kl, Kw, Kw, Kw]
+                    sizes := [8, 4, 2, 1]
+                    while sz != 0:
+                        n := sizes[p]
+                        while sz >= n:
+                            if fwd:
+                                off -= n
+                            r := newtmp(Kl)
+                            r1 := newtmp(Kl)
+                            ro := getcon(off)
+                            emit(sts[p], 0, R, r, r1)
+                            emit(Oadd, Kl, r1, sd[1], ro)
+                            r1 = newtmp(Kl)
+                            emit(lds[p], clss[p], r, r1, R)
+                            emit(Oadd, Kl, r1, sd[0], ro)
+                            if not fwd:
+                                off += n
+                            sz -= n
+                        p += 1
+                    k -= 1
+                    continue
             case Odiv, Orem:
                 r := i.arg[1]
                 if kbase(i.cls) == 0 and rtype(r) == RCon:
