@@ -1108,6 +1108,7 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
     # -1- b dominates il.blk; so we can use temporaries of b in il.blk
     # -2- if il.type != LNoLoad, then il.blk postdominates the original load; so it is safe to load in il.blk
     # -3- if il.type != LNoLoad, then b postdominates il.blk (and by 2, the original load)
+    assert dom(b, il.blk), "a load of " + fn.name + " takes a value from a block that does not dominate it"
     oldl := fn.ilog.len
     oldt := fn.ntmp
     if i < 0:
@@ -2106,6 +2107,7 @@ func schedlate(r: Ref) -> u32:
         t.gcmbid = late
         if late != NOBID:
             best := fn.rpo[late]
+            assert dom(fn.rpo[early], best), "gcm moves an instruction of " + fn.name + " above its arguments"
             while fn.blks[best].odom != 0 and dom(fn.rpo[early], fn.blks[best].odom):
                 best = fn.blks[best].odom
             t.gcmbid = u32(fn.blks[best].id)

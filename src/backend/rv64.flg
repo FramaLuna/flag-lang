@@ -669,11 +669,13 @@ RV64_OMAP: array[Form, 90] = [
 # the offset of a slot from fp: the parameters on the stack are above it
 func rv64_slot(r: Ref) -> i64:
     s := rsval(r)
+    assert s <= fn.slot, "a slot of " + fn.name + " lies past its frame"
     if s < 0:
         return 8 * (0 - s)
     return -4 * (fn.slot - s)
 
 func emitaddr(c: Con):
+    assert (c.symtype and SThr) == 0, "thread data of " + fn.name + " is read as a plain symbol"
     out(asm.syms[c.sym])
     if c.bits != 0:
         out("+")

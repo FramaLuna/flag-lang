@@ -1280,11 +1280,15 @@ func amd64_isel():
         while k > 0:
             k -= 1
             if fn.blks[b].ins[k].op != Osel1:
+                first := fn.out.len
                 sel(fn.blks[b].ins[k])
+                for i in fn.out[first:]:
+                    assert rslot(i.arg[0]) == -1 and rslot(i.arg[1]) == -1, "an instruction of " + fn.name + " reads a slot as a temp"
                 continue
             last := k
             while k > 0 and fn.blks[b].ins[k].op != Osel0:
                 k -= 1
+            assert fn.blks[b].ins[k].op == Osel0, "a sel1 of " + fn.name + " has no sel0"
             r := fn.blks[b].ins[k].arg[0]
             nuse := fn.tmp[r].nuse
             fi := flagi(b, k)
@@ -1445,6 +1449,7 @@ func regtoa(reg: i64, sz: i64) -> &strview:
 
 func slotoff(r: Ref) -> i64:
     s := rsval(r)
+    assert s <= fn.slot, "a slot of " + fn.name + " lies past its frame"
     if s < 0:
         return 4 * (0 - s)
     return -4 * (fn.slot - s) - amd64.save
@@ -1456,11 +1461,13 @@ func emitcon(c: Con):
         if l[0] == '"':
             p = ""
         if c.symtype == SThr:
+            assert not asm.machine.apple and not asm.machine.windows, "thread data of " + fn.name + " is read through fs"
             out("%fs:")
             out(p)
             out(l)
             out("@tpoff")
         else:
+            assert (c.symtype and SThr) == 0, "thread data of " + fn.name + " is read as a plain symbol"
             out(p)
             out(l)
         if c.bits != 0:
@@ -1509,6 +1516,7 @@ func emitf(fmt: &strview, i: *Instr):
             r := i.arg[0]
             i.arg[0] = i.arg[1]
             i.arg[1] = r
+        assert i.arg[1] != i.to or i.arg[0] == i.to, "an instruction of " + fn.name + " has no 2-address form"
         emitcopy(i.to, i.arg[0], i64(i.cls))
         k = 1
     out("\t")
@@ -1554,6 +1562,7 @@ func emitf(fmt: &strview, i: *Instr):
                 if cn.type == CAddr and cn.symtype != SThr:
                     out("(%rip)")
             case RTmp:
+                assert isreg(r), "a temp of " + fn.name + " has no register"
                 out("(%")
                 out(regtoa(i64(r), SLong))
                 out(")")
@@ -1562,6 +1571,7 @@ func emitf(fmt: &strview, i: *Instr):
         k += 1
         switch rtype(r):
         case RTmp:
+            assert isreg(r), "a temp of " + fn.name + " has no register"
             out("%")
             out(regtoa(i64(r), sz))
         case RSlot:
@@ -1734,10 +1744,12 @@ func emitins(i: Instr):
                 asm.text += c.bits
             out("(%" + to + "), %" + to + "\n")
         case SExtThr:
+            assert c.bits == 0, "an address of " + fn.name + " read from the GOT loses its offset"
             # initial-exec TLS: load offset from GOT, add to thread-base register
             emitf("movq %%fs:0, %L=", ptr(i))
             out("\taddq " + p + sym + "@gottpoff(%rip), %" + to + "\n")
         case SExt:
+            assert c.bits == 0, "an address of " + fn.name + " read from the GOT loses its offset"
             # load address from the GOT
             out("\tmovq " + p + sym + "@gotpcrel(%rip), %" + to + "\n")
         case:
