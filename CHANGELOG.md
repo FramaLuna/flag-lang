@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.3
+
+A patch release that fixes a Windows crash with GNU `ld`, makes conditional expressions follow the expected type in more places, and adds `raylib` window controls. Existing programs keep compiling.
+
+### New Features
+
+- **Window controls in `raylib`:** `MaximizeWindow`, `MinimizeWindow`, `RestoreWindow`, `IsWindowMaximized`, `IsWindowMinimized`, `SetWindowPosition`, `GetWindowPosition`, and `SetWindowSize`.
+- **Screen capture in `raylib`:** `LoadImageFromScreen`, `ExportImage`, and `SwapScreenBuffer`.
+
+### Fixed
+
+- **Windows crash with GNU `ld`:** Programs linked by a MinGW-w64 GCC such as the one in Strawberry Perl no longer crash on thread-local access. ASLR stays on.
+- **Conditional arguments:** `f(1 if x else -1)` now passes an `i32` to `f(v: i32)`. The literals take the number type all overloads of the call agree on, and stay `i64` when the overloads differ.
+- **Text conditionals into `&str`:** `s = "a" if c else "b"` now copies into the buffer of an existing `&str`, as `s = "a"` does.
+
 ## 0.6.2
 
 A patch release that expands the `raylib` module so desktop UI applications can use it without their own `extern` declarations. The compiler is unchanged, and existing programs keep compiling.

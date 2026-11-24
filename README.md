@@ -79,15 +79,15 @@ Download the archive for your system from [releases](https://github.com/FramaLun
 
 | Platform | Archive |
 | --- | --- |
-| Linux (`x86_64`) | `flag-0.6.2-linux-x86_64.tar.gz` |
-| macOS (`arm64`) | `flag-0.6.2-macos-arm64.tar.gz` |
-| Windows (`x86_64`) | `flag-0.6.2-windows-x86_64.tar.gz` |
+| Linux (`x86_64`) | `flag-0.6.3-linux-x86_64.tar.gz` |
+| macOS (`arm64`) | `flag-0.6.3-macos-arm64.tar.gz` |
+| Windows (`x86_64`) | `flag-0.6.3-windows-x86_64.tar.gz` |
 
 Unpack it and add its `bin` folder to your `PATH`:
 
 ```sh
-tar -xzf flag-0.6.2-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.6.2-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.6.3-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.6.3-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
@@ -95,7 +95,7 @@ flagc -version
 
 - **macOS:** if the system says it cannot check the developer, run:
   ```sh
-  xattr -d com.apple.quarantine flag-0.6.2-macos-arm64/bin/flagc
+  xattr -d com.apple.quarantine flag-0.6.3-macos-arm64/bin/flagc
   ```
 - **Windows:** unpack the archive the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell.
 
