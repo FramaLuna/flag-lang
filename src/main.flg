@@ -134,6 +134,11 @@ type Piece:
     n: i64 # the number, how many zeros, or what the address adds
     text: &strview = "" # the bytes, the path of the file, or the name of what the address points to
 
+type CField: # a field of a type that crosses the C ABI by value, as QBE reads it
+    kind: u8 # b, h, w, l, s or d, or c for a type of C, type
+    type: i64
+    count: i64
+
 type Data:
     name: &strview
     align: i64 = 8
@@ -233,7 +238,7 @@ context comp:
     resolving: &list[i64] = heap([])
     spelled: i64
     c_types: &list[i64] = heap([])
-    c_defs: &str = heap("")
+    c_fields: &list[CField] = heap([]) # those of each of c_types, after each one with no count
     data: &list[Data] = heap([])
     pieces: &list[Piece] = heap([])
     texts: &list[i64] = heap([])
@@ -666,31 +671,36 @@ func main() -> i32:
         return 0
     ssa: &str = heap(output)
     ssa += ".ssa"
-    asm: &str = heap(output)
-    asm += ".s"
-    if write_file(view(ssa), listing()) is FsError:
-        eprint(comp.err, "failed to write QBE IR file ", ssa)
-        return 1
-    args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm), c_text(ssa), 0 as cstr, 0 as cstr}
-    if comp.debug:
-        args[5] = "-g"
-        args[6] = c_text(ssa)
-    if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
-        return 1
-    assembly: &str = heap("") # what QBE cannot write: the files of @embed, and the DWARF
+    asm_file: &str = heap(output)
+    asm_file += ".s"
+    if comp.machine == "x86_64" and (env("FLAG_QBE") ifnull "").len == 0:
+        if write_file(view(asm_file), assembly()) is FsError:
+            eprint(comp.err, "failed to write assembly file ", asm_file)
+            return 1
+    else:
+        if write_file(view(ssa), listing()) is FsError:
+            eprint(comp.err, "failed to write QBE IR file ", ssa)
+            return 1
+        args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm_file), c_text(ssa), 0 as cstr, 0 as cstr}
+        if comp.debug:
+            args[5] = "-g"
+            args[6] = c_text(ssa)
+        if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
+            return 1
+    extra: &str = heap("") # what the assembly cannot say: the files of @embed, and the DWARF
     for d in comp.data:
         if d.count > 0 and comp.pieces[d.first].kind == File:
             if comp.system == "linux":
-                assembly += ".section .rodata\n.p2align 3\n" + d.name[1:]
+                extra += ".section .rodata\n.p2align 3\n" + d.name[1:]
             elif comp.system == "windows":
-                assembly += ".section .rdata,\"dr\"\n.p2align 3\n" + d.name[1:]
+                extra += ".section .rdata,\"dr\"\n.p2align 3\n" + d.name[1:]
             else:
-                assembly += ".section __TEXT,__const\n.p2align 3\n_" + d.name[1:]
-            assembly += ":\n.incbin \"" + replace(replace(comp.pieces[d.first].text, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
+                extra += ".section __TEXT,__const\n.p2align 3\n_" + d.name[1:]
+            extra += ":\n.incbin \"" + replace(replace(comp.pieces[d.first].text, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
     if comp.debug:
-        assembly += dwarf()
-    if append_file(view(asm), assembly) is FsError:
-        eprint(comp.err, "failed to write assembly file ", asm)
+        extra += dwarf()
+    if append_file(view(asm_file), extra) is FsError:
+        eprint(comp.err, "failed to write assembly file ", asm_file)
         return 1
     cc: &list[&strview] = heap([])
     compiler: &strview = "cc"
@@ -701,14 +711,14 @@ func main() -> i32:
         if part.len > 0:
             append(cc, part)
     linking: &strview = "; flagc links using a C compiler (set the CC environment variable to choose one)"
-    source := view(asm)
+    source := view(asm_file)
     object: &str = heap(output)
     object += ".o"
     apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
     if apart:
         assembling: &list[&strview] = heap([])
         append(assembling, cc)
-        append(assembling, ptr(["-c", "-o", view(object), view(asm)]))
+        append(assembling, ptr(["-c", "-o", view(object), view(asm_file)]))
         if not ran(assembling, linking):
             return 1
         source = view(object)
@@ -757,7 +767,7 @@ func main() -> i32:
         return 1
     if not keep:
         _ = remove_file(view(ssa))
-        _ = remove_file(view(asm))
+        _ = remove_file(view(asm_file))
         if apart:
             _ = remove_file(view(object))
     if not running:

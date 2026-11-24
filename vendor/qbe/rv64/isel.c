@@ -92,6 +92,12 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			 */
 			r1 = newtmp("isel", k, fn);
 			emit(Oextsw, Kl, r1, r0, R);
+		} else if (k == Kl && fn->tmp[r0.val].cls == Kw) {
+			/* a word read as a long has its high bits
+			 * zero, as on amd64 and arm64: gvn gives a
+			 * phi of 0 and 1 the word its jnz reads */
+			r1 = newtmp("isel", Kl, fn);
+			emit(Oextuw, Kl, r1, r0, R);
 		} else {
 			assert(k == fn->tmp[r0.val].cls);
 		}

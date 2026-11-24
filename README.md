@@ -57,7 +57,7 @@ there is no ada
 - `simd[T, n]`, lanes of numbers in one or two registers with operators that work on all of them, on SSE and NEON
 - C ABI FFI to interop with other languages (both ways), with typed C function values, and shared libraries that a program loads and reloads while it runs
 - A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP, UDP and raylib
-- QBE backend for really fast compilation; for example, the compiler builds itself in about a second and a half
+- The backend of QBE, ported to Flag for x86_64, for really fast compilation; for example, the compiler builds itself in about a second and a half
 - Support for Linux, macOS and Windows, and WebAssembly modules (`-target wasm-wasm64`) that `flagc` writes without a C compiler
 
 ## Documentation

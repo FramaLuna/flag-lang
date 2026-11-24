@@ -1,0 +1,419 @@
+@trust
+
+SecText = 0
+SecData = 1
+SecBss = 2
+
+# the assembly of the program, each proc through the passes of QBE on the machine of the target
+func assembly() -> &str:
+    shrink()
+    shaped := tables()
+    asm.machine = AMD64_SYSV
+    if comp.system == "macos":
+        asm.machine = AMD64_APPLE
+    elif comp.system == "windows":
+        asm.machine = AMD64_WIN
+    for t in 0..comp.types.len:
+        append(asm.typs, -1)
+        append(asm.ctyps, -1)
+    for t in 0..comp.reached:
+        if aggregate(t):
+            al := 0
+            n := comp.types[t].align
+            while n / 2 != 0:
+                n /= 2
+                al += 1
+            asm.typs[t] = asm.typ.len
+            append(asm.typ, Typ{isdark = true, align = al, size = comp.types[t].size})
+    k := 0
+    for t in comp.c_types:
+        ty := Typ{align = -1}
+        first := k
+        while comp.c_fields[k].count != 0:
+            k += 1
+        if comp.types[t].kind == Untagged:
+            ty.isunion = true
+            for f in first..k:
+                parsefields(ptr(ty), comp.c_fields[f:f + 1])
+        else:
+            parsefields(ptr(ty), comp.c_fields[first:k])
+        k += 1
+        asm.ctyps[t] = asm.typ.len
+        append(asm.typ, ty)
+    for name in comp.globals:
+        c := Con{type = CAddr}
+        if comp.shared and comp.system == "linux" and starts_with(name, "thread "):
+            c.symtype = SExt # initial-exec, the place of thread data comes from the GOT
+        while true:
+            if starts_with(name, "extern "):
+                c.symtype = c.symtype or SExt
+            elif starts_with(name, "thread "):
+                c.symtype = c.symtype or SThr
+            else:
+                break
+            name = name[7:]
+        c.sym = i32(intern(name[1:]))
+        append(asm.globals, c)
+    if comp.debug:
+        out(".cfi_sections .debug_frame\n")
+    if shaped:
+        special("flag_shapes", true, "flag.shapes")
+        compile()
+    # the data as QBE writes it from the pieces the listing gives: zeros first go to the fill of a bss, the rest as
+    # numbers, addresses and runs of text
+    for d in comp.data:
+        pieces := comp.pieces[d.first:d.first + d.count]
+        if pieces.len > 0 and pieces[0].kind == File: # the assembler reads it
+            continue
+        addresses := false
+        for piece in pieces:
+            addresses = addresses or piece.kind == Address
+        sec: &strview = ""
+        secf: &strview = ""
+        if d.thread:
+            pass
+        elif d.fixed and comp.system == "linux": # where a write stops the program
+            sec = "\".data.rel.ro\""
+        elif d.fixed and comp.system == "windows":
+            sec = "\".rdata\""
+            secf = "\"dr\""
+        elif d.fixed and addresses: # on macOS __TEXT takes no address that the loader fixes
+            sec = "\"__DATA,__const\""
+        elif d.fixed:
+            sec = "\"__TEXT,__const\""
+        name := d.name[1:]
+        zero := 0 # the zeros it starts with, or -1 past them
+        for piece in pieces:
+            if piece.kind == Zeros:
+                if zero != -1:
+                    zero += piece.n
+                else:
+                    out("\t.fill ")
+                    asm.text += piece.n
+                    out(",1,0\n")
+                continue
+            if zero != -1:
+                emitlnk(name, false, d.thread, d.align, sec, secf, SecData)
+                if zero > 0:
+                    out("\t.fill ")
+                    asm.text += zero
+                    out(",1,0\n")
+                zero = -1
+            switch piece.kind:
+            case Number:
+                switch piece.size:
+                case 1:
+                    out("\t.byte ")
+                    asm.text += piece.n and 0xff
+                case 2:
+                    out("\t.short ")
+                    asm.text += piece.n and 0xffff
+                case 4:
+                    out("\t.int ")
+                    asm.text += piece.n and 0xffff_ffff
+                case:
+                    out("\t.quad ")
+                    asm.text += piece.n
+                out("\n")
+            case Address:
+                target := piece.text[1:]
+                out("\t.quad ")
+                if items(target)[0] != '"':
+                    out(asm.machine.assym)
+                out(target)
+                if piece.n >= 0:
+                    out("+")
+                asm.text += piece.n
+                out("\n")
+            case Text:
+                quoted := false
+                for b in items(piece.text):
+                    plain := b >= ' ' and b <= '~' and b != '"' and b != '\\'
+                    if quoted and not plain:
+                        out("\"\n")
+                    elif plain and not quoted:
+                        out("\t.ascii \"")
+                    quoted = plain
+                    if plain:
+                        add_byte(asm.text, b)
+                    else:
+                        out("\t.byte ")
+                        asm.text += i64(b)
+                        out("\n")
+                if quoted:
+                    out("\"\n")
+            case:
+                pass
+        if zero != -1:
+            emitlnk(name, false, d.thread, d.align, sec, secf, SecBss)
+            out("\t.fill ")
+            asm.text += zero
+            out(",1,0\n")
+        out("/* end data */\n\n")
+    special("flag_frame", false, "")
+    compile()
+    special("flag_functions", false, "flag.functions")
+    compile()
+    moved: &list[i64] = heap([])
+    for l in 0..=comp.labels:
+        append(moved, 0)
+    dropped: &list[bool] = heap([])
+    for i in comp.code:
+        append(dropped, i.ghost)
+    for f in comp.procs:
+        threaded(f, dropped, moved)
+        path := "\"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\""
+        asm.curfile = 1 # gas numbers the files from 1
+        while asm.curfile <= asm.files.len and asm.files[asm.curfile - 1] != path:
+            asm.curfile += 1
+        if asm.curfile > asm.files.len:
+            append(asm.files, heap(path))
+            out(".file ")
+            asm.text += asm.curfile
+            out(" " + path + "\n")
+        with scratch():
+            lower(f, dropped, moved)
+            compile()
+    asm.machine.emitfin()
+    return asm.text
+
+# the fields of a type of C, or of one member of a union of C, as QBE lays them out
+func parsefields(ty: *Typ, fields: &listview[CField]):
+    n := 0
+    sz := 0
+    al := ty.align
+    for f in fields:
+        type := FTyp
+        s := 0
+        a := 0
+        switch f.kind:
+        case 'd':
+            type = Fd
+            s = 8
+            a = 3
+        case 'l':
+            type = Fl
+            s = 8
+            a = 3
+        case 's':
+            type = Fs
+            s = 4
+            a = 2
+        case 'w':
+            type = Fw
+            s = 4
+            a = 2
+        case 'h':
+            type = Fh
+            s = 2
+            a = 1
+        case 'b':
+            type = Fb
+            s = 1
+        case:
+            s = asm.typ[asm.ctyps[f.type]].size
+            a = asm.typ[asm.ctyps[f.type]].align
+        if a > al:
+            al = a
+        a = (1 << a) - 1
+        a = ((sz + a) and not a) - sz
+        if a != 0 and n < NField: # padding
+            append(ty.fields, Member{FPad, a})
+            n += 1
+        c := f.count
+        sz += a + c * s
+        if type == FTyp:
+            s = asm.ctyps[f.type]
+        while c > 0 and n < NField:
+            append(ty.fields, Member{i32(type), s})
+            c -= 1
+            n += 1
+    append(ty.fields, Member{FEnd, 0})
+    a := i64(1) << al
+    if sz < ty.size:
+        sz = ty.size
+    ty.size = (sz + a - 1) and -a
+    ty.align = al
+    ty.nunion += 1
+
+# the passes of QBE on the function in fn, and its assembly
+func compile():
+    m := ptr(asm.machine)
+    m.abi0()
+    fillcfg()
+    filluse()
+    if not comp.debug: # with -debug every stack slot stays whole
+        chop()
+        filluse()
+    promote()
+    filluse()
+    ssa()
+    filluse()
+    ssacheck()
+    fillalias()
+    loadopt()
+    filluse()
+    callpads()
+    filluse()
+    fillalias()
+    coalesce()
+    filluse()
+    filldom()
+    ssacheck()
+    gvn()
+    fillcfg()
+    simplcfg()
+    filluse()
+    filldom()
+    gcm()
+    filluse()
+    ssacheck()
+    if m.cansel:
+        ifconvert()
+        fillcfg()
+        filluse()
+        filldom()
+        ssacheck()
+    thronce()
+    m.abi1()
+    simpl()
+    fillcfg()
+    filluse()
+    m.isel()
+    fillcfg()
+    filllive()
+    fillloop()
+    fillcost()
+    spill()
+    rega()
+    fillcfg()
+    simpljmp()
+    fillcfg()
+    # with -debug the blocks keep the order of the input, so a scope is one range of code
+    if not comp.debug:
+        for n in 0..fn.nblk:
+            fn.blks[fn.rpo[n]].link = fn.rpo[n + 1] if n + 1 < fn.nblk else 0
+    m.emitfn()
+    out("/* end function " + fn.name + " */\n\n")
+
+func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
+    m := ptr(asm.machine)
+    pfx := m.assym
+    if items(name)[0] == '"':
+        pfx = ""
+    sfx: &strview = ""
+    if m.apple and thread:
+        sec = "__DATA"
+        secf = "__thread_bss,thread_local_zerofill" if kind == SecBss else "__thread_data,thread_local_regular"
+        sfx = "$tlv$init"
+        out(".section __DATA,__thread_vars,thread_local_variables\n" + pfx + name + ":\n\t.quad __tlv_bootstrap\n\t.quad 0\n\t.quad " + pfx + name + sfx + "\n\n")
+    if m.windows and thread:
+        sec = ".tls$"
+        secf = "\"dw\""
+    if sec.len > 0:
+        if m.apple and items(sec)[0] == '"': # Mach-O takes segment,section bare
+            out(".section " + sec[1:sec.len - 1])
+        else:
+            out(".section " + sec)
+        if secf.len > 0:
+            out("," + secf)
+    elif thread:
+        out([".abort \"unreachable\"", ".section .tdata,\"awT\"", ".section .tbss,\"awT\""][kind])
+    else:
+        out([".text", ".data", ".bss"][kind])
+    out("\n")
+    if align != 0:
+        out(".balign ")
+        asm.text += align
+        out("\n")
+    if export:
+        out(".globl " + pfx + name + "\n")
+    out(pfx + name + sfx + ":\n")
+
+func emitfnlnk():
+    emitlnk(fn.name, fn.export, false, 16, "", "", SecText)
+    if not comp.debug:
+        return
+    out("\t.cfi_startproc\n")
+    # the prologue takes the first line and the code does not repeat it, so a debugger that skips the prologue stops at
+    # the next line
+    b := fn.start
+    while b != 0:
+        for k in 0..fn.blks[b].ins.len:
+            i := fn.blks[b].ins[k]
+            if i.op == Odbgloc:
+                emitdbgloc(rval(i.arg[0]), rval(i.arg[1]))
+                fn.blks[b].ins[k].op = Onop
+                return
+        b = fn.blks[b].link
+
+# the place of bits of size bytes among the floats that the code reads from memory
+func stashbits(n: u64, size: i64) -> i64:
+    for k in 0..asm.stash.len:
+        if size <= asm.stash_size[k] and asm.stash[k] == n:
+            return k
+    append(asm.stash, n)
+    append(asm.stash_size, size)
+    return asm.stash.len - 1
+
+func emitfin(sec: array[&strview, 3]):
+    if asm.stash.len == 0:
+        return
+    out("/* floating point constants */\n")
+    for lg in reverse 2..=4:
+        for k in 0..asm.stash.len:
+            if asm.stash_size[k] != 1 << lg:
+                continue
+            out(".section " + sec[lg - 2] + "\n.p2align ")
+            asm.text += lg
+            out("\n" + asm.machine.asloc + "fp")
+            asm.text += k
+            out(":")
+            n := asm.stash[k]
+            if lg == 4:
+                out("\n\t.quad ")
+                asm.text += i64(n)
+                out("\n\t.quad 0\n\n")
+            elif lg == 3:
+                out("\n\t.quad ")
+                asm.text += i64(n)
+                out(" /* ")
+                print_float(asm.text, "%f", n as f64)
+                out(" */\n\n")
+            else:
+                out("\n\t.int ")
+                asm.text += i32(n and 0xffff_ffff)
+                out(" /* ")
+                print_float(asm.text, "%f", f64(u32(n and 0xffff_ffff) as f32))
+                out(" */\n\n")
+    asm.stash.len = 0
+    asm.stash_size.len = 0
+
+func elf_emitfin():
+    emitfin([".rodata", ".rodata", ".rodata"])
+    out(".section .note.GNU-stack,\"\",@progbits\n")
+
+func macho_emitfin():
+    emitfin(["__TEXT,__literal4,4byte_literals", "__TEXT,__literal8,8byte_literals", "__TEXT,__literal16,16byte_literals"])
+
+func pe_emitfin():
+    emitfin([".rodata", ".rodata", ".rodata"])
+
+func emitdbgloc(line: i64, col: i64):
+    out("\t.loc ")
+    asm.text += asm.curfile
+    out(" ")
+    asm.text += line
+    if col != 0:
+        out(" ")
+        asm.text += col
+    out("\n")
+
+# snprintf of one float, as QBE prints it
+func print_float(out: *&str, format: cstr, f: f64):
+    buf: array[u8, 400]
+    n := snprintf(ptr(buf) as *u8, 400, format, f)
+    text: &strview
+    text = ptr(buf) as *bytes
+    text.len = i64(n)
+    out.* += text

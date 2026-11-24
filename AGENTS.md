@@ -1,7 +1,7 @@
 # AGENTS.md
 
-This repo is the Flag compiler written in Flag. It compiles itself, emits QBE and links
-with cc.
+This repo is the Flag compiler written in Flag. It compiles itself, runs the passes of QBE
+(in Flag for x86_64, the C QBE of vendor/qbe for arm64 and rv64) and links with cc.
 
 ## Before you write
 
@@ -35,7 +35,7 @@ it.
 
 Every pass ends green:
 
-    ./build.sh              stage 2 and stage 3 must emit the same QBE
+    ./build.sh              stage 2 and stage 3 must emit the same assembly
     ./test.sh build/flagc   every test in tests/ passes
 
 Every bug you find gets a test in `tests/`: `name.flg` with `name.out`, or with `name.err`

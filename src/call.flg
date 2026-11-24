@@ -1271,7 +1271,8 @@ func c_type(t: i64, at: i64) -> u32|Fail:
         return fail(ty.name + " cannot cross the C ABI; only integers, floats, bool, pointers, structs, and untagged unions of those are allowed", at)
     if ty.packed:
         return fail("packed struct " + ty.name + " cannot cross the C ABI by value; pass a pointer instead", at)
-    fields: &str = heap("")
+    fields: &list[CField] = heap([])
+    defer free(fields)
     for i in 0..ty.count:
         item := comp.items[ty.first + i]
         e := item.type
@@ -1280,34 +1281,32 @@ func c_type(t: i64, at: i64) -> u32|Fail:
             count = comp.types[e].count
             e = comp.types[e].elem
         k := comp.types[e].kind
-        one: &str = heap("")
+        field := CField{count = count}
         if item.shared:
             return fail("struct " + ty.name + " cannot cross the C ABI by value because field " + item.name + " shares storage; pass a pointer or use an untagged union", at)
         elif comp.types[e].size == 0:
             continue
         elif k == Struct or k == Untagged:
-            one += ":c" + (try c_type(e, at) - CAGG)
+            field.kind = 'c'
+            field.type = i64(try c_type(e, at) - CAGG)
         elif k == Bool or comp.types[e].size == 1 and integer(e):
-            one += "b"
+            field.kind = 'b'
         elif comp.types[e].size == 2 and integer(e):
-            one += "h"
+            field.kind = 'h'
         elif cls(e) == S:
-            one += "s"
+            field.kind = 's'
         elif cls(e) == D:
-            one += "d"
+            field.kind = 'd'
         elif cls(e) == L and (k != Func or comp.types[e].foreign) and k != Thread:
-            one += "l"
+            field.kind = 'l'
         elif numeric(e) or k == Ptr:
-            one += "w"
+            field.kind = 'w'
         else:
             return fail(ty.name + " cannot cross the C ABI because it contains " + comp.types[item.type].name, at)
-        one += " " + count
-        if ty.kind == Untagged:
-            fields += "{ " + one + " } "
-        else:
-            fields += one + ", "
+        append(fields, field)
     append(comp.c_types, t)
-    comp.c_defs += "type :c" + t + " = { " + fields + "}\n"
+    append(comp.c_fields, fields[:])
+    append(comp.c_fields, CField{}) # the end of the fields of t
     return CAGG + u32(t)
 
 func match(n: i64, v: Value) -> i64|Fail:

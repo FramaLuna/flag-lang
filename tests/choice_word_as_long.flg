@@ -1,0 +1,16 @@
+# a long that is 1 or 0 by a comparison becomes the word of that comparison, which riscv64 reads as a long
+type Slice:
+    ref: u32
+    off: i64
+    sz: i64
+    cls: i64
+
+func load(sl: Slice, msk: u64) -> i64:
+    all := msk == (u64(1) << (8 * sl.sz - 1)) * 2 - 1
+    cls := sl.cls if all else 1 if sl.sz > 4 else 0
+    if sl.ref > 7:
+        cls += i64(sl.ref)
+    return cls
+
+func main():
+    print(load(Slice{9, 0, 8, 3}, 0xffff_ffff_ffff_ffff), " ", load(Slice{1, 0, 8, 3}, 1), " ", load(Slice{1, 0, 2, 3}, 1))

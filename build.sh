@@ -88,13 +88,14 @@ $cc -o build/flagc0 build/seed.s $objects $linking
 build/flagc0 src/*.flg -o build/flagc1 -cc $objects $linking
 build/flagc1 src/*.flg -o build/flagc2 -keep -cc $objects $linking
 build/flagc2 src/*.flg -o build/flagc -keep -cc $objects $linking
-cmp build/flagc2.ssa build/flagc.ssa
+cmp build/flagc2.s build/flagc.s
+# the seeds are QBE IR, which FLAG_QBE=1 writes on x86_64 too
 if [ "${1:-}" = seed ]; then
     for target in linux-x86_64 macos-arm64 windows-x86_64; do
-        CC=true build/flagc src/*.flg -target $target -o build/${target%-*} -keep
+        FLAG_QBE=1 CC=true build/flagc src/*.flg -target $target -o build/${target%-*} -keep
         cp build/${target%-*}.ssa boot/${target%-*}.ssa
     done
-elif ! cmp -s build/flagc.ssa boot/$system.ssa; then
+elif ! FLAG_QBE=1 CC=true build/flagc src/*.flg -o build/fresh -keep || ! cmp -s build/fresh.ssa boot/$system.ssa; then
     echo "boot/$system.ssa is older than src: ./build.sh seed refreshes it"
 fi
 if [ "${1:-}" = sanitize ]; then
