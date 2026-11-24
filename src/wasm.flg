@@ -73,7 +73,7 @@ func assemble() -> &str|Fail:
         for i in comp.code[p.code:p.end]:
             for k, a in operands(i, used):
                 if a.kind == Global:
-                    try uses(stripped(comp.globals[a.n]), k > 0 or i.op != "call", externs)
+                    try uses(stripped(comp.globals[a.n]), k > 0 or i.op != Ocall, externs)
     while wasm.waiting.len > 0:
         d := comp.data[trust pop(wasm.waiting)]
         for piece in comp.pieces[d.first:d.first + d.count]:
@@ -169,7 +169,7 @@ func assemble() -> &str|Fail:
         gives: u8 = 0
         if p.cls >= AGG:
             append(kinds, 0x7e) # where the aggregate it gives back goes
-        elif p.cls != 0:
+        elif p.cls != K0:
             gives = passed(p.cls)
         append(wasm.typed, signature(kinds, gives))
         if not exported(p):
@@ -221,17 +221,9 @@ func assemble() -> &str|Fail:
     codes: &str = heap("")
     defer free(codes)
     leb(codes, u64(wasm.typed.len - wasm.imports.len))
-    moved: &list[i64] = heap([])
-    defer free(moved)
-    for l in 0..=comp.labels:
-        append(moved, 0)
-    dropped: &list[bool] = heap([])
-    defer free(dropped)
-    for i in comp.code:
-        append(dropped, i.ghost)
     for p in comp.procs:
         with scratch():
-            lower(p, dropped, moved)
+            lower(p)
             elimsb()
             # an aggregate passes by its address: the callee copies one it takes to a slot of its own, and gives one
             # back to the place the caller adds as its last parameter
@@ -639,7 +631,7 @@ func valtype(k: i64) -> u8:
     return 0x7f
 
 # the value type that a value of the class c of comp passes as
-func passed(c: u32) -> u8:
+func passed(c: i64) -> u8:
     k, _ := parsecls(c)
     return valtype(k)
 

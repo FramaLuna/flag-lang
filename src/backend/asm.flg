@@ -19,7 +19,7 @@ func assembly() -> &str:
     shaped := comp.shared
     for f in comp.procs:
         for i in comp.code[f.code:f.end]:
-            shaped = shaped or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" and not i.ghost # what load calls for the table of the program
+            shaped = shaped or i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" # what load calls for the table of the program
     if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
         privs: &map[i64, bool] = heap({}) # the declarations that are priv
         defer free(privs)
@@ -187,14 +187,6 @@ func assembly() -> &str:
     compile()
     special("flag_functions", false, "flag.functions")
     compile()
-    moved: &list[i64] = heap([])
-    defer free(moved)
-    for l in 0..=comp.labels:
-        append(moved, 0)
-    dropped: &list[bool] = heap([])
-    defer free(dropped)
-    for i in comp.code:
-        append(dropped, i.ghost)
     for f in comp.procs:
         path := in_quotes(view(comp.files[f.file].path))
         asm.curfile = 1 # gas numbers the files from 1
@@ -206,7 +198,7 @@ func assembly() -> &str:
             asm.text += asm.curfile
             out(" " + path + "\n")
         with scratch():
-            lower(f, dropped, moved)
+            lower(f)
             compile()
     asm.machine.emitfin()
     if comp.debug:

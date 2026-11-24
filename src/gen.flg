@@ -107,8 +107,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             append(table, Piece{kind = Address, text = comp.insts[try instantiate(comp.syms[k].node, 0)].name})
         define(Data{name = "$flag.tests"}, table)
         made := open_proc("$flag_tests", 0, 0, false)
-        terminate("ret", global("$flag.tests"))
-        close_proc(made, L, 0)
+        terminate(Oreturn, global("$flag.tests"))
+        close_proc(made, Kl, 0)
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
         if comp.syms[k].export and (generic(f) or try holds_where(f)): # an export for another system is checked when you build for it
@@ -154,9 +154,9 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             t := comp.syms[k].type
             try stamp(t, global("thread $ctx." + comp.types[t].name), 0)
     if comp.stamping:
-        add(Ins{op = "storew", a = int_arg(1), b = global("thread $flag.entered")})
-    terminate("ret", Arg{})
-    close_proc(stamper, 0, 0)
+        add(Ins{op = Ostorew, a = int_arg(1), b = global("thread $flag.entered")})
+    terminate(Oreturn, Arg{})
+    close_proc(stamper, K0, 0)
     for held in comp.syms: # before a call that uses a default value reads it
         f := held.node
         for p in 0..params(f):
@@ -302,7 +302,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                             shown = "operator " + shown
                         for c in order[first:]:
                             for i in comp.code[comp.procs[c].code:comp.procs[c].end]:
-                                if i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == comp.procs[m].name:
+                                if i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == comp.procs[m].name:
                                     failed := fail("recursive function " + shown + " cannot be 'inline'; remove 'inline'", comp.tokens[comp.nodes[f].tok].at)
                                     note("recursive call back to " + shown + " is here", i.pos)
                                     return failed
@@ -360,8 +360,8 @@ func gen_from(from: i64) -> i64|Fail:
         if f == 0 and inst.ret == VOID:
             shape := comp.types[comp.binds[-1].type]
             block := temp()
-            append(comp.passes, Pass{L, block, false, VOID})
-            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
+            append(comp.passes, Pass{Kl, block, false, VOID})
+            add(Ins{op = Ocall, a = global("$flag.stamp"), first = u32(comp.passes.len)})
             args: &list[Value] = heap([])
             try invoke("guard_stack", args, 0)
             start := HEAD + align_up(comp.types[shape.ret].size, 8)
@@ -370,7 +370,7 @@ func gen_from(from: i64) -> i64|Fail:
             for k in 0..shape.count:
                 p := comp.items[shape.first + k].type
                 if comp.types[p].kind == Fat or big(p):
-                    append(passes, Pass{L, offset(block, used), false, VOID})
+                    append(passes, Pass{Kl, offset(block, used), false, VOID})
                 elif aggregate(p):
                     append(passes, Pass{cls(p), offset(block, used), false, VOID})
                 else:
@@ -380,12 +380,12 @@ func gen_from(from: i64) -> i64|Fail:
             for t in inherited():
                 blit(offset(block, used), global("thread $ctx." + comp.types[t].name), t)
                 used += room(t)
-            store(shape.ret, try emit(op1(L, "loadl", offset(block, start)), passes, shape.ret, false, inst.at, comp.binds[-1].type), offset(block, HEAD))
+            store(shape.ret, try emit(op1(Kl, Oload, offset(block, start)), passes, shape.ret, false, inst.at, comp.binds[-1].type), offset(block, HEAD))
             append(args, Value{type = pointer(BYTES), at = block})
             append(args, truth(holds_pointer(shape.ret)))
             try invoke("finished", args, 0)
-            terminate("ret", int_arg(0))
-            close_proc(made, L, 1)
+            terminate(Oreturn, int_arg(0))
+            close_proc(made, Kl, 1)
             close_frame(saved)
             continue
         if f == 0:
@@ -396,7 +396,7 @@ func gen_from(from: i64) -> i64|Fail:
                 p := temp()
                 how := cls(t)
                 if aggregate(t):
-                    how = L
+                    how = Kl
                 append(comp.passes, Pass{how, p, false, VOID})
                 append(sides, Value{type = t, at = p, mem = aggregate(t)})
             a := sides[0]
@@ -405,12 +405,12 @@ func gen_from(from: i64) -> i64|Fail:
                 l_differ := label()
                 if ty.kind == Union:
                     l_same := label()
-                    branch(op(W, "ceqw", tag(a), tag(b)), l_same, l_differ)
+                    branch(op(Kw, Oceqw, tag(a), tag(b)), l_same, l_differ)
                     open_block(l_same)
                     for m in members(t):
                         l_arm := label()
                         l_next := label()
-                        branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
+                        branch(op(Kw, Oceqw, tag(a), tag_of(m)), l_arm, l_next)
                         open_block(l_arm)
                         if holds_lanes(m):
                             return fail("cannot compare " + ty.name + " with '==' because it contains a simd member whose '==' returns a mask; narrow with 'is' and compare lanes explicitly", inst.at)
@@ -418,9 +418,9 @@ func gen_from(from: i64) -> i64|Fail:
                         if same is Fail:
                             note("while generating default '==' for union " + ty.name + ", member " + comp.types[m].name + " failed", inst.at)
                             return Fail
-                        terminate("ret", load(same).at)
+                        terminate(Oreturn, load(same).at)
                         open_block(l_next)
-                    terminate("hlt", Arg{})
+                    terminate(Ohalt, Arg{})
                 else:
                     for k in 0..ty.count:
                         field := comp.items[ty.first + k]
@@ -436,14 +436,14 @@ func gen_from(from: i64) -> i64|Fail:
                             l_next := label()
                             branch(load(same).at, l_next, l_differ)
                             open_block(l_next)
-                    terminate("ret", int_arg(1))
+                    terminate(Oreturn, int_arg(1))
                 open_block(l_differ)
-                terminate("ret", int_arg(0))
+                terminate(Oreturn, int_arg(0))
             else:
                 h := alloc(U64)
-                add(Ins{op = "storel", a = int_arg(0), b = h, number = true})
+                add(Ins{op = Ostorel, a = int_arg(0), b = h, number = true})
                 if ty.kind == Bool:
-                    try mix(h, Value{type = U64, at = op1(L, "extuw", a.at)}, inst.at)
+                    try mix(h, Value{type = U64, at = op1(Kl, Oextuw, a.at)}, inst.at)
                 elif ty.kind == Ptr or ty.kind == Func:
                     try mix(h, Value{type = U64, at = a.at}, inst.at)
                 elif ty.kind == Struct:
@@ -453,13 +453,13 @@ func gen_from(from: i64) -> i64|Fail:
                             note("while generating default 'hash' for struct " + ty.name + ", field " + field.name + " failed", field_at(t, field.name, inst.at))
                             return Fail
                 elif ty.kind == Union:
-                    try mix(h, Value{type = U64, at = op1(L, "extuw", tag(a))}, inst.at)
+                    try mix(h, Value{type = U64, at = op1(Kl, Oextuw, tag(a))}, inst.at)
                     l_done := label()
                     for m in members(t):
                         if comp.types[m].size > 0:
                             l_arm := label()
                             l_next := label()
-                            branch(op(W, "ceqw", tag(a), tag_of(m)), l_arm, l_next)
+                            branch(op(Kw, Oceqw, tag(a), tag_of(m)), l_arm, l_next)
                             open_block(l_arm)
                             if mix(h, Value{type = m, at = payload(a.at, m), mem = true}, inst.at) is Fail:
                                 note("while generating default 'hash' for union " + ty.name + ", member " + comp.types[m].name + " failed", inst.at)
@@ -470,20 +470,20 @@ func gen_from(from: i64) -> i64|Fail:
                     open_block(l_done)
                 elif ty.kind == Array:
                     index := alloc(I64)
-                    add(Ins{op = "storel", a = int_arg(0), b = index, number = true})
+                    add(Ins{op = Ostorel, a = int_arg(0), b = index, number = true})
                     l_head := label()
                     l_body := label()
                     l_done := label()
                     jump(l_head)
                     open_block(l_head)
-                    k := op1(L, "loadl", index)
-                    branch(op(W, "cultl", k, int_arg(i64(ty.count))), l_body, l_done)
+                    k := op1(Kl, Oload, index)
+                    branch(op(Kw, Ocultl, k, int_arg(i64(ty.count))), l_body, l_done)
                     open_block(l_body)
-                    try mix(h, Value{type = ty.elem, at = op(L, "add", a.at, times(k, comp.types[ty.elem].size)), mem = true}, inst.at)
-                    add(Ins{op = "storel", a = op(L, "add", k, int_arg(1)), b = index, number = true})
+                    try mix(h, Value{type = ty.elem, at = op(Kl, Oadd, a.at, times(k, comp.types[ty.elem].size)), mem = true}, inst.at)
+                    add(Ins{op = Ostorel, a = op(Kl, Oadd, k, int_arg(1)), b = index, number = true})
                     jump(l_head)
                     open_block(l_done)
-                terminate("ret", op1(L, "loadl", h))
+                terminate(Oreturn, op1(Kl, Oload, h))
             close_proc(made, cls(inst.ret), sides.len)
             close_frame(saved)
             continue
@@ -506,13 +506,13 @@ func gen_from(from: i64) -> i64|Fail:
             if inst.export:
                 how = try passing(t, true, comp.at)
             elif comp.types[t].kind == Fat or big(t):
-                how = L
+                how = Kl
             append(comp.passes, Pass{how, p, comp.numbers[p.n - 1], t if aggregate(t) and comp.types[t].kind != Fat else VOID})
             append(comp.vars, Local{text(c), t, p, 0, comp.nodes[c].tok, 0, "", 0, true, false})
         comp.dest = Arg{}
         if big(inst.ret) and not inst.export:
             comp.dest = temp()
-            append(comp.passes, Pass{L, comp.dest, false, VOID})
+            append(comp.passes, Pass{Kl, comp.dest, false, VOID})
         taken := comp.passes.len - made.params
         passed := made.params
         for given in comp.vars:
@@ -528,10 +528,10 @@ func gen_from(from: i64) -> i64|Fail:
                 taken = 2
                 argc := temp()
                 argv := temp()
-                append(comp.passes, Pass{W, argc, true, VOID})
-                append(comp.passes, Pass{L, argv, false, VOID})
-                add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
-                add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
+                append(comp.passes, Pass{Kw, argc, true, VOID})
+                append(comp.passes, Pass{Kl, argv, false, VOID})
+                add(Ins{op = Ostorew, a = argc, b = global("$flag.argc")})
+                add(Ins{op = Ostorel, a = argv, b = global("$flag.argv")})
             vectored := false
             for n in comp.nodes:
                 vectored = vectored or n.kind == TName and n.module.len == 0 and comp.tokens[n.tok].text == "simd" and not comp.files[file_of(comp.tokens[n.tok].at)].library
@@ -539,32 +539,32 @@ func gen_from(from: i64) -> i64|Fail:
                 need := int_arg(0x98_0200) # SSSE3, SSE4.1, SSE4.2 and POPCNT, the x86-64-v2 that the lanes use
                 l_old := label()
                 l_new := label()
-                branch(op(W, "ceqw", op(W, "and", op1(W, "cpuid", int_arg(1)), need), need), l_new, l_old)
+                branch(op(Kw, Oceqw, op(Kw, Oand, op1(Kw, Ocpuid, int_arg(1)), need), need), l_new, l_old)
                 open_block(l_old)
                 message := text_data("flag: this program needs an x86-64-v2 processor (SSE4.2)\n")
                 first := comp.passes.len
-                append(comp.passes, Pass{W, int_arg(2), true, VOID})
-                append(comp.passes, Pass{L, op1(L, "loadl", message), false, VOID})
-                append(comp.passes, Pass{L, op1(L, "loadl", offset(message, 8)), true, VOID})
-                add(Ins{op = "call", a = global("$write"), first = u32(first), count = 3})
-                append(comp.passes, Pass{W, int_arg(132), true, VOID})
-                add(Ins{op = "call", a = global("$exit"), first = u32(first + 3), count = 1})
-                terminate("hlt", Arg{})
+                append(comp.passes, Pass{Kw, int_arg(2), true, VOID})
+                append(comp.passes, Pass{Kl, op1(Kl, Oload, message), false, VOID})
+                append(comp.passes, Pass{Kl, op1(Kl, Oload, offset(message, 8)), true, VOID})
+                add(Ins{op = Ocall, a = global("$write"), first = u32(first), count = 3})
+                append(comp.passes, Pass{Kw, int_arg(132), true, VOID})
+                add(Ins{op = Ocall, a = global("$exit"), first = u32(first + 3), count = 1})
+                terminate(Ohalt, Arg{})
                 open_block(l_new)
-            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
-            add(Ins{op = "call", a = global("$flag_start"), first = u32(comp.passes.len)})
+            add(Ins{op = Ocall, a = global("$flag.stamp"), first = u32(comp.passes.len)})
+            add(Ins{op = Ocall, a = global("$flag_start"), first = u32(comp.passes.len)})
             if comp.system == "windows":
                 for fd in 0..3:
                     modes := comp.passes.len
-                    append(comp.passes, Pass{W, int_arg(i64(fd)), true, VOID})
-                    append(comp.passes, Pass{W, int_arg(32768), true, VOID})
-                    add(Ins{op = "call", a = global("$_setmode"), first = u32(modes), count = 2})
+                    append(comp.passes, Pass{Kw, int_arg(i64(fd)), true, VOID})
+                    append(comp.passes, Pass{Kw, int_arg(32768), true, VOID})
+                    add(Ins{op = Ocall, a = global("$_setmode"), first = u32(modes), count = 2})
         elif inst.export and comp.stamping: # C may call it from a thread that never ran code of this program or library, also core at the exit of such a thread
             l_enter := label()
             l_body := label()
-            branch(op1(W, "loadw", global("thread $flag.entered")), l_body, l_enter)
+            branch(op1(Kw, Oloadsw, global("thread $flag.entered")), l_body, l_enter)
             open_block(l_enter)
-            add(Ins{op = "call", a = global("$flag.stamp"), first = u32(comp.passes.len)})
+            add(Ins{op = Ocall, a = global("$flag.stamp"), first = u32(comp.passes.len)})
             jump(l_body)
             open_block(l_body)
         name := text(f)
@@ -590,7 +590,7 @@ func gen_from(from: i64) -> i64|Fail:
                 return fail("'operator " + name + "' must return bool, got " + comp.types[inst.ret].name, comp.at)
             if name != "=" and name != "+=" and numeric(first) and numeric(second) and first != second:
                 return fail("'operator " + name + "' for " + comp.types[first].name + " and " + comp.types[second].name + " is unreachable; numeric operations are built into the language", comp.at)
-            if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind).len > 0 and native(name, comp.types[first].kind).len > 0:
+            if name != "=" and name != "+=" and first == second and native(name, comp.types[target].kind) != Oxxx and native(name, comp.types[first].kind) != Oxxx:
                 return fail("'operator " + name + "' on " + comp.types[first].name + " is built into the language and cannot be redeclared", comp.at)
             if (name == "+" or name == "-") and first != target and target == BYTES and (integer(second) or name == "-" and second == first):
                 return fail("'operator " + name + "' for " + comp.types[first].name + " and " + comp.types[second].name + " is built into the language and cannot be redeclared", comp.at)
@@ -611,17 +611,17 @@ func gen_from(from: i64) -> i64|Fail:
             done := Arg{}
             if comp.inst == comp.entry:
                 done = try ending(Value{type = I32, at = int_arg(0)}, comp.at)
-            terminate("ret", done)
+            terminate(Oreturn, done)
         try forget(0)
-        back: u32 = 0 # what it gives back, nothing when it never returns
+        back := K0 # what it gives back, nothing when it never returns
         if inst.ret != VOID and inst.ret != NEVER and inst.export:
             back = try passing(inst.ret, true, comp.at)
         elif inst.ret != VOID and inst.ret != NEVER and comp.dest.kind == Empty:
             back = cls(inst.ret)
         if i == comp.entry: # C and a WebAssembly host read an exit code from it, a word
-            back = W
+            back = Kw
             for k in 0..comp.body.len:
-                if comp.body[k].op == "ret" and comp.body[k].a.kind == Empty:
+                if comp.body[k].op == Oreturn and comp.body[k].a.kind == Empty:
                     comp.body[k].a = int_arg(0)
         close_proc(made, back, taken)
         close_frame(saved)
@@ -682,7 +682,7 @@ func declared_at(f: Proc) -> i64:
         return comp.insts[f.inst].at
     return comp.tokens[comp.nodes[f.node].tok].at
 
-func close_proc(made: Proc, cls: u32, count: i64):
+func close_proc(made: Proc, cls: i64, count: i64):
     made.cls = cls
     made.count = count
     made.code = comp.code.len
@@ -940,7 +940,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             done := Arg{}
             if comp.inst == comp.entry:
                 done = try ending(Value{type = I32, at = int_arg(0)}, tok.at)
-            terminate("ret", done)
+            terminate(Oreturn, done)
             return none
         if comp.ret == VOID:
             return fail("unexpected return value; this function returns nothing", tok.at)
@@ -1069,7 +1069,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
                 if not contains(wanted, m):
                     l_arm := label()
                     l_next := label()
-                    branch(op(W, "ceqw", tag(sides[0]), tag_of(m)), l_arm, l_next)
+                    branch(op(Kw, Oceqw, tag(sides[0]), tag_of(m)), l_arm, l_next)
                     open_block(l_arm)
                     try put_words(line, spelled(first, sign - 1) + " is " + comp.types[m].name + ", not " + spelled(sign + 1, last), tok.at)
                     if comp.types[m].kind != Void:
@@ -1077,7 +1077,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
                         try put_text(line, Value{type = m, at = payload(sides[0].at, m), mem = true}, tok.at)
                     jump(l_done)
                     open_block(l_next)
-            terminate("hlt", Arg{})
+            terminate(Ohalt, Arg{})
             open_block(l_done)
         elif spelled(first, last) == "false":
             try put_words(line, "assertion failed", tok.at)
@@ -1260,7 +1260,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             if comp.stored[view(slot)] is null:
                 put(comp.stored, view(slot), 0)
                 define(Data{name = view(slot), fixed = true}, ptr([Piece{kind = Address, text = "$" + symbol}]))
-            return Value{type = try resolve(d + 1), at = op1(L, "loadl", global(view(slot)))}
+            return Value{type = try resolve(d + 1), at = op1(Kl, Oload, global(view(slot)))}
         if k == Void:
             return Value{type = try make_type(s, [], false, tok.at)}
         if k != Context:
@@ -1372,7 +1372,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
                     read = Value{type = I32, at = tag(w)}
                 bits := read.at
                 if bits.kind == Single:
-                    bits = op1(W, "cast", bits)
+                    bits = op1(Kw, Ocast, bits)
                 known = known and bits.kind == Const
                 if known:
                     joined = joined or (u64(bits.n) and (u64(1) << u64(8 * size)) - 1) << u64(8 * (f.n - at))
@@ -1619,16 +1619,16 @@ func iterate(n: i64) -> Fail?:
             elem = element(seq)
             field := field_of(seq, "len")
             end = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
-            addr = op1(L, "loadl", addr)
+            addr = op1(Kl, Oload, addr)
     round := comp.slots.len # the slots of a round, after those of the subject, which lives as long as the loop
     if range or elem != VOID:
         low := load(try convert(start, t, Arg{}, at)).at
         high := load(try convert(end, t, Arg{}, at)).at
         last := high
-        runs := cmp_name("csle", t)
+        runs := compare(Ocslew, t)
         if not inclusive:
-            last = op(cls(t), "sub", high, int_arg(1))
-            runs = cmp_name("cslt", t)
+            last = op(cls(t), Osub, high, int_arg(1))
+            runs = compare(Ocsltw, t)
         from := low
         stop = last
         if backward:
@@ -1636,7 +1636,7 @@ func iterate(n: i64) -> Fail?:
             stop = low
         slot = alloc(t)
         store(t, Value{type = t, at = from}, slot)
-        branch(op(W, runs, low, high), l_body, l_exit)
+        branch(op(Kw, runs, low, high), l_body, l_exit)
         open_block(l_body)
         opened = comp.body.len
         current := load(Value{type = t, at = slot, mem = true}).at
@@ -1647,7 +1647,7 @@ func iterate(n: i64) -> Fail?:
             count: u32 = 0
             if comp.types[walked.type].kind == Array and comp.types[walked.type].count <= 0xffff_ffff:
                 count = u32(comp.types[walked.type].count) # -memory keeps the elements of an array apart from what follows it
-            place := add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = times(current, comp.types[elem].size), count = count})
+            place := add(Ins{op = Oadd, cls = Kl, to = u32(temp().n), a = addr, b = times(current, comp.types[elem].size), count = count})
             rounds = round(place, elem, l_body, true)
             mention(tok.text, place, elem, node.tok)
             fixed: &strview
@@ -1675,7 +1675,7 @@ func iterate(n: i64) -> Fail?:
         chars := textual(walked.type)
         walker := walked
         if chars:
-            addr = op1(L, "loadl", walked.at)
+            addr = op1(Kl, Oload, walked.at)
             field := field_of(walked.type, "len")
             end = load(Value{type = field.type, at = offset(walked.at, field.n), mem = true})
             slot = alloc(t)
@@ -1701,7 +1701,7 @@ func iterate(n: i64) -> Fail?:
         jump(l_head)
         open_block(l_head)
         if counter != 0:
-            store(t, Value{type = t, at = op(L, "add", load(Value{type = t, at = count, mem = true}).at, int_arg(1))}, count)
+            store(t, Value{type = t, at = op(Kl, Oadd, load(Value{type = t, at = count, mem = true}).at, int_arg(1))}, count)
             mention(text(counter), count, t, comp.nodes[counter].tok)
             append(comp.vars, Local{text(counter), t, count, comp.loops.len, comp.nodes[counter].tok, 0, counting(text(counter)), 0, true, false})
         item := VOID
@@ -1709,20 +1709,20 @@ func iterate(n: i64) -> Fail?:
         if chars:
             i := load(Value{type = t, at = slot, mem = true}).at
             if backward:
-                branch(op(W, "cultl", int_arg(0), i), l_body, l_exit)
+                branch(op(Kw, Ocultl, int_arg(0), i), l_body, l_exit)
             else:
-                branch(op(W, "cultl", i, end.at), l_body, l_exit)
+                branch(op(Kw, Ocultl, i, end.at), l_body, l_exit)
             open_block(l_body)
             item = try fat_type("strview", VOID, tok.at)
-            here := op(L, "add", addr, i)
+            here := op(Kl, Oadd, addr, i)
             near := here
             if backward:
-                near = op(L, "sub", here, int_arg(1))
+                near = op(Kl, Osub, here, int_arg(1))
             sized := alloc(t)
             l_one := label()
             l_wide := label()
             l_piece := label()
-            branch(op(W, "cultw", op1(W, "loadub", near), int_arg(0x80)), l_one, l_wide)
+            branch(op(Kw, Ocultw, op1(Kw, Oloadub, near), int_arg(0x80)), l_one, l_wide)
             open_block(l_one)
             store(t, Value{type = t, at = int_arg(1)}, sized)
             jump(l_piece)
@@ -1730,32 +1730,32 @@ func iterate(n: i64) -> Fail?:
             trail := Arg{}
             lead := here
             if backward:
-                trail = continued(near, -1, int_arg(3), op(L, "sub", i, int_arg(1)))
-                lead = op(L, "sub", near, trail)
-            first := op1(W, "loadub", lead)
+                trail = continued(near, -1, int_arg(3), op(Kl, Osub, i, int_arg(1)))
+                lead = op(Kl, Osub, near, trail)
+            first := op1(Kw, Oloadub, lead)
             w := int_arg(1)
             for edge in [0xc2, 0xe0, 0xf0]:
-                w = op(W, "add", w, op(W, "cugew", first, int_arg(i64(edge))))
-            w = op1(L, "extuw", op(W, "sub", w, op(W, "mul", op(W, "cugew", first, int_arg(0xf5)), int_arg(3))))
+                w = op(Kw, Oadd, w, op(Kw, Ocugew, first, int_arg(i64(edge))))
+            w = op1(Kl, Oextuw, op(Kw, Osub, w, op(Kw, Omul, op(Kw, Ocugew, first, int_arg(0xf5)), int_arg(3))))
             if not backward:
-                trail = continued(op(L, "add", here, int_arg(1)), 1, op(L, "sub", w, int_arg(1)), op(L, "sub", op(L, "sub", end.at, i), int_arg(1)))
-            second := op1(W, "loadub", op(L, "add", lead, op1(L, "extuw", op(W, "cnel", trail, int_arg(0)))))
+                trail = continued(op(Kl, Oadd, here, int_arg(1)), 1, op(Kl, Osub, w, int_arg(1)), op(Kl, Osub, op(Kl, Osub, end.at, i), int_arg(1)))
+            second := op1(Kw, Oloadub, op(Kl, Oadd, lead, op1(Kl, Oextuw, op(Kw, Ocnel, trail, int_arg(0)))))
             # the second byte goes from 80 to bf, E0 and F0 raise the floor, ED and F4 lower the top
-            low := op(W, "add", int_arg(0x80), op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xe0)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf0)), int_arg(0x10))))
-            high := op(W, "sub", int_arg(0xbf), op(W, "add", op(W, "mul", op(W, "ceqw", first, int_arg(0xed)), int_arg(0x20)), op(W, "mul", op(W, "ceqw", first, int_arg(0xf4)), int_arg(0x30))))
-            inside := op(W, "and", op(W, "cugew", second, low), op(W, "culew", second, high))
-            whole := op1(L, "extuw", op(W, "and", op(W, "ceql", w, op(L, "add", trail, int_arg(1))), inside))
-            store(t, Value{type = t, at = op(L, "add", int_arg(1), op(L, "mul", whole, trail))}, sized)
+            low := op(Kw, Oadd, int_arg(0x80), op(Kw, Oadd, op(Kw, Omul, op(Kw, Oceqw, first, int_arg(0xe0)), int_arg(0x20)), op(Kw, Omul, op(Kw, Oceqw, first, int_arg(0xf0)), int_arg(0x10))))
+            high := op(Kw, Osub, int_arg(0xbf), op(Kw, Oadd, op(Kw, Omul, op(Kw, Oceqw, first, int_arg(0xed)), int_arg(0x20)), op(Kw, Omul, op(Kw, Oceqw, first, int_arg(0xf4)), int_arg(0x30))))
+            inside := op(Kw, Oand, op(Kw, Ocugew, second, low), op(Kw, Oculew, second, high))
+            whole := op1(Kl, Oextuw, op(Kw, Oand, op(Kw, Oceql, w, op(Kl, Oadd, trail, int_arg(1))), inside))
+            store(t, Value{type = t, at = op(Kl, Oadd, int_arg(1), op(Kl, Omul, whole, trail))}, sized)
             jump(l_piece)
             open_block(l_piece)
             size := load(Value{type = t, at = sized, mem = true}).at
-            next := op(L, "add", i, size)
+            next := op(Kl, Oadd, i, size)
             if backward:
-                next = op(L, "sub", i, size)
-                here = op(L, "add", addr, next)
+                next = op(Kl, Osub, i, size)
+                here = op(Kl, Oadd, addr, next)
             store(t, Value{type = t, at = next}, slot)
             place = alloc(item, true)
-            add(Ins{op = "storel", a = here, b = place})
+            add(Ins{op = Ostorel, a = here, b = place})
             field := field_of(item, "len")
             store(field.type, Value{type = field.type, at = size}, offset(place, field.n))
         else:
@@ -1769,7 +1769,7 @@ func iterate(n: i64) -> Fail?:
             if comp.types[got.type].kind != Union or rest.len == members(got.type).len:
                 return fail("'operator next' on " + comp.types[walker.type].name + " must return a union with IterationEnd, got " + comp.types[got.type].name, tok.at)
             item = try union_of(rest, Union, tok.at)
-            branch(op(W, "ceqw", tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
+            branch(op(Kw, Oceqw, tag(got), tag_of(ITERATIONEND)), l_exit, l_body)
             open_block(l_body)
             place = payload(got.at, item)
             if starts_with(comp.types[walked.type].name, "&map["): # its elements stay in it, where those of a Channel leave
@@ -1787,20 +1787,18 @@ func iterate(n: i64) -> Fail?:
     try statements(node_end(subject))
     if range: # a walk by index when the body reads x[i], for -memory
         for i in comp.body[opened:]:
-            rounds = rounds or i.op == "add" and i.first == l_body
+            rounds = rounds or i.op == Oadd and i.first == l_body
         every = start.lit and start.n == 0
         if rounds:
-            insert(comp.body, opened, Ins{op = "round", b = int_arg(i64(l_body)), pos = comp.at, ghost = true})
+            insert(comp.body, opened, Ins{op = Oround, b = int_arg(i64(l_body)), pos = comp.at, ghost = true})
     comp.at = tok.at
     if range or elem != VOID:
         jump(l_step)
         open_block(l_step)
         current := load(Value{type = t, at = slot, mem = true}).at
-        step: &strview = "add"
-        if backward:
-            step = "sub"
+        step := Osub if backward else Oadd
         store(t, Value{type = t, at = op(cls(t), step, current, int_arg(1))}, slot)
-        branch(op(W, cmp_name("cne", t), current, stop), l_body, l_exit)
+        branch(op(Kw, compare(Ocnew, t), current, stop), l_body, l_exit)
     else:
         jump(l_head)
     close_scope(round)
@@ -1809,7 +1807,7 @@ func iterate(n: i64) -> Fail?:
     try forget(before)
     open_block(l_exit)
     if rounds:
-        add(Ins{op = "walked", b = int_arg(i64(l_body)), c = int_arg(i64(every)), ghost = true})
+        add(Ins{op = Owalked, b = int_arg(i64(l_body)), c = int_arg(i64(every)), ghost = true})
     return null
 
 # for -memory, the element of t at place is one of its own in this round of the walk l_body, when it holds a pointer or it is in place, inside
@@ -1819,7 +1817,7 @@ func round(place: Arg, t: i64, l_body: u32, inside: bool) -> bool:
     to: u32 = 0
     if inside:
         to = u32(place.n)
-    add(Ins{op = "round", to = to, a = place, b = int_arg(i64(l_body)), c = int_arg(comp.types[t].size), shape = t, copy = true, ghost = true})
+    add(Ins{op = Oround, to = to, a = place, b = int_arg(i64(l_body)), c = int_arg(comp.types[t].size), shape = t, copy = true, ghost = true})
     return true
 
 func counting(name: &strview) -> &strview:
@@ -1938,7 +1936,7 @@ func cases(n: i64) -> Fail?:
                         below = "<="
                     low := try binary(">=", subject, least, first.at)
                     high := try binary(below, subject, most, first.at)
-                    eq = Value{type = BOOL, at = op(W, "and", load(low).at, load(high).at)}
+                    eq = Value{type = BOOL, at = op(Kw, Oand, load(low).at, load(high).at)}
                 else:
                     if least.lit and subject.type == BOOL:
                         truths = truths or i64(1) << least.n
@@ -1947,7 +1945,7 @@ func cases(n: i64) -> Fail?:
                     return fail("'switch' compares case labels using '==', which returns " + comp.types[eq.type].name + " instead of bool", first.at)
                 if targets.len > 0:
                     l_rest := label()
-                    insert(comp.body, test, Ins{op = "@", a = int_arg(i64(l_rest)), pos = comp.at})
+                    insert(comp.body, test, Ins{op = Olabel, a = int_arg(i64(l_rest)), pos = comp.at})
                     comp.at = tok.at
                     search(subject.at, subject.type, targets, l_rest, start, comp.body.len)
                     comp.at = at
@@ -1992,7 +1990,7 @@ func cases(n: i64) -> Fail?:
                 put(targets, u64(tag_of(all[k]).n), owner[k])
         search(tag(subject), U32, targets, l_fallback, bodies, middle)
     elif fallback == 0 and truths == 3:
-        terminate("hlt", Arg{})
+        terminate(Ohalt, Arg{})
     elif fallback == 0:
         lives += 1
         jump(l_end)
@@ -2013,8 +2011,8 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
     for pair in targets:
         append(keys, pair.key xor flip)
     sort(keys)
-    below: &strview = ("csltw" if signed else "cultw") if class == W else ("csltl" if signed else "cultl")
-    same: &strview = "ceqw" if class == W else "ceql"
+    below := (Ocsltw if signed else Ocultw) if class == Kw else (Ocsltl if signed else Ocultl)
+    same := Oceqw if class == Kw else Oceql
     ranges: &list[i64] = heap([])
     defer free(ranges)
     heads: &list[u32] = heap([])
@@ -2030,15 +2028,15 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
         if count >= TABLED and keys[high - 1] - keys[low] < u64(DENSE * count):
             least := i64(keys[low] xor flip)
             span := i64(keys[high - 1] - keys[low]) + 1
-            index := op(class, "sub", current, int_arg(least))
-            bounded := class == W and comp.system == "wasm" # br_table goes to its last entry, the miss, past the others
+            index := op(class, Osub, current, int_arg(least))
+            bounded := class == Kw and comp.system == "wasm" # br_table goes to its last entry, the miss, past the others
             if not bounded:
                 l_table := label()
-                branch(op(W, "cugew" if class == W else "cugel", index, int_arg(span)), miss, l_table) # the table comes next
+                branch(op(Kw, Ocugew if class == Kw else Ocugel, index, int_arg(span)), miss, l_table) # the table comes next
                 open_block(l_table)
-            if class == W:
-                index = op1(L, "extuw", index)
-            add(Ins{op = "jt", a = index, first = u32(comp.passes.len), count = u32(span + i64(bounded))})
+            if class == Kw:
+                index = op1(Kl, Oextuw, index)
+            add(Ins{op = Otable, a = index, first = u32(comp.passes.len), count = u32(span + i64(bounded))})
             comp.live = false
             for k in 0..span:
                 append(comp.passes, Pass{arg = int_arg(i64(targets[u64(least + k)] ifnull miss))})
@@ -2048,7 +2046,7 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
             half := (low + high) / 2
             l_low := label()
             l_high := label()
-            branch(op(W, below, current, int_arg(i64(keys[half] xor flip))), l_low, l_high)
+            branch(op(Kw, below, current, int_arg(i64(keys[half] xor flip))), l_low, l_high)
             append(ranges, half)
             append(ranges, high)
             append(heads, l_high)
@@ -2066,7 +2064,7 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
                     alone = high - 1
             l_other := label()
             value := i64(keys[alone] xor flip)
-            branch(op(W, same, current, int_arg(value)), trust targets[u64(value)], l_other)
+            branch(op(Kw, same, current, int_arg(value)), trust targets[u64(value)], l_other)
             open_block(l_other)
             if alone == low:
                 low += 1
@@ -2082,7 +2080,7 @@ func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64
         low = trust pop(ranges)
     if halt:
         open_block(miss)
-        terminate("hlt", Arg{})
+        terminate(Ohalt, Arg{})
     postpone(first, middle)
 
 func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
@@ -2124,7 +2122,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             return fail(shape.name + " expects " + counted(shape.count, "argument", "arguments") + ", got " + count, tok.at)
         code := load(callee).at
         if code.kind != Global:
-            try panic_if(op(W, "ceql", code, int_arg(0)), "called an uninitialized (empty) function value", tok.at)
+            try panic_if(op(Kw, Oceql, code, int_arg(0)), "called an uninitialized (empty) function value", tok.at)
         given: &list[Value] = heap([])
         turns := comp.turns.len
         taken: &list[i64] = heap([])
@@ -2337,8 +2335,8 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
             asked: &list[Value] = heap([])
             return try runtime(name[1:], asked, tok.at)
         if name == "@argc":
-            return Value{type = I32, at = op1(W, "loadw", global("$flag.argc"))}
-        return Value{type = pointer(BYTES), at = op1(L, "loadl", global("$flag.argv"))}
+            return Value{type = I32, at = op1(Kw, Oloadsw, global("$flag.argc"))}
+        return Value{type = pointer(BYTES), at = op1(Kl, Oload, global("$flag.argv"))}
     if empty_owner(n) and not threaded: # the compiler knows the empty owners, and writes them without the call
         k := comp.nodes[n + 1].kind
         wanted := comp.types[want].name
@@ -2456,7 +2454,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
         t := comp.types[v.type]
         if o == ".*":
             if t.kind == Fat:
-                return Value{type = BYTES, at = op1(L, "loadl", v.at), mem = true, place = true}
+                return Value{type = BYTES, at = op1(Kl, Oload, v.at), mem = true, place = true}
             if t.kind != Ptr:
                 return fail("cannot dereference non-pointer type " + t.name + " with .*", tok.at)
             if comp.target == n and (v.type == CSTR or v.type == WSTR): # assigned, or given to ptr
@@ -2476,7 +2474,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 return fail("unary '-' requires a signed integer or float, got " + t.name, tok.at)
             if t.kind == Simd:
                 return lanes("neg", ptr([v]), v.type, tok.at)
-            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), "neg", load(v).at))}
+            return Value{type = v.type, at = extend(v.type, op1(cls(v.type), Oneg, load(v).at))}
         if o == "not":
             if t.kind == Simd and lane.kind != Float:
                 return lanes("not", ptr([v]), v.type, tok.at)
@@ -2485,7 +2483,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
             if v.type == BOOL and v.lit:
                 return truth(v.n == 0)
             if v.type == BOOL:
-                return Value{type = BOOL, at = op(W, "xor", load(v).at, int_arg(1))}
+                return Value{type = BOOL, at = op(Kw, Oxor, load(v).at, int_arg(1))}
             if v.lit and integer(v.type) and v.neg:
                 return literal(false, v.n - 1)
             if v.lit and integer(v.type):
@@ -2493,7 +2491,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 bits.flipped = true
                 return bits
             if integer(v.type):
-                return Value{type = v.type, at = extend(v.type, op(cls(v.type), "xor", load(v).at, int_arg(-1)))}
+                return Value{type = v.type, at = extend(v.type, op(cls(v.type), Oxor, load(v).at, int_arg(-1)))}
             operand: &list[Value] = heap([])
             append(operand, v)
             if not try offers("not", operand, tok.at):
@@ -2564,7 +2562,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
             return fail("cannot reinterpret " + from.name + " as " + dest.name + "; types have different byte sizes", tok.at)
         if aggregate(v.type):
             if (integer(to) or dest.kind == Float) and holds_pointer(v.type):
-                add(Ins{op = "counted", a = v.at, ghost = true})
+                add(Ins{op = Ocounted, a = v.at, ghost = true})
             return Value{type = to, at = v.at, mem = true, place = v.place, lit = v.lit and aggregate(to)}
         if aggregate(to):
             slot := alloc(to)
@@ -2572,7 +2570,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
             return Value{type = to, at = slot, mem = true}
         x := load(v).at
         if (from.kind == Float) != (dest.kind == Float):
-            return Value{type = to, at = op1(cls(to), "cast", x)}
+            return Value{type = to, at = op1(cls(to), Ocast, x)}
         return Value{type = to, at = extend(to, x)}
     if o == ".." or o == "..=":
         return fail("ranges can only be used in a 'for' loop header or a 'case' label", tok.at)
@@ -2658,7 +2656,7 @@ func operation(n: i64, want: i64) -> Value|Fail:
         elif (o == "and" or o == "or") and l.type == BOOL:
             slot := alloc(BOOL)
             l_done := label()
-            add(Ins{op = "storew", a = int_arg(i64(o == "or")), b = slot})
+            add(Ins{op = Ostorew, a = int_arg(i64(o == "or")), b = slot})
             before := comp.vars.len
             known := k + 1
             while true:
@@ -2679,10 +2677,10 @@ func operation(n: i64, want: i64) -> Value|Fail:
                 i -= 1
                 k = chain[i]
             comp.vars.len = before
-            add(Ins{op = "storew", a = l.at, b = slot})
+            add(Ins{op = Ostorew, a = l.at, b = slot})
             jump(l_done)
             open_block(l_done)
-            l = Value{type = BOOL, at = op1(W, "loadw", slot)}
+            l = Value{type = BOOL, at = op1(Kw, Oloadsw, slot)}
         else:
             right = node_end(k + 1)
             middle := comp.body.len
@@ -2841,9 +2839,9 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
                 if amount.kind == Const:
                     amount = int_arg(amount.n and most)
                 else:
-                    amount = op(cls(a.type), "and", amount, int_arg(most))
-                if cls(a.type) == L and amount.kind != Const:
-                    amount = op1(W, "copy", amount)
+                    amount = op(cls(a.type), Oand, amount, int_arg(most))
+                if cls(a.type) == Kl and amount.kind != Const:
+                    amount = op1(Kw, Ocopy, amount)
                 append(scalars, amount)
             else:
                 x := a
@@ -2853,7 +2851,7 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
                 if raw != x.type:
                     b = mask_bits(b, raw)
                 append(scalars, splat(raw, b))
-        s := letter(raw)
+        s := lane_place(raw)
         int_lane := I32
         if ty.size == 8:
             int_lane = I64
@@ -2862,7 +2860,7 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             parts: &list[Arg] = heap([])
             for k, a in args:
                 if scalars[k].kind == Empty:
-                    append(parts, op1(V, "loadv", offset(a.at, 16 * half)))
+                    append(parts, op1(Kv, Oload, offset(a.at, 16 * half)))
                 else:
                     append(parts, scalars[k])
             x := parts[0]
@@ -2874,24 +2872,24 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             flip := false
             switch o:
             case "+":
-                x = op(V, "vadd" + s, x, y)
+                x = op(Kv, Ovaddb + s, x, y)
             case "-":
-                x = op(V, "vsub" + s, x, y)
+                x = op(Kv, Ovsubb + s, x, y)
             case "*":
-                x = op(V, "vmul" + s, x, y)
+                x = op(Kv, Ovmulh + s - 1 - i64(float), x, y) # h, w, s and d
             case "/":
-                x = op(V, "vdiv" + s, x, y)
+                x = op(Kv, Ovdivs + s - 4, x, y)
             case "and", "or", "xor":
-                x = op(V, "v" + o, x, y)
+                x = op(Kv, Ovand if o == "and" else Ovor if o == "or" else Ovxor, x, y)
             case "<<":
-                x = op(V, "vshl" + s, x, y)
+                x = op(Kv, Ovshlh + s - 1, x, y)
             case ">>":
                 if ty.kind == Int:
-                    x = op(V, "vsar" + s, x, y)
+                    x = op(Kv, Ovsarh + s - 1, x, y)
                 else:
-                    x = op(V, "vshr" + s, x, y)
+                    x = op(Kv, Ovshrh + s - 1, x, y)
             case "==", "!=":
-                x = op(V, "vceq" + s, x, y)
+                x = op(Kv, Ovceqb + s, x, y)
                 flip = o == "!="
             case "<":
                 x = greater(y, x, raw)
@@ -2903,15 +2901,15 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
                     x = y
                     y = other
                 if float:
-                    x = op(V, "vcle" + s, x, y)
+                    x = op(Kv, Ovcles + s - 4, x, y)
                 else:
                     x = greater(x, y, raw)
                     flip = true
             case "neg":
                 if float:
-                    x = op(V, "vxor", x, splat(int_lane, sign))
+                    x = op(Kv, Ovxor, x, splat(int_lane, sign))
                 else:
-                    x = op(V, "vsub" + s, splat(raw, int_arg(0)), x)
+                    x = op(Kv, Ovsubb + s, splat(raw, int_arg(0)), x)
             case "not":
                 flip = true
             case "select":
@@ -2920,30 +2918,30 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
                 x = parts[2]
             case "min":
                 if float:
-                    x = op(V, "vmin" + s, x, y)
+                    x = op(Kv, Ovmins + s - 4, x, y)
                 else:
                     picks_other = greater(x, y, raw)
             case "max":
                 if float:
-                    x = op(V, "vmax" + s, x, y)
+                    x = op(Kv, Ovmaxs + s - 4, x, y)
                 else:
                     picks_other = greater(y, x, raw)
             case "abs":
                 if float:
-                    x = op(V, "vand", x, splat(int_lane, int_arg(sign.n - 1)))
+                    x = op(Kv, Ovand, x, splat(int_lane, int_arg(sign.n - 1)))
                 else:
-                    negative := op(V, "vsar" + s, x, int_arg(i64(8 * ty.size) - 1))
-                    x = op(V, "vsub" + s, op(V, "vxor", x, negative), negative)
+                    negative := op(Kv, Ovsarh + s - 1, x, int_arg(i64(8 * ty.size) - 1))
+                    x = op(Kv, Ovsubb + s, op(Kv, Ovxor, x, negative), negative)
             case "sqrt":
-                x = op1(V, "vsqrt" + s, x)
+                x = op1(Kv, Ovsqrts + s - 4, x)
             case "convert":
                 if raw != lane_type(to):
-                    x = op1(V, "vitos", x)
+                    x = op1(Kv, Ovitos, x)
             if picks_other.kind != Empty:
-                x = op(V, "vxor", x, op(V, "vand", op(V, "vxor", other, x), picks_other))
+                x = op(Kv, Ovxor, x, op(Kv, Ovand, op(Kv, Ovxor, other, x), picks_other))
             if flip:
-                x = op(V, "vxor", x, splat(I32, int_arg(-1)))
-            add(Ins{op = "storev", a = x, b = offset(slot, 16 * half)})
+                x = op(Kv, Ovxor, x, splat(I32, int_arg(-1)))
+            add(Ins{op = Ostorev, a = x, b = offset(slot, 16 * half)})
         return Value{type = to, at = slot, mem = true}
     given: &list[Value] = heap([])
     for a in args:
@@ -2962,12 +2960,12 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
         other := x
         switch o:
         case "neg":
-            x = Value{type = x.type, at = extend(x.type, op1(cls(x.type), "neg", load(x).at))}
+            x = Value{type = x.type, at = extend(x.type, op1(cls(x.type), Oneg, load(x).at))}
         case "not":
             ones := int_arg(-1)
             if x.type == BOOL:
                 ones = int_arg(1)
-            x = Value{type = x.type, at = extend(x.type, op(cls(x.type), "xor", load(x).at, ones))}
+            x = Value{type = x.type, at = extend(x.type, op(cls(x.type), Oxor, load(x).at, ones))}
         case "select":
             picks_other = load(x).at
             other = parts[1]
@@ -2980,26 +2978,26 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             other = parts[1]
         case "abs":
             if t.kind == Float:
-                how: u32 = L
+                how := Kl
                 magnitude := int_arg(0x7fff_ffff_ffff_ffff)
                 if t.size == 4:
-                    how = W
+                    how = Kw
                     magnitude = int_arg(0x7fff_ffff)
-                x = Value{type = x.type, at = op1(cls(x.type), "cast", op(how, "and", op1(how, "cast", load(x).at), magnitude))}
+                x = Value{type = x.type, at = op1(cls(x.type), Ocast, op(how, Oand, op1(how, Ocast, load(x).at), magnitude))}
             else:
                 picks_other = load(try binary("<", x, literal(false, 0), at)).at
                 other = try binary("-", literal(false, 0), x, at)
         case "sqrt":
             wide := load(x).at
             if t.size == 4:
-                wide = op1(D, "exts", wide)
+                wide = op1(Kd, Oexts, wide)
             if not contains(comp.libs, "m"):
                 append(comp.libs, "m")
             passes: &list[Pass] = heap([])
-            append(passes, Pass{D, wide, false, VOID})
+            append(passes, Pass{Kd, wide, false, VOID})
             x = try emit(global("$sqrt"), passes, F64, true, at)
             if t.size == 4:
-                x = Value{type = F32, at = op1(S, "truncd", x.at)}
+                x = Value{type = F32, at = op1(Ks, Otruncd, x.at)}
         case "convert":
             x = try convert_number(x, lane_value(to), at)
         case:
@@ -3019,33 +3017,29 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
 func vectors() -> bool:
     return comp.machine != "riscv64"
 
-func letter(lane: i64) -> &strview:
+# where lanes of type lane come in a family of vector instructions, which go over b, h, w, l, s and d from the first
+# they have
+func lane_place(lane: i64) -> i64:
     size := comp.types[lane].size
-    if comp.types[lane].kind == Float and size == 4:
-        return "s"
     if comp.types[lane].kind == Float:
-        return "d"
-    if size == 1:
-        return "b"
-    if size == 2:
-        return "h"
-    if size == 4:
-        return "w"
-    return "l"
+        return 3 + size / 4
+    if size == 8:
+        return 3
+    return size / 2
 
 func splat(lane: i64, x: Arg) -> Arg:
-    return op1(V, "vsplat" + letter(lane), x)
+    return op1(Kv, Ovsplatb + lane_place(lane), x)
 
 # all ones in the lanes where x is greater than y
 func greater(x: Arg, y: Arg, lane: i64) -> Arg:
     ty := comp.types[lane]
     if ty.kind == Float:
-        return op(V, "vclt" + letter(lane), y, x)
+        return op(Kv, Ovclts + lane_place(lane) - 4, y, x)
     if ty.kind == Uint:
         bias := splat(lane, int_arg(i64(1) << i64(8 * ty.size - 1))) # the order of signed numbers
-        x = op(V, "vxor", x, bias)
-        y = op(V, "vxor", y, bias)
-    return op(V, "vcgt" + letter(lane), x, y)
+        x = op(Kv, Ovxor, x, bias)
+        y = op(Kv, Ovxor, y, bias)
+    return op(Kv, Ovcgtb + lane_place(lane), x, y)
 
 # lane i of a simd or an array, a mask gives it as a bool, a number is the same in every lane
 func holds_lanes(t: i64) -> bool:
@@ -3059,14 +3053,14 @@ func lane(v: Value, i: i64) -> Value:
     raw := lane_type(v.type)
     x := Value{type = raw, at = offset(v.at, i * comp.types[raw].size), mem = true, place = v.place}
     if raw != comp.types[v.type].elem:
-        return Value{type = BOOL, at = op(W, cmp_name("cne", raw), load(x).at, int_arg(0))}
+        return Value{type = BOOL, at = op(Kw, compare(Ocnew, raw), load(x).at, int_arg(0))}
     return x
 
 # a bool as a lane of a mask, that keeps true as all ones
 func mask_bits(b: Arg, raw: i64) -> Arg:
-    if cls(raw) == L:
-        return op1(L, "neg", op1(L, "extuw", b))
-    return op1(cls(raw), "neg", b)
+    if cls(raw) == Kl:
+        return op1(Kl, Oneg, op1(Kl, Oextuw, b))
+    return op1(cls(raw), Oneg, b)
 
 func set_lane(slot: Arg, t: i64, i: i64, x: Value, at: i64) -> Fail?:
     v := try convert(x, lane_value(t), Arg{}, at)
@@ -3095,7 +3089,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         length := load(Value{type = field.type, at = offset(slice.at, field.n), mem = true})
         l_bad := label()
         l_good := label()
-        branch(op(W, cmp_name("cne", field.type), length.at, int_arg(lanes.count)), l_bad, l_good)
+        branch(op(Kw, compare(Ocnew, field.type), length.at, int_arg(lanes.count)), l_bad, l_good)
         open_block(l_bad)
         args: &list[Value] = heap([])
         append(args, try in_heap(try fat_type("str", VOID, tok.at)))
@@ -3104,7 +3098,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         append(args, try place_of(tok.at))
         try runtime("panic", args, tok.at)
         open_block(l_good)
-        blit(v.at, op1(L, "loadl", slice.at), v.type)
+        blit(v.at, op1(Kl, Oload, slice.at), v.type)
         return none
     passing := comp.passed == n
     first := comp.body.len
@@ -3145,7 +3139,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             elem = element(t)
             field := field_of(t, "len")
             length = load(Value{type = field.type, at = offset(addr, field.n), mem = true})
-            addr = op1(L, "loadl", addr)
+            addr = op1(Kl, Oload, addr)
         wide := U64
         if comp.types[index.type].kind == Int:
             wide = I64
@@ -3153,7 +3147,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         i := raw
         back := from_end(index)
         if back:
-            i = op(L, "add", length.at, raw)
+            i = op(Kl, Oadd, length.at, raw)
         limit: u64 = 0
         if local_of(kid(n, 1)) != 0:
             limit = comp.vars[local_of(kid(n, 1)) - 1].limit
@@ -3164,7 +3158,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
         if not known:
             l_out := label()
             l_in := label()
-            branch(op(W, "cultl", i, length.at), l_in, l_out)
+            branch(op(Kw, Ocultl, i, length.at), l_in, l_out)
             open_block(l_out)
             bounds: &list[Value] = heap([])
             append(bounds, Value{type = wide, at = raw})
@@ -3185,7 +3179,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                     whole := l.whole > 0 and code_of(l.whole) == code_of(kid(n, 0)) or array and limit == comp.types[t].count
                     if holds_pointer(elem) and not whole: # so the walk doesn't free every element
                         comp.loops[k].whole = NONE
-        spot = Value{type = elem, at = add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, shape = elem, copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
+        spot = Value{type = elem, at = add(Ins{op = Oadd, cls = Kl, to = u32(temp().n), a = addr, b = scaled, count = count, first = walk, shape = elem, copy = walk != 0}), mem = true, place = base.place or not array, lit = base.lit and aggregate(elem)}
         if ty.name == "&strview" and assignment != 0:
             return fail(VIEW, at_of(n + 1))
         if ty.name == "&strview" and passing:
@@ -3229,8 +3223,8 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
                 for k, e in ends:
                     if not own and from_end(e):
                         wide := load(try convert_number(length, I64, tok.at)).at
-                        counted := op(L, "add", wide, e.at)
-                        ends[k] = Value{type = I64, at = op(L, "sub", counted, op(L, "and", wide, op(L, "sar", counted, int_arg(63))))} # before the start it stays as written, for the message
+                        counted := op(Kl, Oadd, wide, e.at)
+                        ends[k] = Value{type = I64, at = op(Kl, Osub, counted, op(Kl, Oand, wide, op(Kl, Osar, counted, int_arg(63))))} # before the start it stays as written, for the message
                     signed = signed or comp.types[ends[k].type].kind == Int and (not ends[k].lit or ends[k].neg)
                 for k, e in ends:
                     if signed and integer(e.type) and not e.lit:
@@ -3238,7 +3232,7 @@ func indexed(n: i64, assignment: i64) -> Value|Fail:
             append(args, ends[:])
             shown := try invoke("[:]", args, tok.at)
             if cut and sequence(shown.type) and holds_pointer(element(shown.type)):
-                add(Ins{op = "part", a = shown.at, ghost = true})
+                add(Ins{op = Opart, a = shown.at, ghost = true})
             return shown
         append(args, index)
         read := try returned("[]", args, tok.at)
@@ -3317,7 +3311,7 @@ func filled(v: Value, kept: i64) -> Value|Fail:
         return spot
     l_some := label()
     l_done := label()
-    branch(op(W, "cnew", tag(v), tag_of(NULL)), l_some, l_done)
+    branch(op(Kw, Ocnew, tag(v), tag_of(NULL)), l_some, l_done)
     open_block(l_some)
     store(kept, Value{type = kept, at = payload(v.at, kept), mem = true}, spot.at)
     jump(l_done)
@@ -3420,7 +3414,7 @@ func in_turn(values: &listview[Value], turns: i64, to: &listview[i64] = []):
 
 func calls(first: i64, last: i64) -> bool:
     for i in first..last:
-        if comp.body[i].op == "call" and not comp.body[i].copy and (i + 1 == comp.body.len or comp.body[i + 1].op != "hlt"): # a copy of memory is a call, and a call before hlt is a panic
+        if comp.body[i].op == Ocall and not comp.body[i].copy and (i + 1 == comp.body.len or comp.body[i + 1].op != Ohalt): # a copy of memory is a call, and a call before hlt is a panic
             return true
     return false
 
@@ -3537,12 +3531,12 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
         for m in members(v.type):
             l_arm := label()
             l_next := label()
-            branch(op(W, "ceqw", current, tag_of(m)), l_arm, l_next)
+            branch(op(Kw, Oceqw, current, tag_of(m)), l_arm, l_next)
             open_block(l_arm)
             try put_text(place, Value{type = m, at = payload(v.at, m), mem = true}, at)
             jump(l_done)
             open_block(l_next)
-        terminate("hlt", Arg{})
+        terminate(Ohalt, Arg{})
         open_block(l_done)
         return null
     if t.kind == Struct:
@@ -3570,15 +3564,15 @@ func put_text(place: Value, v: Value, at: i64) -> Fail?:
     jump(l_head)
     open_block(l_head)
     i := load(Value{type = I64, at = index, mem = true}).at
-    branch(op(W, "cultl", i, int_arg(i64(t.count))), l_body, l_done)
+    branch(op(Kw, Ocultl, i, int_arg(i64(t.count))), l_body, l_done)
     open_block(l_body)
-    branch(op(W, "ceql", i, int_arg(0)), l_item, l_comma)
+    branch(op(Kw, Oceql, i, int_arg(0)), l_item, l_comma)
     open_block(l_comma)
     try put_words(place, ", ", at)
     jump(l_item)
     open_block(l_item)
-    try put_text(place, Value{type = t.elem, at = op(L, "add", v.at, times(i, comp.types[t.elem].size)), mem = true}, at)
-    store(I64, Value{type = I64, at = op(L, "add", i, int_arg(1))}, index)
+    try put_text(place, Value{type = t.elem, at = op(Kl, Oadd, v.at, times(i, comp.types[t.elem].size)), mem = true}, at)
+    store(I64, Value{type = I64, at = op(Kl, Oadd, i, int_arg(1))}, index)
     jump(l_head)
     open_block(l_done)
     return put_words(place, "]", at)
@@ -3587,7 +3581,7 @@ func mix(h: Arg, part: Value, at: i64) -> Fail?:
     one: &list[Value] = heap([])
     append(one, part)
     x := load(try convert_number(try invoke("hash", one, at), U64, at)).at
-    add(Ins{op = "storel", a = op(L, "mul", op(L, "xor", op1(L, "loadl", h), x), int_arg(FNVPRIME)), b = h, number = true})
+    add(Ins{op = Ostorel, a = op(Kl, Omul, op(Kl, Oxor, op1(Kl, Oload, h), x), int_arg(FNVPRIME)), b = h, number = true})
     return null
 
 # where field name of t is declared, or at for a tuple, which has no declaration
@@ -3605,7 +3599,7 @@ func field_node(t: i64, name: &strview) -> i64:
 # an empty owner of type t that has no block yet, with the heap for its memory
 func in_heap(t: i64) -> Value|Fail:
     made := try fresh(t)
-    add(Ins{op = "storel", a = int_arg(HEAP), b = offset(made.at, field_of(t, "arena").n)})
+    add(Ins{op = Ostorel, a = int_arg(HEAP), b = offset(made.at, field_of(t, "arena").n)})
     return made
 
 func put_words(place: Value, words: &strview, at: i64) -> Fail?:
@@ -3756,7 +3750,7 @@ func confine(subject: i64, kept: &list[i64], at: i64) -> Fail?:
     whole := comp.vars[declaration(current.name)]
     absent(whole.addr, whole.type, kept)
     if whole.inside and comp.types[t].kind != Union: # for -memory, what the walk changes in the element from now on it changes under t
-        add(Ins{op = "narrowed", a = whole.addr, member = u32(t), ghost = true})
+        add(Ins{op = Onarrowed, a = whole.addr, member = u32(t), ghost = true})
     append(comp.vars, Local{current.name, t, payload(whole.addr, t), comp.loops.len, current.tok, 0, current.fixed, 0, true, current.inside})
     return null
 
@@ -4062,7 +4056,7 @@ func image(t: i64, n: i64, out: *&list[Piece]) -> i64|Fail: # the node of a part
                     if field.default != 0:
                         bits = load(try convert(try default_of(t, field), field.type, Arg{}, at_of(field.default))).at
                     if bits.kind == Single:
-                        bits = op1(W, "cast", bits)
+                        bits = op1(Kw, Ocast, bits)
                     if bits.kind != Const and bits.kind != Double:
                         return given[filler]
                     for k in comp.types[inner].size..size:
@@ -4109,7 +4103,7 @@ func image(t: i64, n: i64, out: *&list[Piece]) -> i64|Fail: # the node of a part
     base := v.at
     past := 0 # what ptr(context.field) adds to the address of a shared context
     last := comp.body.len
-    while last > first and base.kind == Temp and comp.body[last - 1].op == "add" and comp.body[last - 1].to == u32(base.n) and comp.body[last - 1].b.kind == Const and comp.body[last - 1].b.n >= 0:
+    while last > first and base.kind == Temp and comp.body[last - 1].op == Oadd and comp.body[last - 1].to == u32(base.n) and comp.body[last - 1].b.kind == Const and comp.body[last - 1].b.n >= 0:
         last -= 1
         past += comp.body[last].b.n
         base = comp.body[last].a
@@ -4165,7 +4159,7 @@ func numeric(t: i64) -> bool:
     return integer(t) or comp.types[t].kind == Float
 
 func tag(v: Value) -> Arg:
-    return op1(W, "loadw", v.at)
+    return op1(Kw, Oloadsw, v.at)
 
 func tag_of(member: i64) -> Arg:
     return int_arg(i64(comp.types[member].tag))
@@ -4195,14 +4189,14 @@ func stamp(t: i64, addr: Arg, at: i64) -> Fail?:
         l_head := label()
         l_body := label()
         l_done := label()
-        add(Ins{op = "storel", a = int_arg(0), b = slot, number = true})
+        add(Ins{op = Ostorel, a = int_arg(0), b = slot, number = true})
         jump(l_head)
         open_block(l_head)
-        i := op1(L, "loadl", slot)
-        branch(op(W, "cultl", i, int_arg(i64(ty.count))), l_body, l_done)
+        i := op1(Kl, Oload, slot)
+        branch(op(Kw, Ocultl, i, int_arg(i64(ty.count))), l_body, l_done)
         open_block(l_body)
-        try stamp(ty.elem, op(L, "add", offset(addr, at), op(L, "mul", i, int_arg(i64(comp.types[ty.elem].size)))), 0)
-        add(Ins{op = "storel", a = op(L, "add", i, int_arg(1)), b = slot, number = true})
+        try stamp(ty.elem, op(Kl, Oadd, offset(addr, at), op(Kl, Omul, i, int_arg(i64(comp.types[ty.elem].size)))), 0)
+        add(Ins{op = Ostorel, a = op(Kl, Oadd, i, int_arg(1)), b = slot, number = true})
         jump(l_head)
         open_block(l_done)
     return null
@@ -4225,20 +4219,20 @@ func packs(f: Item, at: i64) -> bool:
     return size < 8 and f.n + size <= at + 8 and (numeric(f.type) or f.type == BOOL or comp.types[f.type].kind == Union)
 
 func set_tag(t: i64, member: i64, addr: Arg):
-    name: &strview = "storew"
+    o := Ostorew
     if comp.types[t].size > 4:
-        name = "storel" # the whole word, so a copy of it reads one store
-    add(Ins{op = name, a = tag_of(member), b = addr, number = true})
+        o = Ostorel # the whole word, so a copy of it reads one store
+    add(Ins{op = o, a = tag_of(member), b = addr, number = true})
 
 func tag_test(v: Value, tags: &list[i64]) -> Arg:
     current := tag(v)
     result := Arg{}
     for m in tags:
-        test := op(W, "ceqw", current, tag_of(m))
+        test := op(Kw, Oceqw, current, tag_of(m))
         if result.kind == Empty:
             result = test
         else:
-            result = op(W, "or", result, test)
+            result = op(Kw, Oor, result, test)
     return result
 
 func leave(v: Value, at: i64) -> Fail?:
@@ -4254,7 +4248,7 @@ func leave(v: Value, at: i64) -> Fail?:
     try unwind(0, 0)
     if comp.inst == comp.entry:
         result = try ending(Value{type = comp.ret, at = result}, at)
-    terminate("ret", result)
+    terminate(Oreturn, result)
     return null
 
 # the exit code that main gives C, from ending of core, which turns an end with 0 into 1 when the standard output failed
@@ -4318,12 +4312,12 @@ func continued(first: Arg, step: i64, most: Arg, left: Arg) -> Arg:
     jump(l_scan)
     open_block(l_scan)
     k := load(Value{type = I64, at = count, mem = true}).at
-    branch(op(W, "and", op(W, "cultl", k, most), op(W, "cultl", k, left)), l_byte, l_done)
+    branch(op(Kw, Oand, op(Kw, Ocultl, k, most), op(Kw, Ocultl, k, left)), l_byte, l_done)
     open_block(l_byte)
-    b := op1(W, "loadub", op(L, "add", first, op(L, "mul", k, int_arg(step))))
-    branch(op(W, "ceqw", op(W, "and", b, int_arg(0xc0)), int_arg(0x80)), l_next, l_done)
+    b := op1(Kw, Oloadub, op(Kl, Oadd, first, op(Kl, Omul, k, int_arg(step))))
+    branch(op(Kw, Oceqw, op(Kw, Oand, b, int_arg(0xc0)), int_arg(0x80)), l_next, l_done)
     open_block(l_next)
-    store(I64, Value{type = I64, at = op(L, "add", k, int_arg(1))}, count)
+    store(I64, Value{type = I64, at = op(Kl, Oadd, k, int_arg(1))}, count)
     jump(l_scan)
     open_block(l_done)
     return load(Value{type = I64, at = count, mem = true}).at
@@ -4353,13 +4347,13 @@ func open_scope():
     comp.scope = comp.scopes.len
     append(comp.spare, -1) # the spare slots of the outer blocks wait past it: a block takes only the slots it made, so its end is theirs
     if comp.debug:
-        append(comp.body, Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope))})
+        append(comp.body, Ins{op = Odbgmark, a = int_arg(i64(2 * comp.scope))})
 
 # the slots from first on are the variables and temporaries of the block, and its end is theirs, but in the block of a function, which its return ends
 func close_scope(first: i64):
     outer := comp.scopes[comp.scope - 1]
     if comp.debug:
-        inside(Ins{op = "dbgmark", a = int_arg(i64(2 * comp.scope + 1))})
+        inside(Ins{op = Odbgmark, a = int_arg(i64(2 * comp.scope + 1))})
     if outer != 0 and first < comp.slots.len:
         inside(ended(first))
     comp.scope = outer
@@ -4377,7 +4371,7 @@ func inside(i: Ins):
 
 # for -memory, the slots from first on end here, and a pointer kept to what they hold goes bad
 func ended(first: i64) -> Ins:
-    return Ins{op = "ended", a = int_arg(first), b = int_arg(comp.slots.len), pos = comp.at, ghost = true}
+    return Ins{op = Oended, a = int_arg(first), b = int_arg(comp.slots.len), pos = comp.at, ghost = true}
 
 func statement(n: i64, dropped: &strview) -> Fail?:
     start := comp.held.len
@@ -4510,66 +4504,55 @@ func big(t: i64) -> bool:
 func payload(addr: Arg, t: i64) -> Arg:
     if comp.types[t].kind == Union or comp.types[t].size == 0:
         return addr
-    return add(Ins{op = "add", cls = L, to = u32(temp().n), a = addr, b = int_arg(i64(past_tag(t))), member = u32(t)})
+    return add(Ins{op = Oadd, cls = Kl, to = u32(temp().n), a = addr, b = int_arg(i64(past_tag(t))), member = u32(t)})
 
 func absent(addr: Arg, t: i64, here: &list[i64]):
     for m in members(t):
         if not contains(here, m) and holds_pointer(m):
-            add(Ins{op = "absent", a = addr, c = int_arg(i64(comp.types[m].size)), shape = m, copy = true, ghost = true, member = u32(m)})
+            add(Ins{op = Oabsent, a = addr, c = int_arg(i64(comp.types[m].size)), shape = m, copy = true, ghost = true, member = u32(m)})
 
 func times(count: Arg, size: i64) -> Arg:
     if size == 1:
         return count
-    return op(L, "mul", count, int_arg(i64(size)))
+    return op(Kl, Omul, count, int_arg(i64(size)))
 
 func offset(addr: Arg, n: i64) -> Arg:
     if n == 0:
         return addr
-    return op(L, "add", addr, int_arg(i64(n)))
+    return op(Kl, Oadd, addr, int_arg(i64(n)))
 
-func cls(t: i64) -> u32:
+func cls(t: i64) -> i64:
     ty := comp.types[t]
     if aggregate(t):
-        return AGG + u32(t)
+        return AGG + t
     if ty.kind == Float and ty.size == 4:
-        return S
+        return Ks
     if ty.kind == Float:
-        return D
+        return Kd
     if ty.size == 8:
-        return L
-    return W
+        return Kl
+    return Kw
 
-func cmp_name(base: &strview, t: i64) -> &strview:
+# the comparison o of two signed words, as it compares two values of type t
+func compare(o: i64, t: i64) -> i64:
+    c := o - Ocmpw
     ty := comp.types[t]
-    out: &str = heap("")
-    if ty.kind == Float and base.len == 4:
-        out = "c"
-        out += base[2:4]
-    elif (ty.kind == Uint or ty.kind == Ptr) and base.len == 4:
-        out = "cu"
-        out += base[2:4]
-    else:
-        out = base
-    if cls(t) == S:
-        out += "s"
-    elif cls(t) == D:
-        out += "d"
-    elif cls(t) == L:
-        out += "l"
-    else:
-        out += "w"
-    return view(out)
+    if ty.kind == Float:
+        return (Ocmps if ty.size == 4 else Ocmpd) + [Cfeq, Cfne, Cfge, Cfgt, Cfle, Cflt][c]
+    if (ty.kind == Uint or ty.kind == Ptr) and c >= Cisge:
+        c += Ciuge - Cisge
+    return (Ocmpl if ty.size == 8 else Ocmpw) + c
 
 func extend(t: i64, x: Arg) -> Arg:
     ty := comp.types[t]
     if ty.size == 1 and ty.kind == Int:
-        return op1(W, "extsb", x)
+        return op1(Kw, Oextsb, x)
     if ty.size == 1:
-        return op1(W, "extub", x)
+        return op1(Kw, Oextub, x)
     if ty.size == 2 and ty.kind == Int:
-        return op1(W, "extsh", x)
+        return op1(Kw, Oextsh, x)
     if ty.size == 2:
-        return op1(W, "extuh", x)
+        return op1(Kw, Oextuh, x)
     if ty.size == 4 and x.kind == Const and ty.kind == Int: # a number the compiler knows is held as the value of its type
         return int_arg(x.n << 32 >> 32)
     if ty.size == 4 and x.kind == Const and ty.kind == Uint:
@@ -4582,24 +4565,22 @@ func load(v: Value) -> Value:
         return Value{type = v.type, at = int_arg(0)}
     if not v.mem or aggregate(v.type):
         return v
-    name: &strview = "loadl"
-    if ty.kind == Float and ty.size == 4:
-        name = "loads"
-    elif ty.kind == Float:
-        name = "loadd"
+    o := Oload
+    if ty.kind == Float:
+        pass
     elif ty.size == 1 and ty.kind == Int:
-        name = "loadsb"
+        o = Oloadsb
     elif ty.size == 1:
-        name = "loadub"
+        o = Oloadub
     elif ty.size == 2 and ty.kind == Int:
-        name = "loadsh"
+        o = Oloadsh
     elif ty.size == 2:
-        name = "loaduh"
+        o = Oloaduh
     elif ty.size == 4:
-        name = "loadw"
+        o = Oloadsw
     elif integer(v.type):
-        return Value{type = v.type, at = add(Ins{op = "loadl", cls = L, to = u32(temp().n), a = v.at, number = true})}
-    return Value{type = v.type, at = op1(cls(v.type), name, v.at)}
+        return Value{type = v.type, at = add(Ins{op = Oload, cls = Kl, to = u32(temp().n), a = v.at, number = true})}
+    return Value{type = v.type, at = op1(cls(v.type), o, v.at)}
 
 func store(t: i64, v: Value, addr: Arg):
     ty := comp.types[t]
@@ -4610,36 +4591,36 @@ func store(t: i64, v: Value, addr: Arg):
         return
     x := load(v).at
     if ty.size == 8 and integer(t) and not is_number(x):
-        x = add(Ins{op = "copy", cls = L, to = u32(temp().n), a = x, number = true})
-    name: &strview = "storel"
+        x = add(Ins{op = Ocopy, cls = Kl, to = u32(temp().n), a = x, number = true})
+    o := Ostorel
     if ty.kind == Float and ty.size == 4:
-        name = "stores"
+        o = Ostores
     elif ty.kind == Float:
-        name = "stored"
+        o = Ostored
     elif ty.size == 1:
-        name = "storeb"
+        o = Ostoreb
     elif ty.size == 2:
-        name = "storeh"
+        o = Ostoreh
     elif ty.size == 4:
-        name = "storew"
-    add(Ins{op = name, a = x, b = addr, number = integer(t)})
+        o = Ostorew
+    add(Ins{op = o, a = x, b = addr, number = integer(t)})
 
 func blit(from: Arg, to: Arg, t: i64):
     if from.kind == to.kind and from.n == to.n:
         return
     if comp.types[t].kind == Simd and vectors():
         for half in 0..comp.types[t].size / 16:
-            add(Ins{op = "storev", a = op1(V, "loadv", offset(from, 16 * half)), b = offset(to, 16 * half)}) # a slot only loaded and stored whole becomes a register
+            add(Ins{op = Ostorev, a = op1(Kv, Oload, offset(from, 16 * half)), b = offset(to, 16 * half)}) # a slot only loaded and stored whole becomes a register
         return
     size := i64(comp.types[t].size)
     if not big(t):
-        add(Ins{op = "blit", a = from, b = to, c = int_arg(size), shape = t, copy = true})
+        add(Ins{op = Oblit0, a = from, b = to, c = int_arg(size), shape = t, copy = true})
         return
     first := comp.passes.len
-    append(comp.passes, Pass{L, to, false, VOID})
-    append(comp.passes, Pass{L, from, false, VOID})
-    append(comp.passes, Pass{L, int_arg(size), true, VOID})
-    add(Ins{op = "call", cls = L, to = u32(temp().n), a = global("$memcpy"), first = u32(first), count = 3, shape = t, copy = true})
+    append(comp.passes, Pass{Kl, to, false, VOID})
+    append(comp.passes, Pass{Kl, from, false, VOID})
+    append(comp.passes, Pass{Kl, int_arg(size), true, VOID})
+    add(Ins{op = Ocall, cls = Kl, to = u32(temp().n), a = global("$memcpy"), first = u32(first), count = 3, shape = t, copy = true})
 
 func holds_pointer(t: i64) -> bool:
     ty := comp.types[t]
@@ -4656,18 +4637,18 @@ func holds_pointer(t: i64) -> bool:
 func zero(t: i64, addr: Arg) -> Fail?:
     if comp.types[t].kind == Simd and vectors():
         for half in 0..comp.types[t].size / 16:
-            add(Ins{op = "storev", a = splat(I32, int_arg(0)), b = offset(addr, 16 * half)})
+            add(Ins{op = Ostorev, a = splat(I32, int_arg(0)), b = offset(addr, 16 * half)})
         return null
     size := room(t)
     if size > 64:
         first := comp.passes.len
-        append(comp.passes, Pass{L, addr, false, VOID})
-        append(comp.passes, Pass{W, int_arg(0), true, VOID})
-        append(comp.passes, Pass{L, int_arg(i64(size)), true, VOID})
-        add(Ins{op = "call", cls = L, to = u32(temp().n), a = global("$memset"), first = u32(first), count = 3})
+        append(comp.passes, Pass{Kl, addr, false, VOID})
+        append(comp.passes, Pass{Kw, int_arg(0), true, VOID})
+        append(comp.passes, Pass{Kl, int_arg(i64(size)), true, VOID})
+        add(Ins{op = Ocall, cls = Kl, to = u32(temp().n), a = global("$memset"), first = u32(first), count = 3})
     else:
         for at in 0..size / 8:
-            add(Ins{op = "storel", a = int_arg(0), b = offset(addr, at * 8)})
+            add(Ins{op = Ostorel, a = int_arg(0), b = offset(addr, at * 8)})
     return stamp(t, addr, 0)
 
 func address(v: Value) -> Value:
@@ -4681,26 +4662,26 @@ func address(v: Value) -> Value:
 
 func alloc(t: i64, variable: bool = false) -> Arg:
     size := i64(room(t))
-    name := alloc_op(t)
+    o := alloc_op(t)
     if size > 8 and comp.types[t].kind != Union and not variable: # small slots live in registers, unions are copied whole, a variable names its slot
         for i in reverse 0..comp.spare.len:
             s := comp.spare[i]
             if s < 0:
                 break
-            if comp.slots[s].a.n == size and comp.slots[s].op == name:
+            if comp.slots[s].a.n == size and comp.slots[s].op == o:
                 remove(comp.spare, i)
                 append(comp.held, s)
-                add(Ins{op = "reused", a = Arg{Temp, i64(comp.slots[s].to)}, ghost = true})
+                add(Ins{op = Oreused, a = Arg{Temp, i64(comp.slots[s].to)}, ghost = true})
                 return Arg{Temp, i64(comp.slots[s].to)}
         append(comp.held, comp.slots.len)
     slot := temp()
-    append(comp.slots, Ins{op = name, cls = L, to = u32(slot.n), a = int_arg(size)})
+    append(comp.slots, Ins{op = o, cls = Kl, to = u32(slot.n), a = int_arg(size)})
     return slot
 
-func alloc_op(t: i64) -> &strview:
+func alloc_op(t: i64) -> i64:
     if comp.types[t].align > 8:
-        return "alloc16"
-    return "alloc8"
+        return Oalloc16
+    return Oalloc8
 
 func data_align(t: i64) -> i64:
     if comp.types[t].align > 8:

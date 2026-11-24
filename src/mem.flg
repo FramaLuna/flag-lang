@@ -377,7 +377,7 @@ func check_memory():
         for k in func.params..func.params + func.count:
             p := comp.passes[k]
             t := u32(p.arg.n) + 1 - func.temps
-            if p.cls != L and p.cls < AGG or p.number:
+            if p.cls != Kl and p.cls < AGG or p.number:
                 t = 0
             append(f.params, t)
             append(f.copies, p.cls >= AGG)
@@ -390,7 +390,7 @@ func check_memory():
             i := comp.code[k]
             if f.at == 0:
                 f.at = i.pos
-            if i.op == "@":
+            if i.op == Olabel:
                 begin(f.spans, blocks, block_of(labels, blocks, u32(i.a.n)))
                 continue
             o := Op{pos = i.pos, shape = EVERY, member = i.member, ghost = i.ghost}
@@ -399,10 +399,9 @@ func check_memory():
             if i.to != 0:
                 o.to = i.to + 1 - func.temps
                 o.blob = i.cls >= AGG
-            name := i.op
-            if name == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag.stamp" and func.export and func.inst != comp.entry: # a thread new to an export turns the zeros of its contexts into their defaults, and neither holds memory
+            if i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == "$flag.stamp" and func.export and func.inst != comp.entry: # a thread new to an export turns the zeros of its contexts into their defaults, and neither holds memory
                 continue
-            if name == "jt": # two ways at a time: a fork to each block of the table in turn, and a goto to the last one
+            if i.op == Otable: # two ways at a time: a fork to each block of the table in turn, and a goto to the last one
                 ways.len = 0
                 for given in comp.passes[i.first:i.first + i.count]:
                     append(ways, u32(given.arg.n))
@@ -418,11 +417,11 @@ func check_memory():
                     append(blocks, u32(0))
                     begin(f.spans, blocks, u32(blocks.len) - 1)
                 continue
-            if name == "call":
+            if i.op == Ocall:
                 o.code = Call
                 o.first = u32(mem.args.len)
                 for j in i.first..i.first + i.count:
-                    if comp.passes[j].cls != 0:
+                    if comp.passes[j].cls != K0:
                         append(mem.args, operand(func.temps, comp.passes[j].arg))
                 o.count = u32(mem.args.len) - o.first
                 if o.blob:
@@ -440,18 +439,18 @@ func check_memory():
                             append(aims, p.name)
                     variable := 0 # a local that only ever holds named functions calls one of those
                     for c in comp.code[func.code:func.end]:
-                        if c.to == i.a.n and c.op == "loadl" and c.a.kind == Temp:
+                        if c.to == i.a.n and c.op == Oload and c.cls == Kl and c.a.kind == Temp:
                             variable = c.a.n
                     held.len = 0
                     for c in comp.code[func.code:func.end]:
-                        if variable != 0 and c.op == "storel" and c.b.kind == Temp and c.b.n == variable:
+                        if variable != 0 and c.op == Ostorel and c.b.kind == Temp and c.b.n == variable:
                             if c.a.kind == Global and contains(aims, comp.globals[c.a.n]):
                                 append(held, comp.globals[c.a.n])
                             elif c.a.kind != Const or c.a.n != 0:
                                 variable = 0
-                        elif variable != 0 and c.op != "loadl" and (c.a.kind == Temp and c.a.n == variable or c.b.kind == Temp and c.b.n == variable or c.c.kind == Temp and c.c.n == variable):
+                        elif variable != 0 and not (c.op == Oload and c.cls == Kl) and (c.a.kind == Temp and c.a.n == variable or c.b.kind == Temp and c.b.n == variable or c.c.kind == Temp and c.c.n == variable):
                             variable = 0
-                        elif variable != 0 and c.op == "call":
+                        elif variable != 0 and c.op == Ocall:
                             for j in c.first..c.first + c.count:
                                 if comp.passes[j].arg.kind == Temp and comp.passes[j].arg.n == variable:
                                     variable = 0
@@ -482,104 +481,97 @@ func check_memory():
                 continue
             o.a = operand(func.temps, i.a)
             o.b = operand(func.temps, i.b)
-            if starts_with(name, "alloc"):
+            if isalloc(i.op):
                 o.code = Alloc
                 o.slot = u32(f.slots.len)
                 append(f.slots, o.to)
-            elif starts_with(name, "load") or starts_with(name, "store"):
+            elif isload(i.op) or isstore(i.op):
                 o.code = Clear
-                if name == "loadl" and not i.number:
+                if i.op == Oload and i.cls == Kl and not i.number:
                     o.code = Load
-                elif starts_with(name, "load"):
+                elif isload(i.op):
                     o.code = Word
-                elif name == "storel" and not i.number:
+                elif i.op == Ostorel and not i.number:
                     o.code = Store
-                switch items(name)[name.len - 1]:
-                case 'l', 'd':
-                    o.size = 8
-                case 'w', 's':
-                    o.size = 4
-                case 'h':
-                    o.size = 2
-                case:
-                    o.size = 1
+                access := Instr{op = i32(i.op), cls = i32(i.cls)}
+                o.size = u32(loadsz(access) if isload(i.op) else storesz(access))
             else:
-                switch name:
-                case "blit":
+                switch i.op:
+                case Oblit0:
                     o.code = Blit
                     o.size = u32(i.c.n)
-                case "absent":
+                case Oabsent:
                     o.code = Absent
                     o.size = u32(i.c.n)
-                case "add", "copy":
+                case Oadd, Ocopy:
                     o.code = Offset
                     o.count = i.count
                     o.from = i.first # the walk whose element of the round this is
                     if i.number:
                         o.code = Count
-                case "mul":
+                case Omul:
                     o.code = Scale
-                case "sub", "and", "or", "xor", "shl", "shr", "sar", "udiv", "div", "rem", "urem", "neg", "extsw", "extuw", "extsb", "extub", "extsh", "extuh":
+                case Osub, Oand, Oor, Oxor, Oshl, Oshr, Osar, Oudiv, Odiv, Orem, Ourem, Oneg, Oextsw, Oextuw, Oextsb, Oextub, Oextsh, Oextuh:
                     o.code = Mix
-                    o.size = u32(name == "sub")
+                    o.size = u32(i.op == Osub)
                     if i.number:
                         o.code = Plain
-                case "jmp":
+                case Ojump:
                     o.code = Goto
                     o.a.n = i64(block_of(labels, blocks, u32(i.a.n)))
-                case "jnz":
+                case Obranch:
                     o.code = Fork
                     o.a.n = i64(block_of(labels, blocks, u32(i.b.n)))
                     o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
                     test := comp.code[k - 1]
-                    if test.to == i.a.n and (test.op == "ceql" or test.op == "cnel") and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
+                    if test.to == i.a.n and (test.op == Oceql or test.op == Ocnel) and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
                         o.from = u32(test.a.n) + 1 - func.temps
-                        o.size = 1 if test.op == "ceql" else 2
-                case "ret":
+                        o.size = 1 if test.op == Oceql else 2
+                case Oreturn:
                     o.code = Leave
                     if f.blob: # the value goes back like a blit into the caller's place
-                        t := i64(func.cls) - AGG
+                        t := func.cls - AGG
                         if func.cls >= CAGG:
-                            t = i64(func.cls) - CAGG
+                            t = func.cls - CAGG
                         o.size = u32(comp.types[t].size)
                         o.shape = layout(t, false)
-                case "hlt":
+                case Ohalt:
                     o.code = Halt
-                case "ended":
+                case Oended:
                     o.code = Ended
-                case "round":
+                case Oround:
                     o.code = Round
                     o.size = u32(i.c.n)
-                case "walked":
+                case Owalked:
                     o.code = Walked
                     o.size = u32(i.c.n)
-                case "narrowed":
+                case Onarrowed:
                     o.code = Narrowed
-                case "counted":
+                case Ocounted:
                     o.code = Counted
-                case "reused":
+                case Oreused:
                     o.code = Reused
-                case "part":
+                case Opart:
                     o.code = Part
-                case "aload", "aadd", "aswap", "acas": # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
+                case Oaload, Oaadd, Oaswap, Oacas0: # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
                     o.code = Word
                     o.atomic = true
-                    o.size = 4 << u32(i.cls == L)
-                    if i.cls == L and not i.number:
+                    o.size = 4 << u32(i.cls == Kl)
+                    if i.cls == Kl and not i.number:
                         o.code = Load
-                    if name != "aload":
+                    if i.op != Oaload:
                         append(mem.ops, o)
                         o.to = 0
                         o.b = o.a
                         o.code = Clear
                         if not i.number:
                             o.code = Store
-                            o.a = operand(func.temps, i.c if name == "acas" else i.b)
-                case "astorel", "astorew":
+                            o.a = operand(func.temps, i.c if i.op == Oacas0 else i.b)
+                case Oastorel, Oastorew:
                     o.code = Clear
                     o.atomic = true
-                    o.size = 4 << u32(name == "astorel")
-                    if name == "astorel" and not i.number:
+                    o.size = 4 << u32(i.op == Oastorel)
+                    if i.op == Oastorel and not i.number:
                         o.code = Store
                 case:
                     o.code = Plain

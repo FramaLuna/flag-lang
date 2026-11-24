@@ -812,7 +812,6 @@ context asm:
     files: &list[&strview] = heap([])
     curfile: i64
     blocks: i64 # the labels the functions before took
-    ops: &map[&strview, i64] = heap({}) # each instruction by its name
     lane: i64 # of the next vset, given by a vlane
 
 func rtype(r: Ref) -> i64:
@@ -1867,7 +1866,7 @@ func begin(name: &strview, export: bool):
     for k in 0..Tmp0:
         _ = newtmp(Kd if m.fpr0 <= k and k < m.fpr0 + m.nfpr else Kl)
 
-# the classes of the parser: those of values, then those that only pass
+# the classes past those of values: those that only pass, a type, and nothing
 Ksb = 5
 Kub = 6
 Ksh = 7
@@ -1876,31 +1875,17 @@ Kc = 9
 K0 = 10
 
 # the class of a value, a parameter or an argument of class c of comp, and its aggregate type, or -1
-func parsecls(c: u32) -> (i64, i64):
+func parsecls(c: i64) -> (i64, i64):
     if c >= CAGG:
         return Kc, asm.ctyps[c - CAGG]
     if c >= AGG:
         return Kc, asm.typs[c - AGG]
-    switch c:
-    case W:
-        return Kw, -1
-    case L:
-        return Kl, -1
-    case S:
-        return Ks, -1
-    case D:
-        return Kd, -1
-    case V:
-        return Kv, -1
-    case SB:
-        return Ksb, -1
-    case UB:
-        return Kub, -1
-    case SH:
-        return Ksh, -1
-    return Kuh, -1
+    return c, -1
 
+# the temp of comp's temp n, or R for none
 func tmpref(n: i64) -> Ref:
+    if n == 0:
+        return R
     k := n - fn.base
     if fn.temps[k] == R:
         fn.temps[k] = newtmp(Kx)
@@ -1908,6 +1893,8 @@ func tmpref(n: i64) -> Ref:
 
 func parseref(a: Arg) -> Ref:
     switch a.kind:
+    case Empty:
+        return R
     case Temp:
         return tmpref(a.n)
     case Global:
@@ -1919,6 +1906,8 @@ func parseref(a: Arg) -> Ref:
 
 func findblk(label: i64) -> i64:
     k := label - fn.label0
+    while fn.labels.len <= k:
+        append(fn.labels, 0)
     if fn.labels[k] == 0:
         fn.labels[k] = newblk()
     return fn.labels[k]
@@ -1929,18 +1918,7 @@ func closeblk(type: i64, arg: Ref, s1: i64, s2: i64):
     b.s1 = s1
     b.s2 = s2
 
-func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
-    # a label right after a jump that only jumps on: the jumps to it land where it jumps, and both are dropped
-    ended := false
-    for k in p.code..p.end:
-        i := comp.code[k]
-        next := kept(dropped, k + 1, p.end)
-        if i.op == "@" and ended and next < p.end and comp.code[next].op == "jmp" and landing(moved, comp.code[next].a.n) != i.a.n:
-            moved[i.a.n] = comp.code[next].a.n
-            dropped[k] = true
-            dropped[next] = true
-        if not dropped[k]:
-            ended = i.op == "jmp" or i.op == "jnz" or i.op == "jt" or i.op == "ret" or i.op == "hlt"
+func lower(p: Proc):
     begin(p.name[1:], p.export)
     fn.base = i64(p.temps)
     fn.temps.len = 0
@@ -1948,14 +1926,7 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
         append(fn.temps, R)
     fn.label0 = i64(p.labels)
     fn.labels.len = 0
-    append(fn.labels, 0)
-    for i in comp.code[p.code:p.end]:
-        if i.op == "@":
-            while fn.labels.len <= i.a.n - i64(p.labels):
-                append(fn.labels, 0)
     rcls, retty := parsecls(p.cls)
-    if p.cls == 0:
-        rcls = K0
     fn.retty = retty
     pars: &list[Instr] = heap([])
     defer free(pars)
@@ -1974,29 +1945,26 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
     shown := 0
     line := 0
     slotted := not comp.debug
-    for k in p.code..p.end:
-        i := comp.code[k]
-        if not slotted and not starts_with(i.op, "alloc"):
+    for i in comp.code[p.code:p.end]:
+        ins := ptr(fn.blks[fn.last].ins)
+        if not slotted and not isalloc(i.op):
             slotted = true # the allocs are first, and the emitter says where each one went
             for m in p.mentions..p.mentioned:
                 slot := comp.mentions[m].pointer
                 if slot == 0:
                     slot = comp.mentions[m].temp
-                append(fn.blks[fn.last].ins, Instr{op = Odbgslot, cls = Kw, arg = [tmpref(i64(slot)), ref(RInt, m)]})
+                append(ins, Instr{op = Odbgslot, cls = Kw, arg = [tmpref(i64(slot)), ref(RInt, m)]})
             # the prologue takes this line, so a debugger stops after it with the parameters in place
             shown = declared_at(p)
             line = line_of(shown)
-            append(fn.blks[fn.last].ins, Instr{op = Odbgloc, cls = Kw, arg = [ref(RInt, line), ref(RInt, shown - line_start(shown) + 1)]})
-        next := kept(dropped, k + 1, p.end)
-        if dropped[k] or i.op == "jmp" and next < p.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
-            continue
-        if i.pos != 0 and i.pos != shown and i.op != "@" and not starts_with(i.op, "alloc"):
+            append(ins, Instr{op = Odbgloc, cls = Kw, arg = [ref(RInt, line), ref(RInt, shown - line_start(shown) + 1)]})
+        if i.pos != 0 and i.pos != shown and i.op != Olabel and not isalloc(i.op):
             shown = i.pos
             if line_of(i.pos) != line:
                 line = line_of(i.pos)
-                append(fn.blks[fn.last].ins, Instr{op = Odbgloc, cls = Kw, arg = [ref(RInt, line), ref(RInt, i.pos - line_start(i.pos) + 1)]})
+                append(ins, Instr{op = Odbgloc, cls = Kw, arg = [ref(RInt, line), ref(RInt, i.pos - line_start(i.pos) + 1)]})
         switch i.op:
-        case "@":
+        case Olabel:
             to := findblk(i.a.n)
             if fn.blks[fn.last].jmp.type == Jxxx:
                 closeblk(Jjmp, R, to, 0)
@@ -2005,98 +1973,73 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
             if comp.debug:
                 shown = 0 # a block starts a row of the line table, so a debugger stops where a jump lands
                 line = 0
-        case "jmp":
-            closeblk(Jjmp, R, findblk(landing(moved, i.a.n)), 0)
-        case "jnz":
+        case Ojump:
+            closeblk(Jjmp, R, findblk(i.a.n), 0)
+        case Obranch:
             r := parseref(i.a)
-            closeblk(Jjnz, r, findblk(landing(moved, i.b.n)), findblk(landing(moved, i.c.n)))
-        case "jt":
+            closeblk(Jjnz, r, findblk(i.b.n), findblk(i.c.n))
+        case Otable:
             closeblk(Jjt, parseref(i.a), 0, 0)
             places: &map[i64, i64] = heap({}) # of each target, its place in targets
             for given in comp.passes[i.first:i.first + i.count]:
-                s := findblk(landing(moved, given.arg.n))
+                s := findblk(given.arg.n)
                 if not contains(places, s):
                     put(places, s, fn.blks[fn.last].targets.len)
                     append(fn.blks[fn.last].targets, s)
                 append(fn.blks[fn.last].table, trust places[s])
             free(places)
-        case "ret":
+        case Oreturn:
             if i.a.kind == Empty or rcls == K0:
                 closeblk(Jret0, R, 0, 0)
             else:
                 closeblk(Jretw + rcls - i64(rcls >= Ksb), parseref(i.a), 0, 0)
-        case "hlt":
+        case Ohalt:
             closeblk(Jhlt, R, 0, 0)
-        case "call":
-            b := ptr(fn.blks[fn.last])
-            to: Ref = R
-            kc := Kw
-            ty := -1
-            if i.to != 0:
-                to = tmpref(i64(i.to))
-                kc, ty = parsecls(i.cls)
+        case Ocall:
+            to := tmpref(i64(i.to))
+            kc, ty := parsecls(i.cls)
             fn.leaf = false
             callee := parseref(i.a)
             for given in comp.passes[i.first:i.first + i.count]:
-                if given.cls == 0:
-                    append(b.ins, Instr{op = Oargv})
+                if given.cls == K0:
+                    append(ins, Instr{op = Oargv})
                     continue
                 c, ty2 := parsecls(given.cls)
                 r := parseref(given.arg)
                 if c == Kc:
-                    append(b.ins, Instr{op = Oargc, cls = Kl, arg = [ref(RType, ty2), r]})
+                    append(ins, Instr{op = Oargc, cls = Kl, arg = [ref(RType, ty2), r]})
                 elif c >= Ksb:
-                    append(b.ins, Instr{op = i32(Oargsb + c - Ksb), cls = Kw, arg = [r, R]})
+                    append(ins, Instr{op = i32(Oargsb + c - Ksb), cls = Kw, arg = [r, R]})
                 else:
-                    append(b.ins, Instr{op = Oarg, cls = i32(c), arg = [r, R]})
+                    append(ins, Instr{op = Oarg, cls = i32(c), arg = [r, R]})
             kind: Ref = R
             if kc == Kc:
                 kc = Kl
                 kind = ref(RType, ty)
             if kc >= Ksb:
                 kc = Kw
-            append(b.ins, Instr{op = Ocall, cls = i32(kc), to = to, arg = [callee, kind]})
-        case "blit":
+            append(ins, Instr{op = Ocall, cls = i32(kc), to = to, arg = [callee, kind]})
+        case Oblit0:
             a0 := parseref(i.a)
             a1 := parseref(i.b)
             _ = parseref(i.c)
-            append(fn.blks[fn.last].ins, Instr{op = Oblit0, arg = [a0, a1]})
-            append(fn.blks[fn.last].ins, Instr{op = Oblit1, arg = [ref(RInt, i.c.n), R]})
-        case "acas":
+            append(ins, Instr{op = Oblit0, arg = [a0, a1]})
+            append(ins, Instr{op = Oblit1, arg = [ref(RInt, i.c.n), R]})
+        case Oacas0:
             to := tmpref(i64(i.to))
-            kc, _ := parsecls(i.cls)
             a0 := parseref(i.a)
             a1 := parseref(i.b)
             a2 := parseref(i.c)
-            append(fn.blks[fn.last].ins, Instr{op = Oacas0, cls = i32(kc), arg = [a1, R]})
-            append(fn.blks[fn.last].ins, Instr{op = Oacas1, cls = i32(kc), to = to, arg = [a0, a2]})
-        case "dbgmark":
+            append(ins, Instr{op = Oacas0, cls = i32(i.cls), arg = [a1, R]})
+            append(ins, Instr{op = Oacas1, cls = i32(i.cls), to = to, arg = [a0, a2]})
+        case Odbgmark:
             append(fn.dbgmark, i.a.n)
-            append(fn.blks[fn.last].ins, Instr{op = Odbgmark, cls = Kw, arg = [ref(RInt, fn.dbgmark.len - 1), R]})
+            append(ins, Instr{op = Odbgmark, cls = Kw, arg = [ref(RInt, fn.dbgmark.len - 1), R]})
         case:
-            to: Ref = R
-            kc := Kw
-            if i.to != 0:
-                to = tmpref(i64(i.to))
-                kc, _ = parsecls(i.cls)
-            a0: Ref = R
-            a1: Ref = R
-            if i.a.kind != Empty:
-                a0 = parseref(i.a)
-            if i.b.kind != Empty:
-                a1 = parseref(i.b)
-            append(fn.blks[fn.last].ins, Instr{op = i32(opcode(i.op)), cls = i32(kc), to = to, arg = [a0, a1]})
+            to := tmpref(i64(i.to))
+            a0 := parseref(i.a)
+            append(ins, Instr{op = i32(i.op), cls = i32(i.cls), to = to, arg = [a0, parseref(i.b)]})
     typecheck()
-
-func kept(dropped: &list[bool], k: i64, end: i64) -> i64:
-    while k < end and dropped[k]:
-        k += 1
-    return k
-
-func landing(moved: &list[i64], to: i64) -> i64:
-    while moved[to] != 0:
-        to = moved[to]
-    return to
 
 # a function the compiler makes itself, that returns what it reads from frame, or the address of data
 func special(name: &strview, export: bool, data: &strview):
@@ -2112,18 +2055,6 @@ func special(name: &strview, export: bool, data: &strview):
         append(b.ins, Instr{op = Oload, cls = Kl, to = c, arg = [f, R]})
         b.jmp = Jmp{Jretl, c}
     typecheck()
-
-func opcode(name: &strview) -> i64:
-    if asm.ops.len == 0:
-        for o in 1..NPubOp:
-            put(asm.ops, optab[o].name, o)
-        put(asm.ops, "loadw", Oloadsw)
-        for alias in ["loadl", "loads", "loadd", "loadv"]:
-            put(asm.ops, alias, Oload)
-    found := asm.ops[name]
-    if found is i64:
-        return found
-    panic("no instruction " + name)
 
 # the classes of the temps, by those of the instructions that define them
 func typecheck():
