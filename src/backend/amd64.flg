@@ -1055,11 +1055,14 @@ func emitsel(i: Instr):
 func flagi(b: i64, x: i64) -> i64:
     while x > 0:
         x -= 1
-        o := optab[fn.blks[b].ins[x].op]
-        if o.zflag:
+        i := fn.blks[b].ins[x]
+        if optab[i.op].zflag:
             return x
-        if not o.lflag:
+        if not optab[i.op].lflag:
             return -1
+        for r in i.arg: # fixarg() adds to an address from the GOT, like that of thread data in a library
+            if rtype(r) == RCon and (fn.con[rval(r)].symtype and SExt) != 0:
+                return -1
     return -1
 
 Pob = 0
