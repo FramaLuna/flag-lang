@@ -485,6 +485,15 @@ func arm64_sel(i: Instr):
     case Odbgslot:
         i.arg[0] = ref(RSlot, i64(fn.tmp[i.arg[0]].slot))
         emiti(i)
+    case Osar, Oshr, Oshl:
+        emiti(i)
+        x := fn.out.len - 1
+        arm64_fixout(x, 0, k)
+        n := 0
+        if isconbits(i.arg[1], ptr(n)): # the immediate of lsl, lsr or asr
+            fn.out[x].arg[1] = getcon(n and (63 if k == Kl else 31))
+        else:
+            arm64_fixout(x, 1, Kw)
     case:
         emiti(i)
         f := i.arg[0]

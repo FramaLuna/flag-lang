@@ -1222,14 +1222,19 @@ func amd64_isel():
                 continue
             nl := u8(refn(i.arg[0]) and 0xff)
             nr := u8(refn(i.arg[1]) and 0xff)
+            scale := i.arg[1]
+            v := 0
+            if i.op == Oshl and isconbits(scale, ptr(v)) and v >= 1 and v <= 3: # numbered as the multiplication it is
+                scale = getcon(i64(1) << v)
+                nr = 0
             hi := i64(max(nl, nr))
             lo := i64(min(nl, nr))
             x: u8 = 2
-            if i.op == Omul and 2 <= hi and lo == 0:
+            if (i.op == Omul or scale != i.arg[1]) and 2 <= hi and lo == 0:
                 x = 3
             elif i.op == Oadd:
                 x = ADDTBL[(hi + hi * hi) / 2 + lo]
-            num[i.to] = Num{x, nl, nr, i.arg[0], i.arg[1]}
+            num[i.to] = Num{x, nl, nr, i.arg[0], scale}
         j := fn.blks[b].jmp.type
         if j == Jjnz:
             r := fn.blks[b].jmp.arg

@@ -929,11 +929,10 @@ func enclose(x: i64, count: i64):
     elif j.type == Jjmp or j.type == Jjnz:
         follow(x, s1)
     elif j.type == Jjt:
-        add_byte(out, 0x0e) # br_table
-        leb(out, u64(fn.blks[b].table.len))
+        add_byte(out, 0x0e) # br_table, whose last entry is where it goes past the others
+        leb(out, u64(fn.blks[b].table.len - 1))
         for t in fn.blks[b].table:
             leb(out, u64(t))
-        add_byte(out, 0)
         for t in fn.blks[b].targets:
             add_byte(out, 0x0b)
             wasm.nest.len -= 1

@@ -2009,6 +2009,15 @@ func gvn():
                 j.s2 = 0 # the live instructions of dead blocks go to the start block below
                 j.jmp.type = Jjmp
                 j.jmp.arg = R
+        # a table at a known index becomes a jmp, past its end to its last entry as br_table does
+        entry := 0
+        if fn.blks[b].jmp.type == Jjt and isconbits(fn.blks[b].jmp.arg, ptr(entry)):
+            j := ptr(fn.blks[b])
+            j.s1 = j.targets[j.table[min(u64(entry), u64(j.table.len - 1))]]
+            j.targets.len = 0
+            j.table.len = 0
+            j.jmp.type = Jjmp
+            j.jmp.arg = R
     rpo: &list[i64] = heap(fn.rpo[:fn.nblk])
     fillcfg()
     # the instructions of the blocks that died that are in the table, the code may compute with them
@@ -2263,8 +2272,8 @@ func gcm():
             elif isstore(i.op):
                 r := sinkref(b, i.arg[1])
                 fn.blks[b].ins[k].arg[1] = r
-        r := sinkref(b, fn.blks[b].jmp.arg)
-        fn.blks[b].jmp.arg = r
+        if fn.blks[b].jmp.type != Jjt: # the check of its bounds reads the index of a table too
+            fn.blks[b].jmp.arg = sinkref(b, fn.blks[b].jmp.arg)
         b = fn.blks[b].link
     for k in reverse 0..fn.out.len:
         addgcmins(fn.out[k])
