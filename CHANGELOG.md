@@ -24,6 +24,10 @@ A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm32` a
 
 ### Fixed
 
+- **Unused struct return slots:** calling a function that returns a large struct without reading the result no longer drops its return slot in `gcm()`, which previously wrote through address `0` on WebAssembly or an uninitialized register on native targets.
+- **`x86_64` flags after unsigned float conversions:** `ultof`, `stoui`, and `dtoui` no longer claim to preserve CPU flags across their expansion, fixing wrong branch outcomes when a conditional follows one.
+- **Swapping spilled stack slots:** swapping variables that both live on the stack in a parallel move no longer emits an invalid two-memory `xchg` or `mov` instruction.
+- **Huge `malloc` on WebAssembly:** `malloc` near `i64` max no longer wraps signed address arithmetic in `reaches()` and now returns `null` cleanly on both `wasm32` and `wasm64`.
 - **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops QBE with an assertion.
 - **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
 - **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.

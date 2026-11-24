@@ -288,7 +288,7 @@ func assemble() -> &str|Fail:
                     if isalloc(i.op):
                         size = fn.con[rval(i.arg[0])].bits
                         align = 4 << (i.op - Oalloc4)
-                    elif i.op == Ocall and i.arg[1] != R and fn.tmp[i.to].pad == R: # what it gives back that nothing reads
+                    elif i.op == Ocall and i.arg[1] != R and (fn.tmp[i.to].pad == R or wasm.offsets[fn.tmp[i.to].pad] < 0): # what it gives back that nothing reads
                         size = asm.typ[rval(i.arg[1])].size
                         align = 1 << asm.typ[rval(i.arg[1])].align
                     elif i.op == Oadd and rtype(i.arg[0]) == RTmp and wasm.offsets[i.arg[0]] >= 0 and isconbits(i.arg[1], ptr(c)) and c >= 0:
@@ -766,7 +766,7 @@ func enclose(x: i64, count: i64):
                     append(kinds, valtype(i64(given.cls)))
             if i.arg[1] != R: # where the aggregate it gives back goes: its pad, or a place of its own
                 pad := fn.tmp[i.to].pad
-                push(i.to if pad == R else pad, Kl)
+                push(i.to if pad == R or wasm.offsets[pad] < 0 else pad, Kl)
                 append(kinds, 0x7e)
             gives: u8 = 0
             if rtype(a) == RCon and fn.con[rval(a)].type == CAddr:

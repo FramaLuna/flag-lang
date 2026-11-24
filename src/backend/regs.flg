@@ -37,6 +37,7 @@ context regs:
     seen: &list[i64] = heap([]) # of each temp, the place where spill() saw it last before the one it has reached
     floor: i64 # the place of the first instruction of the block of spill(): seen below it is not in the block
     before: &list[i64] = heap([]) # of each temp the block touches, in order: the place, the temp, where it was seen before
+    scratch: i64 # 16-byte stack slot used to break parallel-move cycles touching stack slots
 
 func liveon(v: *BSet, b: i64, s: i64):
     bscopy(v, ptr(fn.blks[s].live_in))
@@ -600,6 +601,19 @@ ToMove = 0
 Moving = 1
 Moved = 2
 
+func swap(a: Ref, b: Ref, k: i64):
+    if isreg(a) and isreg(b):
+        emit(Oswap, k, R, a, b)
+        return
+    if regs.scratch == -1:
+        fn.slot = (fn.slot + 3) and -4
+        regs.scratch = fn.slot
+        fn.slot += 4
+    tmp := ref(RSlot, regs.scratch)
+    emit(Ocopy, k, b, tmp, R) # fn.out is reversed by idup()
+    emit(Ocopy, k, a, b, R)
+    emit(Ocopy, k, tmp, a, R)
+
 func pmrec(i: i64, k: *i64) -> i64:
     pm := regs.moves
     if pm[i].src == pm[i].dst:
@@ -616,14 +630,14 @@ func pmrec(i: i64, k: *i64) -> i64:
     st := Moved if j == pm.len else regs.status[j]
     if st == Moving:
         c = j # start of cycle
-        emit(Oswap, k.*, R, pm[i].src, pm[i].dst)
+        swap(pm[i].src, pm[i].dst, k.*)
     elif st == ToMove:
         regs.status[i] = Moving
         c = pmrec(j, k)
         if c == i:
             c = -1 # end of cycle
         elif c != -1:
-            emit(Oswap, k.*, R, pm[i].src, pm[i].dst)
+            swap(pm[i].src, pm[i].dst, k.*)
         else:
             emit(Ocopy, pm[i].cls, pm[i].dst, pm[i].src, R)
     else:
@@ -698,6 +712,7 @@ func rega():
             bsinit(ptr(maps[k].b))
     bsinit(ptr(regs.cur.b))
     regs.loop = 2147483647
+    regs.scratch = -1
     for t in 0..fn.ntmp:
         fn.tmp[t].hintr = i32(t) if t < Tmp0 else -1
         fn.tmp[t].hintw = i32(regs.loop)
