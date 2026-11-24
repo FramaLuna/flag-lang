@@ -21,7 +21,7 @@ A minor release that adds WebAssembly as a target and brings the backend into Fl
 
 ### Performance
 
-- **Jump tables:** a `switch` on integers whose literal values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 47% fewer cycles on random values and 45% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The literals are counted by value, not by case, so a few cases with many values get a table too; a range like `'a'..='z'` of up to 128 numbers joins it, and a few values far from the rest no longer keep the others out. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
+- **Jump tables:** a `switch` on integers whose literal values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 47% fewer cycles on random values and 45% fewer on values in order, and a `switch` of 20,000 cases compiles in a third of the time with half the memory. The literals are counted by value, not by case, so a few cases with many values get a table too; a range like `'a'..='z'` of up to 128 numbers joins it, and a few values far from the rest no longer keep the others out. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
 - **Spilling by distance:** when more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
 
 ### Bug Fixes
