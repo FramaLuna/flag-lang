@@ -82,8 +82,6 @@ if [ "${1:-}" = seed ]; then
         CC=true build/flagc src -target $seed -o build/$seed -keep
         gzip -dc boot/$seed.s.gz 2> /dev/null | cmp -s - build/$seed.s || gzip -9n < build/$seed.s > boot/$seed.s.gz
     done
-elif ! gzip -dc boot/$target.s.gz | cmp -s - build/flagc.s; then
-    echo "boot/$target.s.gz is older than src: ./build.sh seed refreshes it"
 fi
 if [ "${1:-}" = cross ]; then
     case $system in

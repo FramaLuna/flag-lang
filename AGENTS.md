@@ -39,7 +39,9 @@ Every pass ends green:
     ./test.sh build/flagc   every test in tests/ passes
 
 Every bug you find gets a test in `tests/`: `name.flg` with `name.out`, or with `name.err`
-holding a piece of the expected diagnostic. When `src/` changes, `./build.sh seed`
-refreshes the seeds in `boot/`, one per target.
+holding a piece of the expected diagnostic. `./build.sh seed` refreshes the seeds in
+`boot/`, one per target, only for a release or when a seed can no longer build `src`: git
+cannot store a compressed seed as a difference, so each refresh adds about 8 MB to the
+history.
 
 At the end verify that the documentation is updated
