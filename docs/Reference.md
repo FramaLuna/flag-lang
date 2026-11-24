@@ -2193,7 +2193,7 @@ The backend lives in `src/backend/` and is [QBE](https://c9x.me/compile/), porte
 
 #### Changes from upstream QBE
 
-The backend has **62 changes** over upstream QBE, grouped by purpose:
+The backend has **64 changes** over upstream QBE, grouped by purpose:
 
 1. **Stack probes and constants (5 changes)**:
    - Stack probes: a function that can go past a page of stack before touching it lowers the stack one page at a time and touches each page. That is how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than a thread's 4 KiB guard used to jump over it into the stack of another thread. A function counts its frame plus the stack its calls take below it (stack arguments, and on Windows the 32 bytes reserved for the callee), so one that does not reach a page is emitted as before.
@@ -2224,8 +2224,8 @@ The backend has **62 changes** over upstream QBE, grouped by purpose:
    - The slot where a call leaves a returned struct is made before slots are coalesced, on every target, so calls whose results are not alive at the same time share one. A call never shares it with a struct it takes as an argument. The compiler's largest frame goes from 11.5 KB to 9.4 KB, and 480 nested calls no longer overflow an 8 MiB stack on `x86_64`.
    - `amd64` copies a float between registers with `movaps` and clears the result of a conversion first: `movss`, `movsd`, `cvtsi2ss`, `cvtss2sd` and `cvtsd2ss` keep the upper bits of their destination, so each one waited for whatever that register held before. The `integrate` physics kernel takes 26% fewer cycles, 37% with every helper marked `inline`, and a loop of conversions 17%.
    - On macOS a section name is written without quotes, `.section __TEXT,__const`, as Mach-O reads it: QBE wrote `section "name"` as `.section "name"`, which ELF and COFF accept and Mach-O does not. That is how the bytes of a text literal are read-only there too.
-   - When more temporaries are alive than registers, the spiller keeps the ones it needs again soonest. It walks each block backward, so it sends to the stack those whose previous use lies furthest back, by Belady's rule, and the cost of a temporary only breaks ties: QBE kept the costliest, and a big function sent a product to the stack to read it back two instructions later. The `integrate` physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which made it slower before and makes it faster now; the compiler builds itself executing 0.8% more instructions.
-5. **Fixes to QBE itself (15 changes)**:
+   - When more temporaries are alive than registers, the spiller keeps the ones it needs again soonest. It walks each block backward, so it sends to the stack those whose previous use lies furthest back, by Belady's rule, and the cost of a temporary only breaks ties: QBE kept the costliest, and a big function sent a product to the stack to read it back two instructions later. The argument of the jump that ends a block counts as used last in it, so a condition that a block only tests keeps its register. The `integrate` physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which made it slower before and makes it faster now; the compiler builds itself executing 0.8% more instructions.
+5. **Fixes to QBE itself (17 changes)**:
    - `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign.
    - Store-to-load forwarding kept the bits above a narrow store when a load that starts inside it took them shifted down. This and the previous one happen in more slots since small slots are cut.
    - GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion.
@@ -2236,6 +2236,8 @@ The backend has **62 changes** over upstream QBE, grouped by purpose:
    - On Windows a parameter passed on the stack (the fifth and later) was read as a 64-bit integer whatever its type, so an `f32` or `f64` there ended in an integer register and the assembler refused the program.
    - `rv64` stopped with `no match for stores(s)` when it copied a float from a register to a stack slot: the store kept the class of the copy.
    - A parallel move of more than 64 copies, like 64 floats alive in a loop, stopped the register allocator with `no more pm slots`; its list grows now.
+   - A cycle of a parallel move that passes through a stack slot, as when spilled variables trade values in a loop, was a chain of swaps in the widest class of its moves: a swap of two slots did not assemble, and an `i32` or `f32` slot took 8 bytes, writing over the slot next to it, so the program computed wrong values. Such a cycle goes through a scratch slot of 16 bytes now, each value copied in its own class, and only a cycle of registers swaps.
+   - In a library on Linux, `amd64` reaches thread data by adding its offset from the GOT with an `addq`, which changes the flags: a jump that a comparison before it decided read the flags of that `addq`. The search for the comparison now stops at an instruction that reads an address from the GOT.
    - With more floats alive than registers, `arm64` copied a float from one stack slot to another through an integer register and stopped with `invalid class`; it goes through `v31` now.
    - `rv64` wrote a shift of a `w` by a constant of 32 or more as it came, which the assembler refuses; the constant is cut to 5 bits for `w` and 6 for `l`, as the processor cuts a count in a register.
    - `rv64` stopped with an assertion when a `jnz` read its condition from a stack slot more than 2 KiB below the frame pointer, a condition spilled in a big function; the address goes through `t6`, as for a load.
