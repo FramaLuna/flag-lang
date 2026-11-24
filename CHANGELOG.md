@@ -2,40 +2,44 @@
 
 ## 0.7.0
 
-A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm32` and `-target wasm-wasm64` write a WebAssembly module themselves, with no C compiler. Existing programs keep compiling.
+A minor release that adds WebAssembly as a target and brings the backend into Flag: `flagc -target wasm-wasm32` and `-target wasm-wasm64` write a WebAssembly module themselves, with no C compiler, and the native backend is QBE ported to Flag, with no C left in the compiler. Existing programs keep compiling.
 
 ### New Features
 
-- **WebAssembly:** `-target wasm-wasm32` builds a `.wasm` module with the 32-bit memory that `node` and Bun run with no flags, and `-target wasm-wasm64` one with Memory64. Flag is the same on both: pointers and lengths take 8 bytes, and only the memory instructions of `wasm32` take the low word of an address. The module exports `memory`, `main`, and the `export func`s, and imports only the host functions its code reaches: `env.write(fd, at, size)` to print, `env.exit` to exit or panic, and those of your `extern` blocks. On `wasm32` a pointer crosses to the host as an `i32`, a number in JavaScript. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
+- **WebAssembly:** `-target wasm-wasm32` builds a `.wasm` module with the 32-bit memory every engine runs, and `-target wasm-wasm64` one with Memory64. Flag is the same on both: pointers and lengths take 8 bytes, and only the memory instructions of `wasm32` take the low word of an address. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
+- **WASI:** a program exports `_start` and imports from `wasi_snapshot_preview1` only what its code reaches: `fd_write`, `fd_read`, `args_sizes_get` and `args_get` for `@argc()` and `@argv()`, and `proc_exit`. So a `wasm32` program runs unchanged on wasmtime or Node's `node:wasi`. On `wasm64` the host gives the same functions with 64-bit pointers and sizes. The function table is exported as `__indirect_function_table`, so a host can call back a function value it gets.
 - **Optimized WebAssembly:** each function goes through the same optimizations as on the native targets, and the module keeps the values in locals and on the stack: a `simd` is a `v128` of SIMD128, a dense `switch` jumps through a `br_table`, and an `if` that only chooses a value is a `select`.
 - **`@wasm()`, `@wasm32()` and `@wasm64()`:** platform builtins for the new targets, in expressions and in `where`.
-- **`math`, `print`, and `parse_float` on WebAssembly:** `math` needs nothing of the host, and floats print and parse with the same digits as on Linux.
+- **The library on WebAssembly:** `math` needs nothing of the host, floats print and parse with the same digits as on Linux, and the shadow stack takes 8 MiB, like a native main thread, and says `flag: stack overflow` when it runs out. `fs`, `os` and `net` do not build there.
 
 ### Changed
 
-- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets, and the compiler builds itself in the same time.
-- **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds took 27.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
-- **WebAssembly tests on both widths:** each line of a test's `.args` builds it once more, and the WebAssembly tests build for `wasm32` and `wasm64`. `./test.sh` runs `wasm32` under any `node`, and `wasm64` under one with 64-bit memory, passing `--experimental-wasm-memory64` only to a Node that needs it, like Node 22; without one it skips those tests instead of failing them.
+- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets. The backend checks its own invariants, as QBE's asserts did, and stops with the rule that broke instead of writing wrong code.
+- **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds of 0.6.3 took 18.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
+- **`-memory` follows bigger functions:** up to 1024 blocks of memory in a function, and fields that hold numbers no longer count, so big functions stay checked. The backend and the WebAssembly writer of `flagc` pass it with no `@trust`.
+- **WebAssembly tests on both widths:** each line of a test's `.args` builds it once more, and the WebAssembly tests build for `wasm32` and `wasm64`. `./test.sh` runs them through `tests/wasm.js`, a small WASI host, under `node`, and says how many it skipped when no `node` can run them.
 
 ### Performance
 
-- **Jump tables:** A `switch` on numbers with 8 or more cases whose values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 52% fewer cycles on random values and 41% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
-- **Spilling by distance:** When more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
+- **Jump tables:** a `switch` on integers whose literal values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 47% fewer cycles on random values and 45% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The literals are counted by value, not by case, so a few cases with many values get a table too; a range like `'a'..='z'` of up to 128 numbers joins it, and a few values far from the rest no longer keep the others out. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
+- **Spilling by distance:** when more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
 
-### Fixed
+### Bug Fixes
 
-- **Unused struct return slots:** calling a function that returns a large struct without reading the result no longer drops its return slot in `gcm()`, which previously wrote through address `0` on WebAssembly or an uninitialized register on native targets.
-- **`x86_64` flags after unsigned float conversions:** `ultof`, `stoui`, and `dtoui` no longer claim to preserve CPU flags across their expansion, fixing wrong branch outcomes when a conditional follows one.
-- **Swapping spilled stack slots:** swapping variables that both live on the stack in a parallel move no longer emits an invalid two-memory `xchg` or `mov` instruction.
-- **Huge `malloc` on WebAssembly:** `malloc` near `i64` max no longer wraps signed address arithmetic in `reaches()` and now returns `null` cleanly on both `wasm32` and `wasm64`.
-- **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops QBE with an assertion.
+- **Variables that trade values in a loop:** when more values were alive than registers, an `i32` or `f32` kept on the stack could be copied with 8 bytes and overwrite its neighbor, giving wrong results on `x86_64`, and two integers on the stack made the assembler refuse the program.
+- **Comparisons in a library on `x86_64`:** reading a `context` field between a comparison and the `if` that tests it no longer makes the `if` take the wrong branch in a `-shared` library.
+- **`x86_64` flags after unsigned float conversions:** an `if` right after converting between a float and a `u64` no longer takes the wrong branch.
+- **Unused struct results:** calling a function that returns a large struct without reading the result no longer makes it write through an uninitialized register.
+- **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops the compiler with an assertion.
 - **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
 - **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
 - **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
 - **`main` with `where`:** a `main` whose `where` does not hold on the target is no longer the entry point, so `func main() where false:` fails with `missing entry point`, and with one `main` per system, like `where @linux()` and `where @windows()`, each build runs its own. Two that hold are an error.
 - **Atomic results:** a function declared `-> atomic[T]` is an error where it is declared, also when no `return` reaches it, and so is a function type that takes or returns an atomic by value.
 - **`-overlay` in folders:** a new `.flg` file that is not saved yet, inside a folder given on the command line, is part of the program at any depth, as in the folder of a quoted `use`.
-- **Stepping in a debugger:** `next` no longer skips the line a jump lands on when values move on the way there, like the line after a `switch`, and no longer stops twice on the first line of a loop.
+- **Stepping in a debugger:** `next` no longer skips the line a jump lands on when values move on the way there, like the line after a `switch`, and no longer stops twice on the first line of a loop. Stopping on a `switch` with a case that is not a literal shows the line of the `switch`, not that case's.
+- **Function values in `-memory`:** calling a function value whose type matches the program's first function no longer reports a false leak in contexts.
+- **Growing elements through a runtime index:** `append(groups[i % 2], x)` in a loop no longer makes `-memory` warn use after free.
 
 ## 0.6.3
 
