@@ -250,6 +250,8 @@ func main():
 
 `*bytes` supports byte-level pointer arithmetic with `+` and `-`, so `memcpy(to + 8, from, n)` writes 8 bytes past `to` (see [Arithmetic](Reference.md#arithmetic)).
 
+On `wasm-wasm64` there is no C library: `core` writes these functions in Flag over the memory of the module, except `snprintf`, which is missing (see [WebAssembly](Reference.md#webassembly)).
+
 #### Out of memory and `try_reserve`
 
 - `out_of_memory() -> never`: flushes pending output without allocating, writes `flag: out of memory` to `stderr`, and exits immediately with code `9`. The library calls it when allocation fails, and you can call it after your own `malloc`.
@@ -847,7 +849,7 @@ func serve(server: Server):
 
 ## math
 
-Links the C math library (`-lm`).
+Links the C math library (`-lm`). On `wasm-wasm64`, `sqrt`, `floor`, `ceil`, and `trunc` are WebAssembly instructions and the others are fdlibm's algorithms written in Flag, so `math` needs nothing of the host.
 
 #### Constants
 

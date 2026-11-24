@@ -663,7 +663,25 @@ func check_memory():
             if mem.ops[k].code == Call:
                 name := mem.callees[mem.ops[k].callee]
                 found := mem.ids[name]
-                if found is i64:
+                code: Code = Extern # what a function of C does, also one that core writes for wasm
+                switch name:
+                case "$malloc", "$calloc", "$realpath":
+                    code = Fresh
+                case "$realloc":
+                    code = Grow
+                case "$free":
+                    code = Release
+                case "$memcpy", "$memmove":
+                    code = Copy
+                case "$memset":
+                    code = Fill
+                case "$pthread_mutex_lock", "$AcquireSRWLockExclusive":
+                    code = Taken
+                case "$strtod":
+                    code = Parse
+                case "$exit", "$_exit":
+                    code = Stop
+                if found is i64 and code == Extern:
                     node := mem.fns[found].node
                     called := token_at(mem.ops[k].pos)
                     mem.ops[k].named = node != 0 and comp.tokens[called].text == text(node) and comp.tokens[called + 1].text == "(" # a for or a with calls the operator of its word without naming it
@@ -719,24 +737,6 @@ func check_memory():
                         if not contains(mem.fns[g].calls, found):
                             append(mem.fns[g].calls, found)
                 else:
-                    code: Code = Extern
-                    switch name:
-                    case "$malloc", "$calloc", "$realpath":
-                        code = Fresh
-                    case "$realloc":
-                        code = Grow
-                    case "$free":
-                        code = Release
-                    case "$memcpy", "$memmove":
-                        code = Copy
-                    case "$memset":
-                        code = Fill
-                    case "$pthread_mutex_lock", "$AcquireSRWLockExclusive":
-                        code = Taken
-                    case "$strtod":
-                        code = Parse
-                    case "$exit", "$_exit":
-                        code = Stop
                     mem.ops[k].code = code
             elif mem.ops[k].code == Walked:
                 d := k

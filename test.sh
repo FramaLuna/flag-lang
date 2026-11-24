@@ -36,6 +36,10 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
     [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc|: flagc ' $files "tests/$name.err" < /dev/null && continue # it starts this compiler, or its error repeats the command line
     args=$target
     [ -f "tests/$name.args" ] && args="$target $(cat "tests/$name.args")"
+    host= # what runs the program: nothing for one of this machine, node for a WebAssembly module
+    case " $args " in
+    *" -target wasm-"*) host="node --experimental-wasm-memory64 tests/wasm.js" ;;
+    esac
     flagc=$compiler
     vars=
     if [ -f "tests/$name.env" ]; then
@@ -97,8 +101,10 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         fail=$((fail + 1))
         continue
     fi
-    if [ ! -f "tests/$name.gdb" ]; then
-        within env FLAGC="$compiler" "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
+    if [ -n "$host" ] && ! command -v node > /dev/null; then
+        continue # without node there is nothing to run the module
+    elif [ ! -f "tests/$name.gdb" ]; then
+        within env FLAGC="$compiler" $host "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
     elif [ -z "$target" ] && command -v gdb > /dev/null; then
         within gdb -batch -nx -x "tests/$name.gdb" "$out/$name" < /dev/null 2>&1 | sed -e /libthread_db/d -e 's/^Thread [0-9]* hit //' > "$out/$name.got"
     else

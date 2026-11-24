@@ -1,0 +1,36 @@
+# static data in linear memory: texts, constants, contexts and an embedded file
+TEXT = @embed("embed.txt")
+TABLE: array[i32, 5] = [1, 1, 2, 3, 5]
+GREETING = "constant text"
+
+context counter:
+    count: i64 = 10
+    label: &strview = "counter"
+
+shared context totals:
+    sum: i64 = 100
+    seen: array[u8, 4] = [1, 2, 3, 4]
+
+type Settings:
+    name: &strview = "default"
+    level: i32 = 3
+    scale: f64 = 0.5
+    handler: func(i64) -> i64
+
+func double(x: i64) -> i64:
+    return x * 2
+
+SETTINGS: Settings = {name = "fixed", level = 7, handler = double}
+
+func bump():
+    counter.count += 1
+    totals.sum += counter.count
+
+func main():
+    print(TEXT.len, ": ", TEXT)
+    print(TABLE, " ", TABLE[4], " ", GREETING, " ", ptr(TEXT.*) as u64 % 8)
+    for i in 0..3:
+        bump()
+    print(counter.count, " ", counter.label, " ", totals.sum, " ", totals.seen)
+    s: Settings
+    print(s.name, " ", s.level, " ", s.scale, " ", SETTINGS.name, " ", SETTINGS.level, " ", SETTINGS.handler(21))

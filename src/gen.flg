@@ -43,15 +43,15 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                             given += ": " + f.name + ": " + comp.types[f.type].name + " = {" + inside.name + " = " + emptied(inside.type) + "}"
                         return fail("context field " + text(d) + "." + f.name + "." + inside.name + " starts without allocated memory; initialize it in the context field default" + given, at_of(field_node(t, f.name)))
             if kind == Context and declared(d) == "shared": # one for all the threads, in the data with what it starts with
-                held: &str = heap("")
+                held: &list[Piece] = heap([])
                 body := comp.body.len
                 slots := comp.slots.len
                 try image(t, 0, held)
                 drop(body, slots, 0)
                 zeros(held, room(t) - comp.types[t].size)
-                comp.data += "data $ctx." + comp.types[t].name + " = align " + data_align(t) + " { " + held + "}\n"
+                define(Data{name = "$ctx." + comp.types[t].name, align = data_align(t)}, held)
             elif kind == Context:
-                comp.data += "thread data $ctx." + comp.types[t].name + " = align " + data_align(t) + " { z " + room(t) + " }\n"
+                define(Data{name = "$ctx." + comp.types[t].name, align = data_align(t), thread = true}, ptr([Piece{kind = Zeros, n = room(t)}]))
                 comp.stamping = comp.stamping or comp.types[t].stamped
     s := first_sym("main")
     while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0 or comp.shared):
@@ -81,9 +81,20 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     if testing and comp.tests.len == 0 and not check:
         eprint(comp.err, "no tests found; a test is a non-generic 'func test_name()' with no parameters and no return value")
         return Fail
+    if testing: # the table that run_test reads
+        table: &list[Piece] = heap([])
+        append(table, Piece{kind = Number, size = 8, n = comp.tests.len})
+        for n, k in comp.tests:
+            define(Data{name = "$flag.test." + n}, ptr([Piece{kind = Text, text = test_name(k)}, Piece{kind = Number, size = 1}]))
+            append(table, Piece{kind = Address, text = comp.data[-1].name})
+            append(table, Piece{kind = Address, text = comp.insts[try instantiate(comp.syms[k].node, 0)].name})
+        define(Data{name = "$flag.tests"}, table)
+        made := open_proc("$flag_tests", 0, 0, false)
+        terminate("ret", global("$flag.tests"))
+        close_proc(made, L, 0)
     for k in 1..comp.syms.len:
-        if comp.syms[k].export:
-            f := comp.syms[k].node
+        f := comp.syms[k].node
+        if comp.syms[k].export and (generic(f) or try holds_where(f)): # an export for another system is checked when you build for it
             at := comp.tokens[comp.nodes[f].tok].at
             others := first_sym(comp.syms[k].name) # a function of the library gives way, but not its symbol of C
             while others != 0 and (others == k or comp.nodes[comp.syms[others].node].kind != Func or comp.syms[others].library):
@@ -97,8 +108,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                     return fail("'export' name " + comp.syms[k].name + " conflicts with an existing C symbol in the library; choose a different name", at)
             if others != 0 and not comp.syms[k].library: # one of yours with the name of an export of core gives way
                 return fail("'export' functions cannot be overloaded; the exported C symbol must be unique", at)
-            if try holds_where(f):
-                try instantiate(f, 0)
+            try instantiate(f, 0)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Var and comp.types[try resolve(d + 1)].kind != Ptr:
@@ -106,7 +116,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         if comp.nodes[d].kind == Constant and kids(d) == 2: # checked like a local declaration, also when nothing reads it, and the code is dropped
             t := try resolve(d + 1)
             given := kid(d, 1)
-            held: &str = heap("")
+            held: &list[Piece] = heap([])
             body := comp.body.len
             slots := comp.slots.len
             try assign(alloc(t), t, try value(given, t), at_of(given))
@@ -114,9 +124,10 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             if unknown != 0:
                 return fail(UNKNOWN, at_of(unknown))
             drop(body, slots, 0)
-    comp.data += "data $flag.argc = { w 0 }\ndata $flag.argv = { l 0 }\n"
+    define(Data{name = "$flag.argc"}, ptr([Piece{kind = Zeros, n = 4}]))
+    define(Data{name = "$flag.argv"}, ptr([Piece{kind = Zeros, n = 8}]))
     if comp.stamping:
-        comp.data += "thread data $flag.entered = { w 0 }\n"
+        define(Data{name = "$flag.entered", thread = true}, ptr([Piece{kind = Zeros, n = 4}]))
     comp.at = 0
     comp.live = true
     stamper := open_proc("$flag.stamp", 0, 0, true) # what the contexts of a thread start with, when it enters
@@ -147,7 +158,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     mentions := comp.mentions.len
     scopes := comp.scopes.len
     data := comp.data.len
-    assembly := comp.assembly.len
+    pieces := comp.pieces.len
     for k in 1..comp.syms.len:
         f := comp.syms[k].node
         checked := comp.nodes[f].kind == Func and not generic(f) and try holds_where(f) # a function for another system is checked when you build for it
@@ -288,17 +299,9 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     comp.mentions.len = mentions
     comp.scopes.len = scopes
     comp.data.len = data
-    comp.assembly.len = assembly
+    comp.pieces.len = pieces
     clear(comp.stored)
     comp.reached = reached
-    if check:
-        return null
-    if testing:
-        table: &str = heap("")
-        for n, k in comp.tests:
-            comp.data += "data $flag.test." + n + " = { b \"" + test_name(k) + "\", b 0 }\n"
-            table += ", l $flag.test." + n + ", l " + comp.insts[try instantiate(comp.syms[k].node, 0)].name
-        comp.data += "data $flag.tests = { l " + comp.tests.len + table + " }\nfunction l $flag_tests() {\n@start\n\tret $flag.tests\n}\n"
     return null
 
 func test_name(s: i64) -> &strview:
@@ -504,13 +507,14 @@ func gen_from(from: i64) -> i64|Fail:
                 mention(given.name, given.addr, given.type, given.tok)
                 passed += 1
         if i == comp.entry: # it is the main of C, and starts the program
-            taken = 2
-            argc := temp()
-            argv := temp()
-            append(comp.passes, Pass{W, argc, true, VOID})
-            append(comp.passes, Pass{L, argv, false, VOID})
-            add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
-            add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
+            if comp.system != "wasm": # a WebAssembly host gives main nothing
+                taken = 2
+                argc := temp()
+                argv := temp()
+                append(comp.passes, Pass{W, argc, true, VOID})
+                append(comp.passes, Pass{L, argv, false, VOID})
+                add(Ins{op = "storew", a = argc, b = global("$flag.argc")})
+                add(Ins{op = "storel", a = argv, b = global("$flag.argv")})
             vectored := false
             for n in comp.nodes:
                 vectored = vectored or n.kind == TName and n.module.len == 0 and comp.tokens[n.tok].text == "simd" and not comp.files[file_of(comp.tokens[n.tok].at)].library
@@ -592,12 +596,12 @@ func gen_from(from: i64) -> i64|Fail:
                 done = try ending(Value{type = I32, at = int_arg(0)}, comp.at)
             terminate("ret", done)
         try forget(0)
-        back: u32 = 0
-        if inst.ret != VOID and inst.export:
+        back: u32 = 0 # what it gives back, nothing when it never returns
+        if inst.ret != VOID and inst.ret != NEVER and inst.export:
             back = try passing(inst.ret, true, comp.at)
-        elif inst.ret != VOID and comp.dest.kind == Empty:
+        elif inst.ret != VOID and inst.ret != NEVER and comp.dest.kind == Empty:
             back = cls(inst.ret)
-        if i == comp.entry and inst.ret == VOID: # C reads an exit code from it
+        if i == comp.entry: # C and a WebAssembly host read an exit code from it, a word
             back = W
             for k in 0..comp.body.len:
                 if comp.body[k].op == "ret" and comp.body[k].a.kind == Empty:
@@ -1219,6 +1223,8 @@ func gen(n: i64, want: i64) -> Value|Fail:
         if k == Constant:
             return constant(s, want, tok.at)
         if k == Var: # the address of a variable of C, from a slot of data that the loader fills, which a library takes too
+            if comp.system == "wasm":
+                return fail("C variable " + tok.text + " cannot be reached from wasm-wasm64; a WebAssembly module imports only functions", tok.at)
             symbol := text(d)
             if kids(d) == 2:
                 symbol = text(kid(d, 1))[1:text(kid(d, 1)).len - 1]
@@ -1226,7 +1232,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             slot += symbol
             if comp.stored[view(slot)] is null:
                 put(comp.stored, view(slot), 0)
-                comp.data += read_only(true) + "data " + slot + " = { l $" + symbol + " }\n"
+                define(Data{name = view(slot), fixed = true}, ptr([Piece{kind = Address, text = "$" + symbol}]))
             return Value{type = try resolve(d + 1), at = op1(L, "loadl", global(view(slot)))}
         if k == Void:
             return Value{type = try make_type(s, [], false, tok.at)}
@@ -2197,17 +2203,8 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
                 pair += id
                 global(view(pair))
                 put(comp.stored, view(key), id)
-                label: &str = heap("flag.file.")
-                label += id
-                comp.data += read_only(true) + "data " + pair + " = { l $" + label + ", l " + size + " }\n"
-                if comp.system == "linux":
-                    comp.assembly += ".section .rodata\n"
-                elif comp.system == "windows":
-                    comp.assembly += ".section .rdata,\"dr\"\n"
-                else:
-                    comp.assembly += ".section __TEXT,__const\n"
-                    label = "_" + label
-                comp.assembly += ".p2align 3\n" + label + ":\n.incbin \"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
+                define(Data{name = "$flag.file." + id, fixed = true}, ptr([Piece{kind = File, text = path}, Piece{kind = Number, size = 1}]))
+                define(Data{name = view(pair), fixed = true}, ptr([Piece{kind = Address, text = comp.data[-1].name}, Piece{kind = Number, size = 8, n = size}]))
             return Value{type = try fat_type("strview", VOID, tok.at), at = Arg{Global, id}, mem = true, lit = true}
         if name == "@offset_of":
             if kids(n) != 2 or comp.nodes[kid(n, 1)].kind != Name:
@@ -2343,8 +2340,9 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
         c = node_end(c)
     if name == "free" and node.module.len == 0 and values.len == 1:
         x := stacked(n + 1)
-        chosen := comp.syms[try choose(name, "", values, names, tok.at)].node
-        if x != 0 and chosen != 0 and (body(chosen) == 0 or comp.tokens[comp.nodes[kid(chosen, 0) + 2].tok].kind == Generic): # the free of C, or the one of core that gives it the pointer
+        best := try choose(name, "", values, names, tok.at)
+        chosen := comp.syms[best].node
+        if x != 0 and chosen != 0 and (body(chosen) == 0 or comp.syms[best].export or comp.tokens[comp.nodes[kid(chosen, 0) + 2].tok].kind == Generic): # the free of C, which core has on wasm, or the one of core that gives it the pointer
             return fail("cannot free stack memory " + code_of(x) + "; free() only releases heap allocations", at_of(x))
     made := call(name, node.module, values, names, turns, tok.at, threaded)
     comp.turns.len = turns
@@ -2353,7 +2351,7 @@ func called(n: i64, want: i64, threaded: bool) -> Value|Fail:
 # whether the program is built for the system or the processor that a builtin like @linux names, null for any other name
 func platform(name: &strview) -> bool?:
     switch name:
-    case "@linux", "@macos", "@windows", "@x86_64", "@arm64", "@riscv64":
+    case "@linux", "@macos", "@windows", "@wasm", "@x86_64", "@arm64", "@riscv64", "@wasm64":
         return name[1:] == comp.system or name[1:] == comp.machine
     return null
 
@@ -2363,6 +2361,8 @@ func operation(n: i64, want: i64) -> Value|Fail:
     none: Value
     if node.kind == Unary:
         o := tok.text
+        if o == "parallel" and comp.system == "wasm":
+            return fail("threads ('parallel') are not supported on wasm-wasm64; a WebAssembly module runs on one thread", tok.at)
         if o == "parallel":
             return called(n + 1, VOID, true)
         if o == "..":
@@ -2930,9 +2930,9 @@ func lanes(o: &strview, args: &listview[Value], to: i64, at: i64) -> Value|Fail:
             open_block(l_done)
     return Value{type = to, at = slot, mem = true}
 
-# amd64 and arm64 hold the lanes of a simd in one register, rv64 has none and does each lane
+# amd64 and arm64 hold the lanes of a simd in one register, rv64 and wasm64 have none and do each lane
 func vectors() -> bool:
-    return comp.machine != "riscv64"
+    return comp.machine == "x86_64" or comp.machine == "arm64"
 
 func letter(lane: i64) -> &strview:
     size := comp.types[lane].size
@@ -3842,21 +3842,22 @@ func constant(s: i64, want: i64, at: i64) -> Value|Fail:
     if inner or not aggregate(v.type) or v.at.kind != Temp:
         return v
     end := comp.body.len
-    data: &str = heap("")
-    data += "align " + data_align(v.type) + " { "
-    if try image(v.type, given, data) != 0:
+    pieces: &list[Piece] = heap([])
+    if try image(v.type, given, pieces) != 0:
         comp.body.len = end
         return v
-    zeros(data, room(v.type) - comp.types[v.type].size)
-    data += "}"
+    zeros(pieces, room(v.type) - comp.types[v.type].size)
     drop(first, slots, held)
-    id := comp.stored[view(data)] ifnull i64(comp.globals.len)
+    key: &str = heap("align ")
+    key += data_align(v.type) + " "
+    put_pieces(key, pieces)
+    id := comp.stored[view(key)] ifnull i64(comp.globals.len)
     if id == i64(comp.globals.len):
         name: &str = heap("$flag.const.")
         name += id
         global(view(name))
-        put(comp.stored, view(data), id)
-        comp.data += read_only(true) + "data " + name + " = " + data + "\n"
+        put(comp.stored, view(key), id)
+        define(Data{name = view(name), align = data_align(v.type), fixed = true}, pieces)
     return Value{type = v.type, at = Arg{Global, id}, mem = true, lit = true}
 
 # drops the code made since body, slots and held had these lengths, and a spare slot it took is spare again
@@ -3875,7 +3876,7 @@ func empty_owner(n: i64) -> bool:
     given := comp.nodes[n + 1].kind
     return (given == Items or given == Pairs or given == Literal and text(n + 1) == "\"\"") and text(n) == "heap" and comp.nodes[n].module.len == 0
 
-func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is computed, or 0
+func image(t: i64, n: i64, out: *&list[Piece]) -> i64|Fail: # the node of a part that is computed, or 0
     while n != 0 and (comp.nodes[n].kind == Name or comp.nodes[n].kind == Choice):
         if comp.nodes[n].kind == Choice:
             c := try condition(node_end(n + 1))
@@ -3892,7 +3893,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
     if n != 0 and empty_owner(n) and field_of(t, "arena").type != VOID: # the heap mark, without a block
         arena := field_of(t, "arena").n
         zeros(out, arena)
-        out.* += "l " + HEAP + ", "
+        append(out, Piece{kind = Number, size = 8, n = HEAP})
         zeros(out, ty.size - arena - 8)
         return 0
     if n != 0 and comp.nodes[n].kind == Pairs and node_end(n) == n + 1 and ty.kind != Union: # {}, the value as it is born
@@ -3919,7 +3920,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                 member = try member_for(t, v, at_of(n))
         if not contains(members(t), member):
             return n
-        out.* += "w " + comp.types[member].tag + ", "
+        append(out, Piece{kind = Number, size = 4, n = comp.types[member].tag})
         if ty.size > 4:
             zeros(out, past_tag(member) - 4)
             unknown := try image(member, n, out)
@@ -3979,7 +3980,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                     if bits.kind != Const and bits.kind != Double:
                         return given[filler]
                     for k in comp.types[inner].size..size:
-                        out.* += "b " + (bits.n >> (8 * k) and 255) + ", "
+                        append(out, Piece{kind = Number, size = 1, n = bits.n >> (8 * k) and 255})
                 else:
                     zeros(out, size - comp.types[inner].size)
                 offset = field.n + size
@@ -4000,7 +4001,7 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
                 if not v.lit:
                     return element
                 for k in 0..comp.types[raw].size:
-                    out.* += "b " + 255 * v.n + ", "
+                    append(out, Piece{kind = Number, size = 1, n = 255 * i64(v.n)})
                 continue
             unknown := try image(raw, element, out)
             if unknown != 0:
@@ -4011,9 +4012,9 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         return 0
     if quoted and (ty.name == "&strview" or t == CSTR): # the address of its bytes, and a view its length
         id := comp.globals[text_data(unquoted(text(n))).n][9:]
-        out.* += "l $flag.str." + id + ", "
+        append(out, Piece{kind = Address, text = "$flag.str." + id})
         if t != CSTR:
-            out.* += "l " + comp.texts[trust parse_int(id)] + ", "
+            append(out, Piece{kind = Number, size = 8, n = comp.texts[trust parse_int(id)]})
         return 0
     if ty.size == 0:
         return 0
@@ -4030,27 +4031,17 @@ func image(t: i64, n: i64, out: *&str) -> i64|Fail: # the node of a part that is
         v.at = base
     if aggregate(t) or not immediate(v):
         return n
-    letter: &strview = "l"
-    if v.at.kind == Single:
-        letter = "s"
-    elif v.at.kind == Double:
-        letter = "d"
-    elif ty.size == 1:
-        letter = "b"
-    elif ty.size == 2:
-        letter = "h"
-    elif ty.size == 4:
-        letter = "w"
-    out.* += letter + " "
-    put_arg(out, v.at, 0)
-    if past > 0:
-        out.* += " + " + past
-    out.* += ", "
+    if v.at.kind == Global:
+        append(out, Piece{kind = Address, text = comp.globals[v.at.n], n = past})
+    elif v.at.kind == Single:
+        append(out, Piece{kind = Number, size = 4, n = i64(f32(v.at.n as f64) as u32)})
+    else:
+        append(out, Piece{kind = Number, size = ty.size, n = v.at.n})
     return 0
 
-func zeros(out: *&str, count: i64):
+func zeros(out: *&list[Piece], count: i64):
     if count > 0:
-        out.* += "z " + count + ", "
+        append(out, Piece{kind = Zeros, n = count})
 
 func truth(b: bool) -> Value:
     if b:
@@ -4643,42 +4634,18 @@ func text_data(text: &strview) -> Arg:
     if found is i64:
         return Arg{Global, found}
     id := comp.texts.len
-    comp.data += read_only(false) + "data $flag.str." + id + " = { "
-    length := text_bytes(comp.data, text)
-    comp.data += "b 0 }\n" + read_only(true) + "data $flag.sv." + id + " = { l $flag.str." + id + ", l " + length + " }\n" # the data of the compiler is in flag., a function is name.number
-    append(comp.texts, length)
-    name: &str = heap("$flag.sv.")
-    name += id
-    made := global(view(name))
+    define(Data{name = "$flag.str." + id, fixed = true}, ptr([Piece{kind = Text, text = text}, Piece{kind = Number, size = 1}]))
+    define(Data{name = "$flag.sv." + id, fixed = true}, ptr([Piece{kind = Address, text = comp.data[-1].name}, Piece{kind = Number, size = 8, n = text.len}])) # the data of the compiler is in flag., a function is name.number
+    append(comp.texts, text.len)
+    made := global(comp.data[-1].name)
     put(comp.stored, view(key), made.n)
     return made
 
-# the section of the data that the program only reads, where a write stops it: on macOS __TEXT takes no address that the loader fixes, so what holds one goes in __DATA,__const
-func read_only(addresses: bool) -> &strview:
-    if comp.system == "linux":
-        return "section \".data.rel.ro\" "
-    if comp.system == "windows":
-        return "section \".rdata\" \"dr\" "
-    if addresses:
-        return "section \"__DATA,__const\" "
-    return "section \"__TEXT,__const\" "
-
-func text_bytes(into: *&str, text: &strview) -> i64:
-    quoted := false
-    for b in items(text):
-        if b >= ' ' and b <= '~' and b != '"' and b != '\\':
-            if not quoted:
-                into.* += "b \""
-                quoted = true
-            add_byte(into, b)
-        else:
-            if quoted:
-                into.* += "\", "
-                quoted = false
-            into.* += "b " + i64(b) + ", "
-    if quoted:
-        into.* += "\", "
-    return text.len
+func define(d: Data, parts: &listview[Piece]):
+    d.first = comp.pieces.len
+    d.count = parts.len
+    append(comp.pieces, parts)
+    append(comp.data, d)
 
 # the text of a literal, without its quotes, with its escapes made bytes and the \r\n of the file made \n
 func unquoted(literal: &strview) -> &strview:

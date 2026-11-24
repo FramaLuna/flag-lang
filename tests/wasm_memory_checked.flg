@@ -1,0 +1,13 @@
+# -memory reads the malloc and free that core writes for wasm as those of C
+func main():
+    text: &str = heap("checked")
+    text += " on wasm"
+    numbers: &list[i64] = heap([])
+    for i in 0..100:
+        append(numbers, i)
+    block := malloc(64)
+    grown := realloc(block, 128)
+    print(text, " ", numbers.len, " ", grown as u64 != 0)
+    free(grown)
+    free(numbers)
+    free(text)

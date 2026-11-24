@@ -1,0 +1,67 @@
+# the heap of wasm: owners, views, arenas and the scratch, on a malloc of its own
+type fatptr grid:
+    len: i64
+    width: i64
+
+func cell(g: &grid, row: i64, column: i64) -> *i64:
+    return (ptr(g.*) + (row * g.width + column) * 8) as *i64
+
+func main():
+    text: &str = heap("hello")
+    text += ", wasm"
+    view: &strview = text[7:]
+    print(text, " ", text.len, " ", view, " ", upper(view), " ", find(text, "wasm"), " ", replace(text, "l", "L"))
+    words: &list[&strview] = heap([])
+    for w in split("one two three four", " "):
+        append(words, w)
+    sort(words)
+    print(words, " ", words.len, " ", join(words, "+"))
+    numbers: &list[i64] = heap([])
+    for i in 0..1000:
+        append(numbers, i * i)
+    part: &listview[i64] = numbers[10:15]
+    print(part, " ", numbers.len, " ", numbers[-1], " ", remove(numbers, 0), " ", pop(numbers))
+    insert(numbers, 3, -1)
+    print(numbers[:6])
+    ages: &map[&str, i64] = heap({})
+    for i in 0..200:
+        ages["name" + i] = i
+    ages["name7"] += 100
+    print(ages.len, " ", ages["name7"], " ", ages["missing"], " ", contains(ages, "name199"), " ", remove(ages, "name3"), " ", ages.len)
+    small := {"a": 1, "b": 2}
+    named: &map[i64, &strview] = heap({})
+    named[7] = "seven"
+    named[-1] = "minus one"
+    print(small, " ", named)
+    free(named)
+    a: Arena
+    for i in 0..1000:
+        cell := arena(ptr(a), i)
+        assert cell.* == i
+    kept: &list[i64] = arena(ptr(a), [])
+    append(kept, 5)
+    words_in_arena: &str = arena(ptr(a), "in the arena")
+    print(a.count, " ", kept, " ", words_in_arena)
+    free(ptr(a))
+    with scratch():
+        line := tmp("temporary " + 42)
+        print(line)
+    data: array[i64, 6]
+    g: &grid = ptr(data) as *bytes
+    g.len = 6
+    g.width = 3
+    cell(g, 1, 2).* = 12
+    cell(g, 0, 1).* = 1
+    print(data)
+    block := malloc(100)
+    memset(block, 7, 100)
+    grown := realloc(block, 100000) as *u8
+    print(grown.*, " ", ((grown as *bytes + 99) as *u8).*)
+    free(grown as *bytes)
+    zeroed := calloc(10, 8) as *i64
+    print(zeroed.*, " ", ((zeroed as *bytes + 72) as *i64).*)
+    free(zeroed as *bytes)
+    free(text)
+    free(words)
+    free(numbers)
+    free(ages)

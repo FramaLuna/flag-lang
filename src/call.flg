@@ -767,6 +767,8 @@ func call(name: &strview, module: &strview, args: &list[Value], names: &list[&st
             close_frame(saved)
             put_back(0, aside)
             comp.site = site
+    if order.len < params(f) and comp.system == "wasm":
+        return fail("variadic extern functions are not supported on wasm-wasm64; the '...' of C has no WebAssembly form, so declare one function for each set of arguments", at)
     if order.len < params(f):
         append(passes, Pass{})
         for k in order.len..args.len:
@@ -1247,6 +1249,8 @@ func passing(t: i64, foreign: bool, at: i64) -> u32|Fail:
         return fail(ty.name + " cannot cross the C ABI; C expects 'extern " + ty.name + "' (from an 'export func')", at)
     if foreign and ty.kind == Thread:
         return fail(ty.name + " cannot cross the C ABI; Flag threads can only be awaited from Flag", at)
+    if foreign and aggregate(t) and comp.system == "wasm":
+        return fail(ty.name + " cannot cross to the host on wasm-wasm64 by value; pass a pointer to it", at)
     if foreign and aggregate(t):
         return c_type(t, at)
     if foreign and ty.size == 1 and ty.kind == Int:

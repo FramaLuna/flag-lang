@@ -655,7 +655,7 @@ emitins(Ins i, E *e)
 			}
 			if (rtype(i.to) == RSlot)
 			if (val < INT32_MIN || val > INT32_MAX) {
-				emitf("movl %0, %=", &i, e);
+				emitf("movl %0&0xffffffff, %=", &i, e);
 				emitf("movl %0>>32, 4+%=", &i, e);
 				break;
 			}

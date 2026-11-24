@@ -75,11 +75,11 @@ flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-m
 | `folder` | Recursively adds every `.flg` file inside `folder`, sorted by name, without following directory symlinks. |
 | `run` | Must be the first argument. Compiles and runs the program, forwarding everything after `--` as program arguments. Without `-o`, writes `flag-run-<number>.out` (`.exe` on Windows) in `TEMP` (or `/tmp` if unset) and deletes it afterward. `flagc` exits with the program's exit code. |
 | `test` | Must be the first argument. Builds and runs tests in the input files, optionally filtered to test names containing any word after `--` (see [Tests](#tests)). `-o` keeps the test binary; `-timeout` sets the per-test limit in seconds (default `10`). |
-| `-o program` | Sets the output path. Defaults to `a.out` (`a.exe` on Windows), or `a.so` / `a.dylib` / `a.dll` with `-shared`. |
-| `-shared` | Builds a shared library instead of an executable (see [Libraries](#libraries)). Cannot be combined with `run`. |
+| `-o program` | Sets the output path. Defaults to `a.out` (`a.exe` on Windows, `a.wasm` for `wasm-wasm64`), or `a.so` / `a.dylib` / `a.dll` with `-shared`. |
+| `-shared` | Builds a shared library instead of an executable (see [Libraries](#libraries)), or a WebAssembly module without `main` (see [WebAssembly](#webassembly)). Cannot be combined with `run`. |
 | `-check` | Stops after type checking (and `-memory`, if passed). Writes no files and does not require `main`. |
 | `-memory` | Runs the compile-time memory checker. Warnings do not change the exit code. |
-| `-debug` | Emits DWARF debug information for `gdb` and `lldb` (see [Debugging](#debugging)). |
+| `-debug` | Emits DWARF debug information for `gdb` and `lldb` (see [Debugging](#debugging)), or the names of the functions in a WebAssembly module. |
 | `-keep` | Keeps `.ssa` and `.s` files (and the `.o` file produced by `-debug` on macOS). |
 | `-target system-machine` | Cross-compiles for another platform (see [Platforms](#platforms)). An unknown target exits with code 2. |
 | `-overlay file`, `-at file:line:column` | Editor and tooling support (see [Editor support](#editor-support)). |
@@ -94,7 +94,7 @@ Colors on `error:`, `warning:`, and `note:` are emitted only when stderr is a te
 
 - `0`: compilation (or `run` / `test`) succeeded.
 - `1`: a compile error occurred, a build step failed, or a test failed.
-- `2`: the command line is invalid. That happens with no input files, a directory with no `.flg` files, a missing value after `-o`/`-target`/`-overlay`/`-at`/`-timeout`, an `-at` location outside the input files, a `-timeout` outside `1`..`2000000`, no test matching the filters after `--`, `run` with `-shared`, or an unrecognized argument.
+- `2`: the command line is invalid. That happens with no input files, a directory with no `.flg` files, a missing value after `-o`/`-target`/`-overlay`/`-at`/`-timeout`, an `-at` location outside the input files, a `-timeout` outside `1`..`2000000`, no test matching the filters after `--`, `run` with `-shared`, `run` or `test` with `-target wasm-wasm64`, or an unrecognized argument.
 
 Invalid command-line errors show the expected form:
 
@@ -178,7 +178,7 @@ Calls starting with `@` are evaluated by the compiler at compile time. Arguments
 | `@sizeof(T)` | Size of `T` in bytes as an untyped integer literal (see [Sizes](#sizes)). |
 | `@offset_of(T, field)` | Byte offset of `field` in a struct or fat pointer, as an untyped integer literal. |
 | `@can_assign(A, B)` | Compile-time `bool`: whether a value of type `B` can be assigned to `A` (see [where](#where)). |
-| `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()` | Compile-time `bool`: whether the build targets that OS or CPU architecture. |
+| `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, `@wasm64()` | Compile-time `bool`: whether the build targets that OS or CPU architecture. |
 | `@here()` | Source location as `&strview` (e.g. `"main.flg:12:5"`). In a parameter default, evaluates to the call site. |
 | `@embed("path")` | Contents of a file embedded at compile time as `&strview` (see [Files in the program](#files-in-the-program)). |
 | `@argc()`, `@argv()` | Raw C `main` arguments: `i32` count and `*bytes` pointer array. |
@@ -741,7 +741,7 @@ A `where` clause filters overloads or compiles conditional blocks using compile-
 - `$T is i8|i16` (type membership in a union)
 - `$T == i32` and `$T != i32` (`$T` on either side)
 - `@can_assign(&strview, $T)`
-- Platform builtins: `@linux()`, `@macos()`, `@windows()`, `@x86_64()`, `@arm64()`, `@riscv64()`
+- Platform builtins: `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, `@wasm64()`
 - `not`, `and`, `or`, and parentheses
 - Any compile-time boolean over types, `$$n`, and constants (`@sizeof($T) >= 8`, `$$n <= 16`, `SCALE > 1.0` with `SCALE: f32 = 2.5`)
 
@@ -941,7 +941,7 @@ Because `==` produces a mask rather than a `bool`:
 On `x86_64` (SSE up to SSE4.2 / `x86-64-v2`) and `arm64` (NEON), most operations compile to one or a few vector instructions (two for 32-byte vectors held in two 16-byte registers), keeping values in registers including across inlined calls. For 32-byte vectors, `sum`, `any`, and `all` fold the two 16-byte halves with one vector instruction first. `v[i]` reads or updates a lane directly in the register with a single instruction.
 
 - **Scalarized operations**: `*` on 8-bit and 64-bit lanes, `abs` on `i8` and `i64`, `<<`/`>>` on 8-bit lanes, `>>` on `i64`, all lane conversions except `i32` -> `f32`, shuffles, `sum`, `any`, and `all` operate lane by lane.
-- **`riscv64`**: has no vector backend here and executes every operation lane by lane with identical results.
+- **`riscv64` and `wasm64`**: have no vector backend here and execute every operation lane by lane with identical results.
 - **Startup CPU check (`x86_64`)**: `x86-64-v2` (SSE4.2) is present on Intel CPUs since 2008 and AMD CPUs since 2011-2013. Any program using `simd` checks CPUID at startup and exits with code `132` if unsupported: `flag: this program needs an x86-64-v2 processor (SSE4.2)`.
 - **Register allocation notes**: taking `ptr(v)` keeps `v` in memory. A struct of 48 bytes or less that a function returns stays in registers and goes to memory at the `return`. `simd` values cannot cross the C ABI by value (pass a pointer).
 
@@ -2069,9 +2069,10 @@ func main():
 | `macos-x86_64` | `amd64_apple` | Second class |
 | `macos-arm64` | `arm64_apple` | First class |
 | `windows-x86_64` | `amd64_win` | First class |
+| `wasm-wasm64` | none: `flagc` writes the module | Second class |
 
 - **First-class targets** have bootstrap seeds, release archives, and CI building the compiler and running all tests natively.
-- **Second-class targets** are compiled and assembled on every change (compiler, tests, and examples via `./build.sh cross`), without native execution in CI. A target moves to the first class when CI runs on it.
+- **Second-class targets** are compiled and assembled on every change (compiler, tests, and examples via `./build.sh cross`), without native execution in CI. A target moves to the first class when CI runs on it. `wasm-wasm64` has its own tests, which `./test.sh` runs under `node` when it finds one (see [WebAssembly](#webassembly)).
 
 By default, `flagc` targets the host platform. On `x86_64`, programs using `simd` require `x86-64-v2` (see [SIMD](#simd)). Use platform builtins (in a `where` or in any expression) and `where` blocks to specialize code per platform, as the standard library does.
 
@@ -2094,6 +2095,20 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - Any MinGW-w64 GCC works as `cc`, including the one in Strawberry Perl, and programs keep ASLR.
 - Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, pass the folder of your own after `-cc`: `flagc game.flg -cc -Lfolder`.
 - The Windows console displays text using its active code page; run `chcp 65001` for UTF-8 output.
+
+### WebAssembly
+
+`-target wasm-wasm64` makes a WebAssembly module (`a.wasm`) that `flagc` writes itself, with no QBE and no C compiler. It uses 64-bit memory (Memory64), bulk memory, and conversions that saturate; Node 22 runs it with `node --experimental-wasm-memory64`.
+
+- **What the host gives and gets**: the module exports `memory`, `main` (no parameters, the exit code as an `i32`), and the `export func`s of the program. It imports only the functions its code reaches: `print` and `eprint` reach `env.write(fd: i32, at: i64, size: i64) -> i32`, which returns how many bytes it wrote or less than `0`, and `exit` or a panic reaches `env.exit(code: i32)`, which must not return. A module that only computes imports nothing. An `extern "module":` block imports its functions from that module, so `extern "env":` asks the host for more.
+- **`-shared`**: a library without `main` that exports `memory` and its `export func`s.
+- **Values across the host**: integers, floats, `bool`, and pointers, which are `i64` addresses into `memory`. A struct does not cross by value (`Point cannot cross to the host on wasm-wasm64 by value; pass a pointer to it`), and neither do variadic C functions (`variadic extern functions are not supported on wasm-wasm64; ...`) or C variables.
+- **Memory**: static data starts at `0x1000`, above where `null` points, and is followed by a 1 MiB shadow stack for the variables whose address escapes; the others live in WebAssembly locals. A function whose frame would pass the end of the shadow stack traps. `malloc`, `calloc`, `realloc`, `free`, `memcmp`, `memchr`, `strlen`, and `strtod` are Flag functions of `core` there, `memcpy`, `memmove`, and `memset` are instructions, and the heap grows `memory` a page at a time.
+- **One thread**: `parallel` fails to compile (`threads ('parallel') are not supported on wasm-wasm64; ...`), a `Lock` never waits, a channel that would wait panics with a deadlock, and `atomic` operations are plain loads and stores.
+- **What is not there**: `fs`, `os`, and `net` call C and do not build; `snprintf` is missing; `@argc()` is `0`; and `flagc run` and `flagc test` refuse the target.
+- **Panics, traps, and output**: a panic writes its message and place and exits with `134`, but without the chain of calls, since WebAssembly hides its stack from the code. Reading through `null` gives zeros instead of a crash. A trap, such as an address outside `memory` or the stack of the engine running out, ends the module in the host; with `-debug` the module carries the names of its functions, which the host shows in its trace. Output goes to the host a line at a time, so a trap loses nothing printed before it.
+- **Floats**: `print` and `parse_float` write and read the exact decimal of a double, the same text as on Linux, and `math` is fdlibm's algorithms in Flag (each within one unit in the last place, `exp` correctly rounded), with `sqrt`, `floor`, `ceil`, and `trunc` as instructions.
+- `tests/wasm.js` is the host of the tests, and a small example of one: it runs `main` in a thread with a 256 MiB stack, maps `env.write` to file descriptors and `env.exit` to the exit code, reports a trap with exit code `134`, and for a library prints what it imports and exports and what each function without parameters returns.
 
 ## Editor support
 
@@ -2158,7 +2173,7 @@ error: unexpected end of line; expected ':'
 | `name.flg` + `name.err` | Must fail compilation with `name.err` contained in the output. |
 | `name.flg` + `name.warn` | Compiled with `-memory`; must contain `name.warn`, or emit no warnings if `name.warn` is empty. |
 | `name.gdb` + `name.out` | Runs under `gdb` (when available) and compares output to `name.out` (stripping `libthread_db` lines and Windows `Thread 1 hit ` prefixes). |
-| `name.args` | Extra flags passed to `flagc`; if `-check` is included, compares compiler stdout/stderr to `name.out` without running (used for `-at`). |
+| `name.args` | Extra flags passed to `flagc`; if `-check` is included, compares compiler stdout/stderr to `name.out` without running (used for `-at`). With `-target wasm-wasm64`, `node` runs the module through `tests/wasm.js`, and without `node` the test is skipped. |
 | `name.env` | Environment `NAME=value` pairs; runs an isolated copy of `flagc` in `build/tests/bin` that unpacks its embedded library (tests missing `cc` and cache failures). |
 | `name.*` auxiliary / folder / no-file | Auxiliary files (like `name.overlay`) sit beside the test; folders test multi-file programs; tests with no `.flg` or folder test CLI usage errors. |
 
@@ -2168,14 +2183,15 @@ error: unexpected end of line; expected ':'
 
 #### Modifications to QBE (`vendor/qbe`)
 
-The embedded QBE in `vendor/qbe` has **58 changes** over upstream, grouped by purpose:
+The embedded QBE in `vendor/qbe` has **59 changes** over upstream, grouped by purpose:
 
-1. **Embedding, stack probes, and constants (6 changes)**:
+1. **Embedding, stack probes, and constants (7 changes)**:
    - `main` returns instead of calling `exit`, so `flagc` can call it in-process.
    - On Windows, QBE opens its files with `_wfopen`, since `flagc` passes it the paths in UTF-8.
    - Stack probes: a function that can go past a page of stack before touching it lowers the stack one page at a time and touches each page. That is how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than a thread's 4 KiB guard used to jump over it into the stack of another thread. A function counts its frame plus the stack its calls take below it (stack arguments, and on Windows the 32 bytes reserved for the callee), so one that does not reach a page is emitted as before.
    - A constant that replaces a 32-bit load is truncated to 32 bits.
    - `amd64` truncates every constant to the size of its operand, as `arm64` and `rv64` already did, so the assembler has nothing to warn about.
+   - `amd64` stores a 64-bit constant that needs more than 32 bits into a stack slot as two 32-bit halves, and the low half is masked to 32 bits like the high one is shifted, so the assembler does not warn that it shortened it (as when a float that might not fit converts to `i64`).
    - macOS: a 64-bit value stored far into a stack frame larger than 32 KiB was written as 32 bits, so a function with that many locals could read a wrong number.
 2. **Big functions and long chains (12 changes)**:
    - Three make big functions fast on every target: dominance between two blocks is read from numbers given to the dominator tree instead of walking up the tree; a temporary defined once, in a block that dominates all its uses, needs no phi and is not searched for one; and the search for a path between two blocks clears only the blocks it visited. A loop that formats a 1,500-variant enum: 37 s -> 0.2 s; a function with 2,400 `l[i]`: 2.5 s -> 0.3 s.

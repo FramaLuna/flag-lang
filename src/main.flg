@@ -125,6 +125,23 @@ type Pass:
     number: bool
     value: i64 # of a parameter, the struct or array that the function takes by value, else VOID
 
+type enum PieceKind:
+    Zeros, Number, Address, Text, File
+
+type Piece:
+    kind: PieceKind
+    size: i64 # of a number, 1, 2, 4 or 8 bytes
+    n: i64 # the number, how many zeros, or what the address adds
+    text: &strview = "" # the bytes, the path of the file, or the name of what the address points to
+
+type Data:
+    name: &strview
+    align: i64 = 8
+    first: i64 # its pieces in comp.pieces
+    count: i64
+    fixed: bool # the program only reads it
+    thread: bool # each thread has its own, and the code names it thread $name
+
 type Mention:
     temp: u32
     name: &strview
@@ -217,7 +234,8 @@ context comp:
     spelled: i64
     c_types: &list[i64] = heap([])
     c_defs: &str = heap("")
-    data: &str = heap("")
+    data: &list[Data] = heap([])
+    pieces: &list[Piece] = heap([])
     texts: &list[i64] = heap([])
     stored: &map[&strview, i64] = heap({})
     globals: &list[&strview] = heap([])
@@ -262,7 +280,6 @@ context comp:
     asked: i64
     defined: &list[i64] = heap([])
     hover: &str = heap("")
-    assembly: &str = heap("") # written after what QBE writes: the files of @embed and the DWARF
     system: &strview = ""
     machine: &strview = ""
     choosing: bool
@@ -421,13 +438,16 @@ func main() -> i32:
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
         return 2
-    backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
+    backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win", "wasm-wasm64": ""}
     backend := backends[target]
     if backend is null:
-        eprint(comp.err, "unknown target ", target, "; supported targets are: linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64, windows-x86_64")
+        eprint(comp.err, "unknown target ", target, "; supported targets are: linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64, windows-x86_64, wasm-wasm64")
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
+    if running and comp.system == "wasm":
+        eprint(comp.err, "'", arguments[1], "' executes a program, but -target wasm-wasm64 builds a WebAssembly module; build with '-o' and load it from a WebAssembly host")
+        return 2
     texts: &map[&strview, &strview] = heap({})
     if overlay.len > 0:
         given := read_file(overlay)
@@ -453,7 +473,9 @@ func main() -> i32:
     suffix: &strview = ".out"
     if comp.system == "windows":
         suffix = ".exe"
-    if comp.shared:
+    if comp.system == "wasm":
+        suffix = ".wasm"
+    elif comp.shared:
         suffixes := {"linux": ".so", "macos": ".dylib", "windows": ".dll"}
         suffix = trust suffixes[comp.system]
     if fleeting:
@@ -634,6 +656,14 @@ func main() -> i32:
         return 1
     if check:
         return 0
+    if comp.system == "wasm":
+        module := assemble()
+        if module is Fail:
+            return 1
+        if write_file(view(output), module) is FsError:
+            eprint(comp.err, "failed to write WebAssembly module ", output)
+            return 1
+        return 0
     ssa: &str = heap(output)
     ssa += ".ssa"
     asm: &str = heap(output)
@@ -647,9 +677,19 @@ func main() -> i32:
         args[6] = c_text(ssa)
     if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
         return 1
+    assembly: &str = heap("") # what QBE cannot write: the files of @embed, and the DWARF
+    for d in comp.data:
+        if d.count > 0 and comp.pieces[d.first].kind == File:
+            if comp.system == "linux":
+                assembly += ".section .rodata\n.p2align 3\n" + d.name[1:]
+            elif comp.system == "windows":
+                assembly += ".section .rdata,\"dr\"\n.p2align 3\n" + d.name[1:]
+            else:
+                assembly += ".section __TEXT,__const\n.p2align 3\n_" + d.name[1:]
+            assembly += ":\n.incbin \"" + replace(replace(comp.pieces[d.first].text, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
     if comp.debug:
-        comp.assembly += dwarf()
-    if append_file(view(asm), comp.assembly) is FsError:
+        assembly += dwarf()
+    if append_file(view(asm), assembly) is FsError:
         eprint(comp.err, "failed to write assembly file ", asm)
         return 1
     cc: &list[&strview] = heap([])

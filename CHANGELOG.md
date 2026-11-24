@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` writes a 64-bit WebAssembly module itself, with no C compiler. Existing programs keep compiling.
+
+### New Features
+
+- **WebAssembly:** `-target wasm-wasm64` builds a `.wasm` module with Memory64 that exports `memory`, `main`, and the `export func`s, and imports only the host functions its code reaches: `env.write` to print, `env.exit` to exit or panic, and those of your `extern` blocks. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
+- **`@wasm()` and `@wasm64()`:** platform builtins for the new target, in expressions and in `where`.
+- **`math`, `print`, and `parse_float` on WebAssembly:** `math` needs nothing of the host, and floats print and parse with the same digits as on Linux.
+
+### Fixed
+
+- **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
+
 ## 0.6.3
 
 A patch release that fixes a Windows crash with GNU `ld`, makes conditional expressions follow the expected type in more places, and adds `raylib` window controls. Existing programs keep compiling.

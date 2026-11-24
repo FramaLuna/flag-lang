@@ -1,29 +1,43 @@
-extern "c":
+extern "c": # on wasm, instructions of its own
+    func memcpy(to: *bytes, from: *bytes, size: i64) -> *bytes
+    func memmove(to: *bytes, from: *bytes, size: i64) -> *bytes
+    func memset(to: *bytes, byte: i32, size: i64) -> *bytes
+
+extern "c" where not @wasm():
     func malloc(size: i64) -> *bytes
     func calloc(count: i64, size: i64) -> *bytes
     func realloc(at: *bytes, size: i64) -> *bytes
     func free(at: *bytes)
-    func memcpy(to: *bytes, from: *bytes, size: i64) -> *bytes
-    func memmove(to: *bytes, from: *bytes, size: i64) -> *bytes
-    func memset(to: *bytes, byte: i32, size: i64) -> *bytes
     func memcmp(a: *bytes, b: *bytes, size: i64) -> i32
     func memchr(at: *bytes, byte: i32, size: i64) -> *bytes
     func strlen(s: cstr) -> i64
     func snprintf(into: *u8, size: i64, format: cstr, ...) -> i32
     func strtod(text: cstr, end: *bytes) -> f64
 
+priv extern "c" where not @wasm():
+    func write(fd: i32, at: *bytes, size: i64) -> i32
+    func isatty(fd: i32) -> i32
+    func atexit(callback: *bytes) -> i32
+    func quit(code: i32) -> never = "exit"
+    func _exit(code: i32) -> never
+
+# what a WebAssembly host gives: write gives what it wrote or less than 0, and exit ends the program
+priv extern "env" where @wasm():
+    func write(fd: i32, at: *bytes, size: i64) -> i32
+    func quit(code: i32) -> never = "exit"
+
+priv extern "c" where @wasm(): # what the compiler writes in the module
+    func flag_heap_base() -> *bytes
+    func flag_memory_size() -> i64
+    func flag_memory_grow(pages: i64) -> i64
+
 priv extern "c":
     func read(fd: i32, at: *bytes, size: i64) -> i32
-    func write(fd: i32, at: *bytes, size: i64) -> i32
     func close(fd: i32) -> i32
-    func isatty(fd: i32) -> i32
     func poll(fds: *bytes, count: i64, timeout: i32) -> i32
     func send(fd: i64, at: *bytes, size: i64, flags: i32) -> i32
     func recv(fd: i64, at: *bytes, size: i64, flags: i32) -> i32
     func getsockname(fd: i64, address: *bytes, size: *u32) -> i32
-    func atexit(callback: *bytes) -> i32
-    func quit(code: i32) -> never = "exit"
-    func _exit(code: i32) -> never
     func strerror(code: i32) -> cstr
     func gai_strerror(code: i32) -> cstr
     func __errno_location() -> *i32
@@ -1084,7 +1098,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
     at := ptr(buf) as *u8
     out: &strview
     out = ptr(buf) as *bytes
-    out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
+    out.len = printed(at, 32, f, digits, true)
     lead := i64(buf[0] == '-')
     while digits < most:
         back := strtod(at as cstr, 0 as *bytes)
@@ -1104,7 +1118,7 @@ priv func float_text(s: *&str, f: f64, single: bool):
                 buf = up
                 break
         digits += 1
-        out.len = snprintf(at, 32, "%#.*e", digits - 1, f)
+        out.len = printed(at, 32, f, digits, true)
     mark := lead + digits + 1
     exponent: i32 = 0
     for i in mark + 2..out.len:
@@ -1142,6 +1156,12 @@ priv func float_text(s: *&str, f: f64, single: bool):
         for k in shown.len..=exponent:
             add_byte(s, '0')
         s.* += ".0"
+
+# snprintf of "%#.*e" with count digits, or of "%.*f" with count digits after the point
+priv func printed(into: *u8, room: i64, f: f64, count: i32, exponent: bool) -> i32 where not @wasm():
+    if exponent:
+        return snprintf(into, room, "%#.*e", count - 1, f)
+    return snprintf(into, room, "%.*f", count, f)
 
 operator +=(s: *&str, items: &listview[$T]):
     s.* += "["
@@ -1183,10 +1203,10 @@ operator +=(s: *&str, f: Fixed):
         room := places + 312 # the sign, 309 digits, the point and the zero
         out: &strview
         out = tmp(room)
-        out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
+        out.len = printed(ptr(out.*) as *u8, room, value, places, false)
         if tie and out[-1] % 2 == 1:
             bits.* += 2
-            out.len = snprintf(ptr(out.*) as *u8, room, "%.*f", places, value)
+            out.len = printed(ptr(out.*) as *u8, room, value, places, false)
         if out[0] == '-' and strtod(ptr(out.*) as cstr, 0 as *bytes) == 0.0:
             out = out[1:] # every digit is zero, so the sign says nothing
         s.* += out
@@ -1281,31 +1301,43 @@ priv func try_lock(l: *Lock[null]) -> bool:
     return true
 
 # the same for the program and for each library, which have contexts of their own
-priv func me() -> u64 where not @windows():
+priv func me() -> u64 where @linux() or @macos():
     return pthread_self()
 
 priv func me() -> u64 where @windows():
     return u64(GetCurrentThreadId())
 
-priv func acquire(l: *Lock[null]) where not @windows():
+priv func me() -> u64 where @wasm(): # the one thread
+    return 1
+
+priv func acquire(l: *Lock[null]) where @linux() or @macos():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     pthread_mutex_lock(ptr(l.room) as *bytes)
 
 priv func acquire(l: *Lock[null]) where @windows():
     AcquireSRWLockExclusive(ptr(l.room) as *bytes)
 
-priv func seized(l: *Lock[null]) -> bool where not @windows():
+priv func acquire(l: *Lock[null]) where @wasm():
+    return
+
+priv func seized(l: *Lock[null]) -> bool where @linux() or @macos():
     sign(ptr(l.room[0]), 0x32aa_aba7)
     return pthread_mutex_trylock(ptr(l.room) as *bytes) == 0
 
 priv func seized(l: *Lock[null]) -> bool where @windows():
     return TryAcquireSRWLockExclusive(ptr(l.room) as *bytes) != 0
 
-priv func release(l: *Lock[null]) where not @windows():
+priv func seized(l: *Lock[null]) -> bool where @wasm():
+    return true
+
+priv func release(l: *Lock[null]) where @linux() or @macos():
     pthread_mutex_unlock(ptr(l.room) as *bytes)
 
 priv func release(l: *Lock[null]) where @windows():
     ReleaseSRWLockExclusive(ptr(l.room) as *bytes)
+
+priv func release(l: *Lock[null]) where @wasm():
+    return
 
 priv shared context signing:
     lock: u32 # an os_unfair_lock, valid at zero
@@ -1336,19 +1368,25 @@ priv func pause(c: *Condition, l: *Lock[null]):
     set(l.owner, me())
     l.depth = 1
 
-priv func rest(c: *Condition, l: *Lock[null]) where not @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where @linux() or @macos():
     sign(ptr(c.room[0]), 0x3cb0_b1bb)
     pthread_cond_wait(ptr(c.room) as *bytes, ptr(l.room) as *bytes)
 
 priv func rest(c: *Condition, l: *Lock[null]) where @windows():
     SleepConditionVariableSRW(ptr(c.room) as *bytes, ptr(l.room) as *bytes, 0xffff_ffff, 0)
 
-priv func wake(c: *Condition) where not @windows():
+priv func rest(c: *Condition, l: *Lock[null]) where @wasm(): # no other thread could wake it
+    panic("deadlock: the only thread waits on a channel that nothing else fills or empties", place = "")
+
+priv func wake(c: *Condition) where @linux() or @macos():
     sign(ptr(c.room[0]), 0x3cb0_b1bb)
     pthread_cond_broadcast(ptr(c.room) as *bytes)
 
 priv func wake(c: *Condition) where @windows():
     WakeAllConditionVariable(ptr(c.room) as *bytes)
+
+priv func wake(c: *Condition) where @wasm():
+    return
 
 priv type Started: # the start of the block of a thread, the result goes after it
     handle: u64
@@ -1377,7 +1415,7 @@ priv func launch(block: *bytes, run: *bytes, place: &strview):
     if not started(block as *Started, run):
         panic("failed to start thread: OS refused thread creation", place = place)
 
-priv func started(t: *Started, run: *bytes) -> bool where not @windows():
+priv func started(t: *Started, run: *bytes) -> bool where @linux() or @macos():
     attributes: array[u64, 8]
     pthread_attr_init(ptr(attributes) as *bytes)
     pthread_attr_setstacksize(ptr(attributes) as *bytes, STACK)
@@ -1388,6 +1426,9 @@ priv func started(t: *Started, run: *bytes) -> bool where not @windows():
 priv func started(t: *Started, run: *bytes) -> bool where @windows():
     t.handle = CreateThread(0 as *bytes, STACK, run, t as *bytes, 0x10000, 0 as *u32) # STACK_SIZE_PARAM_IS_A_RESERVATION
     return t.handle != 0
+
+priv func started(t: *Started, run: *bytes) -> bool where @wasm(): # the compiler takes no parallel there
+    return false
 
 priv func finished(block: *bytes, pointing: bool):
     drop_stack()
@@ -1408,7 +1449,7 @@ priv func finished(block: *bytes, pointing: bool):
 priv func free_at_end():
     where @macos():
         _tlv_atexit(ptr(flag_ended), 0 as *bytes) # macOS never unloads a library with thread data, so this needs no key that a close forgets
-    where not @macos():
+    where @linux() or @windows():
         with lock(threads.key):
             if threads.key.value == -1:
                 where @linux():
@@ -1446,12 +1487,15 @@ priv func reap(block: *bytes, place: &strview):
         last := trust pop(a.blocks) # one spare block less for each one it got, so waiting in a loop doesn't grow
         free(ptr(last.*))
 
-priv func wait_for(handle: u64) where not @windows():
+priv func wait_for(handle: u64) where @linux() or @macos():
     pthread_join(handle, 0 as *bytes)
 
 priv func wait_for(handle: u64) where @windows():
     WaitForSingleObject(handle, 0xffff_ffff)
     CloseHandle(handle)
+
+priv func wait_for(handle: u64) where @wasm():
+    return
 
 priv func detach(block: *bytes):
     t := block as *Started
@@ -1464,11 +1508,14 @@ priv func detach(block: *bytes):
         free(t.left)
         free(block)
 
-priv func let_go(handle: u64) where not @windows():
+priv func let_go(handle: u64) where @linux() or @macos():
     pthread_detach(handle)
 
 priv func let_go(handle: u64) where @windows():
     CloseHandle(handle)
+
+priv func let_go(handle: u64) where @wasm():
+    return
 
 priv func settle():
     flush() # what you wrote goes out before the thread waits for another
@@ -1653,7 +1700,7 @@ priv export func flag_exit():
     if io.table.value.streams.len > 0 and said() and get(io.ended) == 1: # a library that never wrote has nothing to say at its close, and a thread wrote after the end
         _exit(1)
     flag_ended(0 as *bytes) # the thread that closes the library, or ends the program, is done with it
-    where not @macos():
+    where @linux() or @windows():
         with lock(threads.key):
             if threads.key.value >= 0:
                 drop_key(u32(threads.key.value))
@@ -1821,7 +1868,7 @@ func ready(f: File, seconds: f64 = 0.0, place: &strview = @here()) -> bool:
     with scratch():
         return ready(ptr([f]), seconds, place = place).len > 0
 
-func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where not @windows():
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where @linux() or @macos():
     flush() # what you wrote goes out before the program waits for an answer
     polled: &list[array[i32, 2]] = heap([]) # each a struct pollfd: the descriptor, POLLIN, and what poll finds
     defer free(polled)
@@ -1876,6 +1923,15 @@ func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()
             WSAPoll(ptr(sockets.*), u32(sockets.len), 1)
         else:
             Sleep(1)
+
+# a read never waits there: what the host gave is in the stream, or it is the end
+func ready(files: &listview[File], seconds: f64 = 0.0, place: &strview = @here()) -> &listview[i64] where @wasm():
+    found: &list[i64] = heap([])
+    defer free(found)
+    for i, f in files:
+        valid(f, place = place)
+        append(found, i)
+    return tmp(found)
 
 priv type Polled: # a WSAPOLLFD
     socket: u64
@@ -1941,6 +1997,9 @@ func errno() -> i32 where @macos():
 func errno() -> i32 where @windows():
     return _errno().*
 
+func errno() -> i32 where @wasm(): # the host gives no code
+    return 0
+
 priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @linux():
     if not writing:
         return read(s.fd, at, size)
@@ -1962,7 +2021,12 @@ priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @
         return write(s.fd, at, size)
     return read(s.fd, at, size)
 
-priv func failure(s: *Stream, writing: bool) -> i32 where not @windows():
+priv func moved(s: *Stream, at: *bytes, size: i64, writing: bool) -> i32 where @wasm(): # the host gives nothing to read
+    if writing:
+        return write(s.fd, at, size)
+    return 0
+
+priv func failure(s: *Stream, writing: bool) -> i32 where @linux() or @macos():
     code := errno()
     blocked := code == 11 or code == 35 # EAGAIN, 11 on Linux and 35 on macOS, where the other number is not an error of read or write
     if blocked and s.socket:
@@ -1983,7 +2047,10 @@ priv func failure(s: *Stream, writing: bool) -> i32 where @windows():
         return 0 - WSAGetLastError()
     return errno()
 
-priv func recognize(s: *Stream) where not @windows():
+priv func failure(s: *Stream, writing: bool) -> i32 where @wasm():
+    return 5 # EIO, the host gives no reason
+
+priv func recognize(s: *Stream) where @linux() or @macos():
     address: array[u8, 128]
     size: u32 = 128
     s.socket = getsockname(i64(s.fd), ptr(address) as *bytes, ptr(size)) == 0
@@ -1993,7 +2060,10 @@ priv func recognize(s: *Stream) where @windows():
     if s.socket:
         s.fd -= 8192
 
-priv func release(s: *Stream) where not @windows():
+priv func recognize(s: *Stream) where @wasm():
+    return
+
+priv func release(s: *Stream) where @linux() or @macos():
     close(s.fd)
 
 priv func release(s: *Stream) where @windows():
@@ -2001,6 +2071,9 @@ priv func release(s: *Stream) where @windows():
         closesocket(i64(s.fd))
     else:
         close(s.fd)
+
+priv func release(s: *Stream) where @wasm(): # its files are the host's
+    return
 
 priv func reason(code: i32) -> &strview where @linux():
     if code < 0:
@@ -2018,6 +2091,9 @@ priv func reason(code: i32) -> &strview where @windows():
     text: array[u16, 512]
     FormatMessageW(0x1200, 0 as *bytes, u32(0 - code), 0, ptr(text) as wstr, 512, 0 as *bytes)
     return trim_end(tmp(ptr(text) as wstr)) + " (" + (0 - code) + ")"
+
+priv func reason(code: i32) -> &strview where @wasm():
+    return "the host failed with code " + code
 
 type entry[$K, $V]:
     key: $K
@@ -2352,6 +2428,9 @@ priv func catch_crashes() where @windows():
     AddVectoredExceptionHandler(1, ptr(flag_exception))
     signal(22, ptr(flag_abort)) # SIGABRT, that abort raises before the C runtime ends the program
 
+priv func catch_crashes() where @wasm(): # a trap ends the module, and the host tells why
+    return
+
 priv export func flag_abort(number: i32):
     frame := flag_frame()
     crashed("aborted", Crash{frame, 0, frame, 0, 0}, 134)
@@ -2389,7 +2468,7 @@ priv func run_test() -> i32:
     eprint("flag: there is no test named ", view(given[1]))
     return 2
 
-priv func limit(seconds: u32) where not @windows():
+priv func limit(seconds: u32) where @linux() or @macos():
     catch(14) # SIGALRM
     alarm(seconds)
 
@@ -2397,6 +2476,9 @@ priv func limit(seconds: u32) where @windows():
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), ptr(testing.thread), 0, 0, 2) # DUPLICATE_SAME_ACCESS
     timer: u64 = 0
     CreateTimerQueueTimer(ptr(timer), 0, ptr(flag_overtime), 0 as *bytes, seconds * 1000, 0, 8) # WT_EXECUTEONLYONCE
+
+priv func limit(seconds: u32) where @wasm():
+    return
 
 priv export func flag_overtime(parameter: *bytes, fired: u8) where @windows():
     SuspendThread(testing.thread)
@@ -2426,6 +2508,9 @@ priv func guard_stack() where @windows():
     room: u32 = 65536 # what a stack overflow leaves to the handler
     SetThreadStackGuarantee(ptr(room))
 
+priv func guard_stack() where @wasm():
+    return
+
 priv func drop_stack() where @linux():
     stack := [0, 2, 0] # SS_DISABLE
     sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
@@ -2436,10 +2521,10 @@ priv func drop_stack() where @macos():
     sigaltstack(ptr(stack) as *bytes, 0 as *bytes)
     free(failing.stack)
 
-priv func drop_stack() where @windows():
+priv func drop_stack() where @windows() or @wasm():
     return
 
-priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
+priv export func flag_crash(signal: i32, info: *bytes, context: *bytes) where not @wasm():
     c := crash(info as u64, context as u64)
     what: &strview = "invalid memory access"
     if signal == 4:
@@ -2454,7 +2539,7 @@ priv export func flag_crash(signal: i32, info: *bytes, context: *bytes):
         what = "stack overflow"
     crashed(what, c, 128 + signal)
 
-priv export func flag_exception(pointers: *bytes) -> i32:
+priv export func flag_exception(pointers: *bytes) -> i32 where not @wasm():
     record := peek(pointers as u64)
     code := (record as *u32).*
     what: &strview
@@ -2514,7 +2599,7 @@ priv func drain():
                 drain(s)
 
 # the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
-priv func trace(c: Crash):
+priv func trace(c: Crash) where not @wasm():
     head := flag_functions() as u64 # how many functions, where the last one ends, and then each function in the order of their code
     table: &listview[Function]
     table = (head + 16) as *bytes
@@ -2568,6 +2653,9 @@ priv func trace(c: Crash):
         report(u64(chain.more), 10)
         report(" more\n")
 
+priv func trace(c: Crash) where @wasm(): # wasm keeps its frames from the code
+    return
+
 priv func put_line(chain: *Chain):
     if chain.line == chain.table.len:
         return
@@ -2599,3 +2687,391 @@ priv func report(n: u64, base: u64):
         if n == 0:
             break
     report(view(digits[i:]))
+
+# WebAssembly gives a program its memory and nothing more of C: the heap, the bytes and the decimals of floats are here, and export gives each the name it has in C
+
+priv func isatty(fd: i32) -> i32 where @wasm(): # so the streams go out by lines: a trap ends the module before any code drains them
+    return 1
+
+priv func atexit(callback: *bytes) -> i32 where @wasm(): # main ends the program by returning, after ending writes what waits
+    return 0
+
+priv func _exit(code: i32) -> never where @wasm():
+    quit(code)
+
+priv type Chunk: # of the heap of wasm: a header of 16 bytes before what malloc gives, and in a free one the links of the list
+    size: i64 # with the header, a multiple of 16, and 1 more while it is free
+    before: i64 # the size of the chunk before it, 0 for the first
+    next: *Chunk
+    back: *Chunk
+
+priv shared context chunks: # the program has one thread there
+    top: *bytes # where the chunks end, and the memory past them starts
+    last: i64 # the size of the chunk that ends at top
+    free: *Chunk
+
+export func malloc(size: i64) -> *bytes where @wasm():
+    if size < 0 or size > MOST - 31:
+        return 0 as *bytes
+    need := max((size + 31) / 16 * 16, 32)
+    c := chunks.free
+    while c as u64 != 0:
+        whole := c.size - 1
+        if whole >= need:
+            delist(c)
+            c.size = whole
+            if whole - need >= 32: # the rest stays free
+                rest := (c as *bytes + need) as *Chunk
+                rest.size = whole - need + 1
+                rest.before = need
+                ((c as *bytes + whole) as *Chunk).before = whole - need
+                enlist(rest)
+                c.size = need
+            return c as *bytes + 16
+        c = c.next
+    if chunks.top as u64 == 0:
+        chunks.top = flag_heap_base()
+    if not reaches(chunks.top + need):
+        return 0 as *bytes
+    c = chunks.top as *Chunk
+    c.size = need
+    c.before = chunks.last
+    chunks.top += need
+    chunks.last = need
+    return c as *bytes + 16
+
+export func calloc(count: i64, size: i64) -> *bytes where @wasm():
+    if count < 0 or size < 0 or size > 0 and count > MOST / size:
+        return 0 as *bytes
+    at := malloc(count * size)
+    if at as u64 != 0:
+        memset(at, 0, count * size)
+    return at
+
+export func realloc(at: *bytes, size: i64) -> *bytes where @wasm():
+    if at as u64 == 0:
+        return malloc(size)
+    c := (at - 16) as *Chunk
+    if size >= 0 and size <= c.size - 16:
+        return at
+    need := (size + 31) / 16 * 16
+    if size >= 0 and size <= MOST - 31 and c as *bytes + c.size == chunks.top and reaches(c as *bytes + need): # the last chunk grows in place
+        chunks.top = c as *bytes + need
+        chunks.last = need
+        c.size = need
+        return at
+    grown := malloc(size)
+    if grown as u64 != 0:
+        memcpy(grown, at, c.size - 16)
+        free(at)
+    return grown
+
+# a free chunk joins the free ones next to it, and the top takes it back when it ends there
+export func free(at: *bytes) where @wasm():
+    if at as u64 == 0:
+        return
+    c := (at - 16) as *Chunk
+    size := c.size
+    after := (c as *bytes + size) as *Chunk
+    if after as *bytes != chunks.top and after.size % 16 == 1:
+        delist(after)
+        size += after.size - 1
+    if c.before > 0 and ((c as *bytes - c.before) as *Chunk).size % 16 == 1:
+        c = (c as *bytes - c.before) as *Chunk
+        delist(c)
+        size += c.size - 1
+    if c as *bytes + size == chunks.top:
+        chunks.top = c as *bytes
+        chunks.last = c.before
+        return
+    c.size = size + 1
+    ((c as *bytes + size) as *Chunk).before = size
+    enlist(c)
+
+priv func enlist(c: *Chunk) where @wasm():
+    c.next = chunks.free
+    c.back = 0 as *Chunk
+    if chunks.free as u64 != 0:
+        chunks.free.back = c
+    chunks.free = c
+
+priv func delist(c: *Chunk) where @wasm():
+    if c.back as u64 == 0:
+        chunks.free = c.next
+    else:
+        c.back.next = c.next
+    if c.next as u64 != 0:
+        c.next.back = c.back
+
+# memory reaches end, grown by whole pages of 64 KiB when it is short
+priv func reaches(end: *bytes) -> bool where @wasm():
+    have := flag_memory_size() * 65536
+    want := i64(end as u64)
+    return want <= have or flag_memory_grow((want - have + 65535) / 65536) >= 0
+
+export func memcmp(a: *bytes, b: *bytes, size: i64) -> i32 where @wasm():
+    for k in 0..size:
+        x := ((a + k) as *u8).*
+        y := ((b + k) as *u8).*
+        if x != y:
+            return i32(x) - i32(y)
+    return 0
+
+export func memchr(at: *bytes, byte: i32, size: i64) -> *bytes where @wasm():
+    for k in 0..size:
+        if ((at + k) as *u8).* == u8(byte and 255):
+            return at + k
+    return 0 as *bytes
+
+export func strlen(s: cstr) -> i64 where @wasm():
+    n := 0
+    while ((s as *bytes + n) as *u8).* != 0:
+        n += 1
+    return n
+
+priv type Big: # a natural number of up to 4096 bits, 32 in each word, the low one first: what a double and 800 digits take
+    len: i64
+    words: array[u32, 128]
+
+# n times factor and plus more, both less than 2^32
+priv func scale(n: *Big, factor: u64, more: u64) where @wasm():
+    carry := more
+    for k in 0..n.len:
+        x := u64(n.words[k]) * factor + carry
+        n.words[k] = u32(x and 0xffff_ffff)
+        carry = x >> 32
+    if carry != 0:
+        n.words[n.len] = u32(carry)
+        n.len += 1
+
+# n divided by d, less than 2^32, and what is left
+priv func divide(n: *Big, d: u64) -> u64 where @wasm():
+    rest: u64 = 0
+    for k in reverse 0..n.len:
+        x := rest << 32 or u64(n.words[k])
+        n.words[k] = u32(x / d)
+        rest = x % d
+    while n.len > 0 and n.words[n.len - 1] == 0:
+        n.len -= 1
+    return rest
+
+# n times 2^bits
+priv func lifted(n: *Big, bits: i64) where @wasm():
+    if n.len == 0:
+        return
+    whole := bits / 32
+    part := u64(bits % 32)
+    n.words[n.len + whole] = 0
+    for k in reverse 0..n.len: # each word takes the high bits of the one below
+        x := u64(n.words[k]) << part
+        n.words[k + whole + 1] = n.words[k + whole + 1] or u32(x >> 32)
+        n.words[k + whole] = u32(x and 0xffff_ffff)
+    for k in 0..whole:
+        n.words[k] = 0
+    n.len += whole + 1
+    if n.words[n.len - 1] == 0:
+        n.len -= 1
+
+# the double nearest the decimal number at text, an even one when two are as near, as strtod gives it
+export func strtod(text: cstr, end: *bytes) -> f64 where @wasm():
+    s := text as *bytes
+    while (s as *u8).* == ' ' or (s as *u8).* >= '\t' and (s as *u8).* <= '\r':
+        s += 1
+    negative := (s as *u8).* == '-'
+    if negative or (s as *u8).* == '+':
+        s += 1
+    value := 0.0
+    if says(s, "inf"):
+        s += 3
+        if says(s, "inity"):
+            s += 5
+        value = inf
+    elif says(s, "nan"):
+        s += 3
+        value = nan
+    else:
+        n: Big
+        count := 0 # the digits it keeps, past the zeros before the first other one
+        power: i64 = 0 # of 10, that n times it is the number
+        seen := false
+        point := false
+        cut := false # a digit past those it keeps is not 0
+        while true:
+            b := (s as *u8).*
+            if b == '.' and not point:
+                point = true
+            elif b >= '0' and b <= '9' and count == 800:
+                seen = true
+                cut = cut or b != '0'
+                power += i64(not point)
+            elif b >= '0' and b <= '9':
+                seen = true
+                if b != '0' or count > 0:
+                    scale(ptr(n), 10, u64(b - '0'))
+                    count += 1
+                power -= i64(point)
+            else:
+                break
+            s += 1
+        e := s + 1
+        minus := (e as *u8).* == '-'
+        if minus or (e as *u8).* == '+':
+            e += 1
+        if seen and ((s as *u8).* == 'e' or (s as *u8).* == 'E') and (e as *u8).* >= '0' and (e as *u8).* <= '9':
+            given: i64 = 0
+            while (e as *u8).* >= '0' and (e as *u8).* <= '9':
+                given = min(given * 10 + i64((e as *u8).* - '0'), 100000)
+                e += 1
+            power += 0 - given if minus else given
+            s = e
+        if not seen:
+            s = text as *bytes
+            negative = false
+        if cut: # a 1 past the digits it keeps, between them and the next number they make
+            scale(ptr(n), 10, 1)
+            count += 1
+            power -= 1
+        if n.len > 0 and count + power > 310:
+            value = inf
+        elif n.len > 0 and count + power >= -324:
+            for k in 0..power:
+                scale(ptr(n), 10, 0)
+            k := max(0 - power, 0)
+            length := 32 * (n.len - 1)
+            top := n.words[n.len - 1]
+            while top != 0:
+                length += 1
+                top = top >> 1
+            shift := 64 - length + i64(f64(k) * 3.321928094887362) # 10^k has floor(k log2 10) + 1 bits, so n times 2^shift over 10^k has 63 or 64
+            if shift > 0:
+                lifted(ptr(n), shift)
+            sticky := false
+            for j in 0..k:
+                sticky = divide(ptr(n), 10) != 0 or sticky
+            for j in 0..0 - shift:
+                sticky = divide(ptr(n), 2) != 0 or sticky
+            q := u64(n.words[0]) or u64(n.words[1]) << 32
+            length = 63 + i64(q >> 63)
+            exp := length - 1 - shift # the power of 2 of its first bit
+            keep := 53 if exp >= -1022 else exp + 1075 # the bits a double has there
+            if keep >= 0:
+                half := u64(1) << u64(length - keep - 1) # of the last bit it keeps
+                m := q >> u64(length - keep - 1) >> 1
+                rest := q and half * 2 - 1 # when it drops all 64 bits half * 2 is 0, and this takes them all
+                if rest > half or rest == half and (sticky or m % 2 == 1):
+                    m += 1
+                if m == u64(1) << 53:
+                    m = u64(1) << 52
+                    exp += 1
+                bits := m # a subnormal, which a carry makes the first normal
+                if exp >= -1022:
+                    bits = u64(exp + 1023) << 52 or m - (u64(1) << 52)
+                value = bits as f64 if exp <= 1023 else inf
+    if end as u64 != 0:
+        (end as *cstr).* = s as cstr
+    if negative:
+        return -value
+    return value
+
+# the bytes at s are word, in any case
+priv func says(s: *bytes, word: &strview) -> bool where @wasm():
+    for k in 0..word.len:
+        if (((s + k) as *u8).* or 0x20) != items(word)[k]:
+            return false
+    return true
+
+# the digits of f as snprintf writes them with "%#.*e" and "%.*f": the exact decimal of the double, rounded to an even digit when it is a tie
+priv func printed(into: *u8, room: i64, f: f64, count: i32, exponent: bool) -> i32 where @wasm():
+    bits := f as u64
+    power := i64(bits >> 52 and 0x7ff)
+    m := bits and 0xf_ffff_ffff_ffff
+    if power > 0:
+        m = m or u64(1) << 52
+    power = max(power, 1) - 1075 # f is m times 2^power
+    n: Big
+    n.words[0] = u32(m and 0xffff_ffff)
+    n.words[1] = u32(m >> 32)
+    n.len = 2
+    while n.len > 0 and n.words[n.len - 1] == 0:
+        n.len -= 1
+    if power > 0:
+        lifted(ptr(n), power)
+    for k in 0..(0 - power) / 13: # times 5^-power, and the number has -power digits after the point
+        scale(ptr(n), 1220703125, 0) # 5^13, the most that fits in 32 bits
+    for k in 0..(0 - power) % 13:
+        scale(ptr(n), 5, 0)
+    point := max(0 - power, 0) # of the digits of n, those after the point
+    if n.len == 0:
+        point = 0
+    digits: array[u8, 800]
+    first := 800
+    while n.len > 0: # nine at a time, from the last
+        rest := divide(ptr(n), 1000000000)
+        for k in 0..9:
+            first -= 1
+            digits[first] = u8(rest % 10) + '0'
+            rest /= 10
+    while first < 799 and digits[first] == '0':
+        first += 1
+    if first == 800:
+        first = 799
+        digits[first] = '0'
+    length := 800 - first
+    cut := i64(count) if exponent else length - point + i64(count) # the digits it keeps
+    up := false
+    if cut >= 0 and cut < length:
+        rest := false
+        for d in digits[first + cut + 1:]:
+            rest = rest or d != '0'
+        last := u8('0')
+        if cut > 0:
+            last = digits[first + cut - 1]
+        up = digits[first + cut] > '5' or digits[first + cut] == '5' and (rest or last % 2 == 1)
+    shown: array[u8, 1600] # the digits it keeps, after one more for a carry
+    kept := max(cut, 0)
+    shown[0] = '0'
+    for k in 0..kept:
+        shown[k + 1] = digits[first + k] if k < length else '0'
+    lead := 1 # where they start
+    if up:
+        k := kept
+        while k > 0 and shown[k] == '9':
+            shown[k] = '0'
+            k -= 1
+        shown[k] += 1
+        lead = min(k, 1)
+    at := 0
+    if bits >> 63 != 0:
+        at = poke(into, room, at, '-')
+    if exponent:
+        at = poke(into, room, at, shown[lead])
+        at = poke(into, room, at, '.')
+        for k in lead + 1..lead + i64(count):
+            at = poke(into, room, at, shown[k])
+        x := length - 1 - point + 1 - lead
+        at = poke(into, room, at, 'e')
+        at = poke(into, room, at, '-' if x < 0 else '+')
+        x = abs(x)
+        if x >= 100:
+            at = poke(into, room, at, u8(x / 100) + '0')
+        at = poke(into, room, at, u8(x / 10 % 10) + '0')
+        at = poke(into, room, at, u8(x % 10) + '0')
+    else:
+        whole := kept + 1 - lead - i64(count) # the digits before the point
+        if whole <= 0:
+            at = poke(into, room, at, '0')
+        for k in 0..whole:
+            at = poke(into, room, at, shown[lead + k])
+        if count > 0:
+            at = poke(into, room, at, '.')
+        for k in whole..whole + i64(count):
+            at = poke(into, room, at, shown[lead + k] if k >= 0 else '0')
+    if room > 0:
+        ((into as *bytes + min(at, room - 1)) as *u8).* = 0
+    return i32(at)
+
+# b at into + at while it has room for it and the 0 after, and the place after it
+priv func poke(into: *u8, room: i64, at: i64, b: u8) -> i64 where @wasm():
+    if at < room - 1:
+        ((into as *bytes + at) as *u8).* = b
+    return at + 1

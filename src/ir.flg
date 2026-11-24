@@ -248,7 +248,8 @@ func label_prefix() -> &strview:
         return ".L" # how QBE begins a label that the assembler keeps to itself
     return "L"
 
-func listing() -> &str:
+# inlines the small functions into their callers, and keeps the functions that main, an export or a function value reaches
+func shrink():
     ids: &map[&strview, i64] = heap({})
     defer free(ids)
     sizes: &list[i64] = heap([])
@@ -370,24 +371,29 @@ func listing() -> &str:
     defer free(work)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
-        append(live, p.export or comp.insts[p.inst].taken_as != VOID)
+        append(live, exported(p) or comp.insts[p.inst].taken_as != VOID)
         if live[f]:
             append(work, f)
-    shaped := comp.shared
-    asked := comp.global_ids["$flag_shapes"] ifnull -1 # what load calls for the table of the program
+    used: &list[Arg] = heap([])
+    defer free(used)
     while work.len > 0:
         p := comp.procs[trust pop(work)]
         for i in comp.code[p.code:p.end]:
-            shaped = shaped or i.a.n == asked and i.a.kind == Global and i.op == "call"
-            g := callee(i, ids)
-            if g < comp.procs.len and not live[g]:
-                live[g] = true
-                append(work, g)
+            for a in operands(i, used): # where a function it calls or takes by address is
+                g := comp.procs.len
+                if a.kind == Global:
+                    g = ids[comp.globals[a.n]] ifnull g
+                if g < comp.procs.len and not live[g]:
+                    live[g] = true
+                    append(work, g)
     written: &list[Proc] = heap([])
     for index, f in comp.procs:
         if live[index]:
             append(written, f)
     comp.procs = written
+
+func listing() -> &str:
+    shrink()
     out: &str = heap("")
     moved: &list[i64] = heap([])
     for l in 0..=comp.labels:
@@ -399,13 +405,17 @@ func listing() -> &str:
         if aggregate(t):
             out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
     out += comp.c_defs
-    out += comp.data
+    shaped := comp.shared
+    for f in comp.procs:
+        for i in comp.code[f.code:f.end]:
+            shaped = shaped or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" and not i.ghost # what load calls for the table of the program
     if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
         privs: &map[i64, bool] = heap({}) # the declarations that are priv
         for sym in comp.syms:
             if sym.priv:
                 privs[sym.node] = true
-        rows: &list[&strview] = heap([])
+        names: &list[&strview] = heap([])
+        rows: &list[Piece] = heap([]) # of each name, its tag, whether it names a union and the hash of its shape or the tag of the union
         tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
         for t in 0..comp.types.len:
             ty := comp.types[t]
@@ -415,9 +425,9 @@ func listing() -> &str:
                 shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
                 for f in comp.items[ty.first:ty.first + ty.count]:
                     shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
-                append(tags, u64(ty.tag) << 32 or u64(rows.len))
-                append(rows, "w " + ty.tag + ", w 0, l " + hash(view(shape)) as i64 + ", l $flag.shape." + rows.len)
-                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + ty.name + "\", b 0 }\n"
+                append(tags, u64(ty.tag) << 32 or u64(names.len))
+                append(names, ty.name)
+                append(rows, ptr([Piece{kind = Number, size = 4, n = ty.tag}, Piece{kind = Number, size = 4}, Piece{kind = Number, size = 8, n = hash(view(shape)) as i64}]))
         for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
             sym := comp.syms[a]
             if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
@@ -427,28 +437,60 @@ func listing() -> &str:
                 name += sym.name
                 tag := tag_of_shape(view(name))
                 target := comp.types[trust make_type(a, [], false, 0)]
-                append(tags, u64(tag) << 32 or u64(rows.len))
-                append(rows, "w " + tag + ", w " + i64(target.kind == Union) + ", l " + i64(target.tag) + ", l $flag.shape." + rows.len)
-                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + name + "\", b 0 }\n"
+                append(tags, u64(tag) << 32 or u64(names.len))
+                append(names, view(name))
+                append(rows, ptr([Piece{kind = Number, size = 4, n = tag}, Piece{kind = Number, size = 4, n = i64(target.kind == Union)}, Piece{kind = Number, size = 8, n = target.tag}]))
         sort(tags)
-        shapes: &str = heap("")
+        table: &list[Piece] = heap([])
+        append(table, Piece{kind = Number, size = 8, n = names.len})
+        for k, name in names:
+            define(Data{name = "$flag.shape." + k}, ptr([Piece{kind = Text, text = name}, Piece{kind = Number, size = 1}]))
         for t in tags:
-            shapes += ", " + rows[i64(t and 0xffff_ffff)]
-        out += read_only(true) + "data $flag.shapes = { l " + rows.len + shapes + " }\nexport function l $flag_shapes() {\n@start\n\tret $flag.shapes\n}\n"
-    out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
-    places: &str = heap("")
+            k := i64(t and 0xffff_ffff)
+            append(table, rows[3 * k:3 * k + 3])
+            append(table, Piece{kind = Address, text = "$flag.shape." + k})
+        define(Data{name = "$flag.shapes", fixed = true}, table)
+        out += "export function l $flag_shapes() {\n@start\n\tret $flag.shapes\n}\n"
+    functions: &list[Piece] = heap([])
+    places: &list[Piece] = heap([])
+    append(functions, Piece{kind = Number, size = 8, n = comp.procs.len})
+    append(functions, Piece{kind = Number, size = 8}) # where the code of the last function ends
+    if comp.procs.len > 0:
+        functions[1] = Piece{kind = Address, text = "$\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""}
     place := 16 + 16 * comp.procs.len
     for f in comp.procs:
         hidden := f.node == 0 or comp.insts[f.inst].library
-        out += ", l " + f.name + ", w " + place + ", w " + i64(hidden)
+        append(functions, ptr([Piece{kind = Address, text = f.name}, Piece{kind = Number, size = 4, n = place}, Piece{kind = Number, size = 4, n = i64(hidden)}]))
         if not hidden:
             at := declared_at(f)
             shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
             place += shown.len + 1
-            places += ", "
-            text_bytes(places, shown)
-            places += "b 0"
-    out += places + " }\n"
+            append(places, ptr([Piece{kind = Text, text = shown}, Piece{kind = Number, size = 1}]))
+    append(functions, places[:])
+    define(Data{name = "$flag.functions"}, functions)
+    for d in comp.data:
+        pieces := comp.pieces[d.first:d.first + d.count]
+        if pieces.len > 0 and pieces[0].kind == File: # the assembler writes it, QBE has no way to read a file
+            continue
+        addresses := false
+        for piece in pieces:
+            addresses = addresses or piece.kind == Address
+        if d.thread:
+            out += "thread "
+        elif d.fixed and comp.system == "linux": # where a write stops the program
+            out += "section \".data.rel.ro\" "
+        elif d.fixed and comp.system == "windows":
+            out += "section \".rdata\" \"dr\" "
+        elif d.fixed and addresses: # on macOS __TEXT takes no address that the loader fixes
+            out += "section \"__DATA,__const\" "
+        elif d.fixed:
+            out += "section \"__TEXT,__const\" "
+        out += "data " + d.name + " = "
+        if d.align != 8:
+            out += "align " + d.align + " "
+        out += "{ "
+        put_pieces(out, pieces)
+        out += " }\n"
     out += "function l $flag_frame() {\n@start\n\t%f =l frame\n\t%c =l loadl %f\n\tret %c\n}\n" # the frame of its caller, its own is gone when it returns
     out += "function l $flag_functions() {\n@start\n\tret $flag.functions\n}\n"
     for f in comp.procs:
@@ -550,6 +592,20 @@ func listing() -> &str:
             out += "\n"
         out += "}\n"
     return out
+
+# what the outside calls: main and the exports of the program, those of the library are reached from the code that gives them to C by address
+func exported(p: Proc) -> bool:
+    return p.node != 0 and (p.inst == comp.entry or p.export and not comp.insts[p.inst].library)
+
+# what an instruction reads, into used: a, b, c and the arguments of a call, and nothing of a ghost
+func operands(i: Ins, used: *&list[Arg]) -> &listview[Arg]:
+    clear(used)
+    if not i.ghost:
+        append(used, ptr([i.a, i.b, i.c]))
+    if not i.ghost and i.op == "call":
+        for given in comp.passes[i.first:i.first + i.count]:
+            append(used, given.arg)
+    return used.*
 
 func callee(i: Ins, ids: &map[&strview, i64]) -> i64:
     if i.op != "call" or i.a.kind != Global or i.ghost:
@@ -655,3 +711,37 @@ func put_arg(out: *&str, a: Arg, first: u32):
         out.* += a.n
     case:
         return
+
+# the parts of data as QBE reads them, a run of the plain bytes of a text in quotes
+func put_pieces(out: *&str, pieces: &listview[Piece]):
+    start := out.len
+    for p in pieces:
+        switch p.kind:
+        case Zeros:
+            out.* += "z " + p.n + ", "
+        case Number:
+            out.* += ("b" if p.size == 1 else "h" if p.size == 2 else "w" if p.size == 4 else "l") + " " + p.n + ", "
+        case Address:
+            out.* += "l " + p.text
+            if p.n != 0:
+                out.* += " + " + p.n
+            out.* += ", "
+        case Text:
+            quoted := false
+            for b in items(p.text):
+                plain := b >= ' ' and b <= '~' and b != '"' and b != '\\'
+                if quoted and not plain:
+                    out.* += "\", "
+                elif plain and not quoted:
+                    out.* += "b \""
+                quoted = plain
+                if plain:
+                    add_byte(out, b)
+                else:
+                    out.* += "b " + i64(b) + ", "
+            if quoted:
+                out.* += "\", "
+        case File: # the assembler reads it
+            pass
+    if out.len > start:
+        out.len -= 2
