@@ -1,5 +1,3 @@
-@trust
-
 SecText = 0
 SecData = 1
 SecBss = 2
@@ -24,17 +22,22 @@ func assembly() -> &str:
             shaped = shaped or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" and not i.ghost # what load calls for the table of the program
     if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
         privs: &map[i64, bool] = heap({}) # the declarations that are priv
+        defer free(privs)
         for sym in comp.syms:
             if sym.priv:
                 privs[sym.node] = true
         names: &list[&strview] = heap([])
+        defer free(names)
         rows: &list[Piece] = heap([]) # of each name, its tag, whether it names a union and the hash of its shape or the tag of the union
+        defer free(rows)
         tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
+        defer free(tags)
         for t in 0..comp.types.len:
             ty := comp.types[t]
             k := comp.nodes[ty.decl].kind
             if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
                 shape: &str = heap("")
+                defer free(shape)
                 shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
                 for f in comp.items[ty.first:ty.first + ty.count]:
                     shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
@@ -49,12 +52,13 @@ func assembly() -> &str:
                     name += sym.module + "."
                 name += sym.name
                 tag := tag_of_shape(view(name))
-                target := comp.types[trust make_type(a, [], false, 0)]
+                target := comp.types[sym.type]
                 append(tags, u64(tag) << 32 or u64(names.len))
                 append(names, view(name))
                 append(rows, ptr([Piece{kind = Number, size = 4, n = tag}, Piece{kind = Number, size = 4, n = i64(target.kind == Union)}, Piece{kind = Number, size = 8, n = target.tag}]))
         sort(tags)
         table: &list[Piece] = heap([])
+        defer free(table)
         append(table, Piece{kind = Number, size = 8, n = names.len})
         for k, name in names:
             define(Data{name = "$flag.shape." + k}, ptr([Piece{kind = Text, text = name}, Piece{kind = Number, size = 1}]))
@@ -64,7 +68,9 @@ func assembly() -> &str:
             append(table, Piece{kind = Address, text = "$flag.shape." + k})
         define(Data{name = "$flag.shapes", fixed = true}, table)
     functions: &list[Piece] = heap([])
+    defer free(functions)
     places: &list[Piece] = heap([])
+    defer free(places)
     append(functions, Piece{kind = Number, size = 8, n = comp.procs.len})
     append(functions, Piece{kind = Number, size = 8}) # where the code of the last function ends
     if comp.procs.len > 0:
@@ -75,7 +81,8 @@ func assembly() -> &str:
         append(functions, ptr([Piece{kind = Address, text = f.name}, Piece{kind = Number, size = 4, n = place}, Piece{kind = Number, size = 4, n = i64(hidden)}]))
         if not hidden:
             at := declared_at(f)
-            shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
+            shown := proc_name(f) # the data of the program keeps it
+            shown += ", " + comp.files[file_of(at)].path + ":" + line_of(at)
             place += shown.len + 1
             append(places, ptr([Piece{kind = Text, text = shown}, Piece{kind = Number, size = 1}]))
     append(functions, places[:])
@@ -181,9 +188,11 @@ func assembly() -> &str:
     special("flag_functions", false, "flag.functions")
     compile()
     moved: &list[i64] = heap([])
+    defer free(moved)
     for l in 0..=comp.labels:
         append(moved, 0)
     dropped: &list[bool] = heap([])
+    defer free(dropped)
     for i in comp.code:
         append(dropped, i.ghost)
     for f in comp.procs:
@@ -201,7 +210,9 @@ func assembly() -> &str:
             compile()
     asm.machine.emitfin()
     if comp.debug:
-        out(dwarf())
+        info := dwarf()
+        defer free(info)
+        out(info)
     return asm.text
 
 # the types of the aggregates and the globals of comp as the backend reads them

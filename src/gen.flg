@@ -16,7 +16,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     comp.settler = NONE
     for k in 1..comp.syms.len:
         if comp.nodes[comp.syms[k].node].kind == Void:
-            try make_type(k, [], false, comp.tokens[comp.nodes[comp.syms[k].node].tok].at)
+            comp.syms[k].type = try make_type(k, [], false, comp.tokens[comp.nodes[comp.syms[k].node].tok].at)
     for e in 0..comp.nodes.len:
         if comp.nodes[e].kind == Extern:
             lib := text(e)[1:text(e).len - 1]
@@ -32,6 +32,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         kind := comp.nodes[d].kind
         if (kind == Struct or kind == Fat or kind == Context or kind == Alias) and not generic(d):
             t := try make_type(k, [], kind == Fat, comp.tokens[comp.nodes[d].tok].at)
+            comp.syms[k].type = t
             ty := comp.types[t]
             if kind == Context: # nothing runs when a thread starts, so a field that starts without a value never gets one
                 for f in comp.items[ty.first:ty.first + ty.count]:
@@ -150,7 +151,7 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Context and declared(d) != "shared":
-            t := trust make_type(k, [], false, 0)
+            t := comp.syms[k].type
             try stamp(t, global("thread $ctx." + comp.types[t].name), 0)
     if comp.stamping:
         add(Ins{op = "storew", a = int_arg(1), b = global("thread $flag.entered")})
@@ -740,6 +741,16 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
     id := comp.inst_ids[view(key)]
     if id is i64:
         return id
+    taken: &list[i64] = heap([])
+    defer free(taken)
+    for k in 0..params(f):
+        c := kid(f, k)
+        if gathers(c):
+            append(taken, try fat_type("listview", try resolve(c + 1), at))
+        elif text(c) != "..":
+            append(taken, try resolve(c + 1))
+        else:
+            append(taken, VOID)
     depth := 0
     if comp.binds.len > comp.frame and comp.insts.len > 0: # a default of a type is made before any function
         depth = comp.insts[comp.inst].depth + 1
@@ -766,9 +777,11 @@ func instantiate(f: i64, at: i64) -> i64|Fail:
             name += "op"
         name += "." + comp.insts.len
     library := comp.files[file_of(comp.tokens[comp.nodes[f].tok].at)].library
-    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, VOID})
+    append(comp.insts, Inst{f, view(name), comp.inst_binds.len, comp.binds.len - comp.frame, ret, site(at), export, library, depth, VOID, comp.items.len})
     for i in comp.frame..comp.binds.len:
         append(comp.inst_binds, comp.binds[i])
+    for t in taken:
+        append(comp.items, Item{type = t})
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
 

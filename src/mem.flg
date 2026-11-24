@@ -17,7 +17,7 @@ HOPS = 3
 VISITS = 30
 ROUNDS = 20
 
-SLOTS = 512
+SLOTS = 1024
 FNVBASIS = 0xcbf2_9ce4_8422_2325
 FNVPRIME = 0x100_0000_01b3
 
@@ -43,7 +43,7 @@ VISITED = 13
 ROUND = 14
 HELD = 15
 NOW = 16
-MEMBERS = 1 << 14
+MEMBERS = 1 << 13
 
 UNSETTLED = "its memory state did not converge"
 UNFOLLOWED = "-memory cannot track a pointer after it is stored into C-allocated memory"
@@ -85,7 +85,7 @@ type Span:
     yes: u32
     no: u32
 
-type Set = Bits[8]
+type Set = Bits[16]
 
 type enum Reach:
     ByLive, ByMust, ByAny, FromGlobals, FromValue
@@ -195,6 +195,11 @@ type Write:
     value: Target
     id: i64
     strong: bool
+
+# blocks that a call may have moved through a place, which holds them still where it did not
+type Regrown:
+    at: Target
+    blocks: Set
 
 type Warning:
     text: &strview
@@ -319,6 +324,7 @@ context mem:
     binds: &list[Target] = heap([])
     bound: Set
     writes: &list[Write] = heap([])
+    regrown: &list[Regrown] = heap([])
     order: &list[u64] = heap([])
     warnings: &list[Warning] = heap([])
     said: &map[&strview, bool] = heap({})
@@ -430,7 +436,7 @@ func check_memory():
                 aims.len = 0
                 if i.c.n != VOID and not comp.types[i.c.n].foreign: # without closures a function value is one of the functions taken as its type, each a path
                     for p in comp.procs:
-                        if comp.insts[p.inst].taken_as == i.c.n:
+                        if comp.insts[p.inst].name == p.name and comp.insts[p.inst].taken_as == i.c.n:
                             append(aims, p.name)
                     variable := 0 # a local that only ever holds named functions calls one of those
                     for c in comp.code[func.code:func.end]:
@@ -1307,7 +1313,7 @@ func visit(block: i64):
                 christen(target_of(o.a), spelled(sole(address), address.off, 8).name)
             if o.code == Store:
                 stash(address, target_of(o.a))
-            else:
+            elif address.member != 0: # a number holds no memory, but in a union it says which member is there
                 stash(address, number(0))
         case Blit:
             from := target_of(o.a)
@@ -1451,7 +1457,7 @@ func visit(block: i64):
                         h = birth(RECURSIVE, Obj{kind = Heap, many = true, born = born, pos = o.pos, from = mem.who, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone})
                         recursive = h
                     else:
-                        h = lodge(arena_of(ob), (u64(i) << 16) or (u64(x) << 8) or SITE, Obj{kind = Heap, many = mem.fns[g].many[x], born = born, pos = o.pos, from = mem.who, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone})
+                        h = lodge(arena_of(ob), (u64(i) << 24) or (u64(x) << 8) or SITE, Obj{kind = Heap, many = mem.fns[g].many[x], born = born, pos = o.pos, from = mem.who, sent = ob.sent, arena = ob.arena, pool = ob.pool, thread = ob.thread, alone = ob.alone})
                     mem.marks.live = carry(marks.live, x, mem.marks.live, h, replace)
                     mem.marks.freed = carry(marks.freed, x, mem.marks.freed, h, replace)
                     mem.marks.killed = carry(marks.killed, x, mem.marks.killed, h, replace)
@@ -1582,6 +1588,8 @@ func visit(block: i64):
                             condemn(h, marks.sure[x] and b.must[h], marks.freed[x])
                             mem.fn.objs[h].element = mem.fn.objs[h].element or marks.freed[x] and b.element
                             mem.fn.objs[h].part = mem.fn.objs[h].part or marks.freed[x] and not inner and (b.part or ob.part) # a function that calls itself on the rest of a list walks it
+                        if marks.made[x] and not marks.freed[x] and ob.depth > 0 and not empty(killed):
+                            append(mem.regrown, Regrown{plus(binding(ob.parent), ob.off, ob.stride, ob.count), killed})
                         for h in passed:
                             mem.fn.objs[h].pool = mem.fn.objs[h].pool or ob.pool
                             mem.fn.objs[h].loose = mem.fn.objs[h].loose or ob.loose
@@ -1693,7 +1701,7 @@ func visit(block: i64):
         case Fresh, Arena:
             touch_args(o)
             from := mem.callees[o.callee]
-            h := birth((u64(i) << 16) or SITE, Obj{kind = Heap, born = i64(i), pos = o.pos, from = from[1:], arena = o.code == Arena})
+            h := birth((u64(i) << 24) or SITE, Obj{kind = Heap, born = i64(i), pos = o.pos, from = from[1:], arena = o.code == Arena})
             define(o.to, Target{live = bit(h), must = bit(h)})
         case Rewind:
             released: Set
@@ -1709,7 +1717,7 @@ func visit(block: i64):
         case Take:
             touch_args(o)
             worded(target_of(mem.args[o.first])) # the counts and the blocks of the arena
-            k := chunk(target_of(mem.args[o.first]), named(mem.args[o.first].temp, i64(o.callee) - 1, 0), (u64(i) << 16) or SITE, Obj{kind = Heap, born = i64(i), pos = o.pos, from = "arena"})
+            k := chunk(target_of(mem.args[o.first]), named(mem.args[o.first].temp, i64(o.callee) - 1, 0), (u64(i) << 24) or SITE, Obj{kind = Heap, born = i64(i), pos = o.pos, from = "arena"})
             define(o.to, Target{live = bit(k), must = bit(k)})
         case Reclaim:
             touch_args(o)
@@ -1749,7 +1757,7 @@ func visit(block: i64):
             mem.marks.made = mem.marks.made or blocks and (mem.fn.outer or mem.fn.focus)
             sweep()
             out := Target{live = objects(first.live), must = first.must, killer = o.pos if o.code == Grow else 0}
-            reborn(first, blocks, ptr(out), arena, (u64(i) << 16) or SITE, Obj{kind = Heap, pos = o.pos, from = "realloc"})
+            reborn(first, blocks, ptr(out), arena, (u64(i) << 24) or SITE, Obj{kind = Heap, pos = o.pos, from = "realloc"})
             if empty(out.live):
                 out.live = bit(NOWHERE)
             define(o.to, out)
@@ -2459,8 +2467,8 @@ operator hash(t: Touch) -> u64:
     return h xor (h >> 33)
 
 func fold(h: u64, x: Set) -> u64:
-    for i in 0..8:
-        h = (h xor x.words[i]) * FNVPRIME
+    for w in x.words:
+        h = (h xor w) * FNVPRIME
     return h
 
 func release(st: State):
@@ -2811,7 +2819,7 @@ func initial(owner: i64, off: i32, stride: i32, count: u32, member: u32) -> Targ
     x := mem.fn.objs[owner]
     if x.depth > HOPS:
         return Target{live = bit(owner), must = bit(owner)} # past HOPS pointers a block is all the memory it reaches
-    c := object(child(owner, off, stride) or (u64(member) << 49), Obj{kind = Entry, parent = owner, off = off, stride = stride, count = count, member = member, root = x.root, core = x.core, depth = x.depth + 1, many = mem.fn.many[owner] or off == ANY or stride != 0 or x.depth == HOPS})
+    c := object(child(owner, off, stride) or (u64(member) << 50), Obj{kind = Entry, parent = owner, off = off, stride = stride, count = count, member = member, root = x.root, core = x.core, depth = x.depth + 1, many = mem.fn.many[owner] or off == ANY or stride != 0 or x.depth == HOPS})
     if mem.fn.objs[c].count != count:
         mem.fn.objs[c].count = 0
     return Target{live = bit(c), must = bit(c)}
@@ -3196,14 +3204,20 @@ func sweep():
             first = i64(mem.swept[o] and 0xffff_ffff)
         for k in first..mem.refs[o].len:
             id := mem.refs[o][k]
-            owner := i64(mem.fn.cells[id].owner)
+            c := mem.fn.cells[id]
+            owner := i64(c.owner)
             hit := condemned
             if mem.walking.len > 0 and contains(mem.walking, owner if owner >= SLOTS else newest(owner)):
                 hit = strong # the lists that a walk walks hold what it changed, and lose only what it surely freed
-            elif many(mem.fn.cells[id]):
+            elif many(c):
                 hit = strong or mem.released - loose # an element freed at an index it knows may be any of a list, at one it doesn't know it stays live there, and so does one moved
             elif owner < SLOTS and mem.fn.heaps[owner]:
                 hit = condemned - loose # an element freed through a variable stays live where the heap keeps it, like in a list
+            for m in mem.regrown: # a place it may have moved through holds it still, or the new block
+                at := m.at
+                here := at.live[owner] if owner < SLOTS else at.slot != 0 and at.slot != ALL and owner == SLOTS + i64(at.slot) - 1
+                if here and c.off != ANY and c.stride == 0 and (at.off == ANY or at.stride == 0 and at.off == c.off or at.stride != 0 and c.off >= at.off and (c.off - at.off) % at.stride == 0):
+                    hit = hit - (m.blocks - strong - mem.released)
             if mem.ticked[id] == mem.tick and not empty(cell_value(id).live and hit):
                 rewrite(i64(id), kill(cell_value(id), hit, strong))
         mem.swept[o] = (u64(mem.tick) << 32) or u64(mem.refs[o].len)
@@ -3220,6 +3234,7 @@ func sweep():
     mem.condemned = Set{}
     mem.strong = Set{}
     mem.released = Set{}
+    mem.regrown.len = 0
     for o in strong and mem.fn.heaps and mem.marks.gone - mem.marks.live: # what a block freed for sure held is gone, and the next block of its line starts empty
         wipe(o)
 
@@ -3365,12 +3380,13 @@ func touch_args(o: Op):
     for k in o.first..o.first + o.count:
         touch(target_of(mem.args[k]), mem.fn.names[mem.args[k].temp])
 
+# a store of each word: the words that shape marks hold pointers, the others numbers
 func transfer(to: Target, from: Target, size: i64, shape: u32):
     for k in 0..size / 8:
-        v := number(0)
         if marked(shape, k):
-            v = fetch(plus(from, i32(k * 8), 0, 0))
-        stash(plus(to, i32(k * 8), 0, 0), v)
+            stash(plus(to, i32(k * 8), 0, 0), fetch(plus(from, i32(k * 8), 0, 0)))
+        elif to.member != 0:
+            stash(plus(to, i32(k * 8), 0, 0), number(0))
     if not mem.viewed or from.off == ANY or from.member != 0:
         return
     owner := sole(from)
@@ -3518,7 +3534,7 @@ func binding(x: i64) -> Target:
         out = Target{live = bit(s), must = bit(s)}
         t := mem.apart[i64(ob.key >> 8)]
         if o.ghost and t != VOID: # a thread starts with its own, from the defaults or a copy of an inherited one
-            c := object((u64(mem.call) << 16) or (u64(x) << 8) or COPY, Obj{kind = Slot, name = ob.name, pos = o.pos})
+            c := object((u64(mem.call) << 24) or (u64(x) << 8) or COPY, Obj{kind = Slot, name = ob.name, pos = o.pos})
             wipe(c)
             stamper := mem.ids["$flag.stamp"]
             if declared(comp.types[t].decl) == "inherited":
@@ -3558,7 +3574,7 @@ func binding(x: i64) -> Target:
             name = named(mem.args[i64(o.first) + ob.root - 1].temp, g, ob.root - 1)
         if name.len == 0 and home.off != ANY and home.stride == 0 and sole(home) != NONE: # a place with no variable of its own, like a field of a context
             name = spelled(sole(home), home.off, 8).name
-        key := (u64(mem.call) << 16) or (u64(x) << 8) or SITE
+        key := (u64(mem.call) << 24) or (u64(x) << 8) or SITE
         if home.off != ANY and home.stride == 0 and sole(home) != NONE:
             key = (child(sole(home), home.off, 0) xor FIELD) or PLACE
         h := reborn(out, objects(out.live), ptr(out), arena_of(ob), key, Obj{kind = Heap, pos = o.pos, from = mem.who, name = name})

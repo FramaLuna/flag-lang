@@ -1595,10 +1595,10 @@ Where the checker cannot prove safety, it warns conservatively; [What asks for @
 - **Untrackable pointers** (subsequently reported as leaks):
   - Cast to integer, alone or inside a struct (`W{p} as u64`): `-memory cannot track x after converting it to an integer; keep it in a pointer type`. The distance between two places of one block (`ptr(p.b) as i64 - p as i64`) is a plain number and does not warn.
   - Stored into C-allocated memory (directly or via a helper): `-memory cannot track a pointer after it is stored into C-allocated memory`.
-- **Complexity limits**: a function exceeding **512 tracked blocks** (~500 user allocations, temporaries, and parameter targets) or failing to converge stops analysis for that function (still reporting findings so far):
-  - `-memory stopped checking f because it has more than 512 blocks of memory to follow; checks for this function are incomplete`
+- **Complexity limits**: a function exceeding **1024 tracked blocks** (~1000 user allocations, temporaries, and pointers that parameters and contexts reach; words that hold numbers take none) or failing to converge stops analysis for that function (still reporting findings so far):
+  - `-memory stopped checking f because it has more than 1024 blocks of memory to follow; checks for this function are incomplete`
   - `-memory stopped checking f because its memory state did not converge; checks for this function are incomplete`
-  Every caller (and transitive caller, even if `f` is `@trust`) also warns: `-memory stopped checking f because it has more than 512 blocks of memory to follow; this call is not checked` (`@trust` on the call line silences it). Split large functions to stay within the limit.
+  Every caller (and transitive caller, even if `f` is `@trust`) also warns: `-memory stopped checking f because it has more than 1024 blocks of memory to follow; this call is not checked` (`@trust` on the call line silences it). Split large functions to stay within the limit.
 
 #### Naming and notes
 
@@ -1723,7 +1723,8 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 #### Control flow, pointers, and aliasing
 
 - Freeing in `if c:` and again in `if not c:` (warns both double free and possible leak).
-- Freeing one element at a constant index (`free(names[0])`) and reading or freeing another through the list, also when the list holds a union and each element is narrowed first.
+- Freeing one element at a constant index (`free(names[0])`) and reading or freeing another through the list, also when the list holds a union and each element is narrowed first, or when the elements grew through a runtime index (`append(groups[i % 2], x)`, then `free(groups[0])` and `free(groups[1])`).
+- Calling a function that grows what one argument points to and reads another with pointers to two elements of one list or array (`merge(ptr(sets[i]), ptr(sets[j]))`): the elements are tracked together, so it warns `merge may free or reallocate memory that it also reads through another argument` even when `i` and `j` differ.
 - Linked lists and trees built in loops or recursively (all allocations from one line collapse into two blocks: newest vs rest, so freeing a node via a pointer that may be either is not proven to free all).
 - Recursive tree `release` walking children first, when the nodes own memory (`release may free or reallocate memory that it also reads`; a tree of plain `*Tree?` nodes gives no warning).
 - Pointers that may refer to one of several struct fields when storing or freeing through them.
@@ -1739,6 +1740,7 @@ Because `-memory` is conservative, these valid programs produce false-positive w
 - Splitting allocations from one loop line across two lists (`append(good, s)` vs `append(bad, s)`): both lists appear to alias the same block, causing double-free warnings (`free cannot release n; it may already be freed (possible double free)`), view invalidations, and cross-list race warnings.
 - Rebuilding a list in a loop and reading `v` after `append(next, v)` (`use after free: v points to memory that may already be freed`).
 - Emptying a list of lists with `pop`/`remove` (inner elements warn double free and leak).
+- Emptying a list with `l.len = 0` after freeing its elements, then filling it again: only `clear(l)` takes the elements out of the list for `-memory`, so the new ones seem to share the freed blocks (`use after free: p.marks points to memory that may already be freed`). Write `clear(l)`.
 - `append` to a zeroed list (from `calloc`) whose capacity was reserved by hand: the checker does not see the capacity and warns `this call cannot grow data; it may not have allocated memory to grow`.
 - Returning owners nested two levels deep built in an inner loop (list of rows or map of lists: `memory leak: the memory that heap allocates here may never be freed` with note at `return`).
 - Calling `args()` in two places (checker thinks the list may reallocate between calls, invalidating earlier views).
@@ -1795,6 +1797,7 @@ These real bugs currently produce **no** `-memory` warning:
 - Freeing a list after freeing only *some* elements via `pop`/`remove` (hides leaks of remaining elements).
 - Reading a view of a list taken before `clear(l)` after `clear(l)` if an element was freed beforehand.
 - Keeping a view of a `&map[&str, V]` key inside a list after the map frees its keys.
+- Writing a number over a pointer through memory cast to another type (`(ptr(cache.last) as *u64).* = 0`): `-memory` follows only the words that the written type says hold pointers, so it still sees the old pointer there and reports no leak of its block.
 
 #### Trees, contexts, channels, stack, and arenas
 
@@ -1812,7 +1815,7 @@ These real bugs currently produce **no** `-memory` warning:
 - **End of line**: covers that line and any block indented beneath it.
 - **Standalone line**: covers all following lines at that indentation until indentation dedents (at the top of a file, covers the entire file).
 
-`@check` re-enables warnings inside a trusted region; a `@check` function continues reporting warnings even when called from trusted code. `-memory` skips trusted functions that no untrusted code depends on, speeding up checks (`flagc`'s own source is all `@trust`).
+`@check` re-enables warnings inside a trusted region; a `@check` function continues reporting warnings even when called from trusted code. `-memory` skips trusted functions that no untrusted code depends on, speeding up checks (in `flagc`'s own source the frontend is `@trust`, while the backend and the WebAssembly writer are checked).
 
 ## Debugging
 

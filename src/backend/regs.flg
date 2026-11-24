@@ -1,5 +1,3 @@
-@trust
-
 type RMap: # the register of each temp in registers at a point
     t: array[i32, 64]
     r: array[i32, 64]
@@ -133,7 +131,7 @@ func filllive():
 
 # aggregate looping information at loop headers
 func aggreg(hd: i64, b: i64):
-    bsunion(ptr(fn.blks[hd].gen), ptr(fn.blks[b].gen))
+    bsunion(ptr(fn.blks[hd].gen), ptr(fn.blks[b].gen)) @trust
     for k in 0..2:
         if fn.blks[b].nlive[k] > fn.blks[hd].nlive[k]:
             fn.blks[hd].nlive[k] = fn.blks[b].nlive[k]
@@ -254,7 +252,7 @@ func limit(b: *BSet, k: i64, f: *BSet?):
         if f is null:
             sort(tarr.*, tcmp0)
         else:
-            regs.fst = f.*
+            bscopy(ptr(regs.fst), f)
             sort(tarr.*, tcmp1)
     i := 0
     while i < k and i < nt:

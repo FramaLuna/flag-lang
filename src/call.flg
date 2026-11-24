@@ -897,7 +897,7 @@ func inherited() -> &list[i64]:
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         if comp.nodes[d].kind == Context and declared(d) == "inherited":
-            append(out, trust make_type(k, [], false, 0))
+            append(out, comp.syms[k].type)
     return out
 
 # a call as core sees it: the runtime is priv, and a check of the compiler calls the panic of core, not one of yours
@@ -920,7 +920,7 @@ func written(label: &strview, t: i64, ret: i64, at: i64) -> i64:
         return id
     name: &str = heap("$")
     name += label + "." + comp.insts.len
-    append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0, VOID})
+    append(comp.insts, Inst{0, view(name), comp.inst_binds.len, 1, ret, site(at), false, true, 0, VOID, comp.items.len})
     append(comp.inst_binds, Item{name = "$T", type = t})
     put(comp.inst_ids, view(key), comp.insts.len - 1)
     return comp.insts.len - 1
@@ -929,14 +929,11 @@ func instantiate_for(f: i64, order: &list[i64], args: &list[Value], taken: *&lis
     saved := open_frame()
     if generic(f):
         try bind(f, order, args)
-    for k in 0..params(f):
-        c := kid(f, k)
-        if gathers(c):
-            append(taken, try fat_type("listview", try resolve(c + 1), at))
-        elif text(c) != "..":
-            append(taken, try resolve(c + 1))
     id := try instantiate(f, at)
     close_frame(saved)
+    for k, item in comp.items[comp.insts[id].params:comp.insts[id].params + params(f)]:
+        if text(kid(f, k)) != "..":
+            append(taken, item.type)
     return id
 
 func choose(name: &strview, module: &strview, args: &listview[Value], names: &list[&strview], at: i64) -> i64|Fail:

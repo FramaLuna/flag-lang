@@ -1,5 +1,3 @@
-@trust
-
 # the bytes and halves that pass to and from calls are words, with arbitrary high bits
 func elimsb():
     b := fn.start
@@ -594,7 +592,7 @@ func chop():
         free(c.cls)
         free(c.to)
         free(c.blits)
-    chopping.chops.len = 0
+    clear(chopping.chops)
     chopping.blits.len = 0
     for i in fn.blks[fn.start].ins:
         if not isalloc(i.op) or rtype(i.arg[0]) != RCon:
@@ -1661,9 +1659,8 @@ func replaceuse(u: Usage, r1: Ref, r2: Ref):
         panic("unreachable")
 
 func replaceuses(r1: Ref, r2: Ref):
-    uses := fn.tmp[r1].uses
     for k in 0..fn.tmp[r1].nuse:
-        replaceuse(uses[k], r1, r2)
+        replaceuse(fn.tmp[r1].uses[k], r1, r2)
     fn.tmp[r1].nuse = 0
 
 func negcon(cls: i64, c: *Con) -> bool:
@@ -2024,7 +2021,8 @@ func gvn():
     # the instructions of the blocks that died that are in the table, the code may compute with them
     for d in rpo:
         if fn.blks[d].id == -1:
-            for i in fn.blks[d].ins:
+            for k in 0..fn.blks[d].ins.len:
+                i := fn.blks[d].ins[k]
                 if not optab[i.op].pinned and gvndup(i, false) == i.to:
                     addins(ptr(fn.blks[fn.start].ins), i)
     free(rpo)

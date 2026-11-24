@@ -1,4 +1,3 @@
-@trust
 use fs
 
 GUARD = 4096 # the data starts past the first page, which a null pointer points into
@@ -61,11 +60,13 @@ func assemble() -> &str|Fail:
     for k, d in comp.data:
         put(wasm.data_ids, d.name, k)
         append(wasm.kept, false)
-    externs: &map[&strview, i64] = heap({}) # the declaration of each function of an extern block, by its name
-    for inst in comp.insts:
+    externs: &map[&strview, i64] = heap({}) # the instance of each function of an extern block, by its name
+    defer free(externs)
+    for k, inst in comp.insts:
         if inst.node != 0 and body(inst.node) == 0:
-            put(externs, inst.name, inst.node)
+            put(externs, inst.name, k)
     used: &list[Arg] = heap([])
+    defer free(used)
     for p in comp.procs:
         if p.node != 0 and p.inst == comp.entry: # main, which _start ends with proc_exit
             try uses("$proc_exit", false, externs)
@@ -79,6 +80,9 @@ func assemble() -> &str|Fail:
             if piece.kind == Address:
                 try uses(piece.text, true, externs)
     files: &map[&strview, &str] = heap({}) # the bytes of each file of @embed
+    defer free(files)
+    defer for e in files:
+        free(e.value)
     at := GUARD
     for k, d in comp.data:
         if not wasm.kept[k]:
@@ -96,21 +100,28 @@ func assemble() -> &str|Fail:
             case Text:
                 at += piece.text.len
             case File:
-                read := read_file(piece.text)
-                if read is FsError:
-                    eprint(comp.err, read)
-                    return Fail
-                put(files, piece.text, read)
-                at += read.len
+                if files[piece.text] is null: # a file embedded twice is read once
+                    read := read_file(piece.text)
+                    if read is FsError:
+                        eprint(comp.err, read)
+                        return Fail
+                    put(files, piece.text, read)
+                at += (trust files[piece.text]).len
     wasm.stack = align_up(at, 16)
     wasm.heap_base = wasm.stack + SHADOW
     thunked := wasm.imports.len + comp.procs.len + wasm.builtins.len # the index of the first thunk
     stubs: &list[i64] = heap([]) # the type of each thunk, whose code goes in stubbed
-    stubbed: &list[&str] = heap([])
+    defer free(stubs)
+    stubbed: &list[&str] = heap([]) # until wasm.bodies takes them
+    defer free(stubbed)
+    defer for code in stubbed:
+        free(code)
     imports: &str = heap("")
+    defer free(imports)
     leb(imports, u64(wasm.imports.len))
     for k, name in wasm.imports:
-        f := trust externs[name]
+        imported := comp.insts[trust externs[name]]
+        f := imported.node
         e := f - 1
         while comp.nodes[e].kind != Extern or node_end(e) <= f: # the extern block that declares it, and names its module
             e -= 1
@@ -118,16 +129,20 @@ func assemble() -> &str|Fail:
         put_name(imports, name[1:])
         add_byte(imports, 0)
         kinds: &list[u8] = heap([])
-        gives := try foreign(f, kinds)
+        defer free(kinds)
+        gives := try foreign(imported, kinds)
         host: &list[u8] = heap(kinds[:])
-        takes := try hosted(f, host, gives)
+        defer free(host)
+        takes := hosted(imported, host, gives)
         for inst in comp.insts: # another declaration of the function takes and gives the same
             g := inst.node
             if inst.name == name and g != f and g != 0 and body(g) == 0:
                 others: &list[u8] = heap([])
-                given := try foreign(g, others)
+                defer free(others)
+                given := try foreign(inst, others)
                 hosts: &list[u8] = heap(others[:])
-                if signature(others, given) != signature(kinds, gives) or signature(hosts, try hosted(g, hosts, given)) != signature(host, takes):
+                defer free(hosts)
+                if signature(others, given) != signature(kinds, gives) or signature(hosts, hosted(inst, hosts, given)) != signature(host, takes):
                     _ = fail(text(max(f, g)) + " is declared for the host with other types than before; a WebAssembly module imports one function of each name, so declare it with the same types", at_of(max(f, g)))
                     note("declared before here", at_of(min(f, g)))
                     return Fail
@@ -140,6 +155,7 @@ func assemble() -> &str|Fail:
             append(stubs, signature(kinds, gives))
             append(stubbed, thunk(k, kinds, gives, host, takes))
     exports: &str = heap("")
+    defer free(exports)
     shown := 1 # memory
     put_name(exports, "memory")
     exports += "\x02\x00"
@@ -147,6 +163,7 @@ func assemble() -> &str|Fail:
         f := wasm.imports.len + k
         put(wasm.functions, p.name, f)
         kinds: &list[u8] = heap([])
+        defer free(kinds)
         for given in comp.passes[p.params:p.params + p.count]:
             append(kinds, passed(given.cls))
         gives: u8 = 0
@@ -158,7 +175,8 @@ func assemble() -> &str|Fail:
         if not exported(p):
             continue
         host: &list[u8] = heap(kinds[:])
-        takes := try hosted(p.node, host, gives)
+        defer free(host)
+        takes := hosted(comp.insts[p.inst], host, gives)
         name := p.name
         if p.inst == comp.entry: # what a WASI host runs: main, then proc_exit with what it gives
             name = "$_start"
@@ -184,6 +202,7 @@ func assemble() -> &str|Fail:
         append(wasm.bodies, code)
     append(wasm.typed, stubs[:])
     append(wasm.bodies, stubbed[:])
+    clear(stubbed)
     for k, name in comp.globals:
         s := i64(asm.globals[k].sym)
         while wasm.located.len <= s:
@@ -200,11 +219,14 @@ func assemble() -> &str|Fail:
         if function is i64:
             wasm.called[s] = function
     codes: &str = heap("")
+    defer free(codes)
     leb(codes, u64(wasm.typed.len - wasm.imports.len))
     moved: &list[i64] = heap([])
+    defer free(moved)
     for l in 0..=comp.labels:
         append(moved, 0)
     dropped: &list[bool] = heap([])
+    defer free(dropped)
     for i in comp.code:
         append(dropped, i.ghost)
     for p in comp.procs:
@@ -381,16 +403,20 @@ func assemble() -> &str|Fail:
         codes += code
         add_byte(codes, 0x0b)
     types: &str = heap("")
+    defer free(types)
     leb(types, u64(wasm.types.len))
     for t in wasm.types:
         types += t
     declared: &str = heap("") # the type of each function the module writes
+    defer free(declared)
     leb(declared, u64(wasm.typed.len - wasm.imports.len))
     for t in wasm.typed[wasm.imports.len:]:
         leb(declared, u64(t))
     elements: &str = heap("\x01\x00\x41\x01\x0b") # one segment, active in the table, from 1
+    defer free(elements)
     leb(elements, u64(wasm.elements.len))
     table: &list[i64] = heap([])
+    defer free(table)
     for k in 0..wasm.elements.len:
         append(table, 0)
     for e in wasm.elements:
@@ -398,8 +424,10 @@ func assemble() -> &str|Fail:
     for f in table:
         leb(elements, u64(f))
     data: &str = heap("")
+    defer free(data)
     segments := 0
     bytes: &str = heap("") # the data from base on, up to a run of zeros that memory starts with
+    defer free(bytes)
     base := GUARD
     for k, d in comp.data:
         if not wasm.kept[k]:
@@ -433,12 +461,15 @@ func assemble() -> &str|Fail:
     put_section(module, 3, declared)
     if wasm.elements.len > 0 or wasm.indirect: # funcref, at least the null and the functions taken as values
         table_section: &str = heap("\x01\x70\x00")
+        defer free(table_section)
         leb(table_section, u64(wasm.elements.len + 1))
         put_section(module, 4, table_section)
     memory: &str = heap("\x01\x04" if wasm.wide else "\x01\x00") # 64-bit addresses or 32, and no limit
+    defer free(memory)
     leb(memory, u64((wasm.heap_base + SHADOW + PAGE - 1) / PAGE)) # the heap starts with as much room as the stack
     put_section(module, 5, memory)
     global: &str = heap("\x01\x7e\x01\x42") # the shadow stack pointer, an i64 that changes
+    defer free(global)
     sleb(global, wasm.heap_base)
     add_byte(global, 0x0b)
     put_section(module, 6, global)
@@ -447,6 +478,7 @@ func assemble() -> &str|Fail:
         exports += "\x01\x00"
         shown += 1
     counted: &str = heap("")
+    defer free(counted)
     leb(counted, u64(shown))
     counted += exports
     put_section(module, 7, counted)
@@ -460,8 +492,10 @@ func assemble() -> &str|Fail:
         put_section(module, 11, counted)
     if comp.debug: # the name section, for the names a debugger and a trace show
         names: &str = heap("")
+        defer free(names)
         put_name(names, "name")
         list: &str = heap("")
+        defer free(list)
         leb(list, u64(wasm.typed.len))
         for k, name in wasm.imports:
             leb(list, u64(k))
@@ -471,7 +505,9 @@ func assemble() -> &str|Fail:
             if p.node == 0:
                 put_name(list, p.name[1:])
             else:
-                put_name(list, proc_name(p))
+                name := proc_name(p)
+                defer free(name)
+                put_name(list, name)
         for k, name in wasm.builtins:
             leb(list, u64(wasm.imports.len + comp.procs.len + k))
             put_name(list, name[1:])
@@ -607,29 +643,28 @@ func passed(c: u32) -> u8:
     k, _ := parsecls(c)
     return valtype(k)
 
-# the types of the function f of an extern block as the code calls it: what it takes into kinds, and what it gives, or 0
-func foreign(f: i64, kinds: *&list[u8]) -> u8|Fail:
-    for c in 0..params(f):
-        append(kinds, passed(try passing(try resolve(kid(f, c) + 1), true, at_of(kid(f, c)))))
-    back := try result(f)
-    if back == VOID or back == NEVER:
+# the types of the function of an extern block that inst is, as the code calls it: what it takes into kinds, and what
+# it gives, or 0
+func foreign(inst: Inst, kinds: *&list[u8]) -> u8|Fail:
+    for c, taken in comp.items[inst.params:inst.params + params(inst.node)]:
+        append(kinds, passed(try passing(taken.type, true, at_of(kid(inst.node, c)))))
+    if inst.ret == VOID or inst.ret == NEVER:
         return 0
-    return passed(try passing(back, true, at_of(f)))
+    return passed(try passing(inst.ret, true, at_of(inst.node)))
 
-# the types a host gives and gets for the function f, whose types in the code are kinds and gives: on wasm32 a pointer
-# is an i32, as the memory of a host is
-func hosted(f: i64, kinds: *&list[u8], gives: u8) -> u8|Fail:
+# the types a host gives and gets for the function inst, whose types in the code are kinds and gives: on wasm32 a
+# pointer is an i32, as the memory of a host is
+func hosted(inst: Inst, kinds: *&list[u8], gives: u8) -> u8:
     if wasm.wide:
         return gives
     k := 0
-    for c in 0..params(f):
-        t := try resolve(kid(f, c) + 1)
-        if comp.types[t].kind == Given: # it takes nothing at run time
+    for taken in comp.items[inst.params:inst.params + params(inst.node)]:
+        if comp.types[taken.type].kind == Given: # it takes nothing at run time
             continue
-        if comp.types[t].kind == Ptr:
+        if comp.types[taken.type].kind == Ptr:
             kinds[k] = 0x7f
         k += 1
-    if comp.types[try result(f)].kind == Ptr:
+    if comp.types[inst.ret].kind == Ptr:
         return 0x7f
     return gives
 
