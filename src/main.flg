@@ -134,7 +134,7 @@ type Piece:
     n: i64 # the number, how many zeros, or what the address adds
     text: &strview = "" # the bytes, the path of the file, or the name of what the address points to
 
-type CField: # a field of a type that crosses the C ABI by value, as QBE reads it
+type CField: # a field of a type that crosses the C ABI by value, as the calling conventions read it
     kind: u8 # b, h, w, l, s or d, or c for a type of C, type
     type: i64
     count: i64
@@ -298,7 +298,6 @@ extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
     func _wfullpath(into: wstr, path: wstr, size: i64) -> wstr
     func getpid() -> i32
-    func qbe_main(count: i32, args: *cstr) -> i32
     func flag_embedded(index: i64, name: *cstr, size: *i64) -> *bytes
     func flag_version() -> cstr
     func flag_stamp() -> cstr
@@ -443,10 +442,9 @@ func main() -> i32:
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
         return 2
-    backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win", "wasm-wasm64": ""}
-    backend := backends[target]
-    if backend is null:
-        eprint(comp.err, "unknown target ", target, "; supported targets are: linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64, windows-x86_64, wasm-wasm64")
+    targets := ["linux-x86_64", "linux-arm64", "linux-riscv64", "macos-x86_64", "macos-arm64", "windows-x86_64", "wasm-wasm64"]
+    if not contains(ptr(targets), target):
+        eprint(comp.err, "unknown target ", target, "; supported targets are: ", join(ptr(targets), ", "))
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
@@ -669,37 +667,9 @@ func main() -> i32:
             eprint(comp.err, "failed to write WebAssembly module ", output)
             return 1
         return 0
-    ssa: &str = heap(output)
-    ssa += ".ssa"
     asm_file: &str = heap(output)
     asm_file += ".s"
-    if (env("FLAG_QBE") ifnull "").len == 0:
-        if write_file(view(asm_file), assembly()) is FsError:
-            eprint(comp.err, "failed to write assembly file ", asm_file)
-            return 1
-    else:
-        if write_file(view(ssa), listing()) is FsError:
-            eprint(comp.err, "failed to write QBE IR file ", ssa)
-            return 1
-        args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm_file), c_text(ssa), 0 as cstr, 0 as cstr}
-        if comp.debug:
-            args[5] = "-g"
-            args[6] = c_text(ssa)
-        if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
-            return 1
-    extra: &str = heap("") # what the assembly cannot say: the files of @embed, and the DWARF
-    for d in comp.data:
-        if d.count > 0 and comp.pieces[d.first].kind == File:
-            if comp.system == "linux":
-                extra += ".section .rodata\n.p2align 3\n" + d.name[1:]
-            elif comp.system == "windows":
-                extra += ".section .rdata,\"dr\"\n.p2align 3\n" + d.name[1:]
-            else:
-                extra += ".section __TEXT,__const\n.p2align 3\n_" + d.name[1:]
-            extra += ":\n.incbin \"" + replace(replace(comp.pieces[d.first].text, "\\", "\\\\"), "\"", "\\\"") + "\"\n.byte 0\n"
-    if comp.debug:
-        extra += dwarf()
-    if append_file(view(asm_file), extra) is FsError:
+    if write_file(view(asm_file), assembly()) is FsError:
         eprint(comp.err, "failed to write assembly file ", asm_file)
         return 1
     cc: &list[&strview] = heap([])
@@ -766,7 +736,6 @@ func main() -> i32:
     if apart and exists(view(output)) and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
-        _ = remove_file(view(ssa))
         _ = remove_file(view(asm_file))
         if apart:
             _ = remove_file(view(object))

@@ -40,6 +40,6 @@ Every pass ends green:
 
 Every bug you find gets a test in `tests/`: `name.flg` with `name.out`, or with `name.err`
 holding a piece of the expected diagnostic. When `src/` changes, `./build.sh seed`
-refreshes the seeds in `boot/`, one per system.
+refreshes the seeds in `boot/`, one per target.
 
 At the end verify that the documentation is updated

@@ -12,11 +12,13 @@ A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` w
 
 ### Changed
 
-- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They write the same assembly as QBE did, byte for byte, and the compiler builds itself in the same time.
+- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets, and the compiler builds itself in the same time.
+- **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds took 27.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
 
 ### Fixed
 
 - **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops QBE with an assertion.
+- **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
 - **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
 - **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
 

@@ -1,6 +1,6 @@
 @trust
 
-# the instructions in the order of QBE's ops.h, gvn hashes their numbers
+# the instructions in the order of QBE, gvn hashes their numbers
 Oxxx = 0
 Oadd = 1
 Osub = 2
@@ -671,9 +671,6 @@ type Blk:
     gen: BSet
     nlive: array[i64, 2]
     loop: i32
-    view: &list[Instr] = heap([]) # what places taken before fillcfg read, QBE's arrays stay where they were
-    viewed: bool
-    moved: bool # fillcfg gave it the marks of a dead block in other instructions, which no place taken before is in
 
 type Usage:
     type: i32
@@ -793,13 +790,12 @@ context fn:
     labels: &list[i64] = heap([]) # the block of each of its labels
     last: i64 # the block it defined last
     con01: array[Ref, 2] # the constants 0 and 1
-    gvntbl: &list[i64] = heap([]) # the instructions gvn met, by a hash of them
+    gvntbl: &list[Instr] = heap([]) # the instructions gvn met, by a hash of them
     ilog: &list[Insert] = heap([]) # what loadopt inserts
     inum: i64
     thrsym: &list[i64] = heap([]) # the thread data each function reads, and the temps that hold their addresses
     thrtmp: &list[Ref] = heap([])
     thrins: &list[Instr] = heap([])
-    viewing: bool # fillcfg keeps what the places taken before read, for the table of gvn
 
 context asm:
     machine: Machine = AMD64_SYSV
@@ -1197,8 +1193,7 @@ func newblk() -> i64:
     b.ins.len = 0
     b.fron.len = 0
     b.pred.len = 0
-    b.view.len = 0
-    b.* = Blk{ins = b.ins, fron = b.fron, pred = b.pred, live_in = b.live_in, live_out = b.live_out, gen = b.gen, view = b.view}
+    b.* = Blk{ins = b.ins, fron = b.fron, pred = b.pred, live_in = b.live_in, live_out = b.live_out, gen = b.gen}
     return fn.nblks
 
 func fillpreds():
@@ -1261,28 +1256,10 @@ func fillcfg():
         for i in fn.blks[b].ins:
             if i.op == Odbgmark:
                 addins(marks, i)
-        if marks.len > 0:
-            viewing := fn.viewing and not fn.blks[b].viewed
-            if viewing:
-                fn.blks[b].view = fn.blks[b].ins[:]
-                fn.blks[b].viewed = true
-            ins := ptr(fn.blks[b].ins)
-            j := 0
-            for k in 0..ins.len:
-                if ins[k].op != Odbgmark:
-                    ins[j] = ins[k]
-                    if viewing: # QBE packs the array in place, past j it keeps what was there
-                        fn.blks[b].view[j] = ins[k]
-                    j += 1
-            ins.len = j
-            if next != 0:
-                if fn.viewing and not fn.blks[next].viewed:
-                    fn.blks[next].view = fn.blks[next].ins[:]
-                    fn.blks[next].viewed = true
-                fn.blks[next].moved = true
-                for i in fn.blks[next].ins:
-                    addins(marks, i)
-                fn.blks[next].ins = marks[:]
+        if marks.len > 0 and next != 0:
+            for i in fn.blks[next].ins:
+                addins(marks, i)
+            fn.blks[next].ins = marks[:]
         b = next
     fillpreds()
     # the phis keep the arguments of the predecessors that remain
@@ -1839,7 +1816,7 @@ func ssacheck():
                     panic("a temporary of " + fn.name + " violates the ssa invariant")
         b = fn.blks[b].link
 
-# the function as QBE would parse it from the listing
+# a proc of comp lowered to the function in fn
 
 func begin(name: &strview, export: bool):
     if fn.blks.len == 0:
@@ -1916,7 +1893,7 @@ func parseref(a: Arg) -> Ref:
         return tmpref(a.n)
     case Global:
         return newcon(asm.globals[a.n])
-    case Single: # QBE reads the bits of a float from an integer
+    case Single: # the bits of the f32, which the arg holds as an f64
         return getcon(i64(f32(a.n as f64) as u32))
     case:
         return getcon(a.n)
@@ -1934,6 +1911,17 @@ func closeblk(type: i64, arg: Ref, s1: i64, s2: i64):
     b.s2 = s2
 
 func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
+    # a label right after a jump that only jumps on: the jumps to it land where it jumps, and both are dropped
+    ended := false
+    for k in p.code..p.end:
+        i := comp.code[k]
+        next := kept(dropped, k + 1, p.end)
+        if i.op == "@" and ended and next < p.end and comp.code[next].op == "jmp" and landing(moved, comp.code[next].a.n) != i.a.n:
+            moved[i.a.n] = comp.code[next].a.n
+            dropped[k] = true
+            dropped[next] = true
+        if not dropped[k]:
+            ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
     begin(p.name[1:], p.export)
     fn.base = i64(p.temps)
     fn.temps.len = 0
@@ -1970,7 +1958,7 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
     for k in p.code..p.end:
         i := comp.code[k]
         if not slotted and not starts_with(i.op, "alloc"):
-            slotted = true # the allocs are first, and QBE says where each one went
+            slotted = true # the allocs are first, and the emitter says where each one went
             for m in p.mentions..p.mentioned:
                 slot := comp.mentions[m].pointer
                 if slot == 0:
@@ -2071,7 +2059,17 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
             append(fn.blks[fn.last].ins, Instr{op = i32(opcode(i.op)), cls = i32(kc), to = to, arg = [a0, a1]})
     typecheck()
 
-# a function the listing writes itself, that returns what it reads from frame, or the address of data
+func kept(dropped: &list[bool], k: i64, end: i64) -> i64:
+    while k < end and dropped[k]:
+        k += 1
+    return k
+
+func landing(moved: &list[i64], to: i64) -> i64:
+    while moved[to] != 0:
+        to = moved[to]
+    return to
+
+# a function the compiler makes itself, that returns what it reads from frame, or the address of data
 func special(name: &strview, export: bool, data: &strview):
     begin(name, export)
     fn.start = newblk()
@@ -2096,7 +2094,7 @@ func opcode(name: &strview) -> i64:
     found := asm.ops[name]
     if found is i64:
         return found
-    panic("QBE has no instruction " + name)
+    panic("no instruction " + name)
 
 # the classes of the temps, by those of the instructions that define them
 func typecheck():

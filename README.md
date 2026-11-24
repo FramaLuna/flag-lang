@@ -113,7 +113,7 @@ If your C compiler is not called `cc`, set the `CC` environment variable (for ex
 
 ## Build from source
 
-Clone the repository with git and run `build.sh`. Besides the C compiler from [Requirements](#requirements), it only needs `cmp`, which Windows gets from `diffutils`.
+Clone the repository with git and run `build.sh`. Besides the C compiler from [Requirements](#requirements), it only needs `gzip` and `cmp`; on Windows, MSYS2 has `gzip`, and `cmp` comes with `diffutils`.
 
 ```sh
 git clone https://github.com/FramaLuna/flag-lang.git

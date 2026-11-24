@@ -39,7 +39,7 @@ The exact rules of the Flag language, its memory model, and the `flagc` compiler
 1. **Lexing** (`src/lex.flg`): cuts each source file into tokens.
 2. **Parsing** (`src/parse.flg`): builds the syntax tree of the program.
 3. **Type checking and IR generation** (`src/types.flg`, `src/gen.flg`, `src/call.flg`): checks types and builds a list of QBE instructions in memory.
-4. **Optimization and code emission** (`src/ir.flg`, `src/fn.flg`, `src/opt.flg`, `src/regs.flg`, `src/amd64.flg`, `src/arm64.flg`, `src/rv64.flg`, `src/asm.flg`): inlines small functions (see [Inlining](#inlining)) unless `-debug` is enabled, then runs the passes of the [QBE](https://c9x.me/compile/) backend on each function: SSA construction, slot promotion, load and copy elimination, global value numbering and code motion, if-conversion, the calling convention, instruction selection, spilling, register allocation, and the assembly. Those passes are written in Flag and take the functions from memory.
+4. **Optimization and code emission** (`src/ir.flg`, `src/backend/`): inlines small functions (see [Inlining](#inlining)) unless `-debug` is enabled, then runs the passes of [QBE](https://c9x.me/compile/), ported to Flag, on each function: SSA construction, slot promotion, load and copy elimination, global value numbering and code motion, if-conversion, the calling convention, instruction selection, spilling, register allocation, and the assembly (see [The backend](#the-backend)).
 5. **Assembling and linking**: the system C compiler assembles the `.s` file and links it with the C library.
 
 Two flags insert extra passes:
@@ -691,7 +691,7 @@ inline func clamp(x: $T, low: $T, high: $T) -> $T:
 - **Indirect calls** through runtime function values (taking an `inline` function's value keeps an out-of-line copy; calling a constant holding a function is still a direct call).
 - **`parallel` calls**, where the spawned thread calls the function out of line.
 
-Inlined calls preserve full call semantics: copied parameters, early returns, `defer`, and call-site `@here()` / runtime error locations. Multiple inlined calls within one caller reuse stack slots, so loops making millions of inlined calls use constant stack space. Debug info attributes lines inside the same file to the inlined body, and lines from other files to the call site (QBE tracks one file per function). Any function whose calls are all inlined and whose address is never taken is omitted from the binary.
+Inlined calls preserve full call semantics: copied parameters, early returns, `defer`, and call-site `@here()` / runtime error locations. Multiple inlined calls within one caller reuse stack slots, so loops making millions of inlined calls use constant stack space. Debug info attributes lines inside the same file to the inlined body, and lines from other files to the call site (the backend tracks one file per function). Any function whose calls are all inlined and whose address is never taken is omitted from the binary.
 
 ## Generics and where
 
@@ -1831,7 +1831,7 @@ gdb ./main
   - Untagged unions appear as C unions.
 - **Text and lists in `gdb`**: `lib/flag-gdb.py`, also at the top of the release package, shows a `&str` or `&strview` as text and a `&list` or `&listview` with its elements (`names = {"ana", "luz"}`). Load it with `gdb -x flag-gdb.py ./main`, or with a `source` line in `~/.gdbinit`. `print/r` shows the raw fields, `print l.data[1]` one element, and a `&map` stays raw.
 - **Calling functions from the debugger**: functions taking and returning only numbers, `bool`, pointers, and function values match the C ABI and can be called directly (`print twice(21)`), as can any `export func`. Functions taking or returning structs, unions, arrays, or fat pointers use Flag's QBE ABI (passing aggregates in memory or by address for >128 bytes and fat pointers) and are marked `DW_CC_nocall`: `gdb` refuses to call them (`Cannot call the function 'area' which does not follow the target calling convention`) and `finish` omits their return value. In `lldb`, call only C-ABI-compatible functions.
-- **Codegen changes under `-debug`**: inlining is disabled (see [Inlining](#inlining)), all variables remain in stack slots without register promotion or struct slot cutting, by-address parameters get a slot holding the pointer, and basic blocks keep source order with line-table entries at every block start so stepping through loops revisits the header each iteration. Because blocks keep source order, a block's variables cover one range of addresses. A program built with `-debug` is a little slower and bigger; `flagc` itself is ~3% larger and compiles ~9% faster (no inlined code for QBE and the assembler).
+- **Codegen changes under `-debug`**: inlining is disabled (see [Inlining](#inlining)), all variables remain in stack slots without register promotion or struct slot cutting, by-address parameters get a slot holding the pointer, and basic blocks keep source order with line-table entries at every block start so stepping through loops revisits the header each iteration. Because blocks keep source order, a block's variables cover one range of addresses. A program built with `-debug` is a little slower and bigger; `flagc` itself is ~3% larger and compiles ~9% faster (no inlined code for the backend and the assembler).
 - **macOS and Windows**: on macOS, the linker leaves DWARF in object files, so `-debug` assembles to `program.o`, links, runs `dsymutil` to produce `program.dSYM`, and deletes `program.o` unless `-keep` is set (if `dsymutil` cannot run: `cannot run dsymutil: ..., -debug on macOS keeps the DWARF in main.dSYM with dsymutil`). On Windows, `gdb` and `lldb` read the emitted DWARF; Visual Studio's PDB format is not emitted.
 
 ## Tests
@@ -2063,15 +2063,17 @@ func main():
 
 | Target | Backend | Tier |
 |---|---|---|
-| `linux-x86_64` | `amd64_sysv`, in Flag | First class |
-| `linux-arm64` | `arm64` of QBE | Second class |
-| `linux-riscv64` | `rv64` of QBE | Second class |
-| `macos-x86_64` | `amd64_apple`, in Flag | Second class |
-| `macos-arm64` | `arm64_apple` of QBE | First class |
-| `windows-x86_64` | `amd64_win`, in Flag | First class |
-| `wasm-wasm64` | none: `flagc` writes the module | Second class |
+| `linux-x86_64` | `amd64_sysv` | First class |
+| `linux-arm64` | `arm64` | Second class |
+| `linux-riscv64` | `rv64` | Second class |
+| `macos-x86_64` | `amd64_apple` | Second class |
+| `macos-arm64` | `arm64_apple` | First class |
+| `windows-x86_64` | `amd64_win` | First class |
+| `wasm-wasm64` | `wasm` | Second class |
 
-- **First-class targets** have bootstrap seeds, release archives, and CI building the compiler and running all tests natively.
+Every backend is part of `flagc`: the native ones are those of QBE, ported to Flag (see [The backend](#the-backend)), and `src/wasm.flg` writes a WebAssembly module itself. Every native target has a bootstrap seed in `boot/`, so `./build.sh` starts from it on any of them (see [Building the compiler](#building-the-compiler)).
+
+- **First-class targets** have release archives and CI building the compiler and running all tests natively.
 - **Second-class targets** are compiled and assembled on every change (compiler, tests, and examples via `./build.sh cross`), without native execution in CI. A target moves to the first class when CI runs on it. `wasm-wasm64` has its own tests, which `./test.sh` runs under `node` when it finds one (see [WebAssembly](#webassembly)).
 
 By default, `flagc` targets the host platform. On `x86_64`, programs using `simd` require `x86-64-v2` (see [SIMD](#simd)). Use platform builtins (in a `where` or in any expression) and `where` blocks to specialize code per platform, as the standard library does.
@@ -2098,7 +2100,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 
 ### WebAssembly
 
-`-target wasm-wasm64` makes a WebAssembly module (`a.wasm`) that `flagc` writes itself, with no QBE and no C compiler. It uses 64-bit memory (Memory64), bulk memory, and conversions that saturate; Node 22 runs it with `node --experimental-wasm-memory64`.
+`-target wasm-wasm64` makes a WebAssembly module (`a.wasm`) that `flagc` writes itself, with no assembler and no C compiler. It uses 64-bit memory (Memory64), bulk memory, and conversions that saturate; Node 22 runs it with `node --experimental-wasm-memory64`.
 
 - **What the host gives and gets**: the module exports `memory`, `main` (no parameters, the exit code as an `i32`), and the `export func`s of the program. It imports only the functions its code reaches: `print` and `eprint` reach `env.write(fd: i32, at: i64, size: i64) -> i32`, which returns how many bytes it wrote or less than `0`, and `exit` or a panic reaches `env.exit(code: i32)`, which must not return. A module that only computes imports nothing. An `extern "module":` block imports its functions from that module, so `extern "env":` asks the host for more.
 - **`-shared`**: a library without `main` that exports `memory` and its `export func`s.
@@ -2151,19 +2153,18 @@ error: unexpected end of line; expected ':'
 
 ## Building the compiler
 
-`./build.sh` bootstraps `flagc` in four stages:
+`./build.sh` bootstraps `flagc` in four stages, with no tools but `gzip`, `cmp`, and the C compiler, which only assembles and links:
 
-1. Compiles embedded QBE from `vendor/qbe` (with `-fwrapv`, since QBE relies on wrapping signed offsets/constants) and packs `lib/` into an object file.
-2. Builds stage 0 (`build/flagc0`) from the platform seed `boot/<system>.ssa`.
-3. Compiles `src/*.flg` through stage 0 -> stage 1 -> stage 2 -> stage 3 (`build/flagc`).
+1. Packs `lib/` and `docs/` into an object file.
+2. Builds stage 0 (`build/flagc0`) from the seed of the host, `boot/<system>-<machine>.s.gz`: the assembly of `flagc` for that target, compressed with `gzip`.
+3. Compiles `src` through stage 0 -> stage 1 -> stage 2 -> stage 3 (`build/flagc`).
 4. Verifies that stage 2 and stage 3 emit byte-identical assembly.
 
 #### Build targets
 
-- `./build.sh seed`: regenerates the three bootstrap seeds in `boot/` using `-target`. The seeds are QBE IL, which an `x86_64` build writes when `FLAG_QBE=1` is in its environment. When `boot/<system>.ssa` is older than `src/`, `./build.sh` prints `boot/linux.ssa is older than src: ./build.sh seed refreshes it`.
+- `./build.sh seed`: regenerates the six seeds in `boot/`, one per native target, using `-target`. A seed is rewritten only when its assembly changes, since `gzip` on another system may compress the same text to other bytes. When the seed of the host differs from the assembly of stage 3, `./build.sh` prints `boot/linux-x86_64.s.gz is older than src: ./build.sh seed refreshes it`.
 - `./build.sh package`: creates `build/flag-<version>-<system>-<machine>.tar.gz`.
-- `./build.sh sanitize`: builds QBE with AddressSanitizer and UndefinedBehaviorSanitizer and compiles all three seeds for all six targets with and without `-g` (run in Linux CI to catch out-of-bounds reads, double frees, and UB shifts, since such a bug can pass on one system and break on another, as a read past an array of cut slots did on macOS).
-- `./build.sh cross`: compiles `flagc`, all tests, and all examples for second-class targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it, so every system's `where` blocks and `rv64`'s lane-by-lane path compile on every change. A second-class host bootstraps from its OS seed as long as stage 0's IL is architecture-independent.
+- `./build.sh cross`: compiles `flagc`, all tests, and all examples for second-class targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it, so every system's `where` blocks and `rv64`'s lane-by-lane path compile on every change.
 
 #### Running the test suite (`./test.sh build/flagc`)
 
@@ -2181,17 +2182,15 @@ error: unexpected end of line; expected ':'
 
 `./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it, which under WSL starts each `.exe` through interop. It skips the tests that start `flagc` itself, those whose error repeats the command line, and the `gdb` ones. From a WSL folder a few tests cannot pass: `cmd.exe` refuses a UNC folder, Unix tools like `printf` are missing, and the standard output and error arrive through separate pipes, out of order.
 
-#### QBE in Flag
+#### The backend
 
-The passes of QBE that compile for `x86_64` are ported to Flag: the IR, the CFG, SSA and use analyses (`src/fn.flg`), the optimizations (`src/opt.flg`), liveness, spilling and register allocation (`src/regs.flg`), the calling conventions of System V and Windows, instruction selection and emission (`src/amd64.flg`), and the pipeline with the data and the end of the file (`src/asm.flg`). They read the functions from memory, with no text IR in between, and keep QBE's names, numbers and orders, so they choose what the C QBE chooses: `FLAG_QBE=1` sends an `x86_64` build through the embedded QBE instead, and both write the same assembly, byte for byte, for the compiler, the tests, and the examples, with and without `-debug`, on Linux, macOS, and Windows. The compiler builds itself in the same time with either.
+The backend lives in `src/backend/` and is [QBE](https://c9x.me/compile/), ported to Flag: the IR, the CFG, SSA and use analyses (`src/backend/fn.flg`), the optimizations (`src/backend/opt.flg`), liveness, spilling and register allocation (`src/backend/regs.flg`), the calling conventions, instruction selection and emission of `amd64` for System V, Apple and Windows (`src/backend/amd64.flg`), of `arm64` for Linux and Apple (`src/backend/arm64.flg`) and of `rv64` (`src/backend/rv64.flg`), and the pipeline with the data and the end of the file (`src/backend/asm.flg`). The passes read the functions from memory, with no text IR in between, and keep QBE's names, numbers and orders. Before the C sources of QBE left the repository, the port wrote the same assembly as they did, byte for byte, for the compiler, the tests, and the examples on the six native targets, with and without `-debug`, and the compiler builds itself in the same time. QBE's license is in `LICENSE.qbe`.
 
-#### Modifications to QBE (`vendor/qbe`)
+#### Changes from upstream QBE
 
-The embedded QBE in `vendor/qbe` has **60 changes** over upstream, grouped by purpose:
+The backend has **59 changes** over upstream QBE, grouped by purpose:
 
-1. **Embedding, stack probes, and constants (7 changes)**:
-   - `main` returns instead of calling `exit`, so `flagc` can call it in-process.
-   - On Windows, QBE opens its files with `_wfopen`, since `flagc` passes it the paths in UTF-8.
+1. **Stack probes and constants (5 changes)**:
    - Stack probes: a function that can go past a page of stack before touching it lowers the stack one page at a time and touches each page. That is how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than a thread's 4 KiB guard used to jump over it into the stack of another thread. A function counts its frame plus the stack its calls take below it (stack arguments, and on Windows the 32 bytes reserved for the callee), so one that does not reach a page is emitted as before.
    - A constant that replaces a 32-bit load is truncated to 32 bits.
    - `amd64` truncates every constant to the size of its operand, as `arm64` and `rv64` already did, so the assembler has nothing to warn about.
@@ -2212,7 +2211,7 @@ The embedded QBE in `vendor/qbe` has **60 changes** over upstream, grouped by pu
    - Libraries on Linux use `extern thread`, the initial-exec model: `amd64` had it, and `arm64` and `rv64` stopped with `extern thread unavailable`. `arm64` reads the thread offset from the GOT (`:gottprel:`) and adds `tpidr_el0` through `x18`, which QBE keeps free outside Apple; `rv64` writes `la.tls.ie` and adds `tp`.
    - The offset of an address read from the GOT, like a context field, is added after the address is read, on `arm64` through a register: its `add` takes 12 bits, and a field past 4 KiB stopped QBE with an assertion.
 4. **Small slots, struct copies, return pads, signed division, float copies, and Mach-O sections (8 changes)**:
-   - A stack slot of 48 bytes or less whose address only reaches loads, stores, blits and additions of constants is cut, before `promote`, into one slot for each piece that is read or written, and `promote` then keeps the pieces in registers. That is how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, and again only through the blits of a slot that changed, so a chain of copies is not walked once per link. A constant store is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, after the parameters, so no path reads it undefined. `qbe -g` keeps every slot whole, for the debugger. The limit is 48 bytes so that a `Mat3` of nine `f32` is cut too: the `integrate` kernel takes 8% fewer cycles, 19% with every helper marked `inline`, and the compiler checks itself with 1.5% fewer instructions.
+   - A stack slot of 48 bytes or less whose address only reaches loads, stores, blits and additions of constants is cut, before `promote`, into one slot for each piece that is read or written, and `promote` then keeps the pieces in registers. That is how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, and again only through the blits of a slot that changed, so a chain of copies is not walked once per link. A constant store is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, after the parameters, so no path reads it undefined. `-debug` keeps every slot whole, for the debugger. The limit is 48 bytes so that a `Mat3` of nine `f32` is cut too: the `integrate` kernel takes 8% fewer cycles, 19% with every helper marked `inline`, and the compiler checks itself with 1.5% fewer instructions.
    - A slot that a function returns is cut too: its pieces go back to the slot right before the `ret`, so a struct computed in a loop and returned no longer writes memory on every turn. A loop that mixes four `i64` fields: 6.12 G -> 3.18 G cycles; the `integrate` physics kernel: 2.2% fewer cycles.
    - `rv64` copies a constant, or a value on the stack, into a stack temporary through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
    - A copy out of a stack slot whose size is not a multiple of 8 (a struct without 8-byte fields) goes 4 bytes at a time: its fields were written 4 bytes or less at a time, and an 8-byte load that takes two of those stores waits until they reach the cache. That is how a struct of `f32` over 48 bytes is copied; a copy from the heap, whose stores are long done, still goes 8 bytes at a time. The integration of bodies that copies them got 7% faster, and the poses of a skeleton 17%.
@@ -2220,11 +2219,13 @@ The embedded QBE in `vendor/qbe` has **60 changes** over upstream, grouped by pu
    - The slot where a call leaves a returned struct is made before slots are coalesced, on every target, so calls whose results are not alive at the same time share one. A call never shares it with a struct it takes as an argument. The compiler's largest frame goes from 11.5 KB to 9.4 KB, and 480 nested calls no longer overflow an 8 MiB stack on `x86_64`.
    - `amd64` copies a float between registers with `movaps` and clears the result of a conversion first: `movss`, `movsd`, `cvtsi2ss`, `cvtss2sd` and `cvtsd2ss` keep the upper bits of their destination, so each one waited for whatever that register held before. The `integrate` physics kernel takes 26% fewer cycles, 37% with every helper marked `inline`, and a loop of conversions 17%.
    - On macOS a section name is written without quotes, `.section __TEXT,__const`, as Mach-O reads it: QBE wrote `section "name"` as `.section "name"`, which ELF and COFF accept and Mach-O does not. That is how the bytes of a text literal are read-only there too.
-5. **Fixes to QBE itself (13 changes)**:
+5. **Fixes to QBE itself (15 changes)**:
    - `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign.
    - Store-to-load forwarding kept the bits above a narrow store when a load that starts inside it took them shifted down. This and the previous one happen in more slots since small slots are cut.
    - GVN took two phis with the same arguments and different classes for the same value, and stopped with an assertion.
    - Slot coalescing shifted a mask by the offset of an access, which can be past its slot: undefined in C.
+   - GVN moves the instructions of a block that dies, which the code may still read, to the start block. QBE found them through pointers into the arrays of the blocks, which went stale when a dead block gave its debugger marks to the next one, so with `-debug` it could leave one behind.
+   - A conversion of a float that does not fit its integer folds to the saturated value, as Flag converts, the same on every host: QBE folded it to whatever the C compiler that built it gave.
    - On Windows a function keeps `xmm6` to `xmm15` for its caller, as the ABI asks. QBE took them as registers that any call changes, so a Flag function that C calls, like a callback, could change the floats of the C code around it.
    - On Windows a parameter passed on the stack (the fifth and later) was read as a 64-bit integer whatever its type, so an `f32` or `f64` there ended in an integer register and the assembler refused the program.
    - `rv64` stopped with `no match for stores(s)` when it copied a float from a register to a stack slot: the store kept the class of the copy.
@@ -2240,18 +2241,17 @@ The embedded QBE in `vendor/qbe` has **60 changes** over upstream, grouped by pu
    - `hlt` is an instruction on every target: `ud2` on `amd64`, `udf` on `arm64` and `unimp` on `rv64`. It was a breakpoint on the last two, and a crash handler does not take breakpoints.
    - Each function ends with the label `.L<name>.end` (`L<name>.end` on macOS and Windows), which gives the table of functions and the DWARF its end.
    - `%r =l frame` gives the frame pointer of the function.
-   - `qbe -g` builds for a debugger:
+   - `-debug` builds for a debugger:
      - `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and keeps it in memory, whole;
      - `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it;
      - the blocks keep the order of the IL, and a block is not merged into the one before it, so a scope is one range of code;
      - each function has its `.cfi` in `.debug_frame`, with the registers it saves, and its first `.loc`, the line of its declaration, comes before its prologue and not again after it, so a debugger that skips the prologue stops at the first line of the body.
-7. **`simd` (6 changes)**:
+7. **`simd` (5 changes)**:
    - A class `v`, 16 bytes of lanes in a float register, with `loadv`, `storev` and 56 operations whose name ends with the lane, like `vadds` for `f32` and `vceqw` for `i32`, on `amd64` (SSE up to 4.2, with `xmm15` as the scratch) and `arm64` (NEON, with `v31`). `rv64` has none.
-   - Slot cutting makes a 16-byte piece of class `v` where a `loadv` or a `storev` reads or writes it whole, and carries it across a blit, so a `simd` copied by an inlined call stays in a register. A load or store of one lane inside that piece doesn't cut it: it becomes `vget`, which takes the lane out of the register, or `vset`, which puts it in (`pextr`, `pinsr`, `insertps` and `pshufd` on `amd64`; `umov`, `smov`, `dup` and `ins` on `arm64`), so `v[i]` keeps the `simd` in its register. An instruction has two arguments, so `vget` has the lane number as its second one and `vset` takes it from the `vlane` right before it. The cut makes them; they are not IL words.
+   - Slot cutting makes a 16-byte piece of class `v` where a `loadv` or a `storev` reads or writes it whole, and carries it across a blit, so a `simd` copied by an inlined call stays in a register. A load or store of one lane inside that piece doesn't cut it: it becomes `vget`, which takes the lane out of the register, or `vset`, which puts it in (`pextr`, `pinsr`, `insertps` and `pshufd` on `amd64`; `umov`, `smov`, `dup` and `ins` on `arm64`), so `v[i]` keeps the `simd` in its register. An instruction has two arguments, so `vget` has the lane number as its second one and `vset` takes it from the `vlane` right before it. The cut makes them; the frontend never does.
    - A `v` alive across a call is spilled on SysV, where a call keeps no float register, and on `arm64`, where the callee keeps only the low half of `v8` to `v15`. On Windows it can stay in `xmm6` to `xmm15`, which the callee keeps whole.
    - `%c =w cpuid %leaf` gives `ecx` of that instruction on `amd64`, for the check at startup.
    - The slots of `alloc` are laid out from the widest down and rounded to 16 bytes, so an `alloc16` is aligned, which an `alloc4` before it could break, and `arm64` passes the 16-byte-aligned structs it used to refuse.
-   - The IL keywords no longer fit the lexer's hash, which has 2,048 places now.
 8. **Atomics (5 changes)**:
    - Five instructions in one total order, the `seq_cst` of C: `%v =w aload %p` (and `=l`), `astorew %v, %p` (and `astorel`), `%old =w aadd %p, %n` and `%old =w aswap %p, %v`, which return what memory held before, and `%old =w acas %p, %expected, %new`, which writes `%new` only where memory held `%expected` and returns what it held. An instruction has two arguments, so inside QBE `acas` is two, `acas0` with the expected value and `acas1` with the address and the new value, kept together like a `blit` when GCM orders a block and when thread data is read once.
    - They are pinned, so GVN and GCM leave them where they are, and an address they take escapes, so `promote` and slot cutting keep that slot in memory.

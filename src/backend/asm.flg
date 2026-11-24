@@ -6,8 +6,6 @@ SecBss = 2
 
 # the assembly of the program, each proc through the passes of QBE on the machine of the target
 func assembly() -> &str:
-    shrink()
-    shaped := tables()
     asm.machine = AMD64_SYSV
     if comp.machine == "arm64":
         asm.machine = ARM64_APPLE if comp.system == "macos" else ARM64
@@ -17,6 +15,71 @@ func assembly() -> &str:
         asm.machine = AMD64_APPLE
     elif comp.system == "windows":
         asm.machine = AMD64_WIN
+    shrink()
+    # the data of the shapes of the types, that a library or a program that loads one carries, and of the functions, that
+    # the chain of a panic reads
+    shaped := comp.shared
+    for f in comp.procs:
+        for i in comp.code[f.code:f.end]:
+            shaped = shaped or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" and not i.ghost # what load calls for the table of the program
+    if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
+        privs: &map[i64, bool] = heap({}) # the declarations that are priv
+        for sym in comp.syms:
+            if sym.priv:
+                privs[sym.node] = true
+        names: &list[&strview] = heap([])
+        rows: &list[Piece] = heap([]) # of each name, its tag, whether it names a union and the hash of its shape or the tag of the union
+        tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
+        for t in 0..comp.types.len:
+            ty := comp.types[t]
+            k := comp.nodes[ty.decl].kind
+            if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
+                shape: &str = heap("")
+                shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
+                for f in comp.items[ty.first:ty.first + ty.count]:
+                    shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
+                append(tags, u64(ty.tag) << 32 or u64(names.len))
+                append(names, ty.name)
+                append(rows, ptr([Piece{kind = Number, size = 4, n = ty.tag}, Piece{kind = Number, size = 4}, Piece{kind = Number, size = 8, n = hash(view(shape)) as i64}]))
+        for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
+            sym := comp.syms[a]
+            if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
+                name: &str = heap("")
+                if sym.module.len > 0:
+                    name += sym.module + "."
+                name += sym.name
+                tag := tag_of_shape(view(name))
+                target := comp.types[trust make_type(a, [], false, 0)]
+                append(tags, u64(tag) << 32 or u64(names.len))
+                append(names, view(name))
+                append(rows, ptr([Piece{kind = Number, size = 4, n = tag}, Piece{kind = Number, size = 4, n = i64(target.kind == Union)}, Piece{kind = Number, size = 8, n = target.tag}]))
+        sort(tags)
+        table: &list[Piece] = heap([])
+        append(table, Piece{kind = Number, size = 8, n = names.len})
+        for k, name in names:
+            define(Data{name = "$flag.shape." + k}, ptr([Piece{kind = Text, text = name}, Piece{kind = Number, size = 1}]))
+        for t in tags:
+            k := i64(t and 0xffff_ffff)
+            append(table, rows[3 * k:3 * k + 3])
+            append(table, Piece{kind = Address, text = "$flag.shape." + k})
+        define(Data{name = "$flag.shapes", fixed = true}, table)
+    functions: &list[Piece] = heap([])
+    places: &list[Piece] = heap([])
+    append(functions, Piece{kind = Number, size = 8, n = comp.procs.len})
+    append(functions, Piece{kind = Number, size = 8}) # where the code of the last function ends
+    if comp.procs.len > 0:
+        functions[1] = Piece{kind = Address, text = "$\"" + asm.machine.asloc + comp.procs[-1].name[1:] + ".end\""}
+    place := 16 + 16 * comp.procs.len
+    for f in comp.procs:
+        hidden := f.node == 0 or comp.insts[f.inst].library
+        append(functions, ptr([Piece{kind = Address, text = f.name}, Piece{kind = Number, size = 4, n = place}, Piece{kind = Number, size = 4, n = i64(hidden)}]))
+        if not hidden:
+            at := declared_at(f)
+            shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
+            place += shown.len + 1
+            append(places, ptr([Piece{kind = Text, text = shown}, Piece{kind = Number, size = 1}]))
+    append(functions, places[:])
+    define(Data{name = "$flag.functions"}, functions)
     for t in 0..comp.types.len:
         append(asm.typs, -1)
         append(asm.ctyps, -1)
@@ -63,12 +126,9 @@ func assembly() -> &str:
     if shaped:
         special("flag_shapes", true, "flag.shapes")
         compile()
-    # the data as QBE writes it from the pieces the listing gives: zeros first go to the fill of a bss, the rest as
-    # numbers, addresses and runs of text
+    # the data from its pieces: zeros first go to the fill of a bss, the rest as numbers, addresses, runs of text and files
     for d in comp.data:
         pieces := comp.pieces[d.first:d.first + d.count]
-        if pieces.len > 0 and pieces[0].kind == File: # the assembler reads it
-            continue
         addresses := false
         for piece in pieces:
             addresses = addresses or piece.kind == Address
@@ -146,6 +206,8 @@ func assembly() -> &str:
                         out("\n")
                 if quoted:
                     out("\"\n")
+            case File:
+                out("\t.incbin " + in_quotes(piece.text) + "\n")
             case:
                 pass
         if zero != -1:
@@ -165,8 +227,7 @@ func assembly() -> &str:
     for i in comp.code:
         append(dropped, i.ghost)
     for f in comp.procs:
-        threaded(f, dropped, moved)
-        path := "\"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\""
+        path := in_quotes(view(comp.files[f.file].path))
         asm.curfile = 1 # gas numbers the files from 1
         while asm.curfile <= asm.files.len and asm.files[asm.curfile - 1] != path:
             asm.curfile += 1
@@ -179,7 +240,13 @@ func assembly() -> &str:
             lower(f, dropped, moved)
             compile()
     asm.machine.emitfin()
+    if comp.debug:
+        out(dwarf())
     return asm.text
+
+# a path as the assembler reads it, in quotes
+func in_quotes(path: &strview) -> &strview:
+    return "\"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\""
 
 # the fields of a type of C, or of one member of a union of C, as QBE lays them out
 func parsefields(ty: *Typ, fields: &listview[CField]):

@@ -1454,22 +1454,6 @@ func iscon(c: Con, w: bool, k: u64) -> bool:
         return u64(c.bits) == k
     return u32(u64(c.bits) and 0xffff_ffff) == u32(k and 0xffff_ffff)
 
-# what C gives converting a float out of range to an integer on amd64, as QBE was compiled
-func cvt64(f: f64) -> i64:
-    if f >= -9223372036854775808.0 and f < 9223372036854775808.0:
-        return i64(f)
-    return -9223372036854775807 - 1
-
-func cvt32(f: f64) -> i64:
-    if f > -2147483649.0 and f < 2147483648.0:
-        return i64(f)
-    return -2147483648
-
-func cvtu64(f: f64) -> u64:
-    if not (f >= 9223372036854775808.0):
-        return u64(cvt64(f))
-    return u64(cvt64(f - 9223372036854775808.0)) xor 0x8000_0000_0000_0000
-
 # the constant op makes of cl and cr, false when it cannot
 func foldint(res: *Con, op: i64, w: bool, cl: Con, cr: Con) -> bool:
     typ := CBits
@@ -1548,16 +1532,14 @@ func foldint(res: *Con, op: i64, w: bool, cl: Con, cr: Con) -> bool:
         x = u64(i64(i32(l)))
     case Oextuw:
         x = u64(u32(l))
-    case Ostosi:
-        f := f64(u32(l) as f32)
-        x = u64(cvt64(f)) if w else u64(cvt32(f))
-    case Ostoui:
-        f := f64(u32(l) as f32)
-        x = cvtu64(f) if w else u64(cvt64(f))
-    case Odtosi:
-        x = u64(cvt64(l as f64)) if w else u64(cvt32(l as f64))
-    case Odtoui:
-        x = cvtu64(l as f64) if w else u64(cvt64(l as f64))
+    case Ostosi, Ostoui, Odtosi, Odtoui: # out of range they saturate, as Flag converts
+        f := l as f64
+        if op == Ostosi or op == Ostoui:
+            f = f64(u32(l) as f32)
+        if op == Ostosi or op == Odtosi:
+            x = u64(i64(f)) if w else u64(i64(i32(f)))
+        else:
+            x = u64(f) if w else u64(u32(f))
     case Ocast:
         x = l
         if cl.type == CAddr:
@@ -1637,28 +1619,21 @@ func foldint(res: *Con, op: i64, w: bool, cl: Con, cr: Con) -> bool:
     res.* = Con{type = i32(typ), symtype = i32(symtype), sym = i32(sym), bits = i64(x)}
     return true
 
-# the instruction equal to the one at x already in the table, or 0 after adding it when insert
-func gvndup(x: i64, insert: bool) -> i64:
-    i := instr(x).*
+# what an instruction like i already in the table gives, or R after adding i when insert
+func gvndup(i: Instr, insert: bool) -> Ref:
     n := u32(fn.gvntbl.len)
     h := u32(i.op) + 17 * u32(i.cls)
     h = h + 17 * ((i.arg[0] >> 29) + 17 * (i.arg[0] and 0x1fff_ffff))
     h = h + 17 * ((i.arg[1] >> 29) + 17 * (i.arg[1] and 0x1fff_ffff))
     idx := i64(h % n)
-    while true:
-        ii := fn.gvntbl[idx]
-        if ii == 0:
-            break
-        b := ptr(fn.blks[ii >> 32])
-        seen := b.view[ii and 0xffff_ffff] if b.viewed else b.ins[ii and 0xffff_ffff]
+    while fn.gvntbl[idx].op != Oxxx:
+        seen := fn.gvntbl[idx]
         if i.op == seen.op and i.cls == seen.cls and i.arg[0] == seen.arg[0] and i.arg[1] == seen.arg[1]:
-            return ii
-        idx += 1
-        if idx >= i64(n):
-            idx = 0
+            return seen.to
+        idx = (idx + 1) % i64(n)
     if insert:
-        fn.gvntbl[idx] = x
-    return 0
+        fn.gvntbl[idx] = i
+    return R
 
 func replaceuse(u: Usage, r1: Ref, r2: Ref):
     b := fn.rpo[u.bid]
@@ -1817,7 +1792,7 @@ func gvn():
         b = fn.blks[b].link
     fn.gvntbl.len = 0
     for k in 0..nins + nins / 2:
-        append(fn.gvntbl, 0)
+        append(fn.gvntbl, Instr{})
     for n in 0..fn.nblk:
         b = fn.rpo[n]
         # a phi that is a copy: of its arguments when they are one, of a phi before it, or of the jnz that chooses it
@@ -2012,9 +1987,7 @@ func gvn():
                             c.bits = c.bits and 0xffff_ffff
                         r = newcon(c)
             if r == R:
-                x1 := gvndup(x, true)
-                if x1 != 0:
-                    r = instr(x1).to
+                r = gvndup(i1, true)
             if r != R:
                 replaceuses(i1.to, r)
                 fn.blks[b].ins[k] = Instr{op = Onop}
@@ -2038,17 +2011,13 @@ func gvn():
                 j.jmp.type = Jjmp
                 j.jmp.arg = R
     rpo: &list[i64] = heap(fn.rpo[:fn.nblk])
-    fn.viewing = true
     fillcfg()
-    fn.viewing = false
     # the instructions of the blocks that died that are in the table, the code may compute with them
     for d in rpo:
-        if fn.blks[d].id != -1 or fn.blks[d].moved:
-            continue
-        for k in 0..fn.blks[d].ins.len:
-            i := fn.blks[d].ins[k]
-            if not optab[i.op].pinned and gvndup(at(d, k), false) == at(d, k):
-                addins(ptr(fn.blks[fn.start].ins), i)
+        if fn.blks[d].id == -1:
+            for i in fn.blks[d].ins:
+                if not optab[i.op].pinned and gvndup(i, false) == i.to:
+                    addins(ptr(fn.blks[fn.start].ins), i)
     free(rpo)
 
 NOBID = 0xffff_ffff

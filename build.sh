@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")"
 version=0.6.3
 cc=${CC:-cc}
-mkdir -p build/objects build/embed
+mkdir -p build/embed
 case $(uname -m) in aarch64|arm64) machine=arm64 ;; riscv64) machine=riscv64 ;; *) machine=x86_64 ;; esac
 exe=
 linking=
@@ -11,7 +11,6 @@ case $(uname) in
 Darwin)
     system=macos
     linking="-Wl,-stack_size,0x1000000"
-    case $machine in arm64) target=T_arm64_apple ;; *) target=T_amd64_apple ;; esac
     section="__TEXT,__const"
     symbol=_
     ;;
@@ -19,28 +18,16 @@ MINGW*|MSYS*|CYGWIN*)
     system=windows
     exe=.exe
     linking="-Wl,--stack,16777216 -lws2_32"
-    target=T_amd64_win
     section='.rdata,"dr"'
     symbol=
     ;;
 *)
     system=linux
-    case $machine in arm64) target=T_arm64 ;; riscv64) target=T_rv64 ;; *) target=T_amd64_sysv ;; esac
     section=.rodata
     symbol=
     ;;
 esac
-echo "#define Deftgt $target" > build/objects/config.new
-cmp -s build/objects/config.new build/objects/config.h || mv build/objects/config.new build/objects/config.h
-objects=""
-header=$(ls -t vendor/qbe/*.h vendor/qbe/*/*.h | head -1)
-for src in vendor/qbe/*.c vendor/qbe/*/*.c; do
-    obj=build/objects/$(echo "${src#vendor/qbe/}" | tr / _ | sed 's/\.c$/.o/')
-    [ "$obj" -nt "$src" ] && [ "$obj" -nt build/objects/config.h ] && [ "$obj" -nt "$header" ] || $cc -std=c99 -O2 -w -fwrapv -Ibuild/objects -Dmain=qbe_main -c "$src" -o "$obj"
-    objects="$objects $obj"
-done
-printf 'int qbe_main(int, char **);\nint main(int argc, char **argv) { return qbe_main(argc, argv); }\n' > build/embed/qbe.c
-$cc -o build/qbe build/embed/qbe.c $objects
+target=$system-$machine
 stamp=$(cat lib/* docs/*.md | cksum | cut -d' ' -f1)
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 {
@@ -78,35 +65,25 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
     echo "}"
     echo "const char *flag_version(void) { return \"$version ($commit)\"; }"
     echo "const char *flag_stamp(void) { return \"$version-$stamp\"; }"
-    echo "const char *flag_target(void) { return \"$system-$machine\"; }"
+    echo "const char *flag_target(void) { return \"$target\"; }"
 } > build/embed/index.c
 $cc -c build/embed/files.s -o build/embed/files.o
 $cc -O2 -c build/embed/index.c -o build/embed/index.o
-objects="$objects build/embed/files.o build/embed/index.o"
-build/qbe -o build/seed.s boot/$system.ssa
+objects="build/embed/files.o build/embed/index.o"
+gzip -dc boot/$target.s.gz > build/seed.s
 $cc -o build/flagc0 build/seed.s $objects $linking
-build/flagc0 src/*.flg -o build/flagc1 -cc $objects $linking
-build/flagc1 src/*.flg -o build/flagc2 -keep -cc $objects $linking
-build/flagc2 src/*.flg -o build/flagc -keep -cc $objects $linking
+build/flagc0 src -o build/flagc1 -cc $objects $linking
+build/flagc1 src -o build/flagc2 -keep -cc $objects $linking
+build/flagc2 src -o build/flagc -keep -cc $objects $linking
 cmp build/flagc2.s build/flagc.s
-# the seeds are QBE IR, which FLAG_QBE=1 writes on x86_64 too
+# a seed is the assembly of the compiler for one target, rewritten only when it changes, as gzip may differ by system
 if [ "${1:-}" = seed ]; then
-    for target in linux-x86_64 macos-arm64 windows-x86_64; do
-        FLAG_QBE=1 CC=true build/flagc src/*.flg -target $target -o build/${target%-*} -keep
-        cp build/${target%-*}.ssa boot/${target%-*}.ssa
+    for seed in linux-x86_64 linux-arm64 linux-riscv64 macos-x86_64 macos-arm64 windows-x86_64; do
+        CC=true build/flagc src -target $seed -o build/$seed -keep
+        gzip -dc boot/$seed.s.gz 2> /dev/null | cmp -s - build/$seed.s || gzip -9n < build/$seed.s > boot/$seed.s.gz
     done
-elif ! FLAG_QBE=1 CC=true build/flagc src/*.flg -o build/fresh -keep || ! cmp -s build/fresh.ssa boot/$system.ssa; then
-    echo "boot/$system.ssa is older than src: ./build.sh seed refreshes it"
-fi
-if [ "${1:-}" = sanitize ]; then
-    $cc -std=c99 -O1 -g -w -fwrapv -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/objects vendor/qbe/*.c vendor/qbe/*/*.c -o build/qbe-sanitized
-    for target in amd64_sysv amd64_apple amd64_win arm64 arm64_apple rv64; do
-        for seed in boot/*.ssa; do
-            ASAN_OPTIONS=detect_leaks=0 build/qbe-sanitized -t $target -o /dev/null $seed
-            ASAN_OPTIONS=detect_leaks=0 build/qbe-sanitized -g -t $target -o /dev/null $seed
-        done
-    done
-    echo "qbe: no memory errors and no undefined behavior on the seeds, for every target"
+elif ! gzip -dc boot/$target.s.gz | cmp -s - build/flagc.s; then
+    echo "boot/$target.s.gz is older than src: ./build.sh seed refreshes it"
 fi
 if [ "${1:-}" = cross ]; then
     case $system in
@@ -124,7 +101,7 @@ if [ "${1:-}" = cross ]; then
             files=$source
             flags=
             case $source in
-            src) files=src/*.flg ;;
+            src) files=src ;;
             tests/*)
                 files=tests/$name.flg
                 [ -d "tests/$name" ] && files=tests/$name
@@ -142,12 +119,11 @@ if [ "${1:-}" = cross ]; then
     done
 fi
 if [ "${1:-}" = package ]; then
-    name=flag-$version-$system-$machine
+    name=flag-$version-$target
     rm -rf "build/$name"
     mkdir -p "build/$name/bin"
     cp build/flagc$exe "build/$name/bin/"
-    cp README.md LICENSE lib/flag-gdb.py "build/$name/"
-    cp vendor/qbe/LICENSE "build/$name/LICENSE.qbe"
+    cp README.md LICENSE LICENSE.qbe lib/flag-gdb.py "build/$name/"
     cp lib/raylib.license "build/$name/LICENSE.raylib"
     tar -czf "build/$name.tar.gz" -C build "$name"
     echo "packaged build/$name.tar.gz"
