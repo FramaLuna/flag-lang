@@ -673,7 +673,7 @@ func main() -> i32:
     ssa += ".ssa"
     asm_file: &str = heap(output)
     asm_file += ".s"
-    if comp.machine == "x86_64" and (env("FLAG_QBE") ifnull "").len == 0:
+    if (env("FLAG_QBE") ifnull "").len == 0:
         if write_file(view(asm_file), assembly()) is FsError:
             eprint(comp.err, "failed to write assembly file ", asm_file)
             return 1
@@ -924,7 +924,7 @@ func real_path(path: &strview) -> &strview where @windows():
     return heap(tmp(found))
 
 # a file of the program, loaded once, and its place among the files
-func load(path: &strview, loaded: &map[&strview, i64], texts: &map[&strview, &strview]) -> i64|Fail:
+func load(path: &strview, loaded: *&map[&strview, i64], texts: &map[&strview, &strview]) -> i64|Fail:
     real := real_path(path)
     known := loaded[real]
     if known is i64:

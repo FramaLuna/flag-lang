@@ -39,7 +39,7 @@ The exact rules of the Flag language, its memory model, and the `flagc` compiler
 1. **Lexing** (`src/lex.flg`): cuts each source file into tokens.
 2. **Parsing** (`src/parse.flg`): builds the syntax tree of the program.
 3. **Type checking and IR generation** (`src/types.flg`, `src/gen.flg`, `src/call.flg`): checks types and builds a list of QBE instructions in memory.
-4. **Optimization and code emission** (`src/ir.flg`, `src/fn.flg`, `src/opt.flg`, `src/regs.flg`, `src/amd64.flg`, `src/asm.flg`): inlines small functions (see [Inlining](#inlining)) unless `-debug` is enabled, then runs the passes of the [QBE](https://c9x.me/compile/) backend on each function: SSA construction, slot promotion, load and copy elimination, global value numbering and code motion, if-conversion, the calling convention, instruction selection, spilling, register allocation, and the assembly. On `x86_64` those passes are written in Flag and take the functions from memory. On `arm64` and `riscv64` the compiler writes the functions as QBE IL, the text IR of QBE, and the QBE embedded inside `flagc` compiles it.
+4. **Optimization and code emission** (`src/ir.flg`, `src/fn.flg`, `src/opt.flg`, `src/regs.flg`, `src/amd64.flg`, `src/arm64.flg`, `src/rv64.flg`, `src/asm.flg`): inlines small functions (see [Inlining](#inlining)) unless `-debug` is enabled, then runs the passes of the [QBE](https://c9x.me/compile/) backend on each function: SSA construction, slot promotion, load and copy elimination, global value numbering and code motion, if-conversion, the calling convention, instruction selection, spilling, register allocation, and the assembly. Those passes are written in Flag and take the functions from memory.
 5. **Assembling and linking**: the system C compiler assembles the `.s` file and links it with the C library.
 
 Two flags insert extra passes:
@@ -61,7 +61,7 @@ All `extern` C function declarations are checked: their parameter and return typ
 
 `flagc` stops at the first error. It checks a function, then each generic instance created by its calls in order (recursively checking each instance's own callees before moving on), so when two calls in one function fail, the first is reported.
 
-Intermediate files (`program.s`, and `program.ssa` on the targets QBE compiles) are written next to the output path and deleted after linking succeeds unless `-keep` is passed. If assembling or linking fails, they remain on disk for inspection.
+Intermediate files (`program.s`) are written next to the output path and deleted after linking succeeds unless `-keep` is passed. If assembling or linking fails, they remain on disk for inspection.
 
 ## The command line
 
@@ -80,7 +80,7 @@ flagc [run|test] file.flg folder ... [-o program] [-shared] [-keep] [-check] [-m
 | `-check` | Stops after type checking (and `-memory`, if passed). Writes no files and does not require `main`. |
 | `-memory` | Runs the compile-time memory checker. Warnings do not change the exit code. |
 | `-debug` | Emits DWARF debug information for `gdb` and `lldb` (see [Debugging](#debugging)), or the names of the functions in a WebAssembly module. |
-| `-keep` | Keeps the `.s` file, the `.ssa` file on the targets QBE compiles, and the `.o` file produced by `-debug` on macOS. |
+| `-keep` | Keeps the `.s` file, and the `.o` file produced by `-debug` on macOS. |
 | `-target system-machine` | Cross-compiles for another platform (see [Platforms](#platforms)). An unknown target exits with code 2. |
 | `-overlay file`, `-at file:line:column` | Editor and tooling support (see [Editor support](#editor-support)). |
 | `-timeout seconds` | Per-test timeout for `flagc test`, from `1` to `2000000` seconds (about 23 days). Default is `10`. |

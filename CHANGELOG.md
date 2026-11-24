@@ -12,11 +12,12 @@ A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` w
 
 ### Changed
 
-- **The backend on `x86_64` is written in Flag:** the passes of QBE that compile for `x86_64` (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag and read the functions from memory, with no text IR in between. They write the same assembly as QBE did, byte for byte, and the compiler builds itself in the same time. `arm64` and `riscv64` still go through the embedded QBE.
+- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They write the same assembly as QBE did, byte for byte, and the compiler builds itself in the same time.
 
 ### Fixed
 
 - **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops QBE with an assertion.
+- **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
 - **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
 
 ## 0.6.3

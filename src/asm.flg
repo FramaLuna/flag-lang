@@ -9,7 +9,11 @@ func assembly() -> &str:
     shrink()
     shaped := tables()
     asm.machine = AMD64_SYSV
-    if comp.system == "macos":
+    if comp.machine == "arm64":
+        asm.machine = ARM64_APPLE if comp.system == "macos" else ARM64
+    elif comp.machine == "riscv64":
+        asm.machine = RV64
+    elif comp.system == "macos":
         asm.machine = AMD64_APPLE
     elif comp.system == "windows":
         asm.machine = AMD64_WIN
@@ -296,6 +300,110 @@ func compile():
     m.emitfn()
     out("/* end function " + fn.name + " */\n\n")
 
+# the instructions of b, lowered from its end
+func lowerblk(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
+    k := fn.blks[b].ins.len
+    while k > 0:
+        k -= 1
+        i := fn.blks[b].ins[k]
+        switch i.op:
+        case Ocall:
+            i0 := k
+            while i0 > 0 and isarg(fn.blks[b].ins[i0 - 1].op):
+                i0 -= 1
+            call(b, i0, k, ral)
+            k = i0
+        case Ovastart, Ovaarg, Oarg, Oargc:
+            panic("unreachable")
+        case:
+            emiti(i)
+    if b == fn.start: # the allocs in the order they were made
+        for j in reverse 0..ral.len:
+            emiti(ral[j])
+
+Cptr = 1 # replaced by a pointer
+Cstk1 = 2 # on the stack, the first half of a pair of registers or all
+Cstk2 = 4 # on the stack, the second half
+Cstk = 6
+Cfpint = 8 # a float passed as an integer
+
+type Class: # how a value passes to arm64 or risc-v
+    class: i64
+    t: i64 # the type of an aggregate, in asm.typ
+    size: i64
+    align: i64
+    nreg: i64
+    ngp: i64
+    nfp: i64
+    reg: array[i64, 4]
+    cls: array[i64, 4]
+    off: array[i64, 4] # where each register goes in the aggregate
+
+# the first n registers of c come in new temps, given in tmp, which are stored to the aggregate at base
+func sttmps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
+    for j in 0..n:
+        t := newtmp(c.cls[j])
+        r := newtmp(Kl)
+        emit(Ostorew + c.cls[j], 0, R, t, r)
+        emit(Oadd, Kl, r, base, getcon(c.off[j]))
+        append(tmp, t)
+
+# the registers of c are loaded from the aggregate at base
+func ldregs(c: *Class, base: Ref):
+    for j in 0..c.nreg:
+        r := newtmp(Kl)
+        emit(Oload, c.cls[j], u32(c.reg[j]), r, R)
+        emit(Oadd, Kl, r, base, getcon(c.off[j]))
+
+# an alloc of sz bytes with the alignment of the type t, that the start block gets
+func stkblob(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
+    al := max(asm.typ[t].align - 2, 0)
+    append(ral, Instr{op = i32(Oalloc + al), cls = Kl, to = r, arg = [getcon(sz), R]})
+
+# the allocs of the start block of a constant size become slots, the widest first, so each stays aligned
+func fastallocs():
+    b := fn.start
+    n := 16
+    for al in reverse Oalloc..=Oalloc1:
+        for k in 0..fn.blks[b].ins.len:
+            i := fn.blks[b].ins[k]
+            if i.op == al:
+                if rtype(i.arg[0]) != RCon:
+                    break
+                sz := fn.con[rval(i.arg[0])].bits
+                if sz < 0 or sz >= 2147483647 - 15:
+                    panic("invalid alloc size " + sz)
+                sz = (sz + n - 1) and -n
+                sz /= 4
+                if sz > 2147483647 - fn.slot:
+                    panic("alloc too large")
+                fn.tmp[i.to].slot = i32(fn.slot)
+                fn.slot += sz
+                fn.blks[b].ins[k] = Instr{op = Onop}
+        n /= 2
+    fn.slot = (fn.slot + 3) and -4
+
+func out(s: &strview):
+    asm.text += s
+
+func regbit(r: i64) -> u64:
+    return u64(1) << r
+
+Ki = -1 # matches Kw and Kl
+Ka = -2 # matches all classes
+
+type Form: # how an emitter writes an instruction of a class
+    op: i32
+    cls: i32
+    fmt: &strview
+
+# the format of i in the table of an emitter
+func format(table: &listview[Form], i: Instr) -> &strview:
+    for f in table:
+        if f.op == i.op and (f.cls == i.cls or f.cls == Ki and kbase(i.cls) == 0 or f.cls == Ka):
+            return f.fmt
+    panic("no match for " + optab[i.op].name + "(" + "wlsdv"[i.cls:i.cls + 1] + ")")
+
 func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
     m := ptr(asm.machine)
     pfx := m.assym
@@ -330,8 +438,8 @@ func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strvi
         out(".globl " + pfx + name + "\n")
     out(pfx + name + sfx + ":\n")
 
-func emitfnlnk():
-    emitlnk(fn.name, fn.export, false, 16, "", "", SecText)
+func emitfnlnk(align: i64):
+    emitlnk(fn.name, fn.export, false, align, "", "", SecText)
     if not comp.debug:
         return
     out("\t.cfi_startproc\n")
@@ -346,6 +454,58 @@ func emitfnlnk():
                 fn.blks[b].ins[k].op = Onop
                 return
         b = fn.blks[b].link
+
+# the end of a function, past its blocks
+func emitfnend():
+    asm.blocks += fn.nblk
+    for mark in fn.dbgmark: # the marks of a last block that died
+        if mark != -1:
+            out(asm.machine.asloc + "mark")
+            asm.text += mark
+            out(":\n")
+    out(asm.machine.asloc + fn.name + ".end:\n")
+    if comp.debug:
+        out("\t.cfi_endproc\n")
+    if comp.system == "linux":
+        out(".type " + fn.name + ", @function\n.size " + fn.name + ", .-" + fn.name + "\n")
+
+func emitdbgloc(line: i64, col: i64):
+    out("\t.loc ")
+    asm.text += asm.curfile
+    out(" ")
+    asm.text += line
+    if col != 0:
+        out(" ")
+        asm.text += col
+    out("\n")
+
+func emitdbgmark(r: Ref):
+    out(asm.machine.asloc + "mark")
+    asm.text += fn.dbgmark[rval(r)]
+    out(":\n")
+    fn.dbgmark[rval(r)] = -1
+
+func emitdbgslot(n: Ref, off: i64):
+    out(".set " + asm.machine.asloc + "slot")
+    asm.text += rval(n)
+    out(", ")
+    asm.text += off
+    out("\n")
+
+# whether a frame, with the stack the calls take below it, can reach past a page before the next access: then the
+# prologue lowers the stack a page at a time and touches each one, so an overflow meets the guard page and not the
+# memory below it
+func probing(frame: i64) -> bool:
+    most := 0
+    b := fn.start
+    while b != 0:
+        area := 0
+        for i in fn.blks[b].ins:
+            if i.op == Osalloc and rtype(i.arg[0]) == RCon:
+                area += fn.con[rval(i.arg[0])].bits
+                most = max(most, area)
+        b = fn.blks[b].link
+    return frame + most + 16 > 4096
 
 # the place of bits of size bytes among the floats that the code reads from memory
 func stashbits(n: u64, size: i64) -> i64:
@@ -399,21 +559,11 @@ func macho_emitfin():
 func pe_emitfin():
     emitfin([".rodata", ".rodata", ".rodata"])
 
-func emitdbgloc(line: i64, col: i64):
-    out("\t.loc ")
-    asm.text += asm.curfile
-    out(" ")
-    asm.text += line
-    if col != 0:
-        out(" ")
-        asm.text += col
-    out("\n")
-
 # snprintf of one float, as QBE prints it
-func print_float(out: *&str, format: cstr, f: f64):
+func print_float(into: *&str, spec: cstr, f: f64):
     buf: array[u8, 400]
-    n := snprintf(ptr(buf) as *u8, 400, format, f)
+    n := snprintf(ptr(buf) as *u8, 400, spec, f)
     text: &strview
     text = ptr(buf) as *bytes
     text.len = i64(n)
-    out.* += text
+    into.* += text

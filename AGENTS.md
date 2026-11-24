@@ -1,7 +1,7 @@
 # AGENTS.md
 
-This repo is the Flag compiler written in Flag. It compiles itself, runs the passes of QBE
-(in Flag for x86_64, the C QBE of vendor/qbe for arm64 and rv64) and links with cc.
+This repo is the Flag compiler written in Flag. It compiles itself, runs the passes of QBE,
+ported to Flag, and links with cc.
 
 ## Before you write
 

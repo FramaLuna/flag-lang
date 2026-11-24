@@ -747,11 +747,11 @@ type Machine:
     fpr0: i64 # the first float register
     nfpr: i64
     rglob: u64 # registers always live, as the stack pointers
-    rsave: array[i64, 25] # caller-save, ended by -1
+    rsave: array[i64, 43] # caller-save, then -1
     nrsave: array[i64, 2]
     retregs: func(Ref, *array[i64, 2]) -> u64
     argregs: func(Ref, *array[i64, 2]) -> u64
-    memargs: func(i64) -> i64
+    memargs: bool # an instruction takes as many arguments in memory as optab says
     abi0: func()
     abi1: func()
     isel: func()
@@ -816,6 +816,7 @@ context asm:
     curfile: i64
     blocks: i64 # the labels the functions before took
     ops: &map[&strview, i64] = heap({}) # each instruction by its name
+    lane: i64 # of the next vset, given by a vlane
 
 func rtype(r: Ref) -> i64:
     if r == R:
@@ -860,6 +861,9 @@ func isret(j: i64) -> bool:
 
 func isparbh(o: i64) -> bool:
     return o >= Oparsb and o <= Oparuh
+
+func isargbh(o: i64) -> bool:
+    return o >= Oargsb and o <= Oarguh
 
 func isxsel(o: i64) -> bool:
     return o >= Oxsel and o <= Oxsel1
