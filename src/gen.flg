@@ -7,6 +7,8 @@ ENTRY = "'main' is the program entry point and cannot be called or used as a val
 VIEW = "&strview is read-only; mutate the owning &str instead"
 STACK = "cannot return a pointer to stack memory; it becomes invalid when this function returns"
 STRAIGHT = 32 # cases tested in order: one mispredicted jump, where each halving costs half of one
+TABLED = 8 # cases from which a switch on numbers can jump through a table, one load and one jump for all of them
+DENSE = 3 # numbers a table spans for each of its cases, at most
 
 func gen_program(check: bool, testing: bool) -> Fail?:
     comp.entry = NONE # a type checks its defaults when it is made, and they can call functions before main is found
@@ -53,9 +55,17 @@ func gen_program(check: bool, testing: bool) -> Fail?:
             elif kind == Context:
                 define(Data{name = "$ctx." + comp.types[t].name, align = data_align(t), thread = true}, ptr([Piece{kind = Zeros, n = room(t)}]))
                 comp.stamping = comp.stamping or comp.types[t].stamped
-    s := first_sym("main")
-    while s != 0 and (comp.nodes[comp.syms[s].node].kind != Func or params(comp.syms[s].node) != 0 or comp.syms[s].module.len > 0 or comp.shared):
-        s = comp.syms[s].next
+    s := 0
+    found := first_sym("main")
+    while found != 0:
+        f := comp.syms[found].node
+        if comp.nodes[f].kind == Func and params(f) == 0 and comp.syms[found].module.len == 0 and not comp.shared and try holds_where(f):
+            if s != 0:
+                failed := fail("main is declared twice for this target; make the 'where' conditions of the two exclusive", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
+                note("the other declaration of main is here", comp.tokens[comp.nodes[f].tok].at)
+                return failed
+            s = found
+        found = comp.syms[found].next
     if testing:
         s = first_sym("run_test")
         while s != 0 and not comp.syms[s].library:
@@ -714,7 +724,7 @@ func result(f: i64) -> i64|Fail:
     c := kid(f, params(f))
     if c == node_end(f) or comp.nodes[c].kind == Literal or comp.nodes[c].kind == Where or comp.nodes[c].kind == Block:
         return VOID
-    return result_type(c)
+    return returned_type(c)
 
 func instantiate(f: i64, at: i64) -> i64|Fail:
     key: &str = heap("")
@@ -904,8 +914,6 @@ func gen(n: i64, want: i64) -> Value|Fail:
     case Return:
         if comp.ret == NEVER:
             return fail("function returning 'never' cannot contain a 'return' statement", tok.at)
-        if comp.types[comp.ret].kind == Atomic:
-            return fail("cannot return " + comp.types[comp.ret].name + " by value; atomics cannot be copied, so return '*" + comp.types[comp.ret].name + "'", tok.at)
         if node.size == 1:
             if comp.ret != VOID:
                 return fail("missing return value; this function returns " + comp.types[comp.ret].name, tok.at)
@@ -1821,7 +1829,7 @@ func cases(n: i64) -> Fail?:
     ends: &list[Local] = heap([])
     lives := 0
     truths := 0
-    gathering := not union and not subject.lit and integer(subject.type) and kids(n) > STRAIGHT + 1
+    gathering := not union and not subject.lit and integer(subject.type) and kids(n) > TABLED
     targets: &map[u64, u32] = heap({})
     defer free(targets)
     c := node_end(n + 1)
@@ -1911,7 +1919,7 @@ func cases(n: i64) -> Fail?:
                     gathering = false
                     l_rest := label()
                     insert(comp.body, test, Ins{op = "@", a = int_arg(i64(l_rest)), pos = comp.at})
-                    search(subject.at, cls(subject.type), targets, l_rest, bodies, comp.body.len)
+                    search(subject.at, subject.type, targets, l_rest, bodies, comp.body.len)
                     comp.live = true
                 l_more := l_next
                 if not last:
@@ -1941,7 +1949,8 @@ func cases(n: i64) -> Fail?:
     regive(given, before, true)
     if gathering:
         l_rest := label()
-        search(subject.at, cls(subject.type), targets, l_fallback if fallback != 0 else l_rest, bodies, comp.body.len)
+        comp.at = tok.at
+        search(subject.at, subject.type, targets, l_fallback if fallback != 0 else l_rest, bodies, comp.body.len)
         open_block(l_rest)
     if union:
         middle := comp.body.len
@@ -1949,7 +1958,7 @@ func cases(n: i64) -> Fail?:
         for k in 0..all.len:
             if owner[k] != 0:
                 put(targets, u64(tag_of(all[k]).n), owner[k])
-        search(tag(subject), W, targets, l_fallback, bodies, middle)
+        search(tag(subject), U32, targets, l_fallback, bodies, middle)
     elif fallback != 0 or truths == 3:
         terminate("hlt", Arg{})
     else:
@@ -1960,47 +1969,75 @@ func cases(n: i64) -> Fail?:
         try join(ends, lives, tok.at)
     return null
 
-# jumps to the target of the key in current, by halves over the keys in order, or to miss, a hlt without one, and puts this search before the code from first to middle
-func search(current: Arg, class: u32, targets: &map[u64, u32], miss: u32, first: i64, middle: i64):
+# jumps to the target of the key in current, a value of type t, or to miss, a hlt without one, and puts this search
+# before the code from first to middle: the keys in order go through a table where they are dense, by halves where there
+# are more than STRAIGHT, else one by one
+func search(current: Arg, t: i64, targets: &map[u64, u32], miss: u32, first: i64, middle: i64):
+    class := cls(t)
+    signed := comp.types[t].kind == Int
+    mask: u64 = 0xffff_ffff if class == W else 0xffff_ffff_ffff_ffff # of the keys in targets
+    flip: u64 = 0x8000_0000_0000_0000 if signed else 0 # with its sign bit flipped a signed key sorts as an unsigned one
     keys: &list[u64] = heap([])
     defer free(keys)
     for pair in targets:
-        append(keys, pair.key)
+        key := pair.key
+        if signed and class == W:
+            key = u64(i64(key) << 32 >> 32)
+        append(keys, key xor flip)
     sort(keys)
-    below: &strview = "cultw" if class == W else "cultl"
+    below: &strview = ("csltw" if signed else "cultw") if class == W else ("csltl" if signed else "cultl")
     same: &strview = "ceqw" if class == W else "ceql"
     ranges: &list[i64] = heap([])
     defer free(ranges)
     heads: &list[u32] = heap([])
     defer free(heads)
+    halt := miss == 0
+    if halt:
+        miss = label()
     low := 0
     high := keys.len
     comp.live = true
     while true:
-        if high - low > STRAIGHT:
+        count := high - low
+        if comp.system != "wasm" and count >= TABLED and keys[high - 1] - keys[low] < u64(DENSE * count): # wasm-wasm64 has no form for a table yet
+            least := i64(keys[low] xor flip)
+            span := i64(keys[high - 1] - keys[low]) + 1
+            index := op(class, "sub", current, int_arg(least))
+            l_table := label()
+            branch(op(W, "cugew" if class == W else "cugel", index, int_arg(span)), miss, l_table) # the table comes next
+            open_block(l_table)
+            if class == W:
+                index = op1(L, "extuw", index)
+            add(Ins{op = "jt", a = index, first = u32(comp.passes.len), count = u32(span)})
+            comp.live = false
+            for k in 0..span: # least + span may wrap
+                append(comp.passes, Pass{arg = int_arg(i64(targets[u64(least + k) and mask] ifnull miss))})
+        elif count > STRAIGHT:
             half := (low + high) / 2
             l_low := label()
             l_high := label()
-            branch(op(W, below, current, int_arg(i64(keys[half]))), l_low, l_high)
+            branch(op(W, below, current, int_arg(i64(keys[half] xor flip))), l_low, l_high)
             append(ranges, half)
             append(ranges, high)
             append(heads, l_high)
             high = half
             open_block(l_low)
             continue
-        for key in keys[low:high]:
-            l_other := label()
-            branch(op(W, same, current, int_arg(i64(key))), trust targets[key], l_other)
-            open_block(l_other)
-        if miss != 0:
-            jump(miss)
         else:
-            terminate("hlt", Arg{})
+            for key in keys[low:high]:
+                l_other := label()
+                value := i64(key xor flip)
+                branch(op(W, same, current, int_arg(value)), trust targets[u64(value) and mask], l_other)
+                open_block(l_other)
+            jump(miss)
         if heads.len == 0:
             break
         open_block(trust pop(heads))
         high = trust pop(ranges)
         low = trust pop(ranges)
+    if halt:
+        open_block(miss)
+        terminate("hlt", Arg{})
     postpone(first, middle)
 
 func called(n: i64, want: i64, threaded: bool) -> Value|Fail:

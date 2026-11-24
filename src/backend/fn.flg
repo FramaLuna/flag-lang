@@ -275,6 +275,7 @@ Jjmp = 11
 Jjnz = 12
 Jjf = 13 # jf + a comparison: jump on the flags
 Jhlt = 31
+Jjt = 32 # to the target of a jump table at the index in arg, which simpl() turns into its address
 
 Cieq = 0
 Cine = 1
@@ -654,6 +655,8 @@ type Blk:
     jmp: Jmp
     s1: i64
     s2: i64
+    targets: &list[i64] = heap([]) # of a jump table, the blocks it goes to, each once
+    table: &list[i64] = heap([]) # of a jump table, for each index the place in targets it goes to
     link: i64
     id: i64
     visit: i64
@@ -1193,8 +1196,22 @@ func newblk() -> i64:
     b.ins.len = 0
     b.fron.len = 0
     b.pred.len = 0
-    b.* = Blk{ins = b.ins, fron = b.fron, pred = b.pred, live_in = b.live_in, live_out = b.live_out, gen = b.gen}
+    b.targets.len = 0
+    b.table.len = 0
+    b.* = Blk{ins = b.ins, fron = b.fron, pred = b.pred, targets = b.targets, table = b.table, live_in = b.live_in, live_out = b.live_out, gen = b.gen}
     return fn.nblks
+
+# the blocks b jumps to: the targets of its jump table, or s1 and s2 once, which pair holds for the view
+func succs(b: i64, pair: *array[i64, 2]) -> &listview[i64]:
+    p := ptr(fn.blks[b])
+    if p.jmp.type == Jjt:
+        return p.targets
+    pair[0] = p.s1
+    pair[1] = p.s2
+    s: &listview[i64]
+    s = ptr(pair[0])
+    s.len = i64(p.s1 != 0) + i64(p.s2 != 0 and p.s2 != p.s1)
+    return s
 
 func fillpreds():
     b := fn.start
@@ -1203,12 +1220,11 @@ func fillpreds():
         b = fn.blks[b].link
     b = fn.start
     while b != 0:
-        s1 := fn.blks[b].s1
-        s2 := fn.blks[b].s2
-        if s1 != 0:
-            append(fn.blks[s1].pred, b)
-        if s2 != 0 and s2 != s1:
-            append(fn.blks[s2].pred, b)
+        pair: array[i64, 2]
+        for s in succs(b, ptr(pair)):
+            pred := ptr(fn.blks[s].pred)
+            if pred.len == 0 or pred[-1] != b: # simpljmp can send two targets to one block
+                append(pred, b)
         b = fn.blks[b].link
 
 func porec(b: i64):
@@ -1222,6 +1238,8 @@ func porec(b: i64):
         s2 = fn.blks[b].s1
     porec(s1)
     porec(s2)
+    for s in reverse fn.blks[b].targets: # the first one comes first after b
+        porec(s)
     fn.blks[b].id = fn.nblk
     fn.nblk += 1
 
@@ -1271,7 +1289,7 @@ func fillcfg():
             n0 := 0
             for n in 0..ph.arg.len:
                 bp := ph.blk[n]
-                if fn.blks[bp].id != -1 and (fn.blks[bp].s1 == b or fn.blks[bp].s2 == b):
+                if fn.blks[bp].id != -1 and (fn.blks[bp].s1 == b or fn.blks[bp].s2 == b or contains(fn.blks[bp].targets, b)):
                     ph.blk[n0] = bp
                     ph.arg[n0] = ph.arg[n]
                     n0 += 1
@@ -1405,6 +1423,8 @@ func simpljmp():
         if p.s1 != 0 and p.s1 == p.s2:
             p.jmp.type = Jjmp
             p.s2 = 0
+        for k in 0..p.targets.len:
+            p.targets[k] = uffind(p.targets[k], uf)
         last = b
         b = p.link
     fn.blks[last].link = ret
@@ -1415,13 +1435,18 @@ func reachrec(b: i64, to: i64) -> bool:
     if b == 0 or fn.blks[b].visit != 0:
         return false
     fn.blks[b].visit = 1
-    return reachrec(fn.blks[b].s1, to) or reachrec(fn.blks[b].s2, to)
+    pair: array[i64, 2]
+    for s in succs(b, ptr(pair)):
+        if reachrec(s, to):
+            return true
+    return false
 
 func unvisit(b: i64):
     if b != 0 and fn.blks[b].visit != 0:
         fn.blks[b].visit = 0
-        unvisit(fn.blks[b].s1)
-        unvisit(fn.blks[b].s2)
+        pair: array[i64, 2]
+        for s in succs(b, ptr(pair)):
+            unvisit(s)
 
 type Exit: # a block's jump, as simplcfg moves it
     type: i32
@@ -1465,8 +1490,9 @@ func simplcfg():
             id := fn.blks[b].id
             if id != -1:
                 j := jmp[id]
-                # with -debug a block stays where it is, so a scope stays one range of code
-                if j.type == Jjmp and fn.blks[j.s1].pred.len == 1 and not comp.debug:
+                # with -debug a block stays where it is, so a scope stays one range of code; a jump table stays in the
+                # block that holds its targets
+                if j.type == Jjmp and fn.blks[j.s1].pred.len == 1 and not comp.debug and jmp[fn.blks[j.s1].id].type != Jjt:
                     s := j.s1
                     for i in fn.blks[s].ins:
                         addins(ptr(fn.blks[b].ins), i)
@@ -1616,13 +1642,8 @@ func renblk(b: i64, stk: &list[i64]):
     a := fn.blks[b].jmp.arg
     if rtype(a) == RTmp and fn.tmp[a].visit != 0:
         fn.blks[b].jmp.arg = getstk(i64(a), b, stk)
-    s1 := fn.blks[b].s1
-    s2 := fn.blks[b].s2
-    if s2 == s1:
-        s2 = 0
-    for s in [s1, s2]:
-        if s == 0:
-            break
+    pair: array[i64, 2]
+    for s in succs(b, ptr(pair)):
         p = fn.blks[s].phi
         while p != 0:
             t := i64(fn.tmp[fn.phis[p].to].visit)
@@ -1646,12 +1667,12 @@ func ssa():
         b = fn.blks[b].link
     b = fn.start
     while b != 0:
-        for s in [fn.blks[b].s1, fn.blks[b].s2]:
-            if s != 0:
-                a := b
-                while not sdom(a, s) and not contains(fn.blks[a].fron, s):
-                    append(fn.blks[a].fron, s)
-                    a = fn.blks[a].idom
+        pair: array[i64, 2]
+        for s in succs(b, ptr(pair)):
+            a := b
+            while not sdom(a, s) and not contains(fn.blks[a].fron, s):
+                append(fn.blks[a].fron, s)
+                a = fn.blks[a].idom
         b = fn.blks[b].link
     filllive()
     u: BSet
@@ -1921,7 +1942,7 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
             dropped[k] = true
             dropped[next] = true
         if not dropped[k]:
-            ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
+            ended = i.op == "jmp" or i.op == "jnz" or i.op == "jt" or i.op == "ret" or i.op == "hlt"
     begin(p.name[1:], p.export)
     fn.base = i64(p.temps)
     fn.temps.len = 0
@@ -1991,6 +2012,16 @@ func lower(p: Proc, dropped: &list[bool], moved: &list[i64]):
         case "jnz":
             r := parseref(i.a)
             closeblk(Jjnz, r, findblk(landing(moved, i.b.n)), findblk(landing(moved, i.c.n)))
+        case "jt":
+            closeblk(Jjt, parseref(i.a), 0, 0)
+            places: &map[i64, i64] = heap({}) # of each target, its place in targets
+            for given in comp.passes[i.first:i.first + i.count]:
+                s := findblk(landing(moved, given.arg.n))
+                if not contains(places, s):
+                    put(places, s, fn.blks[fn.last].targets.len)
+                    append(fn.blks[fn.last].targets, s)
+                append(fn.blks[fn.last].table, trust places[s])
+            free(places)
         case "ret":
             if i.a.kind == Empty or rcls == K0:
                 closeblk(Jret0, R, 0, 0)

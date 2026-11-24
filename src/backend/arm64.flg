@@ -501,9 +501,8 @@ func arm64_isel():
     b := fn.start
     while b != 0:
         fn.out.len = 0
-        for s in [fn.blks[b].s1, fn.blks[b].s2]:
-            if s == 0:
-                break
+        pair: array[i64, 2]
+        for s in succs(b, ptr(pair)):
             p := fn.blks[s].phi
             while p != 0:
                 a := phiargn(p, b)
@@ -512,7 +511,7 @@ func arm64_isel():
                 p = fn.phis[p].link
         ins := fn.blks[b].ins
         j := fn.blks[b].jmp.type
-        if j != Jret0 and j != Jjmp and j != Jhlt:
+        if j == Jjnz:
             r := fn.blks[b].jmp.arg
             fn.blks[b].jmp.arg = R
             ir := ins.len - 1
@@ -1041,6 +1040,13 @@ func arm64_emitfn():
         j := i64(p.jmp.type)
         if j == Jhlt:
             out("\tudf\t#0\n")
+        elif j == Jjt:
+            if rtype(p.jmp.arg) == RSlot:
+                arm64_emitins(Instr{op = Oload, cls = Kl, to = X17, arg = [p.jmp.arg, R]})
+                p.jmp.arg = X17
+            out("\tbr\t")
+            arm64_reg(i64(p.jmp.arg), Kl)
+            out("\n")
         elif j == Jret0:
             s = (frame - arm64.padding) / 4
             for r in ARM64_RCLOB:
@@ -1094,4 +1100,4 @@ func arm64_emitfn():
             else:
                 lbl = false
         b = p.link
-    emitfnend()
+    emitfnend(m.asloc)

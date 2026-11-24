@@ -386,18 +386,8 @@ func main() -> i32:
                     return 1
             print(real_path(view(folder)))
             return 0
-        elif ends_with(a, ".flg"):
+        elif ends_with(a, ".flg") or is_dir(a): # a folder gives its files once the overlay is read
             append(inputs, a)
-        elif is_dir(a):
-            before := inputs.len
-            found := walk_dir(a)
-            if found is &listview[&strview]:
-                for path in found:
-                    if ends_with(path, ".flg"):
-                        append(inputs, path)
-            if inputs.len == before:
-                eprint(comp.err, "directory ", a, " contains no .flg files")
-                return 2
         elif a == "run" or a == "test":
             line: &str = heap("flagc " + a)
             for j in 1..arguments.len:
@@ -472,6 +462,28 @@ func main() -> i32:
             from := path_end + size_end + 2
             put(texts, real_path(rest_of[:path_end]), rest_of[from:from + size])
             rest_of = rest_of[from + size:]
+    files: &list[&strview] = heap([]) # the inputs, with the .flg files of each folder, saved or in the overlay, in order
+    for input in inputs:
+        if ends_with(input, ".flg"):
+            append(files, input)
+            continue
+        found: &list[&strview] = heap([])
+        walked := walk_dir(input)
+        if walked is &listview[&strview]:
+            for path in walked:
+                if ends_with(path, ".flg"):
+                    append(found, path)
+        root := real_path(input)
+        for e in texts:
+            if ends_with(e.key, ".flg") and starts_with(e.key, root) and e.key.len > root.len + 1:
+                inner := e.key[root.len:]
+                if items(inner)[0] == '/' or items(inner)[0] == '\\':
+                    append(found, join_path(input, inner))
+        if found.len == 0:
+            eprint(comp.err, "directory ", input, " contains no .flg files")
+            return 2
+        sort(found)
+        append(files, found[:])
     fleeting := running and output.len == 0
     suffix: &strview = ".out"
     if comp.system == "windows":
@@ -538,8 +550,8 @@ func main() -> i32:
     put(loaded, real_path(view(core)), 0)
     if add_file(core, read_source(view(core), texts), true) is Fail:
         return 1
-    for input in inputs:
-        if load(input, loaded, texts) is Fail:
+    for path in files:
+        if load(path, loaded, texts) is Fail:
             return 1
     # the folders of the uses in quotes go before the library, whose modules give way to those of the program
     done := 0

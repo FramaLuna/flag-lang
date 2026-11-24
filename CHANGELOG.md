@@ -14,6 +14,12 @@ A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` w
 
 - **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets, and the compiler builds itself in the same time.
 - **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds took 27.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
+- **WebAssembly tests on any Node with 64-bit memory:** `./test.sh` passes `--experimental-wasm-memory64` only to a Node that needs it for 64-bit memory, like Node 22, and skips the tests without such a Node instead of failing them.
+
+### Performance
+
+- **Jump tables:** A `switch` on numbers with 8 or more cases whose values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 52% fewer cycles on random values and 41% fewer on values in order, and a `switch` of 20,000 cases compiles in half the time and memory. The table holds distances within the code, so it needs no relocation, also in a `-shared` library. WebAssembly still finds the cases by halves.
+- **Spilling by distance:** When more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
 
 ### Fixed
 
@@ -21,6 +27,10 @@ A minor release that adds WebAssembly as a target: `flagc -target wasm-wasm64` w
 - **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
 - **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
 - **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
+- **`main` with `where`:** a `main` whose `where` does not hold on the target is no longer the entry point, so `func main() where false:` fails with `missing entry point`, and with one `main` per system, like `where @linux()` and `where @windows()`, each build runs its own. Two that hold are an error.
+- **Atomic results:** a function declared `-> atomic[T]` is an error where it is declared, also when no `return` reaches it, and so is a function type that takes or returns an atomic by value.
+- **`-overlay` in folders:** a new `.flg` file that is not saved yet, inside a folder given on the command line, is part of the program at any depth, as in the folder of a quoted `use`.
+- **Stepping in a debugger:** `next` no longer skips the line a jump lands on when values move on the way there, like the line after a `switch`, and no longer stops twice on the first line of a loop.
 
 ## 0.6.3
 

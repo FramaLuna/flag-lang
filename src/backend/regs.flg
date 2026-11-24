@@ -34,6 +34,9 @@ context regs:
     blk: &list[i64] = heap([])
     rl: array[i64, 64]
     at: i64 # where in fn.out the instruction is that rega gives registers
+    seen: &list[i64] = heap([]) # of each temp, the place where spill() saw it last before the one it has reached
+    floor: i64 # the place of the first instruction of the block of spill(): seen below it is not in the block
+    before: &list[i64] = heap([]) # of each temp the block touches, in order: the place, the temp, where it was seen before
 
 func liveon(v: *BSet, b: i64, s: i64):
     bscopy(v, ptr(fn.blks[s].live_in))
@@ -76,11 +79,9 @@ func filllive():
             b = fn.rpo[n]
             p := ptr(fn.blks[b])
             size := bscount(ptr(p.live_out))
-            if p.s1 != 0:
-                liveon(v, b, p.s1)
-                bsunion(ptr(p.live_out), v)
-            if p.s2 != 0:
-                liveon(v, b, p.s2)
+            pair: array[i64, 2]
+            for s in succs(b, ptr(pair)):
+                liveon(v, b, s)
                 bsunion(ptr(p.live_out), v)
             changed = changed or bscount(ptr(p.live_out)) != size
             nlv: array[i64, 2]
@@ -171,7 +172,15 @@ func fillcost():
         tmpuse(fn.blks[b].jmp.arg, true, n)
         b = fn.blks[b].link
 
+# which of two temps stays in a register: a register, then the one wanted again sooner going back, which is to say the
+# one seen nearer to this place in the block, then the costlier
 func tcmp0(a: i64, b: i64) -> bool:
+    if (a < Tmp0) != (b < Tmp0):
+        return a < Tmp0
+    sa := max(regs.seen[a], regs.floor - 1)
+    sb := max(regs.seen[b], regs.floor - 1)
+    if sa != sb:
+        return sa > sb
     return fn.tmp[a].cost > fn.tmp[b].cost
 
 func tcmp1(a: i64, b: i64) -> bool:
@@ -179,7 +188,21 @@ func tcmp1(a: i64, b: i64) -> bool:
     fb := bshas(ptr(regs.fst), b)
     if fa != fb:
         return fa
-    return fn.tmp[a].cost > fn.tmp[b].cost
+    return tcmp0(a, b)
+
+# the instruction at place at touches r, which is seen there
+func touch(at: i64, r: Ref):
+    if rtype(r) == RTmp:
+        append(regs.before, ptr([at, i64(r), regs.seen[r]]))
+        regs.seen[r] = at
+
+# going back past instruction k of the block, the temps it touched were seen last where they were seen before
+func untouch(k: i64):
+    at := regs.floor + k
+    before := ptr(regs.before)
+    while before.len > 0 and before[-3] == at:
+        regs.seen[before[-2]] = before[-1]
+        before.len -= 3
 
 func slot(t: i64) -> Ref:
     s := i64(fn.tmp[t].slot)
@@ -299,16 +322,29 @@ func spill():
         if t >= Tmp0:
             k = kbase(fn.tmp[t].cls)
         bsset(ptr(regs.masks[k]), t)
+    while regs.seen.len < fn.ntmp:
+        append(regs.seen, -1)
     for n in reverse 0..fn.nblk:
         b := fn.rpo[n]
+        # 0. where each temp was seen last, at the end of the block and before each instruction
+        span := fn.blks[b].ins.len
+        regs.before.len = 0
+        for k in 0..span:
+            i := fn.blks[b].ins[k]
+            touch(regs.floor + k, i.to)
+            for x in 0..2:
+                if rtype(i.arg[x]) == RMem:
+                    touch(regs.floor + k, fn.mem[rval(i.arg[x])].base)
+                    touch(regs.floor + k, fn.mem[rval(i.arg[x])].index)
+                else:
+                    touch(regs.floor + k, i.arg[x])
         # 1. find temporaries in registers at the end of the block (put them in v)
-        s1 := fn.blks[b].s1
-        s2 := fn.blks[b].s2
+        pair: array[i64, 2]
+        succ := succs(b, ptr(pair))
         hd := 0
-        if s1 != 0 and fn.blks[s1].id <= fn.blks[b].id:
-            hd = s1
-        if s2 != 0 and fn.blks[s2].id <= fn.blks[b].id and (hd == 0 or fn.blks[s2].id >= fn.blks[hd].id):
-            hd = s2
+        for s in succ:
+            if fn.blks[s].id <= fn.blks[b].id and (hd == 0 or fn.blks[s].id >= fn.blks[hd].id):
+                hd = s
         if hd != 0: # back-edge
             bszero(v)
             fn.blks[hd].gen.t[0] = fn.blks[hd].gen.t[0] or m.rglob # don't spill registers
@@ -330,13 +366,13 @@ func spill():
                 else:
                     limit(u, nr, null)
                 bsunion(v, u)
-        elif s1 != 0: # avoid reloading temporaries in the middle of loops
+        elif succ.len > 0: # avoid reloading temporaries in the middle of loops
             bszero(v)
-            liveon(w, b, s1)
-            merge(v, b, w, s1)
-            if s2 != 0:
-                liveon(u, b, s2)
-                merge(v, b, u, s2)
+            liveon(w, b, succ[0])
+            merge(v, b, w, succ[0])
+            for s in succ[1:]:
+                liveon(u, b, s)
+                merge(v, b, u, s)
                 bsinter(w, u)
             limit2(v, 0, 0, w)
         else:
@@ -394,6 +430,8 @@ func spill():
                 else:
                     limit2(v, 0, 0, null)
                     r = v.t[0]
+                for x in reverse k..last + 1:
+                    untouch(x)
                 sethints(v, r)
                 reloads(pm, v)
                 for x in reverse k..last + 1:
@@ -431,6 +469,7 @@ func spill():
                     j -= 1
             bscopy(u, v)
             limit2(v, 0, 0, w)
+            untouch(k)
             for x in 0..2:
                 if rtype(i.arg[x]) == RTmp:
                     t = i64(i.arg[x])
@@ -460,6 +499,7 @@ func spill():
             p = fn.phis[p].link
         bscopy(ptr(fn.blks[b].live_in), v)
         idup(b)
+        regs.floor += span # the places count on through the blocks of every function
     # align the locals to a 16 byte boundary
     regs.slot8 += regs.slot8 and 3
     fn.slot += regs.slot8
@@ -889,10 +929,10 @@ func rega():
     blist := 0
     b := fn.start
     while true:
-        for which in 0..2:
-            s = fn.blks[b].s1 if which == 0 else fn.blks[b].s2
+        for which in 0..2 + fn.blks[b].targets.len: # s1, s2, then the targets of a jump table
+            s = fn.blks[b].s1 if which == 0 else fn.blks[b].s2 if which == 1 else fn.blks[b].targets[which - 2]
             if s == 0:
-                break
+                continue
             regs.moves.len = 0
             p := fn.blks[s].phi
             while p != 0:
@@ -928,12 +968,18 @@ func rega():
             blist = b1
             fn.nblk += 1
             idup(b1)
+            for i in fn.blks[s].ins: # the moves take the line of s, which they enter, or a debugger stepping there skips it
+                if i.op == Odbgloc:
+                    insert(fn.blks[b1].ins, 0, i)
+                    break
             fn.blks[b1].jmp.type = Jjmp
             fn.blks[b1].s1 = s
             if which == 0:
                 fn.blks[b].s1 = b1
-            else:
+            elif which == 1:
                 fn.blks[b].s2 = b1
+            else:
+                fn.blks[b].targets[which - 2] = b1
         if fn.blks[b].link == 0:
             fn.blks[b].link = blist
             break

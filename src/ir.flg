@@ -443,10 +443,12 @@ func renamed(i: Ins, names: &list[Arg], first: u32, labels: i64) -> Ins:
     i.a = named(i.a, names, first)
     i.b = named(i.b, names, first)
     i.c = named(i.c, names, first)
-    if i.op == "call":
+    if i.op == "call" or i.op == "jt": # the arguments of a call, or the labels of a jump table
         from := comp.passes.len
         for k in i.first..i.first + i.count:
             given := comp.passes[k]
+            if i.op == "jt":
+                given.arg.n += labels
             given.arg = named(given.arg, names, first)
             append(comp.passes, given)
         i.first = u32(from)

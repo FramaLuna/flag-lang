@@ -348,6 +348,8 @@ func check_memory():
     defer free(aims)
     held: &list[&strview] = heap([])
     defer free(held)
+    ways: &list[u32] = heap([])
+    defer free(ways)
     for func in comp.procs:
         clear(labels)
         blocks.len = 0
@@ -393,6 +395,22 @@ func check_memory():
                 o.blob = i.cls >= AGG
             name := i.op
             if name == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag.stamp" and func.export and func.inst != comp.entry: # a thread new to an export turns the zeros of its contexts into their defaults, and neither holds memory
+                continue
+            if name == "jt": # two ways at a time: a fork to each block of the table in turn, and a goto to the last one
+                ways.len = 0
+                for given in comp.passes[i.first:i.first + i.count]:
+                    append(ways, u32(given.arg.n))
+                sort(ways)
+                for n, way in ways:
+                    if n + 1 < ways.len and ways[n + 1] == way:
+                        continue
+                    to := block_of(labels, blocks, way)
+                    if n + 1 == ways.len:
+                        append(mem.ops, Op{pos = i.pos, code = Goto, a = Operand{n = i64(to)}})
+                        continue
+                    append(mem.ops, Op{pos = i.pos, code = Fork, a = Operand{n = i64(to)}, b = Operand{n = i64(blocks.len)}})
+                    append(blocks, u32(0))
+                    begin(f.spans, blocks, u32(blocks.len) - 1)
                 continue
             if name == "call":
                 o.code = Call

@@ -10,6 +10,13 @@ cp "$compiler" "$out/bin/"
 pass=0
 fail=0
 limit=120
+# what runs a WebAssembly module: a node with 64-bit memory, which before Node 24 takes a flag, or none
+wasm=none
+for node in "node" "node --experimental-wasm-memory64"; do
+    if [ "$wasm" = none ] && $node -e 'process.exit(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1])) ? 0 : 1)' > /dev/null 2>&1; then
+        wasm="$node tests/wasm.js"
+    fi
+done
 exec 3>&1
 within() {
     "$@" &
@@ -38,7 +45,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
     [ -f "tests/$name.args" ] && args="$target $(cat "tests/$name.args")"
     host= # what runs the program: nothing for one of this machine, node for a WebAssembly module
     case " $args " in
-    *" -target wasm-"*) host="node --experimental-wasm-memory64 tests/wasm.js" ;;
+    *" -target wasm-"*) host=$wasm ;;
     esac
     flagc=$compiler
     vars=
@@ -101,8 +108,8 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         fail=$((fail + 1))
         continue
     fi
-    if [ -n "$host" ] && ! command -v node > /dev/null; then
-        continue # without node there is nothing to run the module
+    if [ "$host" = none ]; then
+        continue # without a node that has 64-bit memory there is nothing to run the module
     elif [ ! -f "tests/$name.gdb" ]; then
         within env FLAGC="$compiler" $host "$out/$name$exe" < /dev/null > "$out/$name.got" 2>&1
     elif [ -z "$target" ] && command -v gdb > /dev/null; then

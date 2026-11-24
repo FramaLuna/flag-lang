@@ -235,12 +235,11 @@ func coalesce():
         b = fn.rpo[n]
         br[n].b = ip
         ip -= 1
-        succ := [fn.blks[b].s1, fn.blks[b].s2]
+        pair: array[i64, 2]
+        succ := succs(b, ptr(pair))
         for s in 0..sl.len:
             sl[s].l = 0
             for x in succ:
-                if x == 0:
-                    break
                 m := fn.blks[x].id
                 if m > n and rin(sl[s].r, br[m].a):
                     sl[s].l = sl[s].m
@@ -1216,7 +1215,7 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
     if npred == 1:
         bp := fn.blks[b].pred[0]
         l := il
-        if fn.blks[bp].s2 != 0:
+        if fn.blks[bp].s2 != 0 or fn.blks[bp].targets.len > 1:
             l.type = LNoLoad
         r1 := def(sl, msk, bp, -1, l)
         if r1 == R:
@@ -1231,7 +1230,7 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
     for np in 0..npred:
         bp := fn.blks[b].pred[np]
         l := Loc{LNoLoad, fn.blks[bp].ins.len, bp}
-        if fn.blks[bp].s2 == 0 and il.type != LNoLoad and fn.blks[bp].loop < fn.blks[il.blk].loop:
+        if fn.blks[bp].s2 == 0 and fn.blks[bp].targets.len <= 1 and il.type != LNoLoad and fn.blks[bp].loop < fn.blks[il.blk].loop:
             l.type = LLoad
         r1 := def(sl, msks, bp, -1, l)
         if r1 == R:
@@ -2361,6 +2360,15 @@ func ispow2(v: u64) -> bool:
 func simpl():
     b := fn.start
     while b != 0:
+        if fn.blks[b].jmp.type == Jjt: # the address of the table plus the distance from it that the entry at the index holds
+            table := newcon(Con{type = CAddr, sym = i32(intern("\"" + jumptable(b) + "\""))}) # quoted, with no prefix of a symbol
+            base := newtmp(Kl)
+            offset := newtmp(Kl)
+            entry := newtmp(Kl)
+            distance := newtmp(Kl)
+            to := newtmp(Kl)
+            append(fn.blks[b].ins, ptr([Instr{op = Ocopy, cls = Kl, to = base, arg = [table, R]}, Instr{op = Oshl, cls = Kl, to = offset, arg = [fn.blks[b].jmp.arg, getcon(2)]}, Instr{op = Oadd, cls = Kl, to = entry, arg = [base, offset]}, Instr{op = Oloadsw, cls = Kl, to = distance, arg = [entry, R]}, Instr{op = Oadd, cls = Kl, to = to, arg = [base, distance]}]))
+            fn.blks[b].jmp.arg = to
         renewed := false # the instructions after the one at k went to the buffer, so the ones that replace it go before
         k := fn.blks[b].ins.len
         while k > 0:

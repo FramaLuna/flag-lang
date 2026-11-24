@@ -1010,7 +1010,9 @@ Consequently:
 
 ### switch
 
-Only the first matching `case` runs; there is no fallthrough. The default `case:` must come last. The subject evaluates once, and case values evaluate in order until one matches (skipping remaining cases and remaining items in `case a, b`). `break` inside a `switch` exits the enclosing loop. A `switch` on an integer with more than 32 cases finds its literal values by halves instead of one by one, with the same result: 256 cases with random values take 28% fewer cycles.
+Only the first matching `case` runs; there is no fallthrough. The default `case:` must come last. The subject evaluates once, and case values evaluate in order until one matches (skipping remaining cases and remaining items in `case a, b`). `break` inside a `switch` exits the enclosing loop.
+
+A `switch` on an integer with 8 or more cases does not test its literal values in order, which gives the same result since a literal evaluates to nothing else. Where they are dense, filling at least a third of the numbers from the smallest to the largest, it jumps through a table: one load and one jump whatever their number, and 256 cases take 52% fewer cycles than by halves on random values, 41% fewer on values in order. The table holds distances within the code, so it needs no relocation, also in a `-shared` library. Elsewhere it finds them by halves while more than 32 remain, then one by one, and so does `wasm-wasm64`, which has no form for a table yet. A value that is not a literal, like a variable, a call or a range, is still tested in its place, after the literals before it.
 
 #### Value switches
 
@@ -1040,7 +1042,7 @@ Union `switch` rules:
 
 Case items are interpreted once the subject's type is known (and per instantiation in generics), so `Red`, `m.Thing`, `Car.motor`, and `Pair[i32]` parse as types on a union subject, while `limit`, `p.x`, and `t[0]` parse as values on a numeric subject.
 
-**Code generation**: a tagged-union `switch` loads the tag once and binary-searches the explicit case tags until 8 or fewer remain, then tests linearly (~8 comparisons for 120 types instead of 60). Default-case members are omitted from the table, so matching a few variants plus a default on a large enum takes only a few checks. Debug line info attributes the dispatch to the `switch` line.
+**Code generation**: a tagged-union `switch` loads the tag once and finds the explicit case tags as a `switch` on integers finds its values: through a table where they are dense, as the fixed tags of the built-in types are, and by halves while more than 32 remain, then one by one (about 17 comparisons for 120 types instead of 60). Default-case members are left out of the search, so matching a few variants plus a default on a large enum takes only a few checks. Debug line info attributes the dispatch to the `switch` line.
 
 ### break and continue
 
@@ -1069,7 +1071,7 @@ Any non-error return value of `operator with` is discarded, but an error return 
 
 - **Exhaustive returns**: every path through a non-void function must return (`not all control paths return a value`). An infinite `while true` loop with no `break` counts as never reaching its end.
 - **Unreachable statements**: code after `return`, `break`, or `continue` in the same block fails with `unreachable statement; the preceding code always exits this block`.
-- **`main`**: takes no parameters, must be global (outside any module), and returns nothing (exit code `0`) or an integer (exit code). It is the C `main` entry point and cannot be called or taken as a value: `'main' is the program entry point and cannot be called or used as a value`.
+- **`main`**: takes no parameters, must be global (outside any module), and returns nothing (exit code `0`) or an integer (exit code). It is the C `main` entry point and cannot be called or taken as a value: `'main' is the program entry point and cannot be called or used as a value`. A `main` whose `where` does not hold on the target is not the entry point, so `func main() where @linux():` and `func main() where @windows():` each build for their system; two that hold fail: `main is declared twice for this target; make the 'where' conditions of the two exclusive`.
 - **`-> never`**: marks functions that never return (like `panic` or `exit`). Calls to them act as path-ending statements (narrowing like `return`), may appear on the right of `ifnull`/`iferror` (`port := parse_int(text) ifnull panic("not a number")`) or as one branch of `a if c else b`, and are rejected anywhere else a value is required (`a call to a function returning 'never' is a statement, not a value`). A `-> never` body cannot `return` or fall off the end (`function returning 'never' can reach the end of its body; every path must end in a diverging call like exit() or panic()`). `extern` C functions may return `never`. `parallel` of a `-> never` function returns `Thread[null]`. `never` cannot be a variable, parameter, or union member type (`'never' can only be a function return type, not a value type`), except inside empty fat pointers (`&list[never]`, `&map[never, never]`).
 - **Returning stack addresses**: returning `ptr(...)` of a local variable, parameter, field/element thereof (without an intervening pointer), or temporary, even through `as`, fails immediately: `cannot return a pointer to stack memory; it becomes invalid when this function returns`. Indirect escapes (`p := ptr(x); return p`) are caught by `-memory`.
 - **Multiple returns**: `return 0, n` constructs and returns the tuple `{0, n}` (see [Tuples](#tuples)). Inside brackets, `return` after `ifnull`/`iferror` takes only a single expression so commas still separate call arguments (`sum(parse_int(t) ifnull return -1, 2)`). Returning multiple values from a single-return function fails: `cannot return multiple values; this function returns i64`.
@@ -1425,7 +1427,7 @@ func main():
 - **No direct value reads or writes**:
   - Reading directly (`x := hits`, `print(hits)`, `hits + 1`): `cannot read atomic hits (atomic[i64]) directly as a value; read it with: get(hits)`.
   - Assigning or initializing directly (`hits = 5`, `hits += 1`, `hits: atomic[i64] = 0`): `cannot assign directly to atomic[i64]; atomics start at 0 and must be updated with set, add, swap, or compare_swap`.
-- **Passing to functions**: pass by pointer (`func bump(hits: *atomic[i64])`, accessed as `add(hits.*, 1)`; `bump(hits)` auto-addresses like any `*T`, and generics accept `*atomic[$T]`). Passing by value fails: `parameter hits cannot take atomic[i64] by value; atomics cannot be copied, so take '*atomic[i64]'`. So does a `return` in a function declared `-> atomic[i64]`: `cannot return atomic[i64] by value; atomics cannot be copied, so return '*atomic[i64]'`.
+- **Passing to functions**: pass by pointer (`func bump(hits: *atomic[i64])`, accessed as `add(hits.*, 1)`; `bump(hits)` auto-addresses like any `*T`, and generics accept `*atomic[$T]`). Passing by value fails: `parameter hits cannot take atomic[i64] by value; atomics cannot be copied, so take '*atomic[i64]'`. So does declaring a function `-> atomic[i64]`, even one that never returns: `cannot return atomic[i64] by value; atomics cannot be copied, so return '*atomic[i64]'`, and a function type that takes or returns one: `a function cannot take atomic[i64] by value; atomics cannot be copied, so take '*atomic[i64]'`.
 - **Inside structs**: a struct containing an atomic remains a value type. Copying it reads the 4- or 8-byte atomic whole without a race (`-memory` does not warn), and `print` reads the field via `get`. `core`'s `Lock` stores its owning thread ID in an `atomic[u64]` read this way.
 - **Pointer atomics in `-memory`**: pointers stored in `atomic[*T]` (and returned by `swap`/`compare_swap`) are tracked like struct fields.
 
@@ -2117,7 +2119,7 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 These flags serve editors and language servers without producing a binary:
 
 - **`-check`**: checks code and prints diagnostics quickly.
-- **`-overlay file`**: substitutes unsaved buffer contents for the files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. A listed `.flg` file that is not on disk yet counts as part of the folder of a quoted `use` it sits in, when that folder exists.
+- **`-overlay file`**: substitutes unsaved buffer contents for the files listed in `file`. Each entry consists of three parts: a line with the file path, a line with the byte length, and that exact number of raw bytes. A listed `.flg` file that is not on disk yet counts as part of the folder of a quoted `use` it sits in, when that folder exists, and of a folder given on the command line it sits in at any depth.
 - **`-at file:line:column`**: queries symbol information at a 1-based line and byte column, printing a `definition` line with where the symbol is declared and `hover` lines with its type or declaration. Out-of-range positions exit with code `2`: `error: -at main.flg:1:18 is past end of line (last column is 13)`.
 
 ```sh
@@ -2174,7 +2176,7 @@ error: unexpected end of line; expected ':'
 | `name.flg` + `name.err` | Must fail compilation with `name.err` contained in the output. |
 | `name.flg` + `name.warn` | Compiled with `-memory`; must contain `name.warn`, or emit no warnings if `name.warn` is empty. |
 | `name.gdb` + `name.out` | Runs under `gdb` (when available) and compares output to `name.out` (stripping `libthread_db` lines and Windows `Thread 1 hit ` prefixes). |
-| `name.args` | Extra flags passed to `flagc`; if `-check` is included, compares compiler stdout/stderr to `name.out` without running (used for `-at`). With `-target wasm-wasm64`, `node` runs the module through `tests/wasm.js`, and without `node` the test is skipped. |
+| `name.args` | Extra flags passed to `flagc`; if `-check` is included, compares compiler stdout/stderr to `name.out` without running (used for `-at`). With `-target wasm-wasm64`, `node` runs the module through `tests/wasm.js`, with `--experimental-wasm-memory64` when that `node` needs it for 64-bit memory, and without such a `node` the test is skipped. |
 | `name.env` | Environment `NAME=value` pairs; runs an isolated copy of `flagc` in `build/tests/bin` that unpacks its embedded library (tests missing `cc` and cache failures). |
 | `name.*` auxiliary / folder / no-file | Auxiliary files (like `name.overlay`) sit beside the test; folders test multi-file programs; tests with no `.flg` or folder test CLI usage errors. |
 
@@ -2188,7 +2190,7 @@ The backend lives in `src/backend/` and is [QBE](https://c9x.me/compile/), porte
 
 #### Changes from upstream QBE
 
-The backend has **59 changes** over upstream QBE, grouped by purpose:
+The backend has **62 changes** over upstream QBE, grouped by purpose:
 
 1. **Stack probes and constants (5 changes)**:
    - Stack probes: a function that can go past a page of stack before touching it lowers the stack one page at a time and touches each page. That is how a stack overflow meets the guard page of its thread: Windows grows a stack that way, and on Linux and macOS a frame bigger than a thread's 4 KiB guard used to jump over it into the stack of another thread. A function counts its frame plus the stack its calls take below it (stack arguments, and on Windows the 32 bytes reserved for the callee), so one that does not reach a page is emitted as before.
@@ -2210,7 +2212,7 @@ The backend has **59 changes** over upstream QBE, grouped by purpose:
    - `amd64_win` supports thread data: it goes in section `.tls$`, and its address is the thread's block in the table at `gs:88`, at `_tls_index`, plus the symbol's offset in it. On Windows and macOS, where that address costs a lookup or a call, each function reads it once, after its parameters, and keeps it in a temporary. An address of thread data that a call or a `sel` takes is computed there too, since the arguments of a call and the two halves of a `sel` stay together. On macOS this also fixes thread data passed as a call argument, whose runtime call broke the arguments already in their registers; a function whose only call is that one aligns the stack for it; and zero-initialized thread data goes in `__thread_bss`, taking no room in the program file. On Linux the address costs nothing: the compiler builds itself with the same instructions, 0.1% more when it only checks.
    - Libraries on Linux use `extern thread`, the initial-exec model: `amd64` had it, and `arm64` and `rv64` stopped with `extern thread unavailable`. `arm64` reads the thread offset from the GOT (`:gottprel:`) and adds `tpidr_el0` through `x18`, which QBE keeps free outside Apple; `rv64` writes `la.tls.ie` and adds `tp`.
    - The offset of an address read from the GOT, like a context field, is added after the address is read, on `arm64` through a register: its `add` takes 12 bits, and a field past 4 KiB stopped QBE with an assertion.
-4. **Small slots, struct copies, return pads, signed division, float copies, and Mach-O sections (8 changes)**:
+4. **Small slots, struct copies, return pads, signed division, float copies, Mach-O sections, and spilling (9 changes)**:
    - A stack slot of 48 bytes or less whose address only reaches loads, stores, blits and additions of constants is cut, before `promote`, into one slot for each piece that is read or written, and `promote` then keeps the pieces in registers. That is how small structs, and the copies of them that inlined calls make, live in registers on every target. The pieces follow the edges of the accesses, carried from one side of a blit to the other, and again only through the blits of a slot that changed, so a chain of copies is not walked once per link. A constant store is cut along them, a blit is copied piece by piece, and a piece that is read starts at zero, after the parameters, so no path reads it undefined. `-debug` keeps every slot whole, for the debugger. The limit is 48 bytes so that a `Mat3` of nine `f32` is cut too: the `integrate` kernel takes 8% fewer cycles, 19% with every helper marked `inline`, and the compiler checks itself with 1.5% fewer instructions.
    - A slot that a function returns is cut too: its pieces go back to the slot right before the `ret`, so a struct computed in a loop and returned no longer writes memory on every turn. A loop that mixes four `i64` fields: 6.12 G -> 3.18 G cycles; the `integrate` physics kernel: 2.2% fewer cycles.
    - `rv64` copies a constant, or a value on the stack, into a stack temporary through `ft11`, where it stopped with `unimplemented`: the functions with cut slots need it.
@@ -2219,6 +2221,7 @@ The backend has **59 changes** over upstream QBE, grouped by purpose:
    - The slot where a call leaves a returned struct is made before slots are coalesced, on every target, so calls whose results are not alive at the same time share one. A call never shares it with a struct it takes as an argument. The compiler's largest frame goes from 11.5 KB to 9.4 KB, and 480 nested calls no longer overflow an 8 MiB stack on `x86_64`.
    - `amd64` copies a float between registers with `movaps` and clears the result of a conversion first: `movss`, `movsd`, `cvtsi2ss`, `cvtss2sd` and `cvtsd2ss` keep the upper bits of their destination, so each one waited for whatever that register held before. The `integrate` physics kernel takes 26% fewer cycles, 37% with every helper marked `inline`, and a loop of conversions 17%.
    - On macOS a section name is written without quotes, `.section __TEXT,__const`, as Mach-O reads it: QBE wrote `section "name"` as `.section "name"`, which ELF and COFF accept and Mach-O does not. That is how the bytes of a text literal are read-only there too.
+   - When more temporaries are alive than registers, the spiller keeps the ones it needs again soonest. It walks each block backward, so it sends to the stack those whose previous use lies furthest back, by Belady's rule, and the cost of a temporary only breaks ties: QBE kept the costliest, and a big function sent a product to the stack to read it back two instructions later. The `integrate` physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which made it slower before and makes it faster now; the compiler builds itself executing 0.8% more instructions.
 5. **Fixes to QBE itself (15 changes)**:
    - `promote` turned a `loadsw` of a slot written with `storew` into a copy, and the value lost its sign.
    - Store-to-load forwarding kept the bits above a narrow store when a load that starts inside it took them shifted down. This and the previous one happen in more slots since small slots are cut.
@@ -2235,12 +2238,13 @@ The backend has **59 changes** over upstream QBE, grouped by purpose:
    - `rv64` stopped with an assertion when a `jnz` read its condition from a stack slot more than 2 KiB below the frame pointer, a condition spilled in a big function; the address goes through `t6`, as for a load.
    - `rv64` reads the address of a C symbol from the GOT with `auipc` and `ld`, the two instructions of `lga`, a name that clang 14 does not assemble.
    - `rv64` stopped with an assertion when an instruction of class `l` read a temporary of class `w`, which GVN makes when a phi of `0` and `1` takes the comparison its `jnz` reads. The word is extended with `extuw` first, so its high bits are zero, as on `amd64` and `arm64`.
-6. **Call chains and debugging (6 changes)**:
+6. **Call chains and debugging (7 changes)**:
    - On `x86_64` every function keeps its frame pointer, as on `arm64` and `rv64`.
    - On Windows each function has its unwind information, `.seh_*`, which Windows and its debuggers read to find the end of the prologue, the caller and the registers kept for it. Those are saved right below `rbp` once `rbp` is set (`[rbp]` is the caller's `rbp` and `[rbp+8]` the return address), so they are found from `rbp` wherever the body moves `rsp`.
    - `hlt` is an instruction on every target: `ud2` on `amd64`, `udf` on `arm64` and `unimp` on `rv64`. It was a breakpoint on the last two, and a crash handler does not take breakpoints.
    - Each function ends with the label `.L<name>.end` (`L<name>.end` on macOS and Windows), which gives the table of functions and the DWARF its end.
    - `%r =l frame` gives the frame pointer of the function.
+   - The block of moves that the register allocator puts on an edge takes the line of the block it enters, so a debugger stepping into it stops at that line. It had the line of whatever code it followed, and `next` skipped the line after a loop or a `switch`, or stopped twice on the first line of a loop.
    - `-debug` builds for a debugger:
      - `dbgslot %t, n` says where the `alloc` `%t` is, with `.set .Lslot<n>, <offset from the frame pointer>`, and keeps it in memory, whole;
      - `dbgmark n` writes the label `.Lmark<n>` there, and the mark of a block that dies goes to the start of the block after it;
@@ -2258,6 +2262,8 @@ The backend has **59 changes** over upstream QBE, grouped by purpose:
    - Store-to-load forwarding stops at one of them for memory that escapes, as at a call, since another thread may have written there.
    - `amd64` puts the value in `rax`, which then holds what memory had, like a division, and a store is an `xchg`, so a load is a plain `mov`; add and compare-and-swap are `lock xadd` and `lock cmpxchg`.
    - `arm64` puts the value in `x0` and uses `ldar` and `stlr`; on Apple, whose processors all have the ARMv8.1 atomics, `ldaddal`, `swpal` and `casal`, and elsewhere a loop of `ldaxr` and `stlxr` through `x17` and `x18`. `rv64` puts it in `a0` and has `amoadd` and `amoswap` with `.aqrl`, a loop of `lr.aqrl` and `sc.rl` for `acas`, and fences around a load and before a store.
+9. **Jump tables (1 change)**:
+   - A block can end in `jt`, a jump to one of its targets, each kept once, by the index in its argument, which the code has checked against the size of the table. The passes that walk the successors of a block see the targets, the register allocator puts the moves of each edge in a block of its own, and a block that ends in a table is not merged into the one before it. `simpl` makes the address: the table, plus the distance that its entry at the index holds, with `shl`, `add` and `loadsw`, which each target selects as usual: `leaq`, `movslq` and `jmp *` on `amd64`, `adrp`, `ldrsw` and `br` on `arm64`, `lla`, `lw` and `jr` on `rv64`. The table goes after the code of its function, and each entry is the distance from the table to its block, which the assembler resolves: no relocation on ELF, Mach-O or COFF, so it works in a shared library, and `rv64` keeps the pair of relocations of a difference that linker relaxation needs.
 
 ## Rough edges
 

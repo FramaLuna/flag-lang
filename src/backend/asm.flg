@@ -522,8 +522,22 @@ func emitfnlnk(align: i64):
                 return
         b = fn.blks[b].link
 
-# the end of a function, past its blocks
-func emitfnend():
+# the label of the jump table of block b, which goes after the code of its function
+func jumptable(b: i64) -> &strview:
+    return asm.machine.asloc + fn.name + ".jt" + b
+
+# the end of a function, past its blocks, with its jump tables; block is how the label of a block starts
+func emitfnend(block: &strview):
+    b := fn.start
+    while b != 0:
+        if fn.blks[b].jmp.type == Jjt: # each entry is the distance from the table to its block, which needs no relocation
+            table := jumptable(b)
+            out(".p2align 2\n" + table + ":\n")
+            for k in fn.blks[b].table:
+                out("\t.long " + block)
+                asm.text += asm.blocks + fn.blks[fn.blks[b].targets[k]].id
+                out(" - " + table + "\n")
+        b = fn.blks[b].link
     asm.blocks += fn.nblk
     for mark in fn.dbgmark: # the marks of a last block that died
         if mark != -1:
