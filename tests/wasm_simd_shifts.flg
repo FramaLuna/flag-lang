@@ -1,0 +1,15 @@
+# lanes shifted by a count past their bits, which wasm takes modulo the bits and Flag shifts out, and the sign fills
+noinline func count(n: i64) -> i64:
+    return n
+
+func main():
+    h: simd[i16, 8] = [1, -1, 32767, -32768, 100, -100, 3, -3]
+    u: simd[u16, 8] = [1, 65535, 32768, 7, 100, 200, 3, 9]
+    w: simd[i32, 4] = [1, -1, 2147483647, -2147483648]
+    v: simd[u32, 4] = [1, 4294967295, 2147483648, 7]
+    q: simd[u64, 2] = [1, 18446744073709551615]
+    for n in [0, 1, 15, 16, 17, 31, 32, 33, 63]:
+        k := count(n)
+        print(n, ": ", h << i16(k % 32), " ", h >> i16(k % 32), " ", u << u16(k % 32), " ", u >> u16(k % 32))
+        print("  ", w << i32(k), " ", w >> i32(k), " ", v << u32(k), " ", v >> u32(k), " ", q << u64(k), " ", q >> u64(k))
+    print(h << 16, " ", h >> 20, " ", u >> 16, " ", w << 31, " ", w >> 31, " ", v >> 31, " ", q << 63)

@@ -1,0 +1,172 @@
+# on WebAssembly, literals go through a br_table by their number, not by cases: a few cases with many values, outliers left out of the
+# table, ranges of literals, empty ones tested as ranges, literals after a value that is not one, and a table at a
+# known index
+noinline func arms(c: u8) -> i64:
+    switch c:
+    case 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j':
+        return 1
+    case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+        return 2
+    case:
+        return 0
+
+noinline func outliers(c: u8) -> i64:
+    switch c:
+    case '\n':
+        return 100
+    case 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm':
+        return 1
+    case 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z':
+        return 2
+    case ' ':
+        return 200
+    case:
+        return 0
+
+noinline func ends(x: i32) -> i64:
+    switch x:
+    case -1000:
+        return -1
+    case 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110:
+        return 1
+    case 111, 112, 113, 114, 115, 116, 117, 118, 119, 120:
+        return 2
+    case 300:
+        return 3
+    return 0
+
+noinline func clusters(x: i32) -> i64:
+    switch x:
+    case -1015, -1014, -1013, -1012, -1011, -1010, -1009, -1008, -1007, -1006, -1005, -1004, -1003, -1002, -1001, -1000:
+        return 1
+    case 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15:
+        return 2
+    return 0
+
+noinline func lexer(c: u8) -> &strview:
+    switch c:
+    case 'a'..='z', 'A'..='Z', '_':
+        return "name"
+    case '0'..='9':
+        return "digit"
+    case ' ', '\t', '\r':
+        return "space"
+    case '\n':
+        return "line"
+    case '\'', '"':
+        return "quote"
+    case 0x80..=0xff:
+        return "utf-8"
+    case 0..0x20:
+        return "control"
+    return "symbol"
+
+noinline func edges(x: i8) -> i64:
+    switch x:
+    case 10..=5, 7..7, 5..-128:
+        return 1
+    case -128..-125:
+        return 2
+    case 125..=127:
+        return 3
+    case -3..=3:
+        return 4
+    case -128..=127:
+        return 5
+    return 0
+
+noinline func longs(x: i64) -> i64:
+    switch x:
+    case 0x7fff_ffff_ffff_fffd..=0x7fff_ffff_ffff_ffff:
+        return 1
+    case (-9223372036854775807 - 1)..(-9223372036854775807 + 2):
+        return 2
+    case -2..=2:
+        return 3
+    case 0x1_0000_0000..0x1_0000_0010:
+        return 4
+    return 0
+
+noinline func wide(x: u64) -> i64:
+    switch x:
+    case 0xffff_ffff_ffff_fff0..=0xffff_ffff_ffff_ffff:
+        return 1
+    case 0..0x10:
+        return 2
+    case 0x10..=0x1000:
+        return 3
+    return 0
+
+noinline func restarts(x: i64, v: i64) -> i64:
+    switch x:
+    case 1, 2, 3, 4, 5, 6, 7, 8:
+        return 1
+    case v:
+        return 2
+    case 9, 10, 11, 12, 1, 13, 14, 15, 16:
+        return 3
+    case 17, v, 18:
+        return 4
+    case 20..=30:
+        return 5
+    case 19, 18, 31, 32, 33, 34, 35, 36, 37:
+        return 6
+    return 0
+
+noinline func empty(x: i64, v: i64) -> i64:
+    switch x:
+    case 1, 2, 3:
+        return 1
+    case v, 5..5:
+        return 2
+    case 4..4:
+        return 3
+    return 0
+
+inline func pick(x: i64) -> i64:
+    switch x:
+    case 0:
+        return 10
+    case 1:
+        return 11
+    case 2:
+        return 12
+    case 3:
+        return 13
+    case 4:
+        return 14
+    case 5:
+        return 15
+    case 6:
+        return 16
+    case 7:
+        return 17
+    case:
+        return -1
+
+inline func narrow(x: u8) -> i64:
+    switch x:
+    case 10, 11, 12, 13, 14, 15, 16, 17:
+        return 1
+    return 0
+
+func main():
+    for c in items("az09_ z\n\x7f\xff"):
+        print(arms(c), " ", outliers(c), " ", lexer(c))
+    print(outliers('`'), outliers('{'), outliers('\t'), outliers('!'))
+    for x in [-1001, -1000, -999, 99, 100, 110, 111, 120, 121, 299, 300, 301]:
+        print(x, " ", ends(i32(x)), " ", clusters(i32(x)))
+    print(clusters(-1015), clusters(-1016), clusters(15), clusters(16), clusters(-1))
+    for x in [-128, -126, -125, -4, -3, 0, 3, 4, 5, 7, 10, 124, 125, 127]:
+        print(x, " ", edges(i8(x)))
+    m := 0x7fff_ffff_ffff_ffff
+    for x in [m, m - 2, m - 3, -m - 1, -m, -m + 1, -3, -2, 2, 3, 0x1_0000_0000, 0x1_0000_000f, 0x1_0000_0010, 0xffff_ffff]:
+        print(longs(x))
+    for x in [0xffff_ffff_ffff_ffff, 0xffff_ffff_ffff_fff0, 0xffff_ffff_ffff_ffef, 0, 0xf, 0x10, 0x1000, 0x1001]:
+        print(wide(u64(x)))
+    for x in 0..39:
+        print(x, " ", restarts(x, 1), " ", restarts(x, 10), " ", restarts(x, 18), " ", restarts(x, 38))
+    for x in 0..7:
+        print(x, " ", empty(x, 0), " ", empty(x, 6))
+    print(pick(5), " ", pick(9), " ", pick(0), " ", pick(-1), " ", pick(7), " ", pick(8))
+    print(narrow(13), " ", narrow(9), " ", narrow(18), " ", narrow(255))

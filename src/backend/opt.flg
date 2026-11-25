@@ -1,0 +1,2579 @@
+# the narrow values that pass to and from calls are i32, with arbitrary high bits
+func drop_narrow():
+    b := fn.start
+    while b != 0:
+        ins := ptr(fn.blocks[b].ins)
+        for k in 0..ins.len:
+            if is_narrow_arg(ins[k].op):
+                ins[k].op = Oarg
+            if is_narrow_param(ins[k].op):
+                ins[k].op = Oparam
+        if fn.blocks[b].exit.type >= Jreturni8 and fn.blocks[b].exit.type <= Jreturnu16:
+            fn.blocks[b].exit.type = Jreturni32
+        b = fn.blocks[b].next
+
+func load_size(i: Instr) -> i64:
+    switch i.op:
+    case Oloadi8, Oloadu8:
+        return 1
+    case Oloadi16, Oloadu16:
+        return 2
+    case Oloadi32, Oloadu32:
+        return 4
+    if i.cls == Vector:
+        return 16
+    return 8 if wide(i.cls) != 0 else 4
+
+func store_size(i: Instr) -> i64:
+    switch i.op:
+    case Ostorei8:
+        return 1
+    case Ostorei16:
+        return 2
+    case Ostorei32, Ostoref32:
+        return 4
+    case Ostorei64, Ostoref64:
+        return 8
+    return 16
+
+# a slot only loaded and stored whole becomes a temp
+func promote():
+    b := fn.start
+    for k in 0..fn.blocks[b].ins.len:
+        i := fn.blocks[b].ins[k]
+        if not is_alloc(i.op):
+            continue
+        t := ptr(fn.temps[i.to])
+        if t.defs != 1:
+            continue
+        cls := -1
+        s := -1
+        ok := true
+        for u in t.uses[:t.used]:
+            if u.type != ByInstr:
+                ok = false
+                break
+            l := instr_at(u.at).*
+            if is_load(l.op) and (s == -1 or s == load_size(l)):
+                s = load_size(l)
+                continue
+            argk := i64(OPERATIONS[l.op].arg_class[0])
+            if is_store(l.op) and i.to == l.arg[1] and i.to != l.arg[0] and (s == -1 or s == store_size(l)) and (cls == -1 or cls == argk):
+                s = store_size(l)
+                cls = argk
+                continue
+            ok = false
+            break
+        if not ok:
+            continue
+        if bank(cls) == 1: # a float widened by the load needs a cast first
+            for u in t.uses[:t.used]:
+                l := instr_at(u.at)
+                if is_load(l.op) and l.op != Oload and l.cls == Int64:
+                    ok = false
+        if not ok:
+            continue
+        fn.blocks[b].ins[k] = Instr{op = Onop}
+        t.defs -= 1
+        for u in t.uses[:t.used]:
+            l := instr_at(u.at)
+            if is_store(l.op):
+                l.cls = i32(cls)
+                l.op = Ocopy
+                l.to = l.arg[1]
+                l.arg[1] = EMPTY
+                t.used -= 1
+                t.defs += 1
+                continue
+            if cls == -1:
+                panic("a slot of " + fn.name + " is read but never stored to")
+            # a load becomes a copy or an extension, that later passes remove
+            if l.op == Oload or (l.op == Oloadi32 or l.op == Oloadu32) and l.cls != Int64:
+                l.op = Ocast if bank(cls) != bank(l.cls) else Ocopy
+            else:
+                l.op = l.op - Oloadi8 + Oexti8
+
+type Range: # [from, to) with 0 <= from
+    from: i64
+    to: i64
+
+type Stored:
+    point: i64
+    at: i64
+
+type Spot: # a slot of the stack as coalesce sees it
+    temp: i64
+    size: i64
+    stored: u64
+    live: u64
+    range: Range
+    into: i64 # the spot it fuses into, -1 for none
+    stores: &list[Stored] = heap([])
+
+func within(r: Range, n: i64) -> bool:
+    return r.from <= n and n < r.to
+
+func overlap(r0: Range, r1: Range) -> bool:
+    return r0.to != 0 and r1.to != 0 and r0.from < r1.to and r1.from < r0.to
+
+func stretch(r: *Range, n: i64):
+    if r.to == 0:
+        r.* = Range{n, n + 1}
+    elif n < r.from:
+        r.from = n
+    elif n >= r.to:
+        r.to = n + 1
+
+# the spot that r points into, and where
+func spot(r: Ref, sl: &list[Spot]) -> (i64, i64):
+    a: Region
+    alias_of(ptr(a), r)
+    if a.type != InSlot:
+        return -1, 0
+    v := fn.temps[a.base].visit
+    if v < 0:
+        return -1, 0
+    return i64(v), a.offset
+
+func spot_load(r: Ref, x: u64, ip: i64, sl: &list[Spot]):
+    s, off := spot(r, sl)
+    if s >= 0:
+        p := ptr(sl[s])
+        # a read out of the slot reads all of it
+        p.live = p.live or (x << off if 0 <= off and off < BITS else 0xffff_ffff_ffff_ffff)
+        p.live = p.live and p.stored
+        if p.live != 0:
+            stretch(ptr(p.range), ip)
+
+func spot_store(r: Ref, x: u64, ip: i64, at: i64, sl: &list[Spot]):
+    s, off := spot(r, sl)
+    if s >= 0:
+        p := ptr(sl[s])
+        if p.live != 0:
+            stretch(ptr(p.range), ip)
+            if 0 <= off and off < BITS:
+                p.live = p.live and not (x << off)
+        else:
+            append(p.stores, Stored{ip, at})
+
+func mark_loop_end(hd: i64, b: i64):
+    if i64(fn.blocks[hd].loop) < fn.blocks[b].id:
+        fn.blocks[hd].loop = i32(fn.blocks[b].id)
+
+# the slot of each call that returns an aggregate, made before coalesce so that calls can share them
+func result_slots():
+    pads: &list[Instr] = heap([])
+    defer free(pads)
+    b := fn.start
+    while b != 0:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            to := i.to
+            if i.op != Ocall or i.arg[1] == EMPTY or to == EMPTY or fn.temps[to].used == 0:
+                continue
+            ty := asm.layouts[ref_value(i.arg[1])]
+            pad := new_temp(Int64)
+            append(pads, Instr{op = i32(Oalloc4 + (2 if ty.align > 3 else 1)), cls = Int64, to = pad, arg = [intern((ty.size + 7) and -8), EMPTY]})
+            fn.temps[to].result_slot = pad
+            uses := fn.temps[to].uses
+            for u in uses[:fn.temps[to].used]:
+                switch u.type:
+                case ByInstr:
+                    j := instr_at(u.at)
+                    for n in 0..2:
+                        if j.arg[n] == to:
+                            j.arg[n] = pad
+                case ByPhi:
+                    p := ptr(fn.phis[u.at])
+                    for n in 0..p.arg.len:
+                        if p.arg[n] == to:
+                            p.arg[n] = pad
+                case ByExit:
+                    fn.blocks[fn.order[u.block]].exit.arg = pad
+        b = fn.blocks[b].next
+    if pads.len == 0:
+        return
+    b = fn.start
+    ins := ptr(fn.blocks[b].ins)
+    n := 0
+    while n < ins.len and is_param(ins[n].op):
+        n += 1
+    rest: &list[Instr] = heap(ins[n:])
+    defer free(rest)
+    ins.len = n
+    append(ins, pads[:])
+    append(ins, rest[:])
+
+func before_spot(a: Spot, b: Spot) -> bool:
+    if a.size != b.size:
+        return b.size < a.size
+    return a.range.from < b.range.from
+
+# slots that are never live at the same time share their place
+func coalesce():
+    sl: &list[Spot] = heap([])
+    for n in FIRST_TEMP..fn.temp_count:
+        t := ptr(fn.temps[n])
+        t.visit = -1
+        if t.alias.type == InSlot and t.alias.slot == n and t.block == u32(fn.blocks[fn.start].id) and t.alias.size != -1:
+            t.visit = i32(sl.len)
+            append(sl, Spot{temp = n, size = i64(t.alias.size), stored = t.alias.stored, into = -1})
+    # the liveness of the slots, in one pass
+    b := fn.start
+    while b != 0:
+        fn.blocks[b].loop = -1
+        b = fn.blocks[b].next
+    each_loop(mark_loop_end)
+    bl: &list[i64] = heap([])
+    br: &list[Range] = heap([])
+    for n in 0..fn.ordered:
+        append(br, Range{})
+    ip := 2147483647 - 1
+    for n in reverse 0..fn.ordered:
+        b = fn.order[n]
+        br[n].to = ip
+        ip -= 1
+        pair: array[i64, 2]
+        succ := successors(b, ptr(pair))
+        for s in 0..sl.len:
+            sl[s].live = 0
+            for x in succ:
+                m := fn.blocks[x].id
+                if m > n and within(sl[s].range, br[m].from):
+                    sl[s].live = sl[s].stored
+                    stretch(ptr(sl[s].range), ip)
+        if fn.blocks[b].exit.type == Jreturnaggregate:
+            ip -= 1
+            spot_load(fn.blocks[b].exit.arg, 0xffff_ffff_ffff_ffff, ip, sl)
+        pad: Ref = EMPTY
+        for k in reverse 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if i.op == Ocall:
+                pad = fn.temps[i.to].result_slot
+            if i.op == Oargaggregate:
+                ip -= 1
+                spot_load(i.arg[1], 0xffff_ffff_ffff_ffff, ip, sl)
+            if is_load(i.op):
+                ip -= 1
+                spot_load(i.arg[0], (u64(1) << load_size(i)) - 1, ip, sl)
+            if is_store(i.op):
+                spot_store(i.arg[1], (u64(1) << store_size(i)) - 1, ip, at(b, k), sl)
+                ip -= 1
+            if i.op == Oblit:
+                sz := abs(ref_signed(fn.blocks[b].ins[k + 1].arg[0]))
+                x := 0xffff_ffff_ffff_ffff if sz >= BITS else (u64(1) << sz) - 1
+                spot_store(i.arg[1], x, ip, at(b, k), sl)
+                ip -= 1
+                spot_load(i.arg[0], x, ip, sl)
+                append(bl, at(b, k))
+            # a call writes all of its result slot, below the arguments it must not share it with
+            if pad != EMPTY and (k == 0 or not is_arg(fn.blocks[b].ins[k - 1].op)):
+                ip -= 1
+                s, _ := spot(pad, sl)
+                if s >= 0 and sl[s].live != 0:
+                    stretch(ptr(sl[s].range), ip)
+                    sl[s].live = 0
+                pad = EMPTY
+        for s in 0..sl.len:
+            if sl[s].live != 0:
+                stretch(ptr(sl[s].range), ip)
+                if fn.blocks[b].loop != -1:
+                    stretch(ptr(sl[s].range), br[fn.blocks[b].loop].to - 1)
+        br[n].from = ip
+    free(br)
+    # kill dead stores
+    for s in sl:
+        for st in s.stores:
+            if not within(s.range, st.point):
+                i := instr_at(st.at)
+                if i.op == Oblit:
+                    instr_at(st.at + 1).* = Instr{op = Onop}
+                i.* = Instr{op = Onop}
+    # kill slots with an empty live range
+    stk: &list[i64] = heap([])
+    kept := 0
+    for s in 0..sl.len:
+        if sl[s].range.to == 0:
+            free(sl[s].stores)
+            append(stk, sl[s].temp)
+            fn.temps[sl[s].temp].visit = -2
+        else:
+            sl[kept] = sl[s]
+            kept += 1
+    sl.len = kept
+    while stk.len > 0:
+        t := ptr(fn.temps[trust pop(stk)])
+        i := instr_at(t.def)
+        if is_load(i.op):
+            i.op = Ocopy
+            i.arg[0] = UNDEF
+            continue
+        i.* = Instr{op = Onop}
+        for u in t.uses[:t.used]:
+            if u.type == ByExit:
+                j := ptr(fn.blocks[fn.order[u.block]].exit)
+                j.type = Jreturn
+                j.arg = EMPTY
+                continue
+            i = instr_at(u.at)
+            if i.to != EMPTY:
+                append(stk, i64(i.to))
+            elif is_arg(i.op):
+                i.arg[1] = ZERO # the dead slot is null, which crashes where it is used
+            else:
+                if i.op == Oblit:
+                    instr_at(u.at + 1).* = Instr{op = Onop}
+                i.* = Instr{op = Onop}
+    free(stk)
+    # fuse slots by decreasing size
+    sort(sl, before_spot)
+    for n in 0..sl.len:
+        if sl[n].into >= 0:
+            continue
+        sl[n].into = n
+        r := sl[n].range
+        for s in n + 1..sl.len:
+            if sl[s].into >= 0 or sl[s].range.to == 0:
+                continue
+            if overlap(r, sl[s].range):
+                clash := false
+                for m in n..s:
+                    clash = clash or sl[m].into == n and overlap(sl[m].range, sl[s].range)
+                if clash:
+                    continue
+            stretch(ptr(r), sl[s].range.from)
+            stretch(ptr(r), sl[s].range.to - 1)
+            sl[s].into = n
+    # substitute fused slots
+    for s in 0..sl.len:
+        t := ptr(fn.temps[sl[s].temp])
+        t.visit = i32(s) # the visit link is stale, reset it before the spot calls below
+        if sl[s].into == s:
+            continue
+        instr_at(t.def).* = Instr{op = Onop}
+        leader := sl[sl[s].into].temp
+        ts := ptr(fn.temps[leader])
+        if t.def < ts.def: # the slot chosen has a def that dominates its new uses
+            instr_at(t.def).* = instr_at(ts.def).*
+            instr_at(ts.def).* = Instr{op = Onop}
+            ts.def = t.def
+        for u in t.uses[:t.used]:
+            if u.type == ByExit:
+                fn.blocks[fn.order[u.block]].exit.arg = u32(leader)
+                continue
+            i := instr_at(u.at)
+            for n in 0..2:
+                if i.arg[n] == u32(sl[s].temp):
+                    i.arg[n] = u32(leader)
+    for t in FIRST_TEMP..fn.temp_count:
+        pad := fn.temps[t].result_slot
+        if pad != EMPTY:
+            m := fn.temps[pad].visit
+            if m == -2:
+                fn.temps[t].result_slot = EMPTY
+            elif m >= 0:
+                fn.temps[t].result_slot = u32(sl[sl[m].into].temp)
+    # fix newly overlapping blits
+    for x in bl:
+        i := instr_at(x)
+        if i.op == Oblit:
+            s, off0 := spot(i.arg[0], sl)
+            s0, off1 := spot(i.arg[1], sl)
+            if s >= 0 and s0 >= 0 and sl[s].into == sl[s0].into:
+                if off0 < off1:
+                    j := instr_at(x + 1)
+                    j.arg[0] = ref(RefInt, 0 - ref_signed(j.arg[0]))
+                elif off0 == off1:
+                    i.* = Instr{op = Onop}
+                    instr_at(x + 1).* = Instr{op = Onop}
+    free(bl)
+    for s in sl:
+        free(s.stores)
+    free(sl)
+
+# cut a small slot whose address only reaches loads, stores, blits and constant offsets into one slot per piece,
+# so promote can turn the pieces into temporaries
+
+type Chop:
+    size: i64
+    bad: bool
+    returned: bool # so its pieces go back to it before the return
+    cut: &list[u8] = heap([]) # a piece starts or ends here, 2 marks a vector piece, 4 a cut a vector piece can hold
+    read: &list[bool] = heap([])
+    written: &list[bool] = heap([])
+    cls: &list[i64] = heap([]) # -1 if unknown, 8 marks a class only read
+    to: &list[Ref] = heap([])
+    blits: &list[i64] = heap([]) # the ones that copy from or to it
+
+type Copied: # a blit from one chop to another
+    from: i64
+    into: i64
+    offset: array[i64, 2]
+    size: i64
+
+context chopping:
+    chops: &list[Chop] = heap([])
+    chop_of: &list[i64] = heap([])
+    offset_of: &list[i64] = heap([])
+    blits: &list[Copied] = heap([])
+
+func reach(t: i64, c: i64, off: i64) -> bool:
+    chopping.chop_of[t] = c + 1
+    chopping.offset_of[t] = off
+    for u in fn.temps[t].uses[:fn.temps[t].used]:
+        if u.type == ByExit and fn.blocks[fn.order[u.block]].exit.type == Jreturnaggregate and is_alloc(instr_at(fn.temps[t].def).op):
+            continue
+        if u.type != ByInstr:
+            return false
+        i := instr_at(u.at).*
+        tr := u32(t)
+        if is_load(i.op) and i.arg[0] == tr:
+            continue
+        if is_store(i.op) and i.arg[1] == tr and i.arg[0] != tr:
+            continue
+        if i.op == Oblit and i.arg[0] != i.arg[1]:
+            continue
+        if i.op != Oadd or ref_kind(i.to) != RefTemp or fn.temps[i.to].defs != 1:
+            return false
+        r := i.arg[1] if i.arg[0] == tr else i.arg[0]
+        if ref_kind(r) != RefConstant or fn.constants[ref_value(r)].type != Numeric:
+            return false
+        if not reach(i64(i.to), c, off + fn.constants[ref_value(r)].bits):
+            return false
+    return true
+
+func chop_at(r: Ref, off: *i64) -> i64:
+    if ref_kind(r) != RefTemp or i64(r) >= chopping.chop_of.len or chopping.chop_of[r] == 0:
+        return -1
+    c := chopping.chop_of[r] - 1
+    if chopping.chops[c].bad:
+        return -1
+    off.* = chopping.offset_of[r]
+    return c
+
+# a blit gives each side the cuts of the other, and returns the sides that changed as bits
+func share_cuts(bl: Copied) -> i64:
+    c := ptr(chopping.chops[bl.from])
+    c1 := ptr(chopping.chops[bl.into])
+    grew := 0
+    if c.bad or c1.bad:
+        return 0
+    for o in 0..=bl.size:
+        x := c.cut[bl.offset[0] + o] or c1.cut[bl.offset[1] + o]
+        grew = grew or i64(x != c.cut[bl.offset[0] + o]) or i64(x != c1.cut[bl.offset[1] + o]) << 1
+        c.cut[bl.offset[0] + o] = x
+        c1.cut[bl.offset[1] + o] = x
+    return grew
+
+# a piece with no class takes the one of the piece on the other side, as only read
+func share_classes(bl: Copied) -> i64:
+    c := ptr(chopping.chops[bl.from])
+    c1 := ptr(chopping.chops[bl.into])
+    grew := 0
+    if c.bad or c1.bad:
+        return 0
+    for o in 0..bl.size:
+        p := bl.offset[0] + o
+        q := bl.offset[1] + o
+        if c.cut[p] != 0 and (c.cls[p] < 0) != (c1.cls[q] < 0):
+            if c.cls[p] < 0:
+                c.cls[p] = c1.cls[q] or 8
+                grew = grew or 1
+            else:
+                c1.cls[q] = c.cls[p] or 8
+                grew = grew or 2
+    return grew
+
+# run f on every blit, and again on the blits of a slot that it changed, until none does
+func carry(f: func(Copied) -> i64):
+    nblit := chopping.blits.len
+    q: &list[i64] = heap([])
+    defer free(q)
+    queued: &list[bool] = heap([])
+    defer free(queued)
+    for j in 0..nblit:
+        append(q, j)
+        append(queued, true)
+    h := 0
+    n := nblit
+    while n > 0:
+        j := q[h]
+        h = (h + 1) % nblit
+        queued[j] = false
+        x := f(chopping.blits[j])
+        for side in 0..2:
+            if (x and 1 << side) == 0:
+                continue
+            c := chopping.blits[j].into if side == 1 else chopping.blits[j].from
+            for b in chopping.chops[c].blits:
+                if not queued[b]:
+                    queued[b] = true
+                    q[(h + n - 1) % nblit] = b
+                    n += 1
+        n -= 1
+
+# the next cut after p, and a piece ends with the slot
+func next_cut(c: *Chop, p: i64) -> i64:
+    p += 1
+    while p < c.size and c.cut[p] == 0:
+        p += 1
+    return p
+
+# the vector piece that holds a lane at off, or -1
+func lane_piece(c: *Chop, off: i64, sz: i64) -> i64:
+    p := off
+    while c.cut[p] == 0:
+        p -= 1
+    if sz >= 16 or next_cut(c, p) - p != 16:
+        return -1
+    return p
+
+func class_for(k: i64, sz: i64) -> i64:
+    if sz == 16:
+        return Vector
+    if sz < 8:
+        return Float32 if k == Float32 and sz == 4 else Int32
+    return Float64 if k == Float64 else Int64
+
+func piece_class(c: *Chop, p: i64) -> i64:
+    if c.cls[p] >= 0:
+        return c.cls[p] and 7
+    return class_for(Unknown, next_cut(c, p) - p)
+
+func store_for(k: i64, sz: i64) -> i64:
+    switch sz:
+    case 1:
+        return Ostorei8
+    case 2:
+        return Ostorei16
+    case 4:
+        return Ostoref32 if k == Float32 else Ostorei32
+    case 16:
+        return Ostorevector
+    return Ostoref64 if k == Float64 else Ostorei64
+
+type Access: # the places an instruction reads or writes, a blit reads and writes
+    count: i64
+    refs: array[Ref, 2]
+    sizes: array[i64, 2]
+    writes: array[bool, 2]
+
+func access_of(b: i64, k: i64) -> Access:
+    i := fn.blocks[b].ins[k]
+    if is_load(i.op):
+        return Access{1, [i.arg[0], EMPTY], [load_size(i), 0], [false, false]}
+    if is_store(i.op):
+        return Access{1, [i.arg[1], EMPTY], [store_size(i), 0], [true, false]}
+    if i.op == Oblit:
+        sz := ref_signed(fn.blocks[b].ins[k + 1].arg[0])
+        return Access{2, [i.arg[0], i.arg[1]], [sz, sz], [false, true]}
+    return Access{}
+
+# where a blit reads or writes the piece at rel
+func blit_ref(k: i64, off: i64, r: Ref, rel: i64) -> Ref:
+    if k >= 0:
+        return chopping.chops[k].to[off + rel]
+    if rel == 0:
+        return r
+    return new_temp(Int64)
+
+func chop():
+    chopping.chop_of.len = 0
+    chopping.offset_of.len = 0
+    for t in 0..fn.temp_count:
+        append(chopping.chop_of, 0)
+        append(chopping.offset_of, 0)
+    for c in chopping.chops:
+        free(c.cut)
+        free(c.read)
+        free(c.written)
+        free(c.cls)
+        free(c.to)
+        free(c.blits)
+    clear(chopping.chops)
+    chopping.blits.len = 0
+    for i in fn.blocks[fn.start].ins:
+        if not is_alloc(i.op) or ref_kind(i.arg[0]) != RefConstant:
+            continue
+        s := fn.constants[ref_value(i.arg[0])].bits
+        t := i64(i.to)
+        if s <= 0 or s > CUT or fn.temps[t].defs != 1:
+            continue
+        c := Chop{size = s}
+        for p in 0..s:
+            append(c.cut, 0)
+            append(c.read, false)
+            append(c.written, false)
+            append(c.cls, -1)
+            append(c.to, EMPTY)
+        append(c.cut, 0)
+        append(chopping.chops, c)
+        chopping.chops[-1].bad = not reach(t, chopping.chops.len - 1, 0)
+    if chopping.chops.len == 0:
+        return
+    b := fn.start
+    while b != 0:
+        o := 0
+        k := chop_at(fn.blocks[b].exit.arg, ptr(o))
+        if fn.blocks[b].exit.type == Jreturnaggregate and k >= 0:
+            c := ptr(chopping.chops[k])
+            c.returned = true
+            c.bad = c.bad or asm.layouts[fn.ret_layout].size != c.size
+            c.cut[0] = c.cut[0] or 1
+            c.cut[c.size] = c.cut[c.size] or 1
+        for j in 0..fn.blocks[b].ins.len:
+            a := access_of(b, j)
+            off: array[i64, 2]
+            for m in 0..a.count:
+                k = chop_at(a.refs[m], ptr(off[m]))
+                if k < 0:
+                    continue
+                c := ptr(chopping.chops[k])
+                if off[m] < 0 or a.sizes[m] <= 0 or off[m] > c.size - a.sizes[m]:
+                    c.bad = true
+                elif a.count == 1 and a.sizes[m] < 16:
+                    c.cut[off[m]] = c.cut[off[m]] or 4
+                    c.cut[off[m] + a.sizes[m]] = c.cut[off[m] + a.sizes[m]] or 4
+                else:
+                    c.cut[off[m]] = c.cut[off[m]] or 1 or u8(2 * i64(a.count == 1 and a.sizes[m] == 16))
+                    c.cut[off[m] + a.sizes[m]] = c.cut[off[m] + a.sizes[m]] or 1
+            if a.count == 2:
+                k = chop_at(a.refs[0], ptr(off[0]))
+                m := -1
+                if k >= 0:
+                    m = chop_at(a.refs[1], ptr(off[1]))
+                if k >= 0 and m >= 0:
+                    if k == m:
+                        chopping.chops[k].bad = true
+                        continue
+                    append(chopping.blits, Copied{k, m, off, a.sizes[0]})
+        b = fn.blocks[b].next
+    for n, bl in chopping.blits:
+        append(chopping.chops[bl.from].blits, n)
+        append(chopping.chops[bl.into].blits, n)
+    carry(share_cuts)
+    for k in 0..chopping.chops.len:
+        c := ptr(chopping.chops[k])
+        if c.bad:
+            continue
+        p := 0
+        while p < c.size:
+            if c.cut[p] == 0:
+                p += 1
+                continue
+            # a vector piece holds the cuts of its lanes
+            if (c.cut[p] and 2) != 0 and p + 16 <= c.size:
+                q := p + 1
+                while q < p + 16 and (c.cut[q] and 3) == 0:
+                    q += 1
+                if q == p + 16:
+                    for x in p + 1..p + 16:
+                        c.cut[x] = 0
+            q := next_cut(c, p)
+            s := 16 if (c.cut[p] and 2) != 0 else 8
+            while s > q - p:
+                s /= 2
+            if s < q - p:
+                q = p + s
+                c.cut[q] = 1
+            p = q
+    b = fn.start
+    while b != 0:
+        for j in 0..fn.blocks[b].ins.len:
+            a := access_of(b, j)
+            i := fn.blocks[b].ins[j]
+            hard := a.count == 1 and not (a.writes[0] and ref_kind(i.arg[0]) == RefConstant and fn.constants[ref_value(i.arg[0])].type == Numeric)
+            for m in 0..a.count:
+                o := 0
+                k := chop_at(a.refs[m], ptr(o))
+                if k < 0:
+                    continue
+                c := ptr(chopping.chops[k])
+                p := lane_piece(c, o, a.sizes[m])
+                if p >= 0: # a lane is put into the rest of the piece
+                    if (o - p) % a.sizes[m] != 0:
+                        c.bad = true
+                    c.read[p] = true
+                    c.written[p] = c.written[p] or a.writes[m]
+                    continue
+                for x in o..o + a.sizes[m]:
+                    if c.cut[x] == 0:
+                        continue
+                    if hard and x != o:
+                        c.bad = true
+                    if a.writes[m]:
+                        c.written[x] = true
+                    else:
+                        c.read[x] = true
+                if not hard or c.bad:
+                    continue
+                # stores choose the class, loads only when no store does
+                cl := 0
+                if is_store(i.op):
+                    cl = class_for(i64(OPERATIONS[i.op].arg_class[0]), a.sizes[m])
+                else:
+                    cl = class_for(i64(i.cls), a.sizes[m]) or 8
+                if c.cls[o] < 0 or (c.cls[o] and 8) != 0 and (cl and 8) == 0:
+                    c.cls[o] = cl
+                elif (cl and 8) == 0 and c.cls[o] != cl:
+                    c.bad = true
+        b = fn.blocks[b].next
+    carry(share_classes)
+    good := false
+    for k in 0..chopping.chops.len:
+        c := ptr(chopping.chops[k])
+        if c.bad:
+            continue
+        for p in 0..c.size:
+            if c.cut[p] != 0 and (c.read[p] or c.written[p]):
+                c.read[p] = c.read[p] or c.returned
+                c.to[p] = new_temp(Int64)
+                good = true
+    if not good:
+        return
+    b = fn.start
+    while b != 0:
+        first := 0
+        while first < fn.blocks[b].ins.len and is_param(fn.blocks[b].ins[first].op):
+            first += 1
+        fn.out.len = 0
+        o := 0
+        k := chop_at(fn.blocks[b].exit.arg, ptr(o))
+        if fn.blocks[b].exit.type == Jreturnaggregate and k >= 0:
+            c := ptr(chopping.chops[k])
+            for p in 0..c.size:
+                if c.cut[p] != 0 and c.read[p]:
+                    s := next_cut(c, p) - p
+                    cl := piece_class(c, p)
+                    v := new_temp(cl)
+                    dst := fn.blocks[b].exit.arg
+                    if p != 0:
+                        dst = new_temp(Int64)
+                    emit(store_for(cl, s), 0, EMPTY, v, dst)
+                    if p != 0:
+                        emit(Oadd, Int64, dst, fn.blocks[b].exit.arg, intern(p))
+                    emit(Oloadu8 if s == 1 else Oloadu16 if s == 2 else Oload, cl, v, c.to[p], EMPTY)
+        j := fn.blocks[b].ins.len
+        while j > first:
+            j -= 1
+            i := fn.blocks[b].ins[j]
+            if i.op == Oblitsize:
+                j -= 1
+                a := access_of(b, j)
+                off: array[i64, 2]
+                k = chop_at(a.refs[0], ptr(off[0]))
+                m := chop_at(a.refs[1], ptr(off[1]))
+                if k < 0 and m < 0:
+                    emit(i)
+                    emit(fn.blocks[b].ins[j])
+                    continue
+                c := ptr(chopping.chops[m if m >= 0 else k])
+                o = off[1] if m >= 0 else off[0]
+                pieces: &list[i64] = heap([])
+                piece := o
+                while piece < o + a.sizes[0]:
+                    append(pieces, piece)
+                    piece = next_cut(c, piece)
+                for p in reverse pieces:
+                    s := next_cut(c, p) - p
+                    cl := piece_class(c, p)
+                    src := blit_ref(k, off[0], a.refs[0], p - o)
+                    dst := blit_ref(m, off[1], a.refs[1], p - o)
+                    v := new_temp(cl)
+                    emit(store_for(cl, s), 0, EMPTY, v, dst)
+                    if m < 0 and p != o:
+                        emit(Oadd, Int64, dst, a.refs[1], intern(p - o))
+                    emit(Oloadu8 if s == 1 else Oloadu16 if s == 2 else Oload, cl, v, src, EMPTY)
+                    if k < 0 and p != o:
+                        emit(Oadd, Int64, src, a.refs[0], intern(p - o))
+                free(pieces)
+                continue
+            if is_alloc(i.op) or i.op == Oadd:
+                k = chop_at(i.to, ptr(o))
+                if k >= 0:
+                    if is_alloc(i.op) and chopping.chops[k].returned:
+                        emit(i)
+                    continue
+            if is_load(i.op):
+                k = chop_at(i.arg[0], ptr(o))
+                if k >= 0:
+                    c := ptr(chopping.chops[k])
+                    s := load_size(i)
+                    p := lane_piece(c, o, s)
+                    if p < 0:
+                        emit(i.op, i.cls, i.to, c.to[o], EMPTY)
+                        continue
+                    v := new_temp(Vector)
+                    emit(Ovgeti8 + i64(i.op) - Oloadi8, i.cls, i.to, v, ref(RefInt, (o - p) / s))
+                    emit(Oload, Vector, v, c.to[p], EMPTY)
+                    continue
+            if is_store(i.op):
+                k = chop_at(i.arg[1], ptr(o))
+                if k >= 0:
+                    c := ptr(chopping.chops[k])
+                    s := store_size(i)
+                    p := lane_piece(c, o, s)
+                    if p >= 0:
+                        src := new_temp(Vector)
+                        dst := new_temp(Vector)
+                        emit(Ostorevector, 0, EMPTY, dst, c.to[p])
+                        emit(Ovseti8 + i64(i.op) - Ostorei8, Vector, dst, src, i.arg[0])
+                        emit(Ovlane, Int32, EMPTY, ref(RefInt, (o - p) / s), EMPTY)
+                        emit(Oload, Vector, src, c.to[p], EMPTY)
+                        continue
+                    if next_cut(c, o) - o == s:
+                        emit(store_for(piece_class(c, o), s), 0, EMPTY, i.arg[0], c.to[o])
+                        continue
+                    bits := fn.constants[ref_value(i.arg[0])].bits
+                    p = o
+                    while p < o + s:
+                        q := next_cut(c, p)
+                        part := bits >> (8 * (p - o))
+                        if q - p != 8:
+                            part = part and (i64(1) << (8 * (q - p))) - 1
+                        emit(store_for(piece_class(c, p), q - p), 0, EMPTY, intern(part), c.to[p])
+                        p = q
+                    continue
+            emit(i)
+        # a piece read before a path writes it reads zero
+        if b == fn.start:
+            for k2 in 0..chopping.chops.len:
+                c := ptr(chopping.chops[k2])
+                for p in 0..c.size:
+                    if not c.bad and c.cut[p] != 0 and (c.read[p] or c.written[p]):
+                        s := next_cut(c, p) - p
+                        if c.read[p] and s == 16:
+                            v := new_temp(Vector)
+                            emit(Ostorevector, 0, EMPTY, v, c.to[p])
+                            emit(Ovsplati32, Vector, v, intern(0), EMPTY)
+                        elif c.read[p]:
+                            emit(store_for(piece_class(c, p), s), 0, EMPTY, intern(0), c.to[p])
+                        emit(Oalloc4 if s <= 4 else Oalloc8 if s <= 8 else Oalloc16, Int64, c.to[p], intern(s), EMPTY)
+        while j > 0:
+            j -= 1
+            emit(fn.blocks[b].ins[j])
+        take_emitted(b)
+        b = fn.blocks[b].next
+
+func alias_of(a: *Region, r: Ref):
+    switch ref_kind(r):
+    case RefTemp:
+        a.* = fn.temps[r].alias
+        if (a.type and 1) != 0:
+            a.type = fn.temps[a.slot].alias.type
+    case RefConstant:
+        c := fn.constants[ref_value(r)]
+        if c.type == Addressed:
+            a.type = AtSymbol
+            a.access = c.access
+            a.symbol = c.symbol
+        else:
+            a.type = Absolute
+        a.offset = c.bits
+        a.slot = 0
+    case:
+        panic("alias lookup on a ref that is neither a temp nor a constant in " + fn.name)
+
+func alias(p: Ref, op: i64, sp: i64, q: Ref, sq: i64, delta: *i64) -> i64:
+    ap: Region
+    aq: Region
+    alias_of(ptr(ap), p)
+    alias_of(ptr(aq), q)
+    ap.offset += op
+    # sp and sq are below 2^28, delta does not overflow
+    delta.* = ap.offset - aq.offset
+    ovlap := ap.offset < aq.offset + sq and aq.offset < ap.offset + sp
+    if (ap.type and 1) != 0 and (aq.type and 1) != 0:
+        # offsets of the same slot alias when they overlap
+        if ap.base == aq.base and ovlap:
+            return MustAlias
+        return NoAlias
+    if ap.type == AtSymbol and aq.type == AtSymbol:
+        # different symbols may alias, the same one does when they overlap
+        if ap.access != aq.access or ap.symbol != aq.symbol:
+            return MayAlias
+        if ovlap:
+            return MustAlias
+        return NoAlias
+    if ap.type == Absolute and aq.type == Absolute or ap.type == aq.type and ap.base == aq.base:
+        # with the same base, the offsets tell
+        if ovlap:
+            return MustAlias
+        return NoAlias
+    # an unknown one may alias anything but a local slot
+    if ap.type == Anywhere and aq.type != InSlot:
+        return MayAlias
+    if aq.type == Anywhere and ap.type != InSlot:
+        return MayAlias
+    return NoAlias
+
+func escapes(r: Ref) -> bool:
+    if ref_kind(r) != RefTemp:
+        return true
+    a := fn.temps[r].alias
+    return (a.type and 1) == 0 or fn.temps[a.slot].alias.type == EscapedSlot
+
+func mark_escaped(r: Ref):
+    if ref_kind(r) == RefTemp:
+        a := fn.temps[r].alias
+        if (a.type and 1) != 0:
+            fn.temps[a.slot].alias.type = EscapedSlot
+
+func mark_stored(r: Ref, sz: i64):
+    if ref_kind(r) == RefTemp:
+        a := fn.temps[r].alias
+        if a.slot != 0:
+            m: u64 = 0xffff_ffff_ffff_ffff
+            if sz < BITS and a.offset >= 0 and a.offset < BITS:
+                m = ((u64(1) << sz) - 1) << a.offset
+            fn.temps[a.slot].alias.stored = fn.temps[a.slot].alias.stored or m
+
+func fill_aliases():
+    for t in 0..fn.temp_count:
+        fn.temps[t].alias.type = Nowhere
+    for n in 0..fn.ordered:
+        b := fn.order[n]
+        p := fn.blocks[b].phi
+        while p != 0:
+            a := ptr(fn.temps[fn.phis[p].to].alias)
+            a.type = Anywhere
+            a.base = i32(fn.phis[p].to)
+            a.offset = 0
+            a.slot = 0
+            p = fn.phis[p].next
+        k := 0
+        while k < fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            a := ptr(fn.temps[0].alias)
+            if i.to != EMPTY:
+                a = ptr(fn.temps[i.to].alias)
+                if is_alloc(i.op):
+                    a.type = InSlot
+                    a.slot = i32(i.to)
+                    a.size = -1
+                    if ref_kind(i.arg[0]) == RefConstant:
+                        c := fn.constants[ref_value(i.arg[0])]
+                        if c.type == Numeric and 0 <= c.bits and c.bits <= BITS:
+                            a.size = i32(c.bits)
+                else:
+                    a.type = Anywhere
+                    a.slot = 0
+                a.base = i32(i.to)
+                a.offset = 0
+            if i.op == Ocopy:
+                alias_of(a, i.arg[0])
+            if i.op == Oadd:
+                a0: Region
+                a1: Region
+                alias_of(ptr(a0), i.arg[0])
+                alias_of(ptr(a1), i.arg[1])
+                if a0.type == Absolute:
+                    a.* = a1
+                    a.offset += a0.offset
+                elif a1.type == Absolute:
+                    a.* = a0
+                    a.offset += a1.offset
+            if (i.to == EMPTY or a.type == Anywhere) and i.op != Oblit:
+                if not is_load(i.op):
+                    mark_escaped(i.arg[0])
+                if not is_store(i.op) and i.op != Oargaggregate:
+                    mark_escaped(i.arg[1])
+            if i.op == Oblit:
+                k += 1
+                mark_stored(i.arg[1], abs(ref_signed(fn.blocks[b].ins[k].arg[0])))
+            i = fn.blocks[b].ins[k]
+            if is_store(i.op):
+                mark_stored(i.arg[1], store_size(i))
+            if i.op == Ocall and fn.temps[i.to].result_slot != EMPTY:
+                mark_stored(fn.temps[i.to].result_slot, BITS)
+            k += 1
+        if fn.blocks[b].exit.type != Jreturnaggregate:
+            mark_escaped(fn.blocks[b].exit.arg)
+    b := fn.start
+    while b != 0:
+        p := fn.blocks[b].phi
+        while p != 0:
+            for r in fn.phis[p].arg:
+                mark_escaped(r)
+            p = fn.phis[p].next
+        b = fn.blocks[b].next
+
+AtLoad = 0 # right above the original load
+LoadAllowed = 1 # inserting a load is allowed
+NoLoad = 2 # only scalar operations allowed
+
+type Site:
+    type: i64
+    at: i64
+    block: i64
+
+type Slice:
+    ref: Ref
+    offset: i64
+    size: i64
+    cls: i64 # of the load
+
+type Insert:
+    is_phi: bool
+    number: i64
+    block: i64
+    at: i64
+    ins: Instr
+    slice: Slice
+    phi: i64
+
+func mask_of(w: i64) -> u64:
+    return (u64(1) << (8 * w - 1)) * 2 - 1
+
+func insert_instr(cls: i64, op: i64, a0: Ref, a1: Ref, l: Site) -> Ref:
+    append(fn.inserts, Insert{number = fn.insert_count, block = fn.blocks[l.block].id, at = l.at, ins = Instr{op = i32(op), cls = i32(cls), arg = [a0, a1]}})
+    fn.insert_count += 1
+    k := fn.inserts.len - 1
+    r := new_temp(cls)
+    fn.inserts[k].ins.to = r
+    return r
+
+func cast(r: Ref, cls: i64, l: Site) -> Ref:
+    if ref_kind(r) == RefConstant:
+        if cls == Int32 and fn.constants[ref_value(r)].type == Numeric:
+            return intern(fn.constants[ref_value(r)].bits << 32 >> 32)
+        return r
+    cls0 := i64(fn.temps[r].cls)
+    if cls0 == cls or cls == Int32 and cls0 == Int64:
+        return r
+    if wide(cls0) < wide(cls):
+        if cls0 == Float32:
+            r = insert_instr(Int32, Ocast, r, EMPTY, l)
+        r = insert_instr(Int64, Oextu32, r, EMPTY, l)
+        if cls == Float64:
+            r = insert_instr(Float64, Ocast, r, EMPTY, l)
+    else:
+        if cls0 == Float64 and cls != Int64:
+            r = insert_instr(Int64, Ocast, r, EMPTY, l)
+        if cls0 != Float64 or cls != Int32:
+            r = insert_instr(cls, Ocast, r, EMPTY, l)
+    return r
+
+func mask(cls: i64, r: Ref, msk: u64, l: Site) -> Ref:
+    r = cast(r, cls, l)
+    c := intern(i64(msk))
+    return insert_instr(cls, Oand, r, c, l)
+
+func clobbers(r: Ref, sl: Slice) -> bool:
+    if ref_kind(sl.ref) != RefTemp:
+        return false
+    a := fn.temps[sl.ref].alias
+    switch a.type:
+    case InSlot, EscapedSlot, Anywhere:
+        return u32(a.base) == r
+    case Absolute, AtSymbol:
+        return false
+    panic("unexpected alias kind " + a.type + " in " + fn.name)
+
+func reload(sl: Slice, msk: u64, il: Site, oldl: i64, oldt: i64) -> Ref:
+    fn.temp_count = oldt
+    fn.inserts.len = oldl
+    if il.type != LoadAllowed:
+        return EMPTY
+    ld := [0, Oloadu8, Oloadu16, 0, Oloadu32, 0, 0, 0, Oload][sl.size]
+    all := msk == mask_of(sl.size)
+    cls := sl.cls if all else Int64 if sl.size > 4 else Int32
+    r := sl.ref
+    # sl.ref may be dead here, its alias base is live
+    if ref_kind(r) == RefTemp:
+        a := fn.temps[r].alias
+        switch a.type:
+        case InSlot, EscapedSlot, Anywhere:
+            r = u32(a.base)
+            if a.offset != 0:
+                r1 := intern(a.offset)
+                r = insert_instr(Int64, Oadd, r, r1, il)
+        case Absolute, AtSymbol:
+            r = intern(Immediate{type = Addressed, access = a.access, symbol = a.symbol, bits = a.offset})
+        case:
+            panic("unexpected alias kind " + a.type + " in " + fn.name)
+    r = insert_instr(cls, ld, r, EMPTY, il)
+    if not all:
+        r = mask(cls, r, msk, il)
+    return r
+
+# a ref of the contents of the slice, all the bits set to 0 in the mask zeroed; an integer class when the mask does not
+# cover all the bits of the slice, else the class sl.cls; EMPTY when it fails
+func contents(sl: Slice, msk: u64, b: i64, i: i64, il: Site) -> Ref:
+    # invariants:
+    # -1- b dominates il.block; so we can use temporaries of b in il.block
+    # -2- if il.type != NoLoad, then il.block postdominates the original load; so it is safe to load in il.block
+    # -3- if il.type != NoLoad, then b postdominates il.block (and by 2, the original load)
+    assert dominates(b, il.block), "a load of " + fn.name + " takes a value from a block that does not dominate it"
+    oldl := fn.inserts.len
+    oldt := fn.temp_count
+    if i < 0:
+        i = fn.blocks[b].ins.len
+    cls := Int64 if sl.size > 4 else Int32
+    msks := mask_of(sl.size)
+    while i > 0:
+        i -= 1
+        x := fn.blocks[b].ins[i]
+        # an atomic orders the memory others see, like a call
+        if clobbers(x.to, sl) or (x.op == Ocall or is_atomic(x.op)) and escapes(sl.ref):
+            return reload(sl, msk, il, oldl, oldt)
+        ld := is_load(x.op)
+        sz := 0
+        r1: Ref = EMPTY
+        r: Ref = EMPTY
+        if ld:
+            sz = load_size(x)
+            r1 = x.arg[0]
+            r = x.to
+        elif is_store(x.op):
+            sz = store_size(x)
+            r1 = x.arg[1]
+            r = x.arg[0]
+        elif x.op == Oblitsize:
+            sz = abs(ref_signed(x.arg[0]))
+            i -= 1
+            x = fn.blocks[b].ins[i]
+            r1 = x.arg[1]
+        else:
+            continue
+        off := 0
+        if sz > 8 and x.op != Oblit:
+            # lanes are not forwarded
+            if alias(sl.ref, sl.offset, sl.size, r1, sz, ptr(off)) != NoAlias:
+                return reload(sl, msk, il, oldl, oldt)
+            continue
+        switch alias(sl.ref, sl.offset, sl.size, r1, sz, ptr(off)):
+        case MustAlias:
+            sl1 := sl
+            if x.op == Oblit:
+                sl1.ref = x.arg[0]
+                if off >= 0:
+                    sl1.offset = off
+                    sz -= off
+                    off = 0
+                else:
+                    sl1.offset = 0
+                    sl1.size += off
+                if sz > sl1.size:
+                    sz = sl1.size
+                sl1.size = sz
+            msk1: u64 = 0
+            op := Oshr
+            end := 0
+            if off < 0:
+                off = 0 - off
+                msk1 = (mask_of(sz) << (8 * off)) and msks
+                op = Oshl
+                end = off + sz
+            else:
+                msk1 = (mask_of(sz) >> (8 * off)) and msks
+                end = sz - off
+            if (msk1 and msk) == 0:
+                continue
+            if x.op == Oblit:
+                r = contents(sl1, mask_of(sz), b, i, il)
+                if r == EMPTY:
+                    return reload(sl, msk, il, oldl, oldt)
+            if off != 0:
+                cls1 := cls
+                if op == Oshr and off + sl.size > 4:
+                    cls1 = Int64
+                r = cast(r, cls1, il)
+                r1 = intern(8 * off)
+                r = insert_instr(cls1, op, r, r1, il)
+            if (msk1 and msk) != msk1 or end < sl.size:
+                r = mask(cls, r, msk1 and msk, il)
+            if (msk and not msk1) != 0:
+                r1 = contents(sl, msk and not msk1, b, i, il)
+                if r1 == EMPTY:
+                    return reload(sl, msk, il, oldl, oldt)
+                r = insert_instr(cls, Oor, r, r1, il)
+            if msk == msks:
+                r = cast(r, sl.cls, il)
+            return r
+        case MayAlias:
+            if not ld:
+                return reload(sl, msk, il, oldl, oldt)
+    for ist in fn.inserts:
+        if ist.is_phi and ist.block == fn.blocks[b].id and ist.slice.ref == sl.ref and ist.slice.offset == sl.offset and ist.slice.size == sl.size:
+            r := fn.phis[ist.phi].to
+            if msk != msks:
+                return mask(cls, r, msk, il)
+            return cast(r, sl.cls, il)
+    p := fn.blocks[b].phi
+    while p != 0:
+        if clobbers(fn.phis[p].to, sl):
+            # scanning predecessors in that case would be unsafe
+            return reload(sl, msk, il, oldl, oldt)
+        p = fn.phis[p].next
+    npred := fn.blocks[b].preds.len
+    if npred == 0:
+        return reload(sl, msk, il, oldl, oldt)
+    if npred == 1:
+        bp := fn.blocks[b].preds[0]
+        l := il
+        if fn.blocks[bp].no != 0 or fn.blocks[bp].targets.len > 1:
+            l.type = NoLoad
+        r1 := contents(sl, msk, bp, -1, l)
+        if r1 == EMPTY:
+            return reload(sl, msk, il, oldl, oldt)
+        return r1
+    r := new_temp(sl.cls)
+    p = new_phi(r, sl.cls)
+    append(fn.inserts, Insert{is_phi = true, block = fn.blocks[b].id, slice = sl, phi = p})
+    for np in 0..npred:
+        append(fn.phis[p].arg, EMPTY)
+        append(fn.phis[p].blocks, 0)
+    for np in 0..npred:
+        bp := fn.blocks[b].preds[np]
+        l := Site{NoLoad, fn.blocks[bp].ins.len, bp}
+        if fn.blocks[bp].no == 0 and fn.blocks[bp].targets.len <= 1 and il.type != NoLoad and fn.blocks[bp].loop < fn.blocks[il.block].loop:
+            l.type = LoadAllowed
+        r1 := contents(sl, msks, bp, -1, l)
+        if r1 == EMPTY:
+            return reload(sl, msk, il, oldl, oldt)
+        fn.phis[p].arg[np] = r1
+        fn.phis[p].blocks[np] = bp
+    if msk != msks:
+        return mask(cls, r, msk, il)
+    return r
+
+func before_insert(a: Insert, b: Insert) -> bool:
+    if a.block != b.block:
+        return a.block < b.block
+    if a.is_phi or b.is_phi:
+        return a.is_phi and not b.is_phi
+    if a.at != b.at:
+        return a.at < b.at
+    return a.number < b.number
+
+# a load of what a store or a load before it gave becomes a copy
+func forward_loads():
+    fn.inserts.len = 0
+    fn.insert_count = 0
+    b := fn.start
+    while b != 0:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if not is_load(i.op) or i.cls == Vector:
+                continue
+            sl := Slice{i.arg[0], 0, load_size(i), i64(i.cls)}
+            if ref_kind(sl.ref) == RefTemp:
+                a := fn.temps[sl.ref].alias
+                if a.offset == a.offset << 48 >> 48 and (a.type == InSlot or a.type == EscapedSlot or a.type == Anywhere):
+                    sl.ref = u32(a.base)
+                    sl.offset = a.offset
+            r := contents(sl, mask_of(sl.size), b, k, Site{AtLoad, k, b})
+            fn.blocks[b].ins[k].arg[1] = r
+        b = fn.blocks[b].next
+    sort(fn.inserts, before_insert)
+    append(fn.inserts, Insert{block = fn.ordered}) # a sentinel
+    ib: &list[Instr] = heap([])
+    defer free(ib)
+    x := 0
+    for n in 0..fn.ordered:
+        b = fn.order[n]
+        while fn.inserts[x].block == n and fn.inserts[x].is_phi:
+            p := fn.inserts[x].phi
+            fn.phis[p].next = fn.blocks[b].phi
+            fn.blocks[b].phi = p
+            x += 1
+        ni := 0
+        ib.len = 0
+        while true:
+            i: Instr
+            if fn.inserts[x].block == n and fn.inserts[x].at == ni:
+                i = fn.inserts[x].ins
+                x += 1
+            else:
+                if ni == fn.blocks[b].ins.len:
+                    break
+                i = fn.blocks[b].ins[ni]
+                ni += 1
+                if is_load(i.op) and i.arg[1] != EMPTY:
+                    if i.op == Oload or (i.op == Oloadi32 or i.op == Oloadu32) and i.cls != Int64:
+                        i.op = Ocopy
+                    else:
+                        i.op = Oexti8 + i.op - Oloadi8
+                    i.arg[0] = i.arg[1]
+                    i.arg[1] = EMPTY
+            append(ib, i)
+        fn.blocks[b].ins = ib[:]
+
+type Extension:
+    zero: bool
+    noop_width: i64 # a copy of an argument that wide
+    use_width: i64 # the low bits of the argument it uses
+
+func extension(i: Instr) -> Extension|null:
+    switch i.op:
+    case Oexti8:
+        return Extension{false, 7, 8}
+    case Oextu8:
+        return Extension{true, 8, 8}
+    case Oexti16:
+        return Extension{false, 15, 16}
+    case Oextu16:
+        return Extension{true, 16, 16}
+    case Oexti32:
+        return Extension{false, 31, 32}
+    case Oextu32:
+        return Extension{true, 32, 32}
+    return null
+
+func bit_width(v: u64) -> i64:
+    n := 0
+    if v >> 32 != 0:
+        n += 32
+        v = v >> 32
+    if v >> 16 != 0:
+        n += 16
+        v = v >> 16
+    if v >> 8 != 0:
+        n += 8
+        v = v >> 8
+    if v >> 4 != 0:
+        n += 4
+        v = v >> 4
+    if v >> 2 != 0:
+        n += 2
+        v = v >> 2
+    if v >> 1 != 0:
+        n += 1
+        v = v >> 1
+    return n + i64(v)
+
+func unvisit_phis():
+    b := fn.start
+    while b != 0:
+        p := fn.blocks[b].phi
+        while p != 0:
+            fn.phis[p].visit = 0
+            p = fn.phis[p].next
+        b = fn.blocks[b].next
+
+func uses_within_walk(r: Ref, w: i64) -> bool:
+    t := i64(r)
+    for k in 0..fn.temps[t].used:
+        u := fn.temps[t].uses[k]
+        switch u.type:
+        case ByPhi:
+            p := ptr(fn.phis[u.at])
+            # value numbering replaces a phi by another temp: the uses of the phi go to it, and its to becomes EMPTY
+            if p.visit != 0 or p.to == EMPTY:
+                continue
+            p.visit = 1
+            if uses_within_walk(p.to, w):
+                continue
+        case ByInstr:
+            i := instr_at(u.at).*
+            if i.op == Ocopy and uses_within_walk(i.to, w):
+                continue
+            e := extension(i)
+            if e is Extension:
+                if e.use_width <= w:
+                    continue
+                if uses_within_walk(i.to, w):
+                    continue
+            if i.op == Oand:
+                rc := i.arg[1] if r == i.arg[0] else i.arg[0]
+                v := 0
+                if bits_of(rc, ptr(v)) and bit_width(u64(v)) <= w:
+                    continue
+        return false
+    return true
+
+func uses_within(r: Ref, w: i64) -> bool:
+    ok := uses_within_walk(r, w)
+    unvisit_phis()
+    return ok
+
+func defined_within_walk(r: Ref, w: i64) -> bool:
+    v := 0
+    if bits_of(r, ptr(v)) and bit_width(u64(v)) <= w:
+        return true
+    if w <= 0 or ref_kind(r) != RefTemp:
+        return false
+    t := ptr(fn.temps[r])
+    if t.cls != Int32:
+        return false
+    if t.def == 0: # phi def
+        p := fn.blocks[fn.order[t.block]].phi
+        while fn.phis[p].to != r:
+            p = fn.phis[p].next
+        ph := ptr(fn.phis[p])
+        if ph.visit != 0 and ph.visit <= w:
+            return true
+        append(fn.bounded, ptr([p, i64(ph.visit)]))
+        ph.visit = i32(w)
+        for n in 0..fn.phis[p].arg.len:
+            if not defined_within_walk(fn.phis[p].arg[n], w):
+                return false
+        return true
+    i := instr_at(t.def).*
+    if i.op == Ocopy:
+        return defined_within_walk(i.arg[0], w)
+    if i.op == Oshr or i.op == Osar:
+        if bits_of(i.arg[1], ptr(v)) and 0 < v and v <= 32:
+            if i.op == Oshr and w + v >= 32:
+                return true
+            if w < 32:
+                w = min(31 if i.op == Osar else 32, w + v)
+        return defined_within_walk(i.arg[0], w)
+    x := 0
+    if is_compare(i.op, ptr(x), ptr(x)):
+        return w >= 1
+    if i.op == Oand: # the phis that the side that fails assumed within w are not
+        assumed := fn.bounded.len
+        if defined_within_walk(i.arg[0], w):
+            return true
+        unbound_phis(assumed)
+        return defined_within_walk(i.arg[1], w)
+    if i.op == Oor or i.op == Oxor:
+        return defined_within_walk(i.arg[0], w) and defined_within_walk(i.arg[1], w)
+    e := extension(i)
+    if e is Extension:
+        if e.zero and e.use_width <= w:
+            return true
+        return defined_within_walk(i.arg[0], min(w, e.noop_width))
+    return false
+
+func defined_within(r: Ref, w: i64) -> bool:
+    ok := defined_within_walk(r, w)
+    unbound_phis(0)
+    return ok
+
+# the phis assumed within a width after the first n go back to their visit before
+func unbound_phis(n: i64):
+    bounded := ptr(fn.bounded)
+    while bounded.len > n:
+        fn.phis[bounded[-2]].visit = i32(bounded[-1])
+        bounded.len -= 2
+
+func is_bit(r: Ref) -> bool:
+    return defined_within(r, 1)
+
+func equals(c: Immediate, w: bool, k: u64) -> bool:
+    if c.type != Numeric:
+        return false
+    if w:
+        return u64(c.bits) == k
+    return u32(u64(c.bits) and 0xffff_ffff) == u32(k and 0xffff_ffff)
+
+# the constant op makes of cl and cr, false when it cannot
+func fold_int(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) -> bool:
+    typ := Numeric
+    symtype := 0
+    sym := 0
+    l := u64(cl.bits)
+    r := u64(cr.bits)
+    if op == Oadd:
+        if cl.type == Addressed:
+            if cr.type == Addressed:
+                return false
+            typ = Addressed
+            symtype = i64(cl.access)
+            sym = i64(cl.symbol)
+        elif cr.type == Addressed:
+            typ = Addressed
+            symtype = i64(cr.access)
+            sym = i64(cr.symbol)
+    elif op == Osub:
+        if cl.type == Addressed:
+            if cr.type != Addressed:
+                typ = Addressed
+                symtype = i64(cl.access)
+                sym = i64(cl.symbol)
+            elif cl.access != cr.access or cl.symbol != cr.symbol:
+                return false
+        elif cr.type == Addressed:
+            return false
+    elif cl.type == Addressed or cr.type == Addressed:
+        return false
+    if op == Odiv or op == Orem or op == Oudiv or op == Ourem:
+        if equals(cr, w, 0):
+            return false
+        if (op == Odiv or op == Orem) and equals(cr, w, 0xffff_ffff_ffff_ffff) and equals(cl, w, 0x8000_0000_0000_0000 if w else 0xffff_ffff_8000_0000):
+            return false
+    sh := r and u64(63 if w else 31)
+    x: u64 = 0
+    switch op:
+    case Oadd:
+        x = l + r
+    case Osub:
+        x = l - r
+    case Oneg:
+        x = 0 - l
+    case Odiv:
+        x = u64(i64(l) / i64(r)) if w else u64(i64(i32(l)) / i64(i32(r)))
+    case Orem:
+        x = u64(i64(l) % i64(r)) if w else u64(i64(i32(l)) % i64(i32(r)))
+    case Oudiv:
+        x = l / r if w else u64(u32(l) / u32(r))
+    case Ourem:
+        x = l % r if w else u64(u32(l) % u32(r))
+    case Omul:
+        x = l * r
+    case Oand:
+        x = l and r
+    case Oor:
+        x = l or r
+    case Oxor:
+        x = l xor r
+    case Osar:
+        x = u64(i64(l) >> sh) if w else u64(i64(i32(l)) >> sh)
+    case Oshr:
+        x = l >> sh if w else u64(u32(l)) >> sh
+    case Oshl:
+        x = l << sh
+    case Oexti8:
+        x = u64(i64(i8(l)))
+    case Oextu8:
+        x = u64(u8(l))
+    case Oexti16:
+        x = u64(i64(i16(l)))
+    case Oextu16:
+        x = u64(u16(l))
+    case Oexti32:
+        x = u64(i64(i32(l)))
+    case Oextu32:
+        x = u64(u32(l))
+    case Of32toi, Of32tou, Of64toi, Of64tou: # out of range they saturate, as Flag converts
+        f := l as f64
+        if op == Of32toi or op == Of32tou:
+            f = f64(u32(l) as f32)
+        if op == Of32toi or op == Of64toi:
+            x = u64(i64(f)) if w else u64(i64(i32(f)))
+        else:
+            x = u64(f) if w else u64(u32(f))
+    case Ocast:
+        x = l
+        if cl.type == Addressed:
+            typ = Addressed
+            symtype = i64(cl.access)
+            sym = i64(cl.symbol)
+    case:
+        if Oeqi32 <= op and op <= Oltu64:
+            if op <= Oltu32:
+                l = u64(i64(i32(l)))
+                r = u64(i64(i32(r)))
+            else:
+                op -= Oeqi64 - Oeqi32
+            switch op - Oeqi32:
+            case Leu:
+                x = u64(l <= r)
+            case Ltu:
+                x = u64(l < r)
+            case Lei:
+                x = u64(i64(l) <= i64(r))
+            case Lti:
+                x = u64(i64(l) < i64(r))
+            case Gti:
+                x = u64(i64(l) > i64(r))
+            case Gei:
+                x = u64(i64(l) >= i64(r))
+            case Gtu:
+                x = u64(l > r)
+            case Geu:
+                x = u64(l >= r)
+            case Eqi:
+                x = u64(l == r)
+            case:
+                x = u64(l != r)
+        elif Oeqf32 <= op and op <= Ounorderedf32:
+            a := u32(l) as f32
+            b := u32(r) as f32
+            switch op - Oeqf32:
+            case Lef:
+                x = u64(a <= b)
+            case Ltf:
+                x = u64(a < b)
+            case Gtf:
+                x = u64(a > b)
+            case Gef:
+                x = u64(a >= b)
+            case Nef:
+                x = u64(a != b)
+            case Eqf:
+                x = u64(a == b)
+            case Orderedf:
+                x = u64(a < b or a >= b)
+            case:
+                x = u64(not (a < b or a >= b))
+        elif Oeqf64 <= op and op <= Ounorderedf64:
+            a := l as f64
+            b := r as f64
+            switch op - Oeqf64:
+            case Lef:
+                x = u64(a <= b)
+            case Ltf:
+                x = u64(a < b)
+            case Gtf:
+                x = u64(a > b)
+            case Gef:
+                x = u64(a >= b)
+            case Nef:
+                x = u64(a != b)
+            case Eqf:
+                x = u64(a == b)
+            case Orderedf:
+                x = u64(a < b or a >= b)
+            case:
+                x = u64(not (a < b or a >= b))
+        else:
+            panic("cannot fold integer operation " + OPERATIONS[op].name + " in " + fn.name)
+    res.* = Immediate{type = i32(typ), access = i32(symtype), symbol = i32(sym), bits = i64(x)}
+    return true
+
+# what an instruction like i already in the table gives, or EMPTY after adding i when insert
+func same_value(i: Instr, insert: bool) -> Ref:
+    n := u32(fn.values.len)
+    h := u32(i.op) + 17 * u32(i.cls)
+    h = h + 17 * ((i.arg[0] >> 29) + 17 * (i.arg[0] and 0x1fff_ffff))
+    h = h + 17 * ((i.arg[1] >> 29) + 17 * (i.arg[1] and 0x1fff_ffff))
+    idx := i64(h % n)
+    while fn.values[idx].op != Onone:
+        seen := fn.values[idx]
+        if i.op == seen.op and i.cls == seen.cls and i.arg[0] == seen.arg[0] and i.arg[1] == seen.arg[1]:
+            return seen.to
+        idx = (idx + 1) % i64(n)
+    if insert:
+        fn.values[idx] = i
+    return EMPTY
+
+func replace_use(u: Usage, r1: Ref, r2: Ref):
+    b := fn.order[u.block]
+    switch u.type:
+    case ByPhi:
+        p := ptr(fn.phis[u.at])
+        for n in 0..p.arg.len:
+            if p.arg[n] == r1:
+                p.arg[n] = r2
+        if ref_kind(r2) == RefTemp:
+            add_use(i64(r2), ByPhi, b, u.at)
+    case ByInstr:
+        i := instr_at(u.at)
+        for n in 0..2:
+            if i.arg[n] == r1:
+                i.arg[n] = r2
+        if ref_kind(r2) == RefTemp:
+            add_use(i64(r2), ByInstr, b, u.at)
+    case ByExit:
+        if fn.blocks[b].exit.arg == r1:
+            fn.blocks[b].exit.arg = r2
+        if ref_kind(r2) == RefTemp:
+            add_use(i64(r2), ByExit, b, 0)
+    case:
+        panic("unexpected use kind " + u.type + " in " + fn.name)
+
+func replace_uses(r1: Ref, r2: Ref):
+    for k in 0..fn.temps[r1].used:
+        replace_use(fn.temps[r1].uses[k], r1, r2)
+    fn.temps[r1].used = 0
+
+func negate_constant(cls: i64, c: *Immediate) -> bool:
+    return not fold_int(c, Osub, cls == Int64, Immediate{type = Numeric}, c.*)
+
+func compares_zero(r: Ref, arg: *Ref, cls: *i64, eqval: *i64) -> bool:
+    if ref_kind(r) != RefTemp:
+        return false
+    d := fn.temps[r].def
+    if d == 0:
+        return false
+    i := instr_at(d).*
+    if OPERATIONS[i.op].int_equality and i.arg[1] == ZERO:
+        arg.* = i.arg[0]
+        cls.* = arg_class(i, 0)
+        eqval.* = i64(OPERATIONS[i.op].equal_result)
+        return true
+    return false
+
+# b is reached from bif only through bbr1
+func only_through(bif: i64, bbr1: i64, bbr2: i64, b: i64) -> bool:
+    if b == bif or not dominates(bbr1, b):
+        return false
+    fn.blocks[bif].visit = 1
+    reached := leads_to(bbr2, b)
+    unvisit(bbr2)
+    fn.blocks[bif].visit = 0
+    return not reached
+
+func zero_from(d: i64, b: i64, z: *i64) -> bool:
+    if only_through(d, fn.blocks[d].yes, fn.blocks[d].no, b):
+        z.* = 0
+        return true
+    if only_through(d, fn.blocks[d].no, fn.blocks[d].yes, b):
+        z.* = 1
+        return true
+    return false
+
+# whether a branch that dominates b decides if r is zero, which z says
+func known_zero(b: i64, r: Ref, cls: i64, z: *i64) -> bool:
+    # value numbering keeps the first definition in order, a branch before it cannot test r
+    bid: u32 = 0
+    if ref_kind(r) == RefTemp:
+        bid = fn.temps[r].block
+    d := fn.blocks[b].dominator
+    while d != 0 and fn.blocks[d].id >= i64(bid):
+        if fn.blocks[d].exit.type == Jbranch:
+            if r == fn.blocks[d].exit.arg and cls == Int32 and zero_from(d, b, z):
+                return true
+            arg: Ref = EMPTY
+            cls1 := 0
+            eqval := 0
+            if compares_zero(fn.blocks[d].exit.arg, ptr(arg), ptr(cls1), ptr(eqval)) and r == arg and cls == cls1 and zero_from(d, b, z):
+                z.* = z.* xor eqval
+                return true
+        d = fn.blocks[d].dominator
+    return false
+
+func zero_after_branch(bif: i64, s0: i64, snon0: i64, r: Ref, cls: i64):
+    if fn.blocks[s0].preds.len != 1 or ref_kind(r) != RefTemp:
+        return
+    for n in 0..fn.temps[r].used:
+        u := fn.temps[r].uses[n]
+        k := Unknown # the widest class the use reads r in
+        switch u.type:
+        case ByInstr:
+            i := instr_at(u.at).*
+            if i.arg[0] == r:
+                k = arg_class(i, 0)
+            if i.arg[1] == r and (k == Unknown or wide(k) == 0):
+                k = arg_class(i, 1)
+        case ByPhi:
+            if fn.phis[u.at].to != EMPTY:
+                k = i64(fn.phis[u.at].cls)
+        case ByExit:
+            k = Int32
+        # an i64 temp can be compared as an i32, the use must not read its high bits
+        if (k == Unknown or k == cls) and only_through(bif, s0, snon0, fn.order[u.block]):
+            replace_use(u, r, ZERO)
+
+# move_code fixes the ssa it breaks
+func number_values():
+    fn.zero_one[0] = intern(0)
+    fn.zero_one[1] = intern(1)
+    unvisit_phis() # copy elimination marks the phis it visits
+    fill_loops()
+    # in a function with loops, a parameter only read in its low bytes gets an extu8 or extu16 at the start, which makes
+    # further extensions redundant and keeps them out of the loops
+    loop := false
+    b := fn.start
+    while b != 0:
+        loop = loop or fn.blocks[b].loop > 1
+        b = fn.blocks[b].next
+    ins := ptr(fn.blocks[fn.start].ins)
+    npar := 0
+    while npar < ins.len and is_param(ins[npar].op):
+        npar += 1
+    if loop and npar > 0:
+        exts: &list[Instr] = heap([])
+        for k in 0..npar: # the uses still point at the old places
+            e := Instr{op = Onop}
+            i := ins[k]
+            if i.cls == Int32 and uses_within(i.to, 16):
+                e.op = Oextu16
+                if uses_within(i.to, 8):
+                    e.op = Oextu8
+                r := new_temp(i64(i.cls))
+                e.cls = i.cls
+                e.to = i.to
+                e.arg[0] = r
+                ins[k].to = r
+            append(exts, e)
+        rest: &list[Instr] = heap(ins[npar:])
+        ins.len = npar
+        append(ins, exts[:])
+        append(ins, rest[:])
+        free(exts)
+        free(rest)
+    fill_uses()
+    check_ssa()
+    nins := 0
+    b = fn.start
+    while b != 0:
+        fn.blocks[b].visit = 0
+        nins += fn.blocks[b].ins.len
+        b = fn.blocks[b].next
+    fn.values.len = 0
+    for k in 0..nins + nins / 2:
+        append(fn.values, Instr{})
+    for n in 0..fn.ordered:
+        b = fn.order[n]
+        # a phi that is a copy: of its arguments when they are one, of a phi before it, or of the branch that chooses it
+        prev := 0
+        p := fn.blocks[b].phi
+        while p != 0:
+            ph := fn.phis[p]
+            r: Ref = EMPTY
+            a := 0
+            while a < ph.arg.len:
+                if ph.arg[a] != ph.to:
+                    if r == EMPTY:
+                        r = ph.arg[a]
+                    elif ph.arg[a] != r:
+                        break
+                a += 1
+            if a < ph.arg.len:
+                r = EMPTY
+                p1 := fn.blocks[b].phi
+                while p1 != p and r == EMPTY:
+                    same := fn.phis[p1].cls == ph.cls
+                    for j in 0..fn.phis[p1].arg.len:
+                        same = same and fn.phis[p1].arg[j] == phi_arg(p, fn.phis[p1].blocks[j])
+                    if same:
+                        r = fn.phis[p1].to
+                    p1 = fn.phis[p1].next
+                d := fn.blocks[b].dominator
+                if r == EMPTY and ph.arg.len == 2 and fn.blocks[d].exit.type == Jbranch and is_bit(fn.blocks[d].exit.arg):
+                    s: array[i64, 2]
+                    for j in 0..2:
+                        for c in 0..2:
+                            if ph.arg[j] == fn.zero_one[c]:
+                                s[c] = ph.blocks[j]
+                    # the exit types check, the inference is wrong when s1 ends with a branch on b or s2
+                    s1 := fn.blocks[d].yes
+                    s2 := fn.blocks[d].no
+                    if s1 == s[1] and s2 == s[0] and fn.blocks[s1].exit.type == Jjump and fn.blocks[s2].exit.type == Jjump:
+                        r = fn.blocks[d].exit.arg
+            next := ph.next
+            if r != EMPTY:
+                replace_uses(ph.to, r)
+                fn.phis[p].to = EMPTY
+                if prev == 0:
+                    fn.blocks[b].phi = next
+                else:
+                    fn.phis[prev].next = next
+            else:
+                prev = p
+            p = next
+        for k in 0..fn.blocks[b].ins.len:
+            x := at(b, k)
+            # the constants of f32 and i32 uses in 32 bits, and the arguments of a commutative op in order, a temp first
+            for m in 0..2:
+                v := 0
+                a := fn.blocks[b].ins[k]
+                if wide(arg_class(a, m)) == 0 and bits_of(a.arg[m], ptr(v)) and (v and 0xffff_ffff) != v:
+                    c := intern(v and 0xffff_ffff)
+                    fn.blocks[b].ins[k].arg[m] = c
+            i := ptr(fn.blocks[b].ins[k])
+            if OPERATIONS[i.op].commutes and (ref_kind(i.arg[0]) > ref_kind(i.arg[1]) or ref_kind(i.arg[0]) == ref_kind(i.arg[1]) and ref_value(i.arg[0]) > ref_value(i.arg[1])):
+                a := i.arg[1]
+                i.arg[1] = i.arg[0]
+                i.arg[0] = a
+            if i.op == Onop or pinned(i.*):
+                continue
+            # x + c2 + c1 is x + (c1 + c2) for the associative ops of integers
+            i1 := i.*
+            op := i64(i1.op)
+            if op == Osub:
+                op = Oadd
+            if OPERATIONS[op].associative and bank(i1.cls) == 0 and ref_kind(i1.arg[0]) == RefTemp and ref_kind(i1.arg[1]) == RefConstant and fn.temps[i1.arg[0]].def != 0:
+                c1 := fn.constants[ref_value(i1.arg[1])]
+                i2 := instr_at(fn.temps[i1.arg[0]].def).*
+                if op == (Oadd if i2.op == Osub else i64(i2.op)) and ref_kind(i2.arg[1]) == RefConstant:
+                    c2 := fn.constants[ref_value(i2.arg[1])]
+                    c: Immediate
+                    if not (i1.op == Osub and negate_constant(i1.cls, ptr(c1))) and not (i2.op == Osub and negate_constant(i2.cls, ptr(c2))) and fold_int(ptr(c), op, i1.cls == Int64, c1, c2):
+                        if op == Oadd and c.type == Numeric and (i1.cls == Int64 and c.bits < 0 or i1.cls == Int32 and i32(c.bits and 0xffff_ffff) < 0):
+                            _ = negate_constant(i1.cls, ptr(c))
+                            op = Osub
+                        a := intern(c)
+                        i = ptr(fn.blocks[b].ins[k])
+                        i.op = i32(op)
+                        i.arg[0] = i2.arg[0]
+                        i.arg[1] = a
+                        add_use(i64(i.arg[0]), ByInstr, b, x)
+            # what it computes: a copy of an argument, a constant, or the result of an instruction before it
+            i1 = fn.blocks[b].ins[k]
+            o := OPERATIONS[i1.op]
+            e := extension(i1)
+            r: Ref = EMPTY
+            z := 0
+            v := 0
+            if i1.op == Ocopy:
+                r = i1.arg[0]
+            elif o.has_identity and bank(i1.cls) == 0 and i1.arg[1] == fn.zero_one[i64(o.identity)] and (not o.int_equality or is_bit(i1.arg[0])): # not floats, NaN
+                r = i1.arg[0]
+            elif o.idempotent and i1.arg[0] == i1.arg[1]:
+                r = i1.arg[0]
+            elif (o.int_equality or o.int_order) and i1.arg[0] == i1.arg[1]:
+                r = fn.zero_one[i64(o.equal_result)]
+            elif o.int_equality and i1.arg[1] == ZERO and known_zero(b, i1.arg[0], arg_class(i1, 0), ptr(z)):
+                r = fn.zero_one[i64(o.equal_result) xor z xor 1]
+            elif i1.op == Oand and bits_of(i1.arg[1], ptr(v)) and v > 0 and ((v + 1) and v) == 0 and defined_within(i1.arg[0], bit_width(u64(v))):
+                r = i1.arg[0] # a redundant mask
+            elif i1.cls == Int32 and (i1.op == Oexti32 or i1.op == Oextu32):
+                r = i1.arg[0]
+            elif e is Extension and ref_kind(i1.arg[0]) == RefTemp:
+                t := fn.temps[i1.arg[0]]
+                if wide(i1.cls) <= wide(t.cls): # a narrower temp breaks typing
+                    w := FromI8 + i64(i1.op) - Oexti8
+                    # the extensions that are copies for each width of the argument
+                    extcpy := [0, 1 << FromI8 or 1 << FromI16 or 1 << FromI32, 1 << FromU8 or 1 << FromU16 or 1 << FromU32, 1 << FromI16 or 1 << FromI32, 1 << FromU16 or 1 << FromU32, 1 << FromI32, 1 << FromU32]
+                    # the extensions of parameters in the start block stay, they make the others redundant
+                    if (1 << w and extcpy[t.width]) != 0 or (t.def == 0 or not is_param(instr_at(t.def).op)) and uses_within(i1.to, e.use_width) or defined_within(i1.arg[0], e.noop_width):
+                        r = i1.arg[0]
+            if r == EMPTY and ref_kind(i1.to) == RefTemp and o.folds and ref_kind(i1.arg[0]) == RefConstant:
+                rr := i1.arg[1]
+                if rr == EMPTY:
+                    rr = ZERO
+                if ref_kind(rr) == RefConstant:
+                    cl := fn.constants[ref_value(i1.arg[0])]
+                    cr := fn.constants[ref_value(rr)]
+                    c: Immediate
+                    folded := true
+                    if i1.cls == Int32 or i1.cls == Int64:
+                        folded = fold_int(ptr(c), i64(i1.op), i1.cls == Int64, cl, cr)
+                    elif cl.type != Numeric or cr.type != Numeric:
+                        panic("invalid address operand for '" + o.name + "' in " + fn.name)
+                    elif i1.cls == Float64:
+                        ld := cl.bits as f64
+                        rd := cr.bits as f64
+                        xd := 0.0
+                        switch i1.op:
+                        case Oadd:
+                            xd = ld + rd
+                        case Osub:
+                            xd = ld - rd
+                        case Oneg:
+                            xd = -ld
+                        case Odiv:
+                            xd = ld / rd
+                        case Omul:
+                            xd = ld * rd
+                        case Oi32tof:
+                            xd = f64(i32(cl.bits and 0xffff_ffff))
+                        case Ou32tof:
+                            xd = f64(u32(cl.bits and 0xffff_ffff))
+                        case Oi64tof:
+                            xd = f64(cl.bits)
+                        case Ou64tof:
+                            xd = f64(u64(cl.bits))
+                        case Oextf32:
+                            xd = f64(u32(cl.bits and 0xffff_ffff) as f32)
+                        case Ocast:
+                            xd = ld
+                        case:
+                            panic("cannot fold f64 operation " + o.name + " in " + fn.name)
+                        c = Immediate{type = Numeric, bits = xd as i64}
+                    else:
+                        ls := u32(cl.bits and 0xffff_ffff) as f32
+                        rs := u32(cr.bits and 0xffff_ffff) as f32
+                        xs: f32 = 0.0
+                        switch i1.op:
+                        case Oadd:
+                            xs = ls + rs
+                        case Osub:
+                            xs = ls - rs
+                        case Oneg:
+                            xs = -ls
+                        case Odiv:
+                            xs = ls / rs
+                        case Omul:
+                            xs = ls * rs
+                        case Oi32tof:
+                            xs = f32(i32(cl.bits and 0xffff_ffff))
+                        case Ou32tof:
+                            xs = f32(u32(cl.bits and 0xffff_ffff))
+                        case Oi64tof:
+                            xs = f32(cl.bits)
+                        case Ou64tof:
+                            xs = f32(u64(cl.bits))
+                        case Otruncf64:
+                            xs = f32(cl.bits as f64)
+                        case Ocast:
+                            xs = ls
+                        case:
+                            panic("cannot fold f32 operation " + o.name + " in " + fn.name)
+                        c = Immediate{type = Numeric, bits = i64(xs as u32)}
+                    if folded:
+                        if wide(i1.cls) == 0:
+                            c.bits = c.bits and 0xffff_ffff
+                        r = intern(c)
+            if r == EMPTY:
+                r = same_value(i1, true)
+            if r != EMPTY:
+                replace_uses(i1.to, r)
+                fn.blocks[b].ins[k] = Instr{op = Onop}
+        # a branch gives its argument the value 0 on the way of 0, and becomes a jump when the way is known
+        if fn.blocks[b].exit.type == Jbranch:
+            zero_after_branch(b, fn.blocks[b].no, fn.blocks[b].yes, fn.blocks[b].exit.arg, Int32)
+            arg: Ref = EMPTY
+            cls := 0
+            eqval := 0
+            if compares_zero(fn.blocks[b].exit.arg, ptr(arg), ptr(cls), ptr(eqval)): # what an eq or ne of 0 compares is 0 too
+                ps := [fn.blocks[b].yes, fn.blocks[b].no]
+                zero_after_branch(b, ps[eqval xor 1], ps[eqval], arg, cls)
+            v := 1
+            z := 0
+            j := ptr(fn.blocks[b])
+            if j.yes == j.no or bits_of(j.exit.arg, ptr(v)) or known_zero(b, j.exit.arg, Int32, ptr(z)):
+                j = ptr(fn.blocks[b])
+                if v == 0 or z != 0:
+                    j.yes = j.no
+                j.no = 0 # the live instructions of dead blocks go to the start block below
+                j.exit.type = Jjump
+                j.exit.arg = EMPTY
+        # a table at a known index becomes a jump, past its end to its last entry as br_table does
+        entry := 0
+        if fn.blocks[b].exit.type == Jtable and bits_of(fn.blocks[b].exit.arg, ptr(entry)):
+            j := ptr(fn.blocks[b])
+            j.yes = j.targets[j.table[min(u64(entry), u64(j.table.len - 1))]]
+            j.targets.len = 0
+            j.table.len = 0
+            j.exit.type = Jjump
+            j.exit.arg = EMPTY
+    rpo: &list[i64] = heap(fn.order[:fn.ordered])
+    order_blocks()
+    # the instructions of the blocks that died that are in the table, the code may compute with them
+    for d in rpo:
+        if fn.blocks[d].id == -1:
+            for k in 0..fn.blocks[d].ins.len:
+                i := fn.blocks[d].ins[k]
+                if not OPERATIONS[i.op].pinned and same_value(i, false) == i.to:
+                    add_instr(ptr(fn.blocks[fn.start].ins), i)
+    free(rpo)
+
+NO_BLOCK = 0xffff_ffff
+
+func is_int_division(i: Instr) -> bool:
+    return (i.op == Odiv or i.op == Orem or i.op == Oudiv or i.op == Ourem) and bank(i.cls) == 0
+
+func pinned(i: Instr) -> bool:
+    return OPERATIONS[i.op].pinned or is_int_division(i)
+
+func removable(i: Instr) -> bool:
+    return is_load(i.op) or is_alloc(i.op) or is_int_division(i)
+
+func schedule_early(r: Ref) -> u32:
+    if ref_kind(r) != RefTemp:
+        return 0
+    t := ptr(fn.temps[r])
+    if t.scheduled != NO_BLOCK:
+        return t.scheduled
+    if t.def == 0:
+        t.scheduled = t.block # phis do not move
+        return t.block
+    t.scheduled = 0 # visiting
+    i := instr_at(t.def).*
+    early := schedule_early(i.arg[0])
+    b1 := schedule_early(i.arg[1])
+    if fn.blocks[fn.order[early]].depth < fn.blocks[fn.order[b1]].depth:
+        early = b1
+    if pinned(i):
+        early = t.block
+    t.scheduled = early
+    return early
+
+func common_dominator(bid1: u32, bid2: u32) -> u32:
+    if bid1 == NO_BLOCK:
+        return bid2
+    if bid2 == NO_BLOCK:
+        return bid1
+    b := fn.order[bid1]
+    while not dominates(b, fn.order[bid2]):
+        b = fn.blocks[b].dominator
+    return u32(fn.blocks[b].id)
+
+# the block of the uses of r that dominates them all
+func schedule_late(r: Ref) -> u32:
+    if ref_kind(r) != RefTemp:
+        return NO_BLOCK
+    t := ptr(fn.temps[r])
+    if t.visit != 0:
+        return t.scheduled
+    t.visit = 1
+    early := t.scheduled
+    if early == NO_BLOCK:
+        return NO_BLOCK # not used
+    t.scheduled = t.block # now the late block
+    late: u32 = NO_BLOCK
+    for n in 0..t.used:
+        u := t.uses[n]
+        b := fn.order[u.block]
+        switch u.type:
+        case ByPhi:
+            for a in 0..fn.phis[u.at].arg.len: # none when the phi is unused
+                if fn.phis[u.at].arg[a] == r:
+                    late = common_dominator(late, u32(fn.blocks[fn.phis[u.at].blocks[a]].id))
+        case ByInstr:
+            use := schedule_late(instr_at(u.at).to)
+            i := instr_at(u.at).*
+            if pinned(i) and (use != NO_BLOCK or not removable(i)):
+                use = u32(fn.blocks[b].id)
+            late = common_dominator(late, use)
+        case ByExit:
+            if fn.blocks[b].exit.arg != EMPTY:
+                late = common_dominator(late, u32(fn.blocks[b].id))
+    # late is NO_BLOCK when every use is pinned and removable, the early block stays for a pinned definition
+    if t.def != 0 and not pinned(instr_at(t.def).*):
+        t.scheduled = late
+        if late != NO_BLOCK:
+            best := fn.order[late]
+            assert dominates(fn.order[early], best), "move_code moves an instruction of " + fn.name + " above its arguments"
+            while fn.blocks[best].outer_dominator != 0 and dominates(fn.order[early], fn.blocks[best].outer_dominator):
+                best = fn.blocks[best].outer_dominator
+            t.scheduled = u32(fn.blocks[best].id)
+    return t.scheduled
+
+func add_scheduled(i: Instr):
+    b := fn.order[fn.temps[i.to].scheduled]
+    add_instr(ptr(fn.blocks[b].ins), i)
+
+# the instructions that go with the one at k of b, after those that define their arguments; where the next ones start
+func schedule_instr(b: i64, k: i64, out: *&list[Instr]) -> i64:
+    ins := fn.blocks[b].ins
+    op := ins[k].op
+    i0 := k # the instructions that go together
+    i1 := k + 1
+    switch op:
+    case Oblit, Oatomicexpected:
+        i1 = k + 2
+    case Oblitsize, Oatomiccompareswap:
+        i0 = k - 1
+    case Ocondition, Oselect:
+        while op == Oselect and i0 > 0 and ins[i0 - 1].op == Oselect:
+            i0 -= 1
+        while i1 < ins.len and ins[i1].op == Oselect:
+            i1 += 1
+    case:
+        if is_param(op):
+            while i0 > 0 and is_param(ins[i0 - 1].op):
+                i0 -= 1
+            while i1 < ins.len and is_param(ins[i1].op):
+                i1 += 1
+        elif op == Ocall or is_arg(op):
+            while i0 > 0 and is_arg(ins[i0 - 1].op):
+                i0 -= 1
+            while ins[i1 - 1].op != Ocall:
+                i1 += 1
+    for j in i0..i1:
+        for n in 0..2:
+            a := ins[j].arg[n]
+            if ref_kind(a) != RefTemp:
+                continue
+            t := fn.temps[a]
+            if i64(t.block) != fn.blocks[b].id or t.def == 0:
+                continue
+            _ = schedule_instr(b, t.def and 0xffff_ffff, out)
+    for j in i0..i1:
+        add_instr(out, ins[j])
+        ins[j] = Instr{op = Onop}
+    return i1
+
+func sink(b: i64, r: Ref) -> Ref:
+    if ref_kind(r) != RefTemp:
+        return r
+    t := fn.temps[r]
+    if t.def == 0 or i64(t.block) == fn.blocks[b].id:
+        return r
+    i := instr_at(t.def).*
+    x := 0
+    cheap := is_compare(i.op, ptr(x), ptr(x))
+    switch i.op:
+    case Oneg, Oadd, Osub, Omul, Oand, Oor, Oxor, Osar, Oshr, Oshl:
+        cheap = true
+    if pinned(i) or bank(i.cls) != 0 or not cheap:
+        return r
+    r1 := new_temp(t.cls)
+    i.to = r1
+    fn.temps[r1].scheduled = u32(fn.blocks[b].id)
+    emit(i)
+    i.arg[0] = sink(b, i.arg[0])
+    i.arg[1] = sink(b, i.arg[1])
+    return r1
+
+# an instruction goes to the block that runs least among those it can be in
+func move_code():
+    b := fn.start
+    while b != 0:
+        fn.blocks[b].depth = -1
+        b = fn.blocks[b].next
+    fn.blocks[fn.start].depth = 0
+    b = fn.start
+    while b != 0:
+        if fn.blocks[b].depth == -1:
+            depth := 1
+            d := fn.blocks[b].dominator
+            while fn.blocks[d].depth == -1:
+                depth += 1
+                d = fn.blocks[d].dominator
+            depth += fn.blocks[d].depth
+            fn.blocks[b].depth = depth
+            d = fn.blocks[b].dominator
+            while fn.blocks[d].depth == -1:
+                depth -= 1
+                fn.blocks[d].depth = depth
+                d = fn.blocks[d].dominator
+        b = fn.blocks[b].next
+    fill_loops()
+    for bid in 0..fn.ordered:
+        b = fn.order[bid]
+        d := fn.blocks[b].dominator
+        while d != 0 and fn.blocks[d].loop >= fn.blocks[b].loop:
+            d = fn.blocks[d].outer_dominator
+        fn.blocks[b].outer_dominator = d
+    for t in 0..fn.temp_count:
+        fn.temps[t].visit = 0
+        fn.temps[t].scheduled = NO_BLOCK
+    for bid in 0..fn.ordered:
+        b = fn.order[bid]
+        p := fn.blocks[b].phi
+        while p != 0:
+            for n in 0..fn.phis[p].arg.len:
+                _ = schedule_early(fn.phis[p].arg[n])
+            p = fn.phis[p].next
+        for i in fn.blocks[b].ins:
+            if pinned(i):
+                _ = schedule_early(i.arg[0])
+                _ = schedule_early(i.arg[1])
+                if i.op == Ocall and i.to != EMPTY and fn.temps[i.to].result_slot != EMPTY:
+                    _ = schedule_early(fn.temps[i.to].result_slot)
+        _ = schedule_early(fn.blocks[b].exit.arg)
+    for bid in 0..fn.ordered:
+        b = fn.order[bid]
+        prev := 0
+        p := fn.blocks[b].phi
+        while p != 0:
+            next := fn.phis[p].next
+            if schedule_late(fn.phis[p].to) == NO_BLOCK:
+                fn.phis[p].arg.len = 0 # unused
+                fn.phis[p].blocks.len = 0
+                if prev == 0:
+                    fn.blocks[b].phi = next
+                else:
+                    fn.phis[prev].next = next
+            else:
+                prev = p
+            p = next
+        for i in fn.blocks[b].ins:
+            if pinned(i):
+                _ = schedule_late(i.to)
+    # the live instructions go to the end of their new block, the schedule below puts their arguments first
+    ins: &list[Instr] = heap([])
+    defer free(ins)
+    for t in 0..fn.temp_count:
+        tmp := ptr(fn.temps[t])
+        if tmp.def == 0 or tmp.block == tmp.scheduled:
+            continue
+        i := instr_at(tmp.def)
+        if pinned(i.*) and not removable(i.*):
+            continue
+        if tmp.scheduled != NO_BLOCK:
+            add_instr(ins, i.*)
+        i.* = Instr{op = Onop}
+    for i in ins:
+        add_scheduled(i)
+    fill_uses()
+    # trivial instructions go to their uses in other blocks to shorten the live ranges
+    fn.out.len = 0
+    b = fn.start
+    while b != 0:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if is_load(i.op):
+                r := sink(b, i.arg[0])
+                fn.blocks[b].ins[k].arg[0] = r
+            elif is_store(i.op):
+                r := sink(b, i.arg[1])
+                fn.blocks[b].ins[k].arg[1] = r
+        if fn.blocks[b].exit.type != Jtable: # the check of its bounds reads the index of a table too
+            fn.blocks[b].exit.arg = sink(b, fn.blocks[b].exit.arg)
+        b = fn.blocks[b].next
+    for k in reverse 0..fn.out.len:
+        add_scheduled(fn.out[k])
+    fn.out.len = 0
+    fill_uses()
+    b = fn.start
+    while b != 0:
+        ins.len = 0
+        k := 0
+        while k < fn.blocks[b].ins.len:
+            k = schedule_instr(b, k, ins)
+        fn.blocks[b].ins = ins[:]
+        b = fn.blocks[b].next
+
+IF_INSTRS = 2
+IF_PHIS = 2
+
+func selectable(b: i64) -> bool:
+    n := 0
+    for i in fn.blocks[b].ins:
+        if i.op != Odebugline:
+            if pinned(i):
+                return false
+            if i.op != Onop:
+                n += 1
+    return n <= IF_INSTRS
+
+# an if-then[-else] that only computes values becomes select instructions
+func convert_ifs():
+    ins: &list[Instr] = heap([])
+    defer free(ins)
+    next := fn.start
+    while next != 0:
+        ifb := next
+        next = fn.blocks[ifb].next
+        if fn.blocks[ifb].exit.type != Jbranch:
+            continue
+        s1 := fn.blocks[ifb].yes # the branch with the lower id
+        s2 := fn.blocks[ifb].no
+        if fn.blocks[s1].id > fn.blocks[s2].id:
+            s1 = fn.blocks[ifb].no
+            s2 = fn.blocks[ifb].yes
+        if s1 == s2 or fn.blocks[s1].exit.type != Jjump or fn.blocks[s1].preds.len != 1 or not selectable(s1):
+            continue
+        thenb := s1
+        elseb := ifb
+        joinb := s2
+        if fn.blocks[s1].yes != s2:
+            if fn.blocks[s2].exit.type != Jjump or fn.blocks[s2].preds.len != 1 or fn.blocks[s2].yes != fn.blocks[s1].yes or not selectable(s2):
+                continue
+            elseb = s2
+            joinb = fn.blocks[s1].yes
+        if fn.blocks[joinb].preds.len != 2:
+            continue
+        n := 0
+        p := fn.blocks[joinb].phi
+        while p != 0 and bank(fn.phis[p].cls) == 0:
+            n += 1
+            p = fn.phis[p].next
+        if p != 0 or n > IF_PHIS:
+            continue
+        if s1 != fn.blocks[ifb].yes:
+            thenb = elseb
+            elseb = s1
+        ins.len = 0
+        for i in fn.blocks[ifb].ins:
+            add_instr(ins, i)
+        if thenb != ifb:
+            for i in fn.blocks[thenb].ins:
+                add_instr(ins, i)
+        if elseb != ifb:
+            for i in fn.blocks[elseb].ins:
+                add_instr(ins, i)
+        if fn.blocks[joinb].phi != 0:
+            add_instr(ins, Instr{op = Ocondition, cls = Int32, arg = [fn.blocks[ifb].exit.arg, EMPTY]})
+        p = fn.blocks[joinb].phi
+        while p != 0:
+            add_instr(ins, Instr{op = Oselect, cls = fn.phis[p].cls, to = fn.phis[p].to, arg = [phi_arg(p, thenb), phi_arg(p, elseb)]})
+            p = fn.phis[p].next
+        fn.blocks[ifb].ins = ins[:]
+        fn.blocks[ifb].exit = Exit{Jjump, EMPTY}
+        fn.blocks[ifb].yes = joinb
+        fn.blocks[ifb].no = 0
+        fn.blocks[joinb].preds.len = 1
+        fn.blocks[joinb].preds[0] = ifb
+        fn.blocks[joinb].phi = 0
+
+func log2(pow2: u64) -> i64:
+    tab := [63, 0, 1, 41, 37, 2, 16, 42, 38, 29, 32, 3, 12, 17, 43, 55, 39, 35, 30, 53, 33, 21, 4, 23, 13, 9, 18, 6, 25, 44, 48, 56, 62, 40, 36, 15, 28, 31, 11, 54, 34, 52, 20, 22, 8, 5, 24, 47, 61, 14, 27, 10, 51, 19, 7, 46, 60, 26, 50, 45, 59, 49, 58, 57]
+    return tab[(pow2 * 0x5b3_1ab9_2887_7a7e) >> 58]
+
+func is_power_of_2(v: u64) -> bool:
+    return v != 0 and (v and v - 1) == 0
+
+# a division by a power of 2 becomes shifts; with flatten a blit becomes loads and stores, and a jump table loads the
+# address that its entry gives, which wasm leaves to memory.copy and br_table
+func simplify(flatten: bool):
+    b := fn.start
+    while b != 0:
+        if flatten and fn.blocks[b].exit.type == Jtable: # the address of the table plus the distance from it that the entry at the index holds
+            table := intern(Immediate{type = Addressed, symbol = i32(intern("\"" + jumptable(b) + "\""))}) # quoted, with no prefix of a symbol
+            base := new_temp(Int64)
+            offset := new_temp(Int64)
+            entry := new_temp(Int64)
+            distance := new_temp(Int64)
+            to := new_temp(Int64)
+            append(fn.blocks[b].ins, ptr([Instr{op = Ocopy, cls = Int64, to = base, arg = [table, EMPTY]}, Instr{op = Oshl, cls = Int64, to = offset, arg = [fn.blocks[b].exit.arg, intern(2)]}, Instr{op = Oadd, cls = Int64, to = entry, arg = [base, offset]}, Instr{op = Oloadi32, cls = Int64, to = distance, arg = [entry, EMPTY]}, Instr{op = Oadd, cls = Int64, to = to, arg = [base, distance]}]))
+            fn.blocks[b].exit.arg = to
+        renewed := false # the instructions after the one at k went to the buffer, so the ones that replace it go before
+        k := fn.blocks[b].ins.len
+        while k > 0:
+            k -= 1
+            i := fn.blocks[b].ins[k]
+            switch i.op:
+            case Oblitsize:
+                if flatten:
+                    if not renewed:
+                        emit_after(b, k)
+                        renewed = true
+                    sd := fn.blocks[b].ins[k - 1].arg
+                    sz := ref_signed(i.arg[0])
+                    fwd := sz >= 0
+                    sz = abs(sz)
+                    off := sz if fwd else 0
+                    p := 0
+                    # a slot with no field of 8 bytes was written by 4 at most, a load of 8 would wait for two stores
+                    if sz % 8 != 0 and ref_kind(sd[0]) == RefTemp and (fn.temps[sd[0]].alias.type and 1) != 0:
+                        p = 1
+                    sts := [Ostorei64, Ostorei32, Ostorei16, Ostorei8]
+                    lds := [Oload, Oload, Oloadu16, Oloadu8]
+                    clss := [Int64, Int32, Int32, Int32]
+                    sizes := [8, 4, 2, 1]
+                    while sz != 0:
+                        n := sizes[p]
+                        while sz >= n:
+                            if fwd:
+                                off -= n
+                            r := new_temp(Int64)
+                            r1 := new_temp(Int64)
+                            ro := intern(off)
+                            emit(sts[p], 0, EMPTY, r, r1)
+                            emit(Oadd, Int64, r1, sd[1], ro)
+                            r1 = new_temp(Int64)
+                            emit(lds[p], clss[p], r, r1, EMPTY)
+                            emit(Oadd, Int64, r1, sd[0], ro)
+                            if not fwd:
+                                off += n
+                            sz -= n
+                        p += 1
+                    k -= 1
+                    continue
+            case Odiv, Orem:
+                r := i.arg[1]
+                if bank(i.cls) == 0 and ref_kind(r) == RefConstant:
+                    c := fn.constants[ref_value(r)]
+                    v := c.bits if wide(i.cls) != 0 else c.bits << 32 >> 32
+                    if c.type == Numeric and v > 0 and is_power_of_2(u64(v)):
+                        if not renewed:
+                            emit_after(b, k)
+                            renewed = true
+                        # x/2^n and x%2^n round toward zero: a negative x is moved up by 2^n-1 before the shift
+                        n := log2(u64(v))
+                        cls := i64(i.cls)
+                        if n == 0:
+                            emit(Ocopy, cls, i.to, i.arg[0] if i.op == Odiv else ZERO, EMPTY)
+                            continue
+                        sign := i.arg[0]
+                        if n > 1:
+                            sign = new_temp(cls)
+                        bias := new_temp(cls)
+                        sum := new_temp(cls)
+                        if i.op == Odiv:
+                            emit(Osar, cls, i.to, sum, intern(n))
+                        else:
+                            low := new_temp(cls)
+                            emit(Osub, cls, i.to, low, bias)
+                            emit(Oand, cls, low, sum, intern(i64((u64(1) << n) - 1)))
+                        emit(Oadd, cls, sum, i.arg[0], bias)
+                        emit(Oshr, cls, bias, sign, intern((64 if wide(cls) != 0 else 32) - n))
+                        if n > 1:
+                            emit(Osar, cls, sign, i.arg[0], intern(63 if wide(cls) != 0 else 31))
+                        continue
+            case Oudiv, Ourem:
+                r := i.arg[1]
+                if bank(i.cls) == 0 and ref_kind(r) == RefConstant:
+                    c := fn.constants[ref_value(r)]
+                    if c.type == Numeric and is_power_of_2(u64(c.bits)):
+                        n := log2(u64(c.bits))
+                        if i.op == Ourem:
+                            i.op = Oand
+                            i.arg[1] = intern(i64((u64(1) << n) - 1))
+                        else:
+                            i.op = Oshr
+                            i.arg[1] = intern(n)
+                        fn.blocks[b].ins[k] = i
+            if renewed:
+                emit(i)
+        if renewed:
+            take_emitted(b)
+        b = fn.blocks[b].next
+
+func emit_after(b: i64, k: i64):
+    fn.out.len = 0
+    ins := fn.blocks[b].ins
+    for j in reverse k + 1..ins.len:
+        append(fn.out, ins[j])
+
+func thread_base(r: Ref, off: *Ref) -> Ref:
+    off.* = EMPTY
+    if ref_kind(r) != RefConstant:
+        return EMPTY
+    c := fn.constants[ref_value(r)]
+    if c.type != Addressed or c.access != ThreadData:
+        return EMPTY
+    n := 0
+    while n < fn.thread_symbols.len and fn.thread_symbols[n] != i64(c.symbol):
+        n += 1
+    if n == fn.thread_symbols.len:
+        append(fn.thread_symbols, i64(c.symbol))
+        append(fn.thread_temps, new_temp(Int64))
+    if c.bits != 0:
+        off.* = intern(c.bits)
+    return fn.thread_temps[n]
+
+func thread_address(r: Ref) -> Ref:
+    off: Ref = EMPTY
+    b := thread_base(r, ptr(off))
+    if b == EMPTY or off == EMPTY:
+        return b
+    t := new_temp(Int64)
+    append(fn.thread_instrs, Instr{op = Oadd, cls = Int64, to = t, arg = [b, off]})
+    return t
+
+# where reading the address of thread data costs a call (apple) or a lookup in a table (windows), it is read once per
+# function, after the parameters, into a temp
+func hoist_thread_data():
+    if not asm.machine.apple and not asm.machine.windows:
+        return
+    fn.thread_symbols.len = 0
+    fn.thread_temps.len = 0
+    fn.thread_instrs.len = 0
+    b := fn.start
+    while b != 0:
+        p := fn.blocks[b].phi
+        while p != 0:
+            for n in 0..fn.phis[p].arg.len:
+                r := thread_address(fn.phis[p].arg[n])
+                if r != EMPTY:
+                    fn.phis[p].arg[n] = r
+            p = fn.phis[p].next
+        r := thread_address(fn.blocks[b].exit.arg)
+        if r != EMPTY:
+            fn.blocks[b].exit.arg = r
+        fn.out.len = 0
+        for k in reverse 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            t: array[Ref, 2]
+            off: array[Ref, 2]
+            for x in 0..2:
+                if is_arg(i.op) or i.op == Oselect or i.op == Oatomiccompareswap:
+                    # the arguments of a call, the selects and a compare_swap stay together
+                    r = thread_address(i.arg[x])
+                    if r != EMPTY:
+                        i.arg[x] = r
+                    continue
+                r = thread_base(i.arg[x], ptr(off[x]))
+                if r == EMPTY:
+                    continue
+                i.arg[x] = r
+                if off[x] != EMPTY:
+                    t[x] = r
+                    i.arg[x] = new_temp(Int64)
+            emit(i)
+            for x in 0..2:
+                if t[x] != EMPTY:
+                    emit(Oadd, Int64, i.arg[x], t[x], off[x])
+        take_emitted(b)
+        b = fn.blocks[b].next
+    if fn.thread_symbols.len == 0:
+        return
+    b = fn.start
+    ins := fn.blocks[b].ins
+    first := 0
+    while first < ins.len and is_param(ins[first].op):
+        first += 1
+    fn.out.len = 0
+    for k in reverse first..ins.len:
+        emit(ins[k])
+    for n in reverse 0..fn.thread_instrs.len:
+        emit(fn.thread_instrs[n])
+    for n in reverse 0..fn.thread_symbols.len:
+        c := intern(Immediate{type = Addressed, access = ThreadData, symbol = i32(fn.thread_symbols[n])})
+        emit(Ocopy, Int64, fn.thread_temps[n], c, EMPTY)
+    for k in reverse 0..first:
+        emit(fn.blocks[b].ins[k])
+    take_emitted(b)
+    fill_uses()

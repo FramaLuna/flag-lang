@@ -1,0 +1,70 @@
+# Unsigned values at the top of their range jump through a table, for bytes, words and longs.
+noinline func letter(c: u8) -> &strview:
+    switch c:
+    case 'a', 'e', 'i', 'o', 'u':
+        return "vowel"
+    case 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm':
+        return "early"
+    case 'n':
+        return "n"
+    case 'p':
+        return "p"
+    case 'q':
+        return "q"
+    case 'r':
+        return "r"
+    case 's':
+        return "s"
+    case 't':
+        return "t"
+    case:
+        return "other"
+
+noinline func word(x: u32) -> i64:
+    switch x:
+    case 0xffff_fff0:
+        return 0
+    case 0xffff_fff1:
+        return 1
+    case 0xffff_fff3:
+        return 3
+    case 0xffff_fff4:
+        return 4
+    case 0xffff_fff5:
+        return 5
+    case 0xffff_fff7:
+        return 7
+    case 0xffff_fffa:
+        return 10
+    case 0xffff_ffff:
+        return 15
+    case:
+        return -1
+
+noinline func long(x: u64) -> i64:
+    switch x:
+    case 0xffff_ffff_ffff_fff8:
+        return 8
+    case 0xffff_ffff_ffff_fff9:
+        return 9
+    case 0xffff_ffff_ffff_fffa:
+        return 10
+    case 0xffff_ffff_ffff_fffb:
+        return 11
+    case 0xffff_ffff_ffff_fffc:
+        return 12
+    case 0xffff_ffff_ffff_fffd:
+        return 13
+    case 0xffff_ffff_ffff_fffe:
+        return 14
+    case 0xffff_ffff_ffff_ffff:
+        return 15
+    case:
+        return -1
+
+func main():
+    for c in "abcnopqrstuvz~":
+        print(c, " ", letter(items(c)[0]))
+    print(letter(255), " ", letter(0))
+    for k in 0..17:
+        print(word(0xffff_ffef + u32(k)), " ", long(0xffff_ffff_ffff_fff6 + u64(k)), " ", long(u64(k)))

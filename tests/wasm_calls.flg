@@ -1,0 +1,54 @@
+# calls through function values, which wasm makes through its table, recursion, exports, and a function of the host
+# that calls one back through the table the module exports
+extern "env":
+    func apply(f: extern func(i64) -> i64, x: i64) -> i64
+
+type Op:
+    name: &strview
+    apply: func(i64, i64) -> i64
+
+func add(a: i64, b: i64) -> i64:
+    return a + b
+
+func mul(a: i64, b: i64) -> i64:
+    return a * b
+
+func ackermann(m: i64, n: i64) -> i64:
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ackermann(m - 1, 1)
+    return ackermann(m - 1, ackermann(m, n - 1))
+
+func fold(items: &listview[i64], start: i64, f: func(i64, i64) -> i64) -> i64:
+    total := start
+    for x in items:
+        total = f(total, x)
+    return total
+
+func pick(big: bool) -> func(i64, i64) -> i64:
+    if big:
+        return mul
+    return add
+
+export func triple(x: i32) -> i32: # an export of a program, beside main
+    return x * 3
+
+export func halve(x: i64) -> i64:
+    return x / 2
+
+func greater(a: i64, b: i64) -> bool:
+    return a > b
+
+func main():
+    ops := [Op{"add", add}, Op{"mul", mul}]
+    for op in ops:
+        print(op.name, " ", op.apply(6, 7), " ", fold([1, 2, 3, 4][:], 1, op.apply))
+    print(pick(true)(5, 5), " ", pick(false)(5, 5), " ", ackermann(2, 3), " ", triple(14))
+    values: &list[i64] = heap([5, 3, 9, 1, 7])
+    defer free(values)
+    sort(values, greater)
+    print(values)
+    empty: func(i64, i64) -> i64
+    print(empty as u64 == 0)
+    print(apply(halve, 84), " ", apply(halve, -7))

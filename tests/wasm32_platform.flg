@@ -1,0 +1,14 @@
+# wasm32 is a wasm with 32-bit memory: pointers stay 8 bytes in Flag, and only the memory instructions take the low word
+func machine() -> &strview where @wasm32():
+    return "wasm32"
+
+func machine() -> &strview where not @wasm32():
+    return "other"
+
+func main():
+    print(@wasm(), " ", @wasm32(), " ", @wasm64(), " ", @x86_64(), " ", machine())
+    print(@sizeof(*i64), " ", @sizeof(&strview), " ", malloc(5 << 30) as u64 == 0, " ", malloc(1 << 50) as u64 == 0)
+    big: &list[u8] = heap([])
+    for k in 0..(3 << 20):
+        append(big, u8(k))
+    print(big.len, " ", big[-1])

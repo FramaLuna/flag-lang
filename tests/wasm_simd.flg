@@ -1,0 +1,19 @@
+# simd, which WebAssembly holds in v128 registers, and atomics, which one thread does as loads and stores
+func main():
+    a := simd[f32, 4]([1.0, 2.0, 3.0, 4.0])
+    b := simd[f32, 4]([0.5, 0.5, 2.0, -1.0])
+    print(a + b, " ", a * b, " ", a / b, " ", -a, " ", sqrt(a * a), " ", min(a, b), " ", max(a, b))
+    m := a > b
+    print(m, " ", any(m), " ", all(m), " ", select(m, a, b), " ", sum(a))
+    i := simd[i32, 4]([1, -2, 3, -4])
+    print(i << 2, " ", i >> 1, " ", abs(i), " ", i and 6, " ", not i, " ", simd[f32, 4](i))
+    bytes := simd[u8, 16]([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 255])
+    print(bytes + 1, " ", sum(simd[u64, 2]([3, 4])))
+    wide := simd[f64, 4]([1.0, 4.0, 9.0, 16.0])
+    print(sqrt(wide), " ", array[f64, 4](wide))
+    count: atomic[i64]
+    print(get(count), " ", add(count, 5), " ", swap(count, 9), " ", compare_swap(count, 9, 11), " ", compare_swap(count, 9, 13), " ", get(count))
+    set(count, -3)
+    flag: atomic[u32]
+    add(flag, 4)
+    print(get(count), " ", get(flag))

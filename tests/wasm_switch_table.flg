@@ -1,0 +1,86 @@
+# dense switches jump through br_table: on bytes, signed words, longs that wrap, with values that leave the cases
+noinline func letter(c: u8) -> i64:
+    switch c:
+    case 'a', 'e', 'i', 'o', 'u':
+        return 1
+    case 'b', 'c', 'd', 'f', 'g':
+        return 2
+    case 'h', 'j', 'k':
+        return 3
+    case 'l', 'm', 'n':
+        return 4
+    return 0
+
+noinline func signed(x: i32) -> i32:
+    y: i32 = 0
+    switch x:
+    case -4:
+        y = 40
+    case -3:
+        y = 30
+    case -2, 2:
+        y = 20
+    case -1:
+        y = 10
+    case 0:
+        y = -1
+    case 1:
+        y = 11
+    case 3:
+        y = 33
+    case 4:
+        y = 44
+    case:
+        y = x * 1000
+    return y + 1
+
+noinline func wrapped(x: u64) -> &strview:
+    switch x:
+    case 18446744073709551613:
+        return "max - 2"
+    case 18446744073709551614:
+        return "max - 1"
+    case 18446744073709551615:
+        return "max"
+    case 0:
+        return "zero"
+    case 1:
+        return "one"
+    case 2:
+        return "two"
+    case 3:
+        return "three"
+    case 4:
+        return "four"
+    return "other"
+
+func main():
+    total := 0
+    for c in items("flag compiles to webassembly"):
+        total = total * 3 + letter(c)
+    print(total)
+    for x in -6..7:
+        print(x, " ", signed(i32(x)))
+    for x in [18446744073709551612, 18446744073709551613, 18446744073709551615, 0, 4, 5]:
+        print(wrapped(u64(x)))
+    a := 0
+    b := 1
+    for step in 0..40: # values that cross the table, swapped on the way
+        switch step % 10:
+        case 0, 5:
+            a, b = b, a
+        case 1:
+            a += b
+        case 2:
+            b += a
+        case 3:
+            a, b = b + 1, a + 1
+        case 4:
+            a -= 1
+        case 6, 7:
+            b *= 2
+        case 8:
+            a = a xor b
+        case 9:
+            b = b - a
+    print(a, " ", b)

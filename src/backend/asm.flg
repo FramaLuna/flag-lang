@@ -1,0 +1,662 @@
+InText = 0
+InData = 1
+InBss = 2
+
+# the assembly of the program, each proc through the passes of the backend on the machine of the target
+func assembly() -> &str:
+    asm.machine = AMD64_SYSV
+    if comp.machine == "arm64":
+        asm.machine = ARM64_APPLE if comp.system == "macos" else ARM64
+    elif comp.machine == "riscv64":
+        asm.machine = RV64
+    elif comp.system == "macos":
+        asm.machine = AMD64_APPLE
+    elif comp.system == "windows":
+        asm.machine = AMD64_WIN
+    shrink()
+    # the data of the shapes of the types, that a library or a program that loads one carries, and of the functions, that
+    # the chain of a panic reads
+    shaped := comp.shared
+    for f in comp.procs:
+        for i in comp.code[f.code:f.end]:
+            shaped = shaped or i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == "$flag_shapes" # what load calls for the table of the program
+    if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
+        privs: &map[i64, bool] = heap({}) # the declarations that are priv
+        defer free(privs)
+        for sym in comp.syms:
+            if sym.priv:
+                privs[sym.node] = true
+        names: &list[&strview] = heap([])
+        defer free(names)
+        rows: &list[Piece] = heap([]) # of each name, its tag, whether it names a union and the hash of its shape or the tag of the union
+        defer free(rows)
+        tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
+        defer free(tags)
+        for t in 0..comp.types.len:
+            ty := comp.types[t]
+            k := comp.nodes[ty.decl].kind
+            if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
+                shape: &str = heap("")
+                defer free(shape)
+                shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
+                for f in comp.items[ty.first:ty.first + ty.count]:
+                    shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
+                append(tags, u64(ty.tag) << 32 or u64(names.len))
+                append(names, ty.name)
+                append(rows, ptr([Piece{kind = Number, size = 4, n = ty.tag}, Piece{kind = Number, size = 4}, Piece{kind = Number, size = 8, n = hash(view(shape)) as i64}]))
+        for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
+            sym := comp.syms[a]
+            if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
+                name: &str = heap("")
+                if sym.module.len > 0:
+                    name += sym.module + "."
+                name += sym.name
+                tag := tag_of_shape(view(name))
+                target := comp.types[sym.type]
+                append(tags, u64(tag) << 32 or u64(names.len))
+                append(names, view(name))
+                append(rows, ptr([Piece{kind = Number, size = 4, n = tag}, Piece{kind = Number, size = 4, n = i64(target.kind == Union)}, Piece{kind = Number, size = 8, n = target.tag}]))
+        sort(tags)
+        table: &list[Piece] = heap([])
+        defer free(table)
+        append(table, Piece{kind = Number, size = 8, n = names.len})
+        for k, name in names:
+            define(Data{name = "$flag.shape." + k}, ptr([Piece{kind = Text, text = name}, Piece{kind = Number, size = 1}]))
+        for t in tags:
+            k := i64(t and 0xffff_ffff)
+            append(table, rows[3 * k:3 * k + 3])
+            append(table, Piece{kind = Address, text = "$flag.shape." + k})
+        define(Data{name = "$flag.shapes", fixed = true}, table)
+    functions: &list[Piece] = heap([])
+    defer free(functions)
+    places: &list[Piece] = heap([])
+    defer free(places)
+    append(functions, Piece{kind = Number, size = 8, n = comp.procs.len})
+    append(functions, Piece{kind = Number, size = 8}) # where the code of the last function ends
+    if comp.procs.len > 0:
+        functions[1] = Piece{kind = Address, text = "$\"" + asm.machine.local_prefix + comp.procs[-1].name[1:] + ".end\""}
+    place := 16 + 16 * comp.procs.len
+    for f in comp.procs:
+        hidden := f.node == 0 or comp.insts[f.inst].library
+        append(functions, ptr([Piece{kind = Address, text = f.name}, Piece{kind = Number, size = 4, n = place}, Piece{kind = Number, size = 4, n = i64(hidden)}]))
+        if not hidden:
+            at := declared_at(f)
+            shown := proc_name(f) # the data of the program keeps it
+            shown += ", " + comp.files[file_of(at)].path + ":" + line_of(at)
+            place += shown.len + 1
+            append(places, ptr([Piece{kind = Text, text = shown}, Piece{kind = Number, size = 1}]))
+    append(functions, places[:])
+    define(Data{name = "$flag.functions"}, functions)
+    prepare()
+    if comp.debug:
+        out(".cfi_sections .debug_frame\n")
+    if shaped:
+        special("flag_shapes", true, "flag.shapes")
+        compile()
+    # the data from its pieces: zeros first go to the fill of a bss, the rest as numbers, addresses, runs of text and files
+    for d in comp.data:
+        pieces := comp.pieces[d.first:d.first + d.count]
+        addresses := false
+        for piece in pieces:
+            addresses = addresses or piece.kind == Address
+        sec: &strview = ""
+        secf: &strview = ""
+        if d.thread:
+            pass
+        elif d.fixed and comp.system == "linux": # where a write stops the program
+            sec = "\".data.rel.ro\""
+        elif d.fixed and comp.system == "windows":
+            sec = "\".rdata\""
+            secf = "\"dr\""
+        elif d.fixed and addresses: # on macOS __TEXT takes no address that the loader fixes
+            sec = "\"__DATA,__const\""
+        elif d.fixed:
+            sec = "\"__TEXT,__const\""
+        name := d.name[1:]
+        zero := 0 # the zeros it starts with, or -1 past them
+        for piece in pieces:
+            if piece.kind == Zeros:
+                if zero != -1:
+                    zero += piece.n
+                else:
+                    out("\t.fill ")
+                    asm.text += piece.n
+                    out(",1,0\n")
+                continue
+            if zero != -1:
+                emit_symbol(name, false, d.thread, d.align, sec, secf, InData)
+                if zero > 0:
+                    out("\t.fill ")
+                    asm.text += zero
+                    out(",1,0\n")
+                zero = -1
+            switch piece.kind:
+            case Number:
+                switch piece.size:
+                case 1:
+                    out("\t.byte ")
+                    asm.text += piece.n and 0xff
+                case 2:
+                    out("\t.short ")
+                    asm.text += piece.n and 0xffff
+                case 4:
+                    out("\t.int ")
+                    asm.text += piece.n and 0xffff_ffff
+                case:
+                    out("\t.quad ")
+                    asm.text += piece.n
+                out("\n")
+            case Address:
+                target := piece.text[1:]
+                out("\t.quad ")
+                if items(target)[0] != '"':
+                    out(asm.machine.symbol_prefix)
+                out(target)
+                if piece.n >= 0:
+                    out("+")
+                asm.text += piece.n
+                out("\n")
+            case Text:
+                quoted := false
+                for b in items(piece.text):
+                    plain := b >= ' ' and b <= '~' and b != '"' and b != '\\'
+                    if quoted and not plain:
+                        out("\"\n")
+                    elif plain and not quoted:
+                        out("\t.ascii \"")
+                    quoted = plain
+                    if plain:
+                        add_byte(asm.text, b)
+                    else:
+                        out("\t.byte ")
+                        asm.text += i64(b)
+                        out("\n")
+                if quoted:
+                    out("\"\n")
+            case File:
+                out("\t.incbin " + in_quotes(piece.text) + "\n")
+            case:
+                pass
+        if zero != -1:
+            emit_symbol(name, false, d.thread, d.align, sec, secf, InBss)
+            out("\t.fill ")
+            asm.text += zero
+            out(",1,0\n")
+        out("/* end data */\n\n")
+    special("flag_frame", false, "")
+    compile()
+    special("flag_functions", false, "flag.functions")
+    compile()
+    for f in comp.procs:
+        path := in_quotes(view(comp.files[f.file].path))
+        asm.file = 1 # gas numbers the files from 1
+        while asm.file <= asm.files.len and asm.files[asm.file - 1] != path:
+            asm.file += 1
+        if asm.file > asm.files.len:
+            append(asm.files, heap(path))
+            out(".file ")
+            asm.text += asm.file
+            out(" " + path + "\n")
+        with scratch():
+            lower(f)
+            compile()
+    asm.machine.emit_end()
+    if comp.debug and comp.procs.len > 0: # with no function of its own there is no line to describe
+        info := dwarf()
+        defer free(info)
+        out(info)
+    return asm.text
+
+# the types of the aggregates and the globals of comp as the backend reads them
+func prepare():
+    for t in 0..comp.types.len:
+        append(asm.layout_of, -1)
+        append(asm.c_layout_of, -1)
+    for t in 0..comp.reached:
+        if aggregate(t):
+            al := 0
+            n := comp.types[t].align
+            while n / 2 != 0:
+                n /= 2
+                al += 1
+            asm.layout_of[t] = asm.layouts.len
+            append(asm.layouts, Layout{opaque = true, align = al, size = comp.types[t].size})
+    k := 0
+    for t in comp.c_types:
+        ty := Layout{align = -1}
+        first := k
+        while comp.c_fields[k].count != 0:
+            k += 1
+        if comp.types[t].kind == Untagged:
+            ty.is_union = true
+            for f in first..k:
+                add_fields(ptr(ty), comp.c_fields[f:f + 1])
+        else:
+            add_fields(ptr(ty), comp.c_fields[first:k])
+        k += 1
+        asm.c_layout_of[t] = asm.layouts.len
+        append(asm.layouts, ty)
+    for name in comp.globals:
+        c := Immediate{type = Addressed}
+        if comp.shared and comp.system == "linux" and starts_with(name, "thread "):
+            c.access = ThroughGot # initial-exec, the place of thread data comes from the GOT
+        while true:
+            if starts_with(name, "extern "):
+                c.access = c.access or ThroughGot
+            elif starts_with(name, "thread "):
+                c.access = c.access or ThreadData
+            else:
+                break
+            name = name[7:]
+        c.symbol = i32(intern(name[1:]))
+        append(asm.globals, c)
+
+# a path as the assembler reads it, in quotes
+func in_quotes(path: &strview) -> &strview:
+    return "\"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\""
+
+# the fields of a type of C, or of one member of a union of C, as C lays them out
+func add_fields(ty: *Layout, fields: &listview[CField]):
+    n := 0
+    sz := 0
+    al := ty.align
+    for f in fields:
+        type := FieldType
+        s := 0
+        a := 0
+        switch f.kind:
+        case 'd':
+            type = FieldF64
+            s = 8
+            a = 3
+        case 'l':
+            type = FieldI64
+            s = 8
+            a = 3
+        case 's':
+            type = FieldF32
+            s = 4
+            a = 2
+        case 'w':
+            type = FieldI32
+            s = 4
+            a = 2
+        case 'h':
+            type = FieldI16
+            s = 2
+            a = 1
+        case 'b':
+            type = FieldI8
+            s = 1
+        case:
+            s = asm.layouts[asm.c_layout_of[f.type]].size
+            a = asm.layouts[asm.c_layout_of[f.type]].align
+        if a > al:
+            al = a
+        a = (1 << a) - 1
+        a = ((sz + a) and not a) - sz
+        if a != 0 and n < MAX_FIELDS: # padding
+            append(ty.fields, Member{FieldPad, a})
+            n += 1
+        c := f.count
+        sz += a + c * s
+        if type == FieldType:
+            s = asm.c_layout_of[f.type]
+        while c > 0 and n < MAX_FIELDS:
+            append(ty.fields, Member{i32(type), s})
+            c -= 1
+            n += 1
+    append(ty.fields, Member{FieldEnd, 0})
+    a := i64(1) << al
+    if sz < ty.size:
+        sz = ty.size
+    ty.size = (sz + a - 1) and -a
+    ty.align = al
+    ty.members += 1
+
+# the passes on the function in fn, and its assembly
+func compile():
+    m := ptr(asm.machine)
+    m.lower_narrow()
+    optimize(m.selects)
+    hoist_thread_data()
+    m.lower_calls()
+    simplify(true)
+    order_blocks()
+    fill_uses()
+    m.select()
+    order_blocks()
+    fill_live()
+    fill_loops()
+    fill_costs()
+    spill()
+    assign_registers()
+    order_blocks()
+    skip_jumps()
+    order_blocks()
+    # with -debug the blocks keep the order of the input, so a scope is one range of code
+    if not comp.debug:
+        for n in 0..fn.ordered:
+            fn.blocks[fn.order[n]].next = fn.order[n + 1] if n + 1 < fn.ordered else 0
+    m.emit_function()
+    out("/* end function " + fn.name + " */\n\n")
+
+# the passes that take the function in fn to SSA and optimize it, on every target; with selects, an if that only
+# chooses values becomes select instructions
+func optimize(selects: bool):
+    order_blocks()
+    fill_uses()
+    if not comp.debug: # with -debug every stack slot stays whole
+        chop()
+        fill_uses()
+    promote()
+    fill_uses()
+    ssa()
+    fill_uses()
+    check_ssa()
+    fill_aliases()
+    forward_loads()
+    fill_uses()
+    result_slots()
+    fill_uses()
+    fill_aliases()
+    coalesce()
+    fill_uses()
+    fill_dominators()
+    check_ssa()
+    number_values()
+    order_blocks()
+    simplify_flow()
+    fill_uses()
+    fill_dominators()
+    move_code()
+    fill_uses()
+    check_ssa()
+    if selects:
+        convert_ifs()
+        order_blocks()
+        fill_uses()
+        fill_dominators()
+        check_ssa()
+
+# the instructions of b, lowered from its end
+func lower_block(b: i64, allocs: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
+    k := fn.blocks[b].ins.len
+    while k > 0:
+        k -= 1
+        i := fn.blocks[b].ins[k]
+        switch i.op:
+        case Ocall:
+            i0 := k
+            while i0 > 0 and is_arg(fn.blocks[b].ins[i0 - 1].op):
+                i0 -= 1
+            call(b, i0, k, allocs)
+            k = i0
+        case Ovastart, Ovaarg, Oarg, Oargaggregate:
+            panic("unhandled instruction " + OPERATIONS[i.op].name + " while lowering calls in " + fn.name)
+        case:
+            emit(i)
+    if b == fn.start: # the allocs in the order they were made
+        for j in reverse 0..allocs.len:
+            emit(allocs[j])
+
+ByPointer = 1
+FirstOnStack = 2 # the first half of a pair of registers, or all
+SecondOnStack = 4
+OnStack = 6
+FloatAsInt = 8
+
+type Passing: # how a value passes to arm64 or risc-v
+    how: i64
+    layout: i64 # of an aggregate
+    size: i64
+    align: i64
+    reg_count: i64
+    int_count: i64
+    float_count: i64
+    reg: array[i64, 4]
+    cls: array[i64, 4]
+    offset: array[i64, 4] # where each register goes in the aggregate
+
+# the first n registers of c come in new temps, given in tmp, which are stored to the aggregate at base
+func store_temps(tmp: *&list[Ref], n: i64, c: *Passing, base: Ref):
+    for j in 0..n:
+        t := new_temp(c.cls[j])
+        r := new_temp(Int64)
+        emit(Ostorei32 + c.cls[j], 0, EMPTY, t, r)
+        emit(Oadd, Int64, r, base, intern(c.offset[j]))
+        append(tmp, t)
+
+# the registers of c are loaded from the aggregate at base
+func load_regs(c: *Passing, base: Ref):
+    for j in 0..c.reg_count:
+        r := new_temp(Int64)
+        emit(Oload, c.cls[j], u32(c.reg[j]), r, EMPTY)
+        emit(Oadd, Int64, r, base, intern(c.offset[j]))
+
+# an alloc of sz bytes with the alignment of the layout t, that the start block gets
+func alloc_slot(r: Ref, t: i64, sz: i64, allocs: *&list[Instr]):
+    al := max(asm.layouts[t].align - 2, 0)
+    append(allocs, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
+
+# the allocs of the start block of a constant size become slots, the widest first, so each stays aligned
+func slot_allocs():
+    b := fn.start
+    n := 16
+    for al in reverse Oalloc4..=Oalloc16:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if i.op == al:
+                if ref_kind(i.arg[0]) != RefConstant:
+                    break
+                sz := fn.constants[ref_value(i.arg[0])].bits
+                if sz < 0 or sz >= 2147483647 - 15:
+                    panic("invalid stack allocation size " + sz + " in " + fn.name)
+                sz = (sz + n - 1) and -n
+                sz /= 4
+                if sz > 2147483647 - fn.slots:
+                    panic("stack allocation overflows frame size in " + fn.name)
+                fn.temps[i.to].slot = i32(fn.slots)
+                fn.slots += sz
+                fn.blocks[b].ins[k] = Instr{op = Onop}
+        n /= 2
+    fn.slots = (fn.slots + 3) and -4
+
+func out(s: &strview):
+    asm.text += s
+
+func reg_bit(r: i64) -> u64:
+    return u64(1) << r
+
+AnyInt = -1
+AnyClass = -2
+
+type Form: # how an emitter writes an instruction of a class
+    op: i32
+    cls: i32
+    fmt: &strview
+
+# the format of i in the table of an emitter
+func format(table: &listview[Form], i: Instr) -> &strview:
+    for f in table:
+        if f.op == i.op and (f.cls == i.cls or f.cls == AnyInt and bank(i.cls) == 0 or f.cls == AnyClass):
+            return f.fmt
+    panic("no assembly form for " + OPERATIONS[i.op].name + " of class " + i.cls + " in " + fn.name)
+
+func emit_symbol(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
+    m := ptr(asm.machine)
+    pfx := m.symbol_prefix
+    if items(name)[0] == '"':
+        pfx = ""
+    sfx: &strview = ""
+    if m.apple and thread:
+        sec = "__DATA"
+        secf = "__thread_bss,thread_local_zerofill" if kind == InBss else "__thread_data,thread_local_regular"
+        sfx = "$tlv$init"
+        out(".section __DATA,__thread_vars,thread_local_variables\n" + pfx + name + ":\n\t.quad __tlv_bootstrap\n\t.quad 0\n\t.quad " + pfx + name + sfx + "\n\n")
+    if m.windows and thread:
+        sec = ".tls$"
+        secf = "\"dw\""
+    if sec.len > 0:
+        if m.apple and items(sec)[0] == '"': # Mach-O takes segment,section bare
+            out(".section " + sec[1:sec.len - 1])
+        else:
+            out(".section " + sec)
+        if secf.len > 0:
+            out("," + secf)
+    elif thread:
+        out([".abort \"unreachable\"", ".section .tdata,\"awT\"", ".section .tbss,\"awT\""][kind])
+    else:
+        out([".text", ".data", ".bss"][kind])
+    out("\n")
+    if align != 0:
+        out(".balign ")
+        asm.text += align
+        out("\n")
+    if export:
+        out(".globl " + pfx + name + "\n")
+    out(pfx + name + sfx + ":\n")
+
+func emit_function_symbol(align: i64):
+    emit_symbol(fn.name, fn.export, false, align, "", "", InText)
+    if not comp.debug:
+        return
+    out("\t.cfi_startproc\n")
+    # the prologue takes the first line and the code does not repeat it, so a debugger that skips the prologue stops at
+    # the next line
+    b := fn.start
+    while b != 0:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if i.op == Odebugline:
+                emit_line(ref_value(i.arg[0]), ref_value(i.arg[1]))
+                fn.blocks[b].ins[k].op = Onop
+                return
+        b = fn.blocks[b].next
+
+# the label of the jump table of block b, which goes after the code of its function
+func jumptable(b: i64) -> &strview:
+    return asm.machine.local_prefix + fn.name + ".jt" + b
+
+# the end of a function, past its blocks, with its jump tables; block is how the label of a block starts
+func emit_function_end(block: &strview):
+    b := fn.start
+    while b != 0:
+        if fn.blocks[b].exit.type == Jtable: # each entry is the distance from the table to its block, which needs no relocation
+            table := jumptable(b)
+            out(".p2align 2\n" + table + ":\n")
+            for k in fn.blocks[b].table:
+                out("\t.long " + block)
+                asm.text += asm.blocks + fn.blocks[fn.blocks[b].targets[k]].id
+                out(" - " + table + "\n")
+        b = fn.blocks[b].next
+    asm.blocks += fn.ordered
+    for mark in fn.marks: # the marks of a last block that died
+        if mark != -1:
+            out(asm.machine.local_prefix + "mark")
+            asm.text += mark
+            out(":\n")
+    out(asm.machine.local_prefix + fn.name + ".end:\n")
+    if comp.debug:
+        out("\t.cfi_endproc\n")
+    if comp.system == "linux":
+        out(".type " + fn.name + ", @function\n.size " + fn.name + ", .-" + fn.name + "\n")
+
+func emit_line(line: i64, col: i64):
+    out("\t.loc ")
+    asm.text += asm.file
+    out(" ")
+    asm.text += line
+    if col != 0:
+        out(" ")
+        asm.text += col
+    out("\n")
+
+func emit_mark(r: Ref):
+    out(asm.machine.local_prefix + "mark")
+    asm.text += fn.marks[ref_value(r)]
+    out(":\n")
+    fn.marks[ref_value(r)] = -1
+
+func emit_slot(n: Ref, off: i64):
+    out(".set " + asm.machine.local_prefix + "slot")
+    asm.text += ref_value(n)
+    out(", ")
+    asm.text += off
+    out("\n")
+
+# whether a frame, with the stack the calls take below it, can reach past a page before the next access: then the
+# prologue lowers the stack a page at a time and touches each one, so an overflow meets the guard page and not the
+# memory below it
+func probing(frame: i64) -> bool:
+    most := 0
+    b := fn.start
+    while b != 0:
+        area := 0
+        for i in fn.blocks[b].ins:
+            if i.op == Ostackalloc and ref_kind(i.arg[0]) == RefConstant:
+                area += fn.constants[ref_value(i.arg[0])].bits
+                most = max(most, area)
+        b = fn.blocks[b].next
+    return frame + most + 16 > 4096
+
+# the place of bits of size bytes among the floats that the code reads from memory
+func float_constant(n: u64, size: i64) -> i64:
+    for k in 0..asm.float_bits.len:
+        if size <= asm.float_sizes[k] and asm.float_bits[k] == n:
+            return k
+    append(asm.float_bits, n)
+    append(asm.float_sizes, size)
+    return asm.float_bits.len - 1
+
+func emit_floats(sec: array[&strview, 3]):
+    if asm.float_bits.len == 0:
+        return
+    out("/* floating point constants */\n")
+    for lg in reverse 2..=4:
+        for k in 0..asm.float_bits.len:
+            if asm.float_sizes[k] != 1 << lg:
+                continue
+            out(".section " + sec[lg - 2] + "\n.p2align ")
+            asm.text += lg
+            out("\n" + asm.machine.local_prefix + "fp")
+            asm.text += k
+            out(":")
+            n := asm.float_bits[k]
+            if lg == 4:
+                out("\n\t.quad ")
+                asm.text += i64(n)
+                out("\n\t.quad 0\n\n")
+            elif lg == 3:
+                out("\n\t.quad ")
+                asm.text += i64(n)
+                out(" /* ")
+                print_float(asm.text, "%f", n as f64)
+                out(" */\n\n")
+            else:
+                out("\n\t.int ")
+                asm.text += i32(n and 0xffff_ffff)
+                out(" /* ")
+                print_float(asm.text, "%f", f64(u32(n and 0xffff_ffff) as f32))
+                out(" */\n\n")
+    asm.float_bits.len = 0
+    asm.float_sizes.len = 0
+
+func elf_end():
+    emit_floats([".rodata", ".rodata", ".rodata"])
+    out(".section .note.GNU-stack,\"\",@progbits\n")
+
+func macho_end():
+    emit_floats(["__TEXT,__literal4,4byte_literals", "__TEXT,__literal8,8byte_literals", "__TEXT,__literal16,16byte_literals"])
+
+func pe_end():
+    emit_floats([".rodata", ".rodata", ".rodata"])
+
+# one float as snprintf prints it
+func print_float(into: *&str, spec: cstr, f: f64):
+    buf: array[u8, 400]
+    n := snprintf(ptr(buf) as *u8, 400, spec, f)
+    text: &strview
+    text = ptr(buf) as *bytes
+    text.len = i64(n)
+    into.* += text

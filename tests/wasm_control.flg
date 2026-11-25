@@ -1,0 +1,151 @@
+# the jumps of every kind of control flow, which wasm takes as blocks and loops
+noinline func keep(x: i64) -> i64:
+    return x
+
+func classify(n: i64) -> &strview:
+    if n < 0:
+        return "negative"
+    elif n == 0:
+        return "zero"
+    elif n < 10:
+        return "small"
+    else:
+        return "large"
+
+func short(n: i64) -> i64:
+    switch n:
+    case 1, 2:
+        return 10
+    case 3..6:
+        return 20
+    case 7:
+        return 30
+    case:
+        return -1
+
+func long(n: i64) -> i64: # more cases than are tested one by one, so it searches by halves
+    switch n:
+    case 0:
+        return 100
+    case 1:
+        return 101
+    case 2:
+        return 102
+    case 3:
+        return 103
+    case 4:
+        return 104
+    case 5:
+        return 105
+    case 6:
+        return 106
+    case 7:
+        return 107
+    case 8:
+        return 108
+    case 9:
+        return 109
+    case 10:
+        return 110
+    case 11:
+        return 111
+    case 12:
+        return 112
+    case 13:
+        return 113
+    case 14:
+        return 114
+    case 15:
+        return 115
+    case 16:
+        return 116
+    case 17:
+        return 117
+    case 18:
+        return 118
+    case 19:
+        return 119
+    case 20:
+        return 120
+    case 21:
+        return 121
+    case 22:
+        return 122
+    case 23:
+        return 123
+    case 24:
+        return 124
+    case 25:
+        return 125
+    case 26:
+        return 126
+    case 27:
+        return 127
+    case 28:
+        return 128
+    case 29:
+        return 129
+    case 30:
+        return 130
+    case 31:
+        return 131
+    case 32:
+        return 132
+    case 40:
+        return 140
+    case 1000:
+        return 1100
+    case:
+        return -1
+
+type Door:
+    name: &strview
+
+operator with(d: Door):
+    print("close ", d.name)
+
+func guarded(n: i64) -> i64:
+    defer print("leave ", n)
+    with Door{"inner"}:
+        if n > 2:
+            return n * 2
+        print("stay")
+    return n
+
+func main():
+    for n in [-5, 0, 7, 42]:
+        print(n, " ", classify(n))
+    total := 0
+    i := 0
+    while i < keep(10):
+        i += 1
+        if i % 3 == 0:
+            continue
+        if i == 8:
+            break
+        total += i
+    print("while ", total)
+    for k in reverse 0..5:
+        print("down ", k)
+    found := 0
+    for a in 0..10:
+        for b in 0..10:
+            if b > a:
+                continue 2
+            if a * b == 42:
+                found = a * 10 + b
+                break 2
+    print("found ", found)
+    for n in [0, 2, 5, 7, 9]:
+        print("short ", n, " ", short(keep(n)))
+    sum := 0
+    for n in -3..45:
+        sum += long(keep(n))
+    print("long ", sum, " ", long(keep(1000)), " ", long(keep(999)))
+    print(guarded(1), " ", guarded(5))
+    calls := 0
+    t := keep(1) > 0 or keep(calls) > 5
+    f := keep(0) > 0 and keep(calls) > 5
+    print(t, " ", f, " ", keep(3) > 2 and keep(4) < 9 or false)
+    x := keep(7)
+    print("odd" if x % 2 == 1 else "even", " ", 1 if x > 5 else 2)

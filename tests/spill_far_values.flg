@@ -1,0 +1,147 @@
+# The integration of bodies with every helper inline: one big block where far more values are alive than registers,
+# which the spiller sends to the stack by the distance to their next use.
+use math
+
+type Vec3:
+    x: f32
+    y: f32
+    z: f32
+
+type Quat:
+    x: f32
+    y: f32
+    z: f32
+    w: f32
+
+type Mat3:
+    r0: Vec3
+    r1: Vec3
+    r2: Vec3
+
+type Body:
+    v: Vec3
+    w: Vec3
+    dp: Vec3
+    dq: Quat
+
+type Params:
+    linear_acceleration: Vec3
+    angular_acceleration: Vec3
+    linear_damping: f32
+    angular_damping: f32
+    q0: Quat
+    inertia: Mat3
+
+inline operator +(a: Vec3, b: Vec3) -> Vec3:
+    return {a.x + b.x, a.y + b.y, a.z + b.z}
+
+inline operator -(a: Vec3, b: Vec3) -> Vec3:
+    return {a.x - b.x, a.y - b.y, a.z - b.z}
+
+inline operator *(s: f32, a: Vec3) -> Vec3:
+    return {s * a.x, s * a.y, s * a.z}
+
+inline operator *(a: Vec3, s: f32) -> Vec3:
+    return {s * a.x, s * a.y, s * a.z}
+
+inline func dot(a: Vec3, b: Vec3) -> f32:
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+inline func cross(a: Vec3, b: Vec3) -> Vec3:
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}
+
+inline func length2(a: Vec3) -> f32:
+    return dot(a, a)
+
+inline operator *(a: Quat, b: Quat) -> Quat:
+    return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z}
+
+inline func rotate(q: Quat, v: Vec3) -> Vec3:
+    u := Vec3{q.x, q.y, q.z}
+    t := 2.0 * cross(u, v)
+    return v + q.w * t + cross(u, t)
+
+inline func inv_rotate(q: Quat, v: Vec3) -> Vec3:
+    return rotate(Quat{-q.x, -q.y, -q.z, q.w}, v)
+
+inline func normalize(q: Quat) -> Quat:
+    l := sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+    if l < 1e-20:
+        return {0.0, 0.0, 0.0, 1.0}
+    s := 1.0 / l
+    return {q.x * s, q.y * s, q.z * s, q.w * s}
+
+inline func integrate(q: Quat, dw: Vec3) -> Quat:
+    r := Quat{dw.x, dw.y, dw.z, 0.0} * q
+    return normalize(Quat{q.x + 0.5 * r.x, q.y + 0.5 * r.y, q.z + 0.5 * r.z, q.w + 0.5 * r.w})
+
+inline operator *(m: Mat3, v: Vec3) -> Vec3:
+    return {dot(m.r0, v), dot(m.r1, v), dot(m.r2, v)}
+
+inline operator *(a: Mat3, b: Mat3) -> Mat3:
+    return {a.r0.x * b.r0 + a.r0.y * b.r1 + a.r0.z * b.r2, a.r1.x * b.r0 + a.r1.y * b.r1 + a.r1.z * b.r2, a.r2.x * b.r0 + a.r2.y * b.r1 + a.r2.z * b.r2}
+
+inline operator +(a: Mat3, b: Mat3) -> Mat3:
+    return {a.r0 + b.r0, a.r1 + b.r1, a.r2 + b.r2}
+
+inline operator -(a: Mat3, b: Mat3) -> Mat3:
+    return {a.r0 - b.r0, a.r1 - b.r1, a.r2 - b.r2}
+
+inline operator *(s: f32, m: Mat3) -> Mat3:
+    return {s * m.r0, s * m.r1, s * m.r2}
+
+inline func skew(v: Vec3) -> Mat3:
+    return {{0.0, -v.z, v.y}, {v.z, 0.0, -v.x}, {-v.y, v.x, 0.0}}
+
+# x with m x = b, by the cofactors; zero when m is singular.
+inline func solve(m: Mat3, b: Vec3) -> Vec3:
+    c0 := cross(m.r1, m.r2)
+    c1 := cross(m.r2, m.r0)
+    c2 := cross(m.r0, m.r1)
+    det := dot(m.r0, c0)
+    if det > -1e-20 and det < 1e-20:
+        return {0.0, 0.0, 0.0}
+    return (1.0 / det) * (b.x * c0 + b.y * c1 + b.z * c2)
+
+func step(bodies: &listview[Body], params: &listview[Params], h: f32, max_linear: f32, max_angular: f32):
+    for i in 0..bodies.len:
+        p := params[i]
+        b := bodies[i]
+        v := (b.v + h * p.linear_acceleration) * (1.0 / (1.0 + h * p.linear_damping))
+        om := (b.w + h * p.angular_acceleration) * (1.0 / (1.0 + h * p.angular_damping))
+        q := b.dq * p.q0
+        local := inv_rotate(q, om)
+        momentum := p.inertia * local
+        residual := h * cross(local, momentum)
+        jacobian := p.inertia + h * (skew(local) * p.inertia - skew(momentum))
+        om = rotate(q, local - solve(jacobian, residual))
+        s := length2(v)
+        if s > max_linear * max_linear:
+            v = v * (max_linear / sqrt(s))
+        s = length2(om)
+        if s > max_angular * max_angular:
+            om = om * (max_angular / sqrt(s))
+        b.v = v
+        b.w = om
+        b.dp = b.dp + h * v
+        b.dq = integrate(b.dq, h * om)
+        bodies[i] = b
+
+func main():
+    n := 200
+    bodies: &list[Body] = heap([])
+    params: &list[Params] = heap([])
+    defer free(bodies)
+    defer free(params)
+    for i in 0..n:
+        f := f32(i % 97) * 0.01
+        append(bodies, Body{v = {f, 1.0, -f}, w = {0.3, f, 0.1}, dq = {0.0, 0.0, 0.0, 1.0}})
+        append(params, Params{linear_acceleration = {0.0, -9.8, 0.0}, angular_acceleration = {0.0, 0.0, 0.0}, linear_damping = 0.01, angular_damping = 0.05, q0 = normalize(Quat{0.1, f, 0.2, 1.0}), inertia = {{1.0 + f, 0.1, 0.0}, {0.1, 2.0, 0.05}, {0.0, 0.05, 3.0 - f}}})
+    for s in 0..40:
+        step(bodies, params, f32(1.0 / 240.0), 100.0, 50.0)
+    check: f64 = 0.0
+    for b in bodies:
+        check += f64(b.dp.x + b.dp.y + b.dp.z + b.dq.x + b.dq.w + b.w.y)
+    last := bodies[n - 1]
+    print("check ", fixed(check, 3))
+    print("last ", fixed(f64(last.dp.y), 5), " ", fixed(f64(last.dq.w), 5), " ", fixed(f64(last.w.y), 5))

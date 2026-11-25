@@ -54,11 +54,11 @@ there is no ada
 - Function and operator overloading, with `where` to choose an overload at compile time
 - Function values, without closures
 - Small functions are inlined and small structs live in registers, `inline func` inlines at every direct call
-- `simd[T, n]`, lanes of numbers in one or two registers with operators that work on all of them, on SSE and NEON
+- `simd[T, n]`, lanes of numbers in one or two registers with operators that work on all of them, on SSE, NEON and WebAssembly SIMD128
 - C ABI FFI to interop with other languages (both ways), with typed C function values, and shared libraries that a program loads and reloads while it runs
 - A small standard library: text, lists, maps, buffered files, folders, other programs, JSON, TCP, UDP and raylib
-- QBE backend for really fast compilation; for example, the compiler builds itself in about a second and a half
-- Support for Linux, macOS and Windows
+- Its own backend, which started as a port of QBE to Flag, for really fast compilation; for example, the compiler builds itself in under three seconds
+- Support for Linux, macOS and Windows, and WebAssembly modules (`-target wasm-wasm32` or `wasm-wasm64`) that `flagc` writes without a C compiler, optimized by the same backend, which run on a WASI host such as wasmtime or Node
 
 ## Documentation
 
@@ -79,15 +79,17 @@ Download the archive for your system from [releases](https://github.com/FramaLun
 
 | Platform | Archive |
 | --- | --- |
-| Linux (`x86_64`) | `flag-0.6.3-linux-x86_64.tar.gz` |
-| macOS (`arm64`) | `flag-0.6.3-macos-arm64.tar.gz` |
-| Windows (`x86_64`) | `flag-0.6.3-windows-x86_64.tar.gz` |
+| Linux (`x86_64`) | `flag-0.7.0-linux-x86_64.tar.gz` |
+| Linux (`arm64`) | `flag-0.7.0-linux-arm64.tar.gz` |
+| macOS (`arm64`) | `flag-0.7.0-macos-arm64.tar.gz` |
+| macOS (`x86_64`) | `flag-0.7.0-macos-x86_64.tar.gz` |
+| Windows (`x86_64`) | `flag-0.7.0-windows-x86_64.tar.gz` |
 
 Unpack it and add its `bin` folder to your `PATH`:
 
 ```sh
-tar -xzf flag-0.6.3-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.6.3-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.7.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.7.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
@@ -95,7 +97,7 @@ flagc -version
 
 - **macOS:** if the system says it cannot check the developer, run:
   ```sh
-  xattr -d com.apple.quarantine flag-0.6.3-macos-arm64/bin/flagc
+  xattr -d com.apple.quarantine flag-0.7.0-macos-arm64/bin/flagc
   ```
 - **Windows:** unpack the archive the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell.
 
@@ -113,7 +115,7 @@ If your C compiler is not called `cc`, set the `CC` environment variable (for ex
 
 ## Build from source
 
-Clone the repository with git and run `build.sh`. Besides the C compiler from [Requirements](#requirements), it only needs `cmp`, which Windows gets from `diffutils`.
+Clone the repository with git and run `build.sh`. Besides the C compiler from [Requirements](#requirements), it only needs `gzip` and `cmp`; on Windows, MSYS2 has `gzip`, and `cmp` comes with `diffutils`.
 
 ```sh
 git clone https://github.com/FramaLuna/flag-lang.git

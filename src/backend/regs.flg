@@ -1,0 +1,1041 @@
+type RegisterMap: # the register of each temp in registers at a point
+    temps: array[i32, 64]
+    regs: array[i32, 64]
+    waiting: array[i32, 64] # of each register, the temp hinted to it that went elsewhere
+    taken: Bitset # its temps and registers
+    count: i64
+
+type Move:
+    src: Ref
+    dst: Ref
+    cls: i64
+
+context regs:
+    spare: Bitset
+    in_regs: Bitset
+    needed: Bitset
+    first: Bitset # the temps limit keeps first
+    of_bank: array[Bitset, 2]
+    floats: Bitset
+    after_move: Bitset
+    sorted: &list[i64] = heap([])
+    locals: i64 # the slots of the frame before spill
+    slot4: i64 # the next slot of 4 bytes
+    slot8: i64 # and of 8
+    used: u64
+    moves: &list[Move] = heap([]) # the parallel move being made
+    status: &list[i64] = heap([])
+    loop: i64
+    at_start: &list[RegisterMap] = heap([])
+    at_end: &list[RegisterMap] = heap([])
+    current: RegisterMap
+    blocks: &list[i64] = heap([])
+    work: array[i64, 64]
+    at: i64 # where in fn.out the instruction is that assign_registers gives registers
+    seen: &list[i64] = heap([]) # of each temp, the last place in the block of spill before the one it has reached, or -1
+    before: &list[i64] = heap([]) # of each temp the block touches, in order: the place, the temp, where it was seen before
+    sizes: &list[i64] = heap([]) # of each slot of spill, its size in slots
+    scratch: i64 # a slot of 16 bytes for the cycles of parallel moves through slots, or -1
+    swap_class: i64 # the class in which the cycle of a parallel move swaps registers, or -1 when it goes through scratch
+
+func live_on(v: *Bitset, b: i64, s: i64):
+    copy_set(v, ptr(fn.blocks[s].live_in))
+    p := fn.blocks[s].phi
+    while p != 0:
+        if ref_kind(fn.phis[p].to) == RefTemp:
+            exclude(v, i64(fn.phis[p].to))
+        p = fn.phis[p].next
+    p = fn.blocks[s].phi
+    while p != 0:
+        ph := fn.phis[p]
+        for a in 0..ph.arg.len:
+            if ph.blocks[a] == b and ref_kind(ph.arg[a]) == RefTemp:
+                include(v, i64(ph.arg[a]))
+                include(ptr(fn.blocks[b].touched), i64(ph.arg[a]))
+        p = ph.next
+
+func mark_used(r: Ref, b: i64, nlv: *array[i64, 2]):
+    if ref_kind(r) != RefTemp:
+        return
+    include(ptr(fn.blocks[b].touched), i64(r))
+    if not has(ptr(fn.blocks[b].live_in), i64(r)):
+        nlv[bank(fn.temps[r].cls)] += 1
+        include(ptr(fn.blocks[b].live_in), i64(r))
+
+func fill_live():
+    m := ptr(asm.machine)
+    v := ptr(regs.spare)
+    clear(v)
+    b := fn.start
+    while b != 0:
+        clear(ptr(fn.blocks[b].live_in))
+        clear(ptr(fn.blocks[b].live_out))
+        clear(ptr(fn.blocks[b].touched))
+        b = fn.blocks[b].next
+    changed := true
+    while changed:
+        changed = false
+        for n in reverse 0..fn.ordered:
+            b = fn.order[n]
+            p := ptr(fn.blocks[b])
+            size := count(ptr(p.live_out))
+            pair: array[i64, 2]
+            for s in successors(b, ptr(pair)):
+                live_on(v, b, s)
+                include_all(ptr(p.live_out), v)
+            changed = changed or count(ptr(p.live_out)) != size
+            nlv: array[i64, 2]
+            p.live_out.words[0] = p.live_out.words[0] or m.always_live
+            copy_set(ptr(p.live_in), ptr(p.live_out))
+            t := next_in(ptr(p.live_in), 0)
+            while t >= 0:
+                nlv[bank(fn.temps[t].cls)] += 1
+                t = next_in(ptr(p.live_in), t + 1)
+            if ref_kind(p.exit.arg) == RefCall:
+                assert count(ptr(p.live_in)) == popcount(m.always_live) and p.live_in.words[0] == m.always_live, "a temp of " + fn.name + " is alive after its return"
+                p.live_in.words[0] = p.live_in.words[0] or m.return_regs(p.exit.arg, ptr(nlv))
+            else:
+                mark_used(p.exit.arg, b, ptr(nlv))
+            p.most_live = nlv
+            for k in reverse 0..p.ins.len:
+                i := p.ins[k]
+                if i.op == Ocall and ref_kind(i.arg[1]) == RefCall:
+                    c: array[i64, 2]
+                    p.live_in.words[0] = p.live_in.words[0] and not m.return_regs(i.arg[1], ptr(c))
+                    for j in 0..2:
+                        nlv[j] -= c[j]
+                        # the callee uses the caller-save registers, they are live in the middle of the call
+                        nlv[j] += m.caller_saved_count[j]
+                        if nlv[j] > p.most_live[j]:
+                            p.most_live[j] = nlv[j]
+                    p.live_in.words[0] = p.live_in.words[0] or m.arg_regs(i.arg[1], ptr(c))
+                    for j in 0..2:
+                        nlv[j] -= m.caller_saved_count[j]
+                        nlv[j] += c[j]
+                if i.to != EMPTY:
+                    t = i64(i.to)
+                    if has(ptr(p.live_in), t):
+                        nlv[bank(fn.temps[t].cls)] -= 1
+                    include(ptr(p.touched), t)
+                    exclude(ptr(p.live_in), t)
+                for j in 0..2:
+                    if ref_kind(i.arg[j]) == RefAddress:
+                        a := fn.addresses[ref_value(i.arg[j])]
+                        mark_used(a.base, b, ptr(nlv))
+                        mark_used(a.index, b, ptr(nlv))
+                    else:
+                        mark_used(i.arg[j], b, ptr(nlv))
+                for j in 0..2:
+                    if nlv[j] > p.most_live[j]:
+                        p.most_live[j] = nlv[j]
+
+# a loop header gathers what its loop uses and the most it keeps live
+func gather_loop(hd: i64, b: i64):
+    include_all(ptr(fn.blocks[hd].touched), ptr(fn.blocks[b].touched)) @trust
+    for k in 0..2:
+        if fn.blocks[b].most_live[k] > fn.blocks[hd].most_live[k]:
+            fn.blocks[hd].most_live[k] = fn.blocks[b].most_live[k]
+
+func count_use(r: Ref, use: bool, loop: i32):
+    if ref_kind(r) == RefAddress:
+        a := fn.addresses[ref_value(r)]
+        count_use(a.base, true, loop)
+        count_use(a.index, true, loop)
+    elif ref_kind(r) == RefTemp and r >= FIRST_TEMP:
+        t := ptr(fn.temps[r])
+        t.used += i32(use)
+        t.defs += i32(not use)
+        t.cost += u32(loop)
+
+# the spill costs of the temps, and their uses
+func fill_costs():
+    each_loop(gather_loop)
+    for t in 0..fn.temp_count:
+        fn.temps[t].cost = 0xffff_ffff if t < FIRST_TEMP else 0
+        fn.temps[t].used = 0
+        fn.temps[t].defs = 0
+    b := fn.start
+    while b != 0:
+        p := fn.blocks[b].phi
+        while p != 0:
+            ph := fn.phis[p]
+            count_use(ph.to, false, 0)
+            for a in 0..ph.arg.len:
+                n := fn.blocks[ph.blocks[a]].loop
+                fn.temps[ph.to].cost += u32(n)
+                count_use(ph.arg[a], true, n)
+            p = ph.next
+        n := fn.blocks[b].loop
+        for i in fn.blocks[b].ins:
+            count_use(i.to, false, n)
+            count_use(i.arg[0], true, n)
+            count_use(i.arg[1], true, n)
+        count_use(fn.blocks[b].exit.arg, true, n)
+        b = fn.blocks[b].next
+
+# which of two temps stays in a register: a register, then the one wanted again sooner going back, which is to say the
+# one seen nearer to this place in the block, then the costlier
+func keep_first(a: i64, b: i64) -> bool:
+    if (a < FIRST_TEMP) != (b < FIRST_TEMP):
+        return a < FIRST_TEMP
+    if regs.seen[a] != regs.seen[b]:
+        return regs.seen[a] > regs.seen[b]
+    return fn.temps[a].cost > fn.temps[b].cost
+
+func keep_wanted_first(a: i64, b: i64) -> bool:
+    fa := has(ptr(regs.first), a)
+    fb := has(ptr(regs.first), b)
+    if fa != fb:
+        return fa
+    return keep_first(a, b)
+
+# the instruction at place at touches r, which is seen there
+func touch(at: i64, r: Ref):
+    if ref_kind(r) == RefTemp:
+        append(regs.before, ptr([at, i64(r), regs.seen[r]]))
+        regs.seen[r] = at
+
+# going back past place at, the temps touched there were seen last where they were seen before
+func untouch(at: i64):
+    before := ptr(regs.before)
+    while before.len > 0 and before[-3] == at:
+        regs.seen[before[-2]] = before[-1]
+        before.len -= 3
+
+# the size of class k in slots, of 4 bytes
+func units(k: i64) -> i64:
+    return 4 if k == Vector else 1 + wide(k)
+
+func slot(t: i64) -> Ref:
+    assert t >= FIRST_TEMP, "spill sends a register of " + fn.name + " to the stack"
+    s := i64(fn.temps[t].slot)
+    if s == -1:
+        # a slot of 4 fills the one hole of 8, at slot4; slot4 <= slot8
+        cls := fn.temps[t].cls
+        if cls == Vector: # aligned to 16, a gap below it is lost
+            s = (regs.slot8 + 3) and -4
+            if regs.slot4 == regs.slot8 and s == regs.slot8:
+                regs.slot4 = s + 4
+            regs.slot8 = s + 4
+        elif wide(cls) != 0:
+            s = regs.slot8
+            if regs.slot4 == regs.slot8:
+                regs.slot4 += 2
+            regs.slot8 += 2
+        else:
+            s = regs.slot4
+            if regs.slot4 == regs.slot8:
+                regs.slot8 += 2
+                regs.slot4 += 1
+            else:
+                regs.slot4 = regs.slot8
+        s += regs.locals
+        fn.temps[t].slot = i32(s)
+        while regs.sizes.len <= s:
+            append(regs.sizes, 0)
+        regs.sizes[s] = units(cls)
+    return ref(RefSlot, s)
+
+# b keeps at most k temps: those in f first, when given, then those with the largest spill cost
+func limit(b: *Bitset, k: i64, f: *Bitset?):
+    nt := count(b)
+    if nt <= k:
+        return
+    tarr := ptr(regs.sorted)
+    tarr.len = 0
+    t := next_in(b, 0)
+    while t >= 0:
+        exclude(b, t)
+        append(tarr, t)
+        t = next_in(b, t + 1)
+    if nt > 1:
+        if f is null:
+            sort(tarr.*, keep_first)
+        else:
+            copy_set(ptr(regs.first), f)
+            sort(tarr.*, keep_wanted_first)
+    i := 0
+    while i < k and i < nt:
+        include(b, tarr[i])
+        i += 1
+    while i < nt:
+        _ = slot(tarr[i])
+        i += 1
+
+# b keeps the temps that fit in the registers, as limit chooses, when k1 int and k2 float registers are in use
+func limit_banks(b1: *Bitset, k1: i64, k2: i64, f: *Bitset?):
+    b2 := ptr(regs.floats)
+    copy_set(b2, b1)
+    intersect(b1, ptr(regs.of_bank[0]))
+    intersect(b2, ptr(regs.of_bank[1]))
+    limit(b1, asm.machine.ints - k1, f)
+    limit(b2, asm.machine.floats - k2, f)
+    include_all(b1, b2)
+
+func avoid_regs(u: *Bitset, r: u64):
+    t := next_in(u, FIRST_TEMP)
+    while t >= 0:
+        p := phi_class(t)
+        fn.temps[p].avoid = fn.temps[p].avoid or r
+        t = next_in(u, t + 1)
+
+# the temps in u that are not in v come back from their slots
+func reloads(u: *Bitset, v: *Bitset):
+    t := next_in(u, FIRST_TEMP)
+    while t >= 0:
+        if not has(v, t):
+            s := slot(t)
+            emit(Oload, fn.temps[t].cls, u32(t), s, EMPTY)
+        t = next_in(u, t + 1)
+
+func spill_store(r: Ref, s: i64):
+    if s != -1:
+        emit(Ostorei32 + i64(fn.temps[r].cls), 0, EMPTY, r, ref(RefSlot, s))
+
+func is_reg_copy(i: Instr) -> bool:
+    return i.op == Ocopy and is_register(i.arg[0])
+
+func merge_live(u: *Bitset, bu: i64, v: *Bitset, bv: i64):
+    if fn.blocks[bu].loop <= fn.blocks[bv].loop:
+        include_all(u, v)
+    else:
+        t := next_in(v, 0)
+        while t >= 0:
+            if fn.temps[t].slot == -1:
+                include(u, t)
+            t = next_in(v, t + 1)
+
+# the temps that do not fit in registers go to slots; the live sets of a block become the temps in registers at its ends
+func spill():
+    m := ptr(asm.machine)
+    u := ptr(regs.spare)
+    v := ptr(regs.in_regs)
+    w := ptr(regs.needed)
+    clear(u)
+    clear(v)
+    clear(w)
+    clear(ptr(regs.of_bank[0]))
+    clear(ptr(regs.of_bank[1]))
+    clear(ptr(regs.floats))
+    clear(ptr(regs.after_move))
+    regs.locals = fn.slots
+    regs.sizes.len = 0
+    regs.slot4 = 0
+    regs.slot8 = 0
+    for t in 0..fn.temp_count:
+        k := 0
+        if t >= m.first_float and t < m.first_float + m.floats:
+            k = 1
+        if t >= FIRST_TEMP:
+            k = bank(fn.temps[t].cls)
+        include(ptr(regs.of_bank[k]), t)
+    while regs.seen.len < fn.temp_count:
+        append(regs.seen, -1)
+    for n in reverse 0..fn.ordered:
+        b := fn.order[n]
+        # 0. where each temp was seen last, at the end of the block and before each instruction
+        regs.before.len = 0
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            touch(k, i.to)
+            for x in 0..2:
+                if ref_kind(i.arg[x]) == RefAddress:
+                    touch(k, fn.addresses[ref_value(i.arg[x])].base)
+                    touch(k, fn.addresses[ref_value(i.arg[x])].index)
+                else:
+                    touch(k, i.arg[x])
+        touch(fn.blocks[b].ins.len, fn.blocks[b].exit.arg)
+        # 1. find temporaries in registers at the end of the block (put them in v)
+        pair: array[i64, 2]
+        succ := successors(b, ptr(pair))
+        hd := 0
+        for s in succ:
+            if fn.blocks[s].id <= fn.blocks[b].id and (hd == 0 or fn.blocks[s].id >= fn.blocks[hd].id):
+                hd = s
+        if hd != 0: # back-edge
+            clear(v)
+            fn.blocks[hd].touched.words[0] = fn.blocks[hd].touched.words[0] or m.always_live # don't spill registers
+            for k in 0..2:
+                nr := m.ints if k == 0 else m.floats
+                copy_set(u, ptr(fn.blocks[b].live_out))
+                intersect(u, ptr(regs.of_bank[k]))
+                copy_set(w, u)
+                intersect(u, ptr(fn.blocks[hd].touched))
+                t := next_in(u, 0) # w keeps what u does not
+                while t >= 0:
+                    exclude(w, t)
+                    t = next_in(u, t + 1)
+                if count(u) < nr:
+                    j := count(w) # live through
+                    l := fn.blocks[hd].most_live[k]
+                    limit(w, nr - (l - j), null)
+                    include_all(u, w)
+                else:
+                    limit(u, nr, null)
+                include_all(v, u)
+        elif succ.len > 0: # avoid reloading temporaries in the middle of loops
+            clear(v)
+            live_on(w, b, succ[0])
+            merge_live(v, b, w, succ[0])
+            for s in succ[1:]:
+                live_on(u, b, s)
+                merge_live(v, b, u, s)
+                intersect(w, u)
+            limit_banks(v, 0, 0, w)
+        else:
+            copy_set(v, ptr(fn.blocks[b].live_out))
+            if ref_kind(fn.blocks[b].exit.arg) == RefCall:
+                c: array[i64, 2]
+                v.words[0] = v.words[0] or m.return_regs(fn.blocks[b].exit.arg, ptr(c))
+        if ref_kind(fn.blocks[b].exit.arg) == RefTemp:
+            t := i64(fn.blocks[b].exit.arg)
+            assert bank(fn.temps[t].cls) == 0, "a jump of " + fn.name + " reads a float"
+            include(v, t)
+            limit_banks(v, 0, 0, null)
+            if not has(v, t):
+                fn.blocks[b].exit.arg = slot(t)
+        t := next_in(ptr(fn.blocks[b].live_out), FIRST_TEMP)
+        while t >= 0:
+            if not has(v, t):
+                _ = slot(t)
+            t = next_in(ptr(fn.blocks[b].live_out), t + 1)
+        copy_set(ptr(fn.blocks[b].live_out), v)
+        # 2. process the block instructions
+        fn.out.len = 0
+        k := fn.blocks[b].ins.len
+        untouch(k)
+        while k > 0:
+            k -= 1
+            i := fn.blocks[b].ins[k]
+            if is_reg_copy(i): # with the copies from registers before it, one large instruction
+                ins := fn.blocks[b].ins
+                last := k
+                while true:
+                    to := ins[k].to
+                    if to != EMPTY and has(v, i64(to)):
+                        exclude(v, i64(to))
+                        spill_store(to, i64(fn.temps[to].slot))
+                    include(v, i64(ins[k].arg[0]))
+                    if k == 0 or not is_reg_copy(ins[k - 1]):
+                        break
+                    k -= 1
+                pm := ptr(regs.after_move)
+                copy_set(pm, v)
+                r: u64 = 0
+                if k != 0 and ins[k - 1].op == Ocall:
+                    c: array[i64, 2]
+                    v.words[0] = v.words[0] and not m.return_regs(ins[k - 1].arg[1], ptr(c))
+                    if m.half_saved: # the callee keeps only half of a vector register
+                        t = next_in(v, FIRST_TEMP)
+                        while t >= 0:
+                            if fn.temps[t].cls == Vector:
+                                exclude(v, t)
+                            t = next_in(v, t + 1)
+                    limit_banks(v, m.caller_saved_count[0], m.caller_saved_count[1], null)
+                    for x in m.caller_saved:
+                        if x >= 0:
+                            r = r or u64(1) << x
+                    v.words[0] = v.words[0] or m.arg_regs(ins[k - 1].arg[1], ptr(c))
+                else:
+                    limit_banks(v, 0, 0, null)
+                    r = v.words[0]
+                for x in reverse k..last + 1:
+                    untouch(x)
+                avoid_regs(v, r)
+                reloads(pm, v)
+                for x in reverse k..last + 1:
+                    emit(ins[x])
+                continue
+            clear(w)
+            if i.to != EMPTY:
+                t = i64(i.to)
+                if has(v, t):
+                    exclude(v, t)
+                else: # the result needs a register
+                    assert t >= FIRST_TEMP, "an instruction of " + fn.name + " writes a register that nothing reads"
+                    include(v, t)
+                    include(w, t)
+            j := i64(OPERATIONS[i.op].memory_args) if m.memory_args else 0
+            for x in 0..2:
+                if ref_kind(i.arg[x]) == RefAddress:
+                    j -= 1
+            lvarg: array[bool, 2]
+            for x in 0..2:
+                switch ref_kind(i.arg[x]):
+                case RefAddress:
+                    a := fn.addresses[ref_value(i.arg[x])]
+                    if ref_kind(a.base) == RefTemp:
+                        include(v, i64(a.base))
+                        include(w, i64(a.base))
+                    if ref_kind(a.index) == RefTemp:
+                        include(v, i64(a.index))
+                        include(w, i64(a.index))
+                case RefTemp:
+                    t = i64(i.arg[x])
+                    lvarg[x] = has(v, t)
+                    include(v, t)
+                    if j <= 0:
+                        include(w, t)
+                    j -= 1
+            copy_set(u, v)
+            limit_banks(v, 0, 0, w)
+            untouch(k)
+            for x in 0..2:
+                if ref_kind(i.arg[x]) == RefTemp:
+                    t = i64(i.arg[x])
+                    if not has(v, t):
+                        # do not reload if the argument is dead
+                        if not lvarg[x]:
+                            exclude(u, t)
+                        i.arg[x] = slot(t)
+            reloads(u, v)
+            if i.to != EMPTY:
+                t = i64(i.to)
+                spill_store(i.to, i64(fn.temps[t].slot))
+                if t >= FIRST_TEMP: # in case i.to was a dead temporary
+                    exclude(v, t)
+            emit(i)
+            r := v.words[0] # FIRST_TEMP is BITS
+            if r != 0:
+                avoid_regs(v, r)
+        assert v.words[0] == (m.always_live or fn.used_regs if b == fn.start else m.always_live), "a register of " + fn.name + " is read before it is set"
+        p := fn.blocks[b].phi
+        while p != 0:
+            t = i64(fn.phis[p].to)
+            if has(v, t):
+                exclude(v, t)
+                spill_store(fn.phis[p].to, i64(fn.temps[t].slot))
+            elif has(ptr(fn.blocks[b].live_in), t): # only if the phi is live
+                fn.phis[p].to = slot(t)
+            p = fn.phis[p].next
+        copy_set(ptr(fn.blocks[b].live_in), v)
+        take_emitted(b)
+    # align the locals to a 16 byte boundary
+    regs.slot8 += regs.slot8 and 3
+    fn.slots += regs.slot8
+
+func hint(t: i64) -> i64:
+    return i64(fn.temps[phi_class(t)].hint)
+
+func set_hint(t: i64, r: i64):
+    p := ptr(fn.temps[phi_class(t)])
+    if p.hint == -1 or i64(p.hint_depth) > regs.loop:
+        p.hint = i32(r)
+        p.hint_depth = i32(regs.loop)
+        fn.temps[t].visit = -1
+
+func copy_map(ma: *RegisterMap, mb: *RegisterMap):
+    ma.temps = mb.temps
+    ma.regs = mb.regs
+    ma.waiting = mb.waiting
+    copy_set(ptr(ma.taken), ptr(mb.taken))
+    ma.count = mb.count
+
+func reg_of(m: *RegisterMap, t: i64) -> i64:
+    for i in 0..m.count:
+        if m.temps[i] == t:
+            return i64(m.regs[i])
+    return -1
+
+func reg_or_slot(m: *RegisterMap, t: i64) -> Ref:
+    r := reg_of(m, t)
+    if r == -1:
+        assert fn.temps[t].slot != -1, "a temp of " + fn.name + " is neither in a register nor on the stack"
+        return ref(RefSlot, i64(fn.temps[t].slot))
+    return u32(r)
+
+func take_reg(m: *RegisterMap, t: i64, r: i64):
+    mc := ptr(asm.machine)
+    assert (t >= FIRST_TEMP or t == r) and (r >= mc.first_int and r < mc.first_int + mc.ints or r >= mc.first_float and r < mc.first_float + mc.floats), "a temp of " + fn.name + " takes an invalid register"
+    assert (m.taken.words[0] and u64(1) << r) == 0, "a register of " + fn.name + " takes two temps"
+    include(ptr(m.taken), t)
+    include(ptr(m.taken), r)
+    m.temps[m.count] = i32(t)
+    m.regs[m.count] = i32(r)
+    m.count += 1
+    regs.used = regs.used or u64(1) << r
+
+func allocate(m: *RegisterMap, t: i64, trying: bool) -> Ref:
+    if t < FIRST_TEMP:
+        assert (m.taken.words[0] and u64(1) << t) != 0, "a register of " + fn.name + " is read before it is set"
+        return u32(t)
+    if has(ptr(m.taken), t):
+        return u32(reg_of(m, t))
+    r := i64(fn.temps[t].visit)
+    if r == -1 or has(ptr(m.taken), r):
+        r = hint(t)
+    if r == -1 or has(ptr(m.taken), r):
+        if trying:
+            return EMPTY
+        avoid := fn.temps[phi_class(t)].avoid or m.taken.words[0]
+        r0 := asm.machine.first_int
+        r1 := r0 + asm.machine.ints
+        if bank(fn.temps[t].cls) != 0:
+            r0 = asm.machine.first_float
+            r1 = r0 + asm.machine.floats
+        r = r0
+        while r < r1 and (avoid and u64(1) << r) != 0:
+            r += 1
+        if r == r1:
+            r = r0
+            while r < r1 and has(ptr(m.taken), r):
+                r += 1
+            if r == r1:
+                panic("ran out of free registers in " + fn.name)
+    take_reg(m, t, r)
+    set_hint(t, r)
+    fn.temps[t].visit = i32(r)
+    h := hint(t)
+    if h != -1 and h != r:
+        m.waiting[h] = i32(t)
+    return u32(r)
+
+func free_reg(m: *RegisterMap, t: i64) -> i64:
+    assert t >= FIRST_TEMP or (u64(1) << t and asm.machine.always_live) == 0, "assign_registers frees an always live register of " + fn.name
+    if not has(ptr(m.taken), t):
+        return -1
+    i := 0
+    while m.temps[i] != t:
+        i += 1
+    r := i64(m.regs[i])
+    exclude(ptr(m.taken), t)
+    exclude(ptr(m.taken), r)
+    m.count -= 1
+    for j in i..m.count:
+        m.temps[j] = m.temps[j + 1]
+        m.regs[j] = m.regs[j + 1]
+    return r
+
+func add_move(src: Ref, dst: Ref, k: i64):
+    append(regs.moves, Move{src, dst, k})
+
+ToMove = 0
+Moving = 1
+Moved = 2
+
+func move_copy(k: i64, dst: Ref, src: Ref):
+    if ref_kind(dst) == RefSlot and ref_signed(dst) != regs.scratch:
+        assert units(k) <= regs.sizes[ref_signed(dst)], "a copy of " + fn.name + " overflows its slot"
+    emit(Ocopy, k, dst, src, EMPTY)
+
+# the move that writes the source of move i, or moves.len
+func feeder(i: i64) -> i64:
+    pm := regs.moves
+    j := 0
+    while j < pm.len and pm[j].dst != pm[i].src:
+        j += 1
+    return j
+
+# take_emitted reverses fn.out, so what emit_move emits last runs first
+func emit_move(i: i64) -> i64:
+    pm := regs.moves
+    if pm[i].src == pm[i].dst:
+        regs.status[i] = Moved
+        return -1
+    j := feeder(i)
+    c := -1
+    st := Moved if j == pm.len else regs.status[j]
+    if st == Moving:
+        c = j # start of cycle, from move j to move i
+        # registers swap in the widest class of the cycle; through a slot each move copies in its own class, and move j
+        # from the scratch slot, where its source went first
+        regs.swap_class = pm[i].cls
+        x := j
+        while regs.swap_class != -1:
+            assert bank(pm[x].cls) == bank(pm[i].cls), "a parallel move of " + fn.name + " mixes ints and floats"
+            if ref_kind(pm[x].src) == RefSlot:
+                regs.swap_class = -1
+            elif regs.swap_class == Vector or pm[x].cls == Vector:
+                regs.swap_class = Vector
+            else:
+                regs.swap_class = regs.swap_class or pm[x].cls
+            if x == i:
+                break
+            x = feeder(x)
+        if regs.swap_class != -1:
+            emit(Oswap, regs.swap_class, EMPTY, pm[i].src, pm[i].dst)
+        else:
+            if regs.scratch == -1:
+                fn.slots = (fn.slots + 3) and -4
+                regs.scratch = fn.slots
+                fn.slots += 4
+            move_copy(pm[j].cls, pm[j].dst, ref(RefSlot, regs.scratch))
+            move_copy(pm[i].cls, pm[i].dst, pm[i].src)
+    elif st == ToMove:
+        regs.status[i] = Moving
+        c = emit_move(j)
+        if c == i:
+            c = -1 # end of cycle
+            if regs.swap_class == -1:
+                move_copy(pm[i].cls, ref(RefSlot, regs.scratch), pm[i].src)
+        elif c != -1 and regs.swap_class != -1:
+            emit(Oswap, regs.swap_class, EMPTY, pm[i].src, pm[i].dst)
+        else:
+            move_copy(pm[i].cls, pm[i].dst, pm[i].src)
+    else:
+        move_copy(pm[i].cls, pm[i].dst, pm[i].src)
+    regs.status[i] = Moved
+    return c
+
+func emit_moves():
+    regs.status.len = 0
+    for i in 0..regs.moves.len:
+        append(regs.status, ToMove)
+    for i in 0..regs.moves.len:
+        if regs.status[i] == ToMove:
+            _ = emit_move(i)
+
+func move(r: i64, to: Ref, m: *RegisterMap):
+    if to != EMPTY:
+        _ = free_reg(m, i64(to))
+    if has(ptr(m.taken), r):
+        # r is used and not by to
+        n := 0
+        while m.regs[n] != r:
+            n += 1
+        t := i64(m.temps[n])
+        _ = free_reg(m, t)
+        include(ptr(m.taken), r)
+        _ = allocate(m, t, false)
+        exclude(ptr(m.taken), r)
+    t := r if to == EMPTY else i64(to)
+    take_reg(m, t, r)
+
+# the places of the refs an instruction reads, as assign_registers gives them registers: 0 and 1 are its arguments, 2 +
+# 2 * m and 3 + 2 * m the base and the index of the address m
+func ref_at(x: i64) -> Ref:
+    if x < 2:
+        return fn.out[regs.at].arg[x]
+    a := fn.addresses[(x - 2) / 2]
+    return a.base if x % 2 == 0 else a.index
+
+func set_ref(x: i64, r: Ref):
+    if x < 2:
+        fn.out[regs.at].arg[x] = r
+    elif x % 2 == 0:
+        fn.addresses[(x - 2) / 2].base = r
+    else:
+        fn.addresses[(x - 2) / 2].index = r
+
+func insert_hinted(x: i64, ra: *array[i64, 4], p: i64):
+    ra[p] = x
+    i := p
+    # the hinted ones first
+    while i > 0 and hint(i64(ref_at(x))) != -1:
+        i -= 1
+        ra[i + 1] = ra[i]
+        ra[i] = x
+
+# loop nests peel from the inside out
+func inner_first(a: i64, b: i64) -> bool:
+    if fn.blocks[a].loop == fn.blocks[b].loop:
+        return fn.blocks[a].id > fn.blocks[b].id
+    return fn.blocks[a].loop > fn.blocks[b].loop
+
+func assign_registers():
+    mc := ptr(asm.machine)
+    # 1. setup
+    regs.used = 0
+    for maps in [ptr(regs.at_start), ptr(regs.at_end)]:
+        while maps.len < fn.ordered:
+            append(maps, RegisterMap{})
+        for k in 0..fn.ordered:
+            clear(ptr(maps[k].taken))
+    clear(ptr(regs.current.taken))
+    regs.loop = 2147483647
+    regs.scratch = -1
+    for t in 0..fn.temp_count:
+        fn.temps[t].hint = i32(t) if t < FIRST_TEMP else -1
+        fn.temps[t].hint_depth = i32(regs.loop)
+        fn.temps[t].visit = -1
+    blk := ptr(regs.blocks)
+    blk.len = 0
+    linked := fn.start
+    while linked != 0:
+        append(blk, linked)
+        linked = fn.blocks[linked].next
+    sort(blk.*, inner_first)
+    for i in fn.blocks[fn.start].ins:
+        if i.op != Ocopy or not is_register(i.arg[0]):
+            break
+        set_hint(i64(i.to), i64(i.arg[0]))
+    # 2. assign registers
+    cur := ptr(regs.current)
+    for b in blk.*:
+        n := fn.blocks[b].id
+        regs.loop = i64(fn.blocks[b].loop)
+        cur.count = 0
+        clear(ptr(cur.taken))
+        for j in 0..64:
+            cur.waiting[j] = 0
+        rl := ptr(regs.work) # the temps live at the end, the allocated first, then the hinted, then the costlier
+        count := 0
+        t := next_in(ptr(fn.blocks[b].live_out), FIRST_TEMP)
+        while t >= 0:
+            j := count
+            count += 1
+            rl[j] = t
+            while j > 0:
+                v1 := fn.temps[t].visit
+                v2 := fn.temps[rl[j - 1]].visit
+                first := v1 != -1
+                if (v1 xor v2) >= 0:
+                    h1 := hint(t)
+                    first = h1 != -1
+                    if (h1 xor hint(rl[j - 1])) >= 0:
+                        first = i32(fn.temps[t].cost - fn.temps[rl[j - 1]].cost) > 0
+                if not first:
+                    break
+                j -= 1
+                rl[j + 1] = rl[j]
+                rl[j] = t
+            t = next_in(ptr(fn.blocks[b].live_out), t + 1)
+        t = next_in(ptr(fn.blocks[b].live_out), 0)
+        while t >= 0 and t < FIRST_TEMP:
+            take_reg(cur, t, t)
+            t = next_in(ptr(fn.blocks[b].live_out), t + 1)
+        for j in 0..count:
+            _ = allocate(cur, rl[j], true)
+        for j in 0..count:
+            _ = allocate(cur, rl[j], false)
+        copy_map(ptr(regs.at_end[n]), cur)
+        if ref_kind(fn.blocks[b].exit.arg) == RefTemp:
+            fn.blocks[b].exit.arg = allocate(cur, i64(fn.blocks[b].exit.arg), false)
+        fn.out.len = 0
+        k := fn.blocks[b].ins.len
+        while k > 0:
+            k -= 1
+            emit(fn.blocks[b].ins[k])
+            regs.at = fn.out.len - 1
+            i := fn.out[regs.at]
+            rf := -1
+            dropped := false
+            switch i.op:
+            case Ocall:
+                c: array[i64, 2]
+                rs := mc.arg_regs(i.arg[1], ptr(c)) or mc.always_live
+                for r in mc.caller_saved:
+                    if r >= 0 and (u64(1) << r and rs) == 0:
+                        _ = free_reg(cur, r)
+            case:
+                if is_reg_copy(i): # with the copies from registers before it, one large parallel move
+                    fn.out.len -= 1
+                    ins := fn.blocks[b].ins
+                    last := k
+                    t0 := cur.temps
+                    r0 := cur.regs
+                    n0 := cur.count
+                    while true:
+                        move(i64(ins[k].arg[0]), ins[k].to, cur)
+                        if k == 0 or not is_reg_copy(ins[k - 1]):
+                            break
+                        k -= 1
+                    if k != 0 and ins[k - 1].op == Ocall:
+                        c: array[i64, 2]
+                        rs := mc.return_regs(ins[k - 1].arg[1], ptr(c)) or mc.always_live
+                        for r in mc.caller_saved:
+                            if r >= 0 and (u64(1) << r and rs) == 0:
+                                move(r, EMPTY, cur)
+                    regs.moves.len = 0
+                    for x in 0..cur.count:
+                        t = i64(cur.temps[x])
+                        r := -1
+                        for y in 0..n0:
+                            if t0[y] == t:
+                                r = i64(r0[y])
+                                break
+                        if r != -1:
+                            add_move(u32(cur.regs[x]), u32(r), i64(fn.temps[t].cls))
+                        elif fn.temps[t].slot != -1:
+                            add_move(u32(cur.regs[x]), ref(RefSlot, i64(fn.temps[t].slot)), i64(fn.temps[t].cls))
+                    for x in k..last + 1:
+                        if ins[x].to != EMPTY:
+                            _ = free_reg(cur, i64(ins[x].to))
+                        r := i64(ins[x].arg[0])
+                        if reg_of(cur, r) == -1:
+                            take_reg(cur, r, r)
+                    emit_moves()
+                    continue
+                if i.op == Ocopy and is_register(i.to) and ref_kind(i.arg[0]) == RefTemp:
+                    set_hint(i64(i.arg[0]), i64(i.to))
+                if i.to != EMPTY and not (i.to < FIRST_TEMP and (u64(1) << i.to and mc.always_live) != 0):
+                    rf = free_reg(cur, i64(i.to))
+                    if rf == -1:
+                        assert not is_register(i.to), "an instruction of " + fn.name + " writes a register that nothing reads"
+                        fn.out.len -= 1
+                        dropped = true
+                    else:
+                        fn.out[fn.out.len - 1].to = u32(rf)
+            if dropped:
+                continue
+            ra: array[i64, 4]
+            nr := 0
+            for x in 0..2:
+                switch ref_kind(i.arg[x]):
+                case RefAddress:
+                    a := fn.addresses[ref_value(i.arg[x])]
+                    if ref_kind(a.base) == RefTemp:
+                        insert_hinted(2 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
+                        nr += 1
+                    if ref_kind(a.index) == RefTemp:
+                        insert_hinted(3 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
+                        nr += 1
+                case RefTemp:
+                    insert_hinted(x, ptr(ra), nr)
+                    nr += 1
+            for x in 0..nr:
+                set_ref(ra[x], allocate(cur, i64(ref_at(ra[x])), false))
+            last := fn.out[fn.out.len - 1]
+            if last.op == Ocopy and last.to == last.arg[0]:
+                fn.out.len -= 1
+            # a hinted temp moves to rf when rf is free
+            if rf != -1:
+                t = i64(cur.waiting[rf])
+                if t != 0 and not has(ptr(cur.taken), rf) and hint(t) == rf:
+                    rt := free_reg(cur, t)
+                    if rt != -1:
+                        fn.temps[t].visit = -1
+                        _ = allocate(cur, t, false)
+                        assert has(ptr(cur.taken), rf), "a hinted temp of " + fn.name + " misses its register"
+                        emit(Ocopy, fn.temps[t].cls, u32(rt), u32(rf), EMPTY)
+                        cur.waiting[rf] = 0
+                        for x in 0..nr:
+                            if ref_at(ra[x]) == u32(rt):
+                                set_ref(ra[x], u32(rf))
+        take_emitted(b)
+        copy_set(ptr(fn.blocks[b].live_in), ptr(cur.taken))
+        p := fn.blocks[b].phi
+        while p != 0:
+            if ref_kind(fn.phis[p].to) == RefTemp:
+                exclude(ptr(fn.blocks[b].live_in), i64(fn.phis[p].to))
+            p = fn.phis[p].next
+        copy_map(ptr(regs.at_start[n]), cur)
+    # 3. emit copies shared by multiple edges to the same block
+    s := fn.start
+    while s != 0:
+        if fn.blocks[s].preds.len <= 1:
+            s = fn.blocks[s].next
+            continue
+        m := ptr(regs.at_start[fn.blocks[s].id])
+        # rl maps a register live at the start of s to the one all its predecessors use, or -1
+        rl := ptr(regs.work)
+        for j in 0..64:
+            rl[j] = 0
+        # the register of a phi in a predecessor is that of its argument from there
+        p := fn.blocks[s].phi
+        while p != 0:
+            ph := fn.phis[p]
+            r := -1
+            if ref_kind(ph.to) == RefTemp:
+                r = reg_of(m, i64(ph.to))
+            if r != -1:
+                for u in 0..ph.arg.len:
+                    src := ph.arg[u]
+                    if ref_kind(src) != RefTemp:
+                        continue
+                    x := reg_of(ptr(regs.at_end[fn.blocks[ph.blocks[u]].id]), i64(src))
+                    if x == -1: # spilled
+                        continue
+                    rl[r] = x if rl[r] == 0 or rl[r] == x else -1
+                if rl[r] == 0:
+                    rl[r] = -1
+            p = ph.next
+        # the temps that are not phis
+        for j in 0..m.count:
+            t := i64(m.temps[j])
+            r := i64(m.regs[j])
+            if rl[r] != 0 or t < FIRST_TEMP:
+                continue
+            for bp in fn.blocks[s].preds:
+                x := reg_of(ptr(regs.at_end[fn.blocks[bp].id]), t)
+                if x == -1: # spilled
+                    continue
+                rl[r] = x if rl[r] == 0 or rl[r] == x else -1
+            if rl[r] == 0:
+                rl[r] = -1
+        regs.moves.len = 0
+        for j in 0..m.count:
+            t := i64(m.temps[j])
+            r := i64(m.regs[j])
+            x := rl[r]
+            assert x != 0 or t < FIRST_TEMP, "a temp of " + fn.name + " has no register in the blocks before"
+            if x > 0 and not has(ptr(m.taken), x):
+                add_move(u32(x), u32(r), i64(fn.temps[t].cls))
+                m.regs[j] = i32(x)
+                include(ptr(m.taken), x)
+        fn.out.len = 0
+        emit_moves()
+        if fn.out.len > 0:
+            ins := ptr(fn.blocks[s].ins)
+            moved: &list[Instr] = heap([])
+            for k in reverse 0..fn.out.len:
+                append(moved, fn.out[k])
+            append(moved, ins.*[:])
+            ins.* = moved[:]
+            free(moved)
+        s = fn.blocks[s].next
+    # 4. emit remaining copies in new blocks
+    blist := 0
+    b := fn.start
+    while true:
+        for which in 0..2 + fn.blocks[b].targets.len: # yes, no, then the targets of a jump table
+            s = fn.blocks[b].yes if which == 0 else fn.blocks[b].no if which == 1 else fn.blocks[b].targets[which - 2]
+            if s == 0:
+                continue
+            regs.moves.len = 0
+            p := fn.blocks[s].phi
+            while p != 0:
+                ph := fn.phis[p]
+                dst := ph.to
+                assert ref_kind(dst) == RefTemp or ref_kind(dst) == RefSlot, "a phi of " + fn.name + " writes neither a temp nor a slot"
+                if ref_kind(dst) == RefTemp:
+                    r := reg_of(ptr(regs.at_start[fn.blocks[s].id]), i64(dst))
+                    if r == -1:
+                        p = ph.next
+                        continue
+                    dst = u32(r)
+                u := 0
+                while ph.blocks[u] != b:
+                    u += 1
+                src := ph.arg[u]
+                if ref_kind(src) == RefTemp:
+                    src = reg_or_slot(ptr(regs.at_end[fn.blocks[b].id]), i64(src))
+                add_move(src, dst, i64(ph.cls))
+                p = ph.next
+            t := next_in(ptr(fn.blocks[s].live_in), FIRST_TEMP)
+            while t >= 0:
+                src := reg_or_slot(ptr(regs.at_end[fn.blocks[b].id]), t)
+                dst := reg_or_slot(ptr(regs.at_start[fn.blocks[s].id]), t)
+                add_move(src, dst, i64(fn.temps[t].cls))
+                t = next_in(ptr(fn.blocks[s].live_in), t + 1)
+            fn.out.len = 0
+            emit_moves()
+            if fn.out.len == 0:
+                continue
+            b1 := new_block()
+            fn.blocks[b1].loop = (fn.blocks[b].loop + fn.blocks[s].loop) / 2
+            fn.blocks[b1].next = blist
+            blist = b1
+            fn.ordered += 1
+            take_emitted(b1)
+            for i in fn.blocks[s].ins: # the moves take the line of s, which they enter, or a debugger stepping there skips it
+                if i.op == Odebugline:
+                    insert(fn.blocks[b1].ins, 0, i)
+                    break
+            fn.blocks[b1].exit.type = Jjump
+            fn.blocks[b1].yes = s
+            if which == 0:
+                fn.blocks[b].yes = b1
+            elif which == 1:
+                fn.blocks[b].no = b1
+            else:
+                fn.blocks[b].targets[which - 2] = b1
+        if fn.blocks[b].next == 0:
+            fn.blocks[b].next = blist
+            break
+        b = fn.blocks[b].next
+    b = fn.start
+    while b != 0:
+        fn.blocks[b].phi = 0
+        b = fn.blocks[b].next
+    fn.used_regs = regs.used

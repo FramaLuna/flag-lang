@@ -1,0 +1,15 @@
+# A library jumps through a table wherever the loader puts it: its entries are distances within its own code.
+use fs
+use os
+
+func main():
+    library := dir_of(args()[0]) + "switch_table_library_game.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/switch_table_library_game.flg", "-shared", "-o", library]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library)
+    loaded := load_library(library)
+    if loaded is LoadError:
+        panic("" + loaded)
+    score := trust symbol(loaded, "score") as extern func(i32) -> i32
+    for x in 0..11:
+        print(x, " ", score(i32(x)))

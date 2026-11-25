@@ -1,0 +1,15 @@
+# frames past the end of the shadow stack report a stack overflow, after what waits goes out
+noinline func keep(x: $T) -> $T:
+    return x
+
+noinline func deep(n: i64) -> i64:
+    a: array[i64, 64]
+    a[keep(n) % 64] = n
+    if n == 0:
+        return keep(ptr(a))[0]
+    return deep(n - 1) + keep(ptr(a))[n % 64]
+
+func main():
+    print(deep(10000))
+    write(stdout, "a line that waits ")
+    print(deep(1000000))

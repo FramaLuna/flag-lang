@@ -1,0 +1,45 @@
+# many blocks taken and given back, which the heap reuses and joins, and memory that grows
+func main():
+    blocks: &list[*bytes] = heap([])
+    sizes: &list[i64] = heap([])
+    state: u64 = 12345
+    total: i64 = 0
+    for round in 0..20000:
+        state = state * 6364136223846793005 + 1442695040888963407
+        size := i64(state >> 33) % 3000 + 1
+        if blocks.len > 0 and state % 3 == 0:
+            k := i64(state >> 20) % blocks.len
+            p := blocks[k]
+            n := sizes[k]
+            for i in 0..n:
+                if ((p + i) as *u8).* != u8(n and 255):
+                    print("block ", k, " lost its bytes")
+            free(p)
+            blocks[k] = blocks[-1]
+            sizes[k] = sizes[-1]
+            blocks.len -= 1
+            sizes.len -= 1
+        else:
+            p := malloc(size)
+            memset(p, i32(size and 255), size)
+            append(blocks, p)
+            append(sizes, size)
+            total += size
+    print("kept ", blocks.len, " blocks after ", total, " bytes")
+    for p in blocks:
+        free(p)
+    free(blocks)
+    free(sizes)
+    big: &list[i64] = heap([])
+    for i in 0..4000000: # 32 MiB, past the memory the module starts with
+        append(big, i)
+    sum: i64 = 0
+    for x in big:
+        sum += x
+    print(sum, " ", big.len)
+    free(big)
+    again: &list[i64] = heap([])
+    for i in 0..4000000:
+        append(again, i)
+    print(again[3999999])
+    free(again)

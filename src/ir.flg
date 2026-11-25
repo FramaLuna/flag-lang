@@ -1,17 +1,25 @@
 @trust
-W = 1
-L = 2
-S = 3
-D = 4
-SB = 5
-UB = 6
-SH = 7
-UH = 8
-V = 9
-AGG = 16
+# comp.code holds the instructions of the backend, with blit and atomicexpected taking the three arguments of their
+# pair, and these: a label starts a block, the five after it end one, and the marks after those only -memory reads
+Olabel = OPS
+Ojump = OPS + 1
+Obranch = OPS + 2
+Otable = OPS + 3
+Oreturn = OPS + 4
+Ohalt = OPS + 5
+Oabsent = OPS + 6
+Oended = OPS + 7
+Oround = OPS + 8
+Owalked = OPS + 9
+Onarrowed = OPS + 10
+Ocounted = OPS + 11
+Oreused = OPS + 12
+Opart = OPS + 13
+
+AGG = 16 # the classes past those of the backend name a type: an aggregate of the program from AGG, and one of C from CAGG
 CAGG = 1 << 30
 SMALL = 35
-CUT = 48 # bytes of a slot that QBE cuts into registers
+CUT = 48 # bytes of a slot that chop cuts into registers
 LARGE = 500
 ROOMY = 4096 # bytes of slots, a page: a function with more is not inlined on its own, every caller's frame would take them
 SNUG = 32 # the same into a recursive caller, each level of the recursion takes them: about what the call takes
@@ -47,91 +55,90 @@ func add(i: Ins) -> Arg:
     comp.numbers[i.to - 1] = i.number
     return Arg{Temp, i64(i.to)}
 
-func op(cls: u32, name: &strview, a: Arg, b: Arg) -> Arg:
+func op(cls: i64, o: i64, a: Arg, b: Arg) -> Arg:
     if (a.kind == Const or a.kind == Single or a.kind == Double) and (b.kind == Empty or b.kind == a.kind):
-        known := computed(cls, name, a, b)
+        known := computed(cls, o, a, b)
         if known.kind != Empty:
             return known
-    return add(Ins{op = name, cls = cls, to = u32(temp().n), a = a, b = b})
+    return add(Ins{op = o, cls = cls, to = u32(temp().n), a = a, b = b})
 
-func op1(cls: u32, name: &strview, a: Arg) -> Arg:
-    return op(cls, name, a, Arg{})
+func op1(cls: i64, o: i64, a: Arg) -> Arg:
+    return op(cls, o, a, Arg{})
 
-# the number that QBE would compute for an instruction on numbers the compiler knows, as it folds one, or nothing for one it leaves to the program
-func computed(cls: u32, name: &strview, left: Arg, right: Arg) -> Arg:
+# the number that the backend would compute for an instruction on numbers the compiler knows, as it folds one, or nothing for one it leaves to the program
+func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
     float := left.kind != Const
     f := left.n as f64
     g := right.n as f64
     a := left.n
     b := right.n
-    if cls == S or cls == D:
-        word := cls == S
-        if float == (ends_with(name, "tof") or name == "cast"): # only those take an integer
+    if cls == Float32 or cls == Float64:
+        word := cls == Float32
+        if float == (o >= Oi32tof and o <= Ocast): # only those take an integer
             return Arg{}
         r := 0.0
-        switch name:
-        case "add":
+        switch o:
+        case Oadd:
             r = f64(f32(f) + f32(g)) if word else f + g
-        case "sub":
+        case Osub:
             r = f64(f32(f) - f32(g)) if word else f - g
-        case "mul":
+        case Omul:
             r = f64(f32(f) * f32(g)) if word else f * g
-        case "div":
+        case Odiv:
             r = f64(f32(f) / f32(g)) if word else f / g
-        case "neg":
+        case Oneg:
             r = -f
-        case "exts", "truncd":
+        case Oextf32, Otruncf64:
             r = f64(f32(f)) if word else f
-        case "swtof", "sltof":
-            if name == "swtof":
+        case Oi32tof, Oi64tof:
+            if o == Oi32tof:
                 a = a << 32 >> 32
             r = f64(f32(a)) if word else f64(a)
-        case "uwtof", "ultof":
-            if name == "uwtof":
+        case Ou32tof, Ou64tof:
+            if o == Ou32tof:
                 a = a and 0xffff_ffff
             r = f64(f32(u64(a))) if word else f64(u64(a))
-        case "cast":
+        case Ocast:
             r = f64(u32(a) as f32) if word else a as f64
             if word and r != r: # an f32 holds as an f64, where a nan doesn't keep its bits
                 return Arg{}
         case:
             return Arg{}
         return Arg{Single if word else Double, r as i64}
-    if cls != W and cls != L:
+    if cls != Int32 and cls != Int64:
         return Arg{}
-    o := name
-    word := cls == W
-    if starts_with(name, "c") and (ends_with(name, "w") or ends_with(name, "l") or float and name != "cast"): # a comparison names the class of what it compares
-        o = name[:name.len - 1]
-        word = ends_with(name, "w")
+    k := cls
+    c := 0
+    _ = is_compare(o, ptr(k), ptr(c)) # a comparison works on the class it names
+    word := k == Int32
     r := 0
     if float:
         switch o:
-        case "ceq":
+        case Oeqf32, Oeqf64:
             r = i64(f == g)
-        case "cne":
+        case Onef32, Onef64:
             r = i64(f != g)
-        case "clt":
+        case Oltf32, Oltf64:
             r = i64(f < g)
-        case "cle":
+        case Olef32, Olef64:
             r = i64(f <= g)
-        case "cgt":
+        case Ogtf32, Ogtf64:
             r = i64(f > g)
-        case "cge":
+        case Ogef32, Ogef64:
             r = i64(f >= g)
-        case "dtosi", "stosi":
-            if not (f > (-2147483649.0 if cls == W else -9223372036854777856.0) and f < (2147483648.0 if cls == W else 9223372036854775808.0)): # out of its range each processor gives its own
+        case Of64toi, Of32toi:
+            if not (f > (-2147483649.0 if word else -9223372036854777856.0) and f < (2147483648.0 if word else 9223372036854775808.0)): # out of its range each processor gives its own
                 return Arg{}
             r = i64(f)
-        case "dtoui", "stoui":
-            if not (f > -1.0 and f < (4294967296.0 if cls == W else 18446744073709551616.0)):
+        case Of64tou, Of32tou:
+            if not (f > -1.0 and f < (4294967296.0 if word else 18446744073709551616.0)):
                 return Arg{}
             r = u64(f) as i64
-        case "cast":
-            r = i64(f32(f) as u32) if cls == W else a
+        case Ocast:
+            r = i64(f32(f) as u32) if word else a
         case:
             return Arg{}
-        return int_arg(r << 32 >> 32 if cls == W else r)
+        return int_arg(r << 32 >> 32 if word else r)
     if word:
         a = a << 32 >> 32
         b = b << 32 >> 32
@@ -140,91 +147,91 @@ func computed(cls: u32, name: &strview, left: Arg, right: Arg) -> Arg:
     y := u64(b) and mask
     shift := b and (31 if word else 63)
     switch o:
-    case "add":
+    case Oadd:
         r = a + b
-    case "sub":
+    case Osub:
         r = a - b
-    case "mul":
+    case Omul:
         r = a * b
-    case "and":
+    case Oand:
         r = a and b
-    case "or":
+    case Oor:
         r = a or b
-    case "xor":
+    case Oxor:
         r = a xor b
-    case "neg":
+    case Oneg:
         r = 0 - a
-    case "copy":
+    case Ocopy:
         r = a
-    case "shl":
+    case Oshl:
         r = a << shift
-    case "sar":
+    case Osar:
         r = a >> shift
-    case "shr":
+    case Oshr:
         r = i64(x >> shift)
-    case "div", "rem", "udiv", "urem":
+    case Odiv, Orem, Oudiv, Ourem:
         if b == 0:
             return Arg{}
         switch o:
-        case "div":
+        case Odiv:
             r = a / b
-        case "rem":
+        case Orem:
             r = a % b
-        case "udiv":
+        case Oudiv:
             r = i64(x / y)
         case:
             r = i64(x % y)
-    case "ceq":
+    case Oeqi32, Oeqi64:
         r = i64(a == b)
-    case "cne":
+    case Onei32, Onei64:
         r = i64(a != b)
-    case "cslt":
+    case Olti32, Olti64:
         r = i64(a < b)
-    case "csle":
+    case Olei32, Olei64:
         r = i64(a <= b)
-    case "csgt":
+    case Ogti32, Ogti64:
         r = i64(a > b)
-    case "csge":
+    case Ogei32, Ogei64:
         r = i64(a >= b)
-    case "cult":
+    case Oltu32, Oltu64:
         r = i64(x < y)
-    case "cule":
+    case Oleu32, Oleu64:
         r = i64(x <= y)
-    case "cugt":
+    case Ogtu32, Ogtu64:
         r = i64(x > y)
-    case "cuge":
+    case Ogeu32, Ogeu64:
         r = i64(x >= y)
-    case "extsb":
+    case Oexti8:
         r = a << 56 >> 56
-    case "extub":
+    case Oextu8:
         r = a and 0xff
-    case "extsh":
+    case Oexti16:
         r = a << 48 >> 48
-    case "extuh":
+    case Oextu16:
         r = a and 0xffff
-    case "extsw":
+    case Oexti32:
         r = a << 32 >> 32
-    case "extuw":
+    case Oextu32:
         r = a and 0xffff_ffff
     case:
         return Arg{}
-    return int_arg(r << 32 >> 32 if cls == W else r)
+    return int_arg(r << 32 >> 32 if cls == Int32 else r)
 
-func terminate(name: &strview, a: Arg):
-    add(Ins{op = name, a = a})
+func terminate(o: i64, a: Arg):
+    add(Ins{op = o, a = a})
     comp.live = false
 
 func jump(l: u32):
     if comp.live:
-        add(Ins{op = "jmp", a = int_arg(i64(l))})
+        add(Ins{op = Ojump, a = int_arg(i64(l))})
     comp.live = false
 
 func branch(c: Arg, yes: u32, no: u32):
-    add(Ins{op = "jnz", a = c, b = int_arg(i64(yes)), c = int_arg(i64(no))})
+    add(Ins{op = Obranch, a = c, b = int_arg(i64(yes)), c = int_arg(i64(no))})
     comp.live = false
 
 func open_block(l: u32):
-    add(Ins{op = "@", a = int_arg(i64(l))})
+    add(Ins{op = Olabel, a = int_arg(i64(l))})
     comp.live = true
 
 func mention(name: &strview, a: Arg, type: i64, tok: i64):
@@ -236,19 +243,16 @@ func mention(name: &strview, a: Arg, type: i64, tok: i64):
         own = own or s.to == u32(a.n)
     if comp.debug and not own:
         pointer = alloc(U64) # a debugger reads the variable through it
-        add(Ins{op = "storel", a = a, b = pointer})
+        add(Ins{op = Ostorei64, a = a, b = pointer})
     append(comp.mentions, Mention{u32(a.n), name, type, tok, comp.scope, u32(pointer.n)})
     for k in reverse 0..comp.held.len:
         if comp.slots[comp.held[k]].to == u32(a.n):
             remove(comp.held, k) # the slot of a variable is never given back
             return
 
-func label_prefix() -> &strview:
-    if comp.system == "linux":
-        return ".L" # how QBE begins a label that the assembler keeps to itself
-    return "L"
-
-func listing() -> &str:
+# inlines the small functions into their callers, keeps the functions that main, an export or a function value reaches,
+# and threads their jumps
+func shrink():
     ids: &map[&strview, i64] = heap({})
     defer free(ids)
     sizes: &list[i64] = heap([])
@@ -263,7 +267,7 @@ func listing() -> &str:
             large := p.end - p.code > LARGE
             top := p.labels
             for i in comp.code[p.code:p.end]:
-                if i.op == "@" and u32(i.a.n) > top:
+                if i.op == Olabel and u32(i.a.n) > top:
                     top = u32(i.a.n)
             first := p.temps
             p.temps = comp.temps + 1
@@ -293,39 +297,39 @@ func listing() -> &str:
                         at := want.arg.n - i64(q.temps)
                         inner[at] = given.arg
                         if want.cls >= AGG:
-                            t := i64(want.cls - AGG)
+                            t := want.cls - AGG
                             inner[at] = pooled(Ins{op = alloc_op(t), a = int_arg(i64(room(t)))}, g, pool, taken)
-                            append(body, Ins{op = "blit", a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
+                            append(body, Ins{op = Oblit, a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
                     if i.cls >= AGG:
-                        append(slots, Ins{op = alloc_op(i.cls - AGG), cls = L, to = i.to, a = int_arg(room(i.cls - AGG))})
+                        append(slots, Ins{op = alloc_op(i.cls - AGG), cls = Int64, to = i.to, a = int_arg(room(i.cls - AGG))})
                     comp.labels += 1
                     after := comp.labels
                     jumped := false
                     for j in q.code..q.end:
                         c := comp.code[j]
-                        if starts_with(c.op, "alloc"):
+                        if is_alloc(c.op):
                             inner[c.to - q.temps] = pooled(c, g, pool, taken)
                             continue
                         c = renamed(c, inner, q.temps, i64(after) - i64(q.labels))
                         if q.file != p.file:
                             c.pos = i.pos
-                        if c.op == "@" and u32(c.a.n) > comp.labels:
+                        if c.op == Olabel and u32(c.a.n) > comp.labels:
                             comp.labels = u32(c.a.n)
-                        if c.op != "ret":
+                        if c.op != Oreturn:
                             append(body, c)
                             continue
                         if i.cls >= AGG:
-                            append(body, Ins{op = "blit", a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(comp.types[i64(i.cls - AGG)].size), pos = c.pos})
+                            append(body, Ins{op = Oblit, a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(comp.types[i.cls - AGG].size), pos = c.pos})
                         elif i.to != 0:
-                            append(body, Ins{op = "copy", cls = i.cls, to = i.to, a = c.a, pos = c.pos})
+                            append(body, Ins{op = Ocopy, cls = i.cls, to = i.to, a = c.a, pos = c.pos})
                         if j + 1 < q.end:
-                            append(body, Ins{op = "jmp", a = int_arg(i64(after)), pos = c.pos})
+                            append(body, Ins{op = Ojump, a = int_arg(i64(after)), pos = c.pos})
                             jumped = true
-                    if jumped or comp.code[q.end - 1].op != "ret":
-                        append(body, Ins{op = "@", a = int_arg(i64(after))})
+                    if jumped or comp.code[q.end - 1].op != Oreturn:
+                        append(body, Ins{op = Olabel, a = int_arg(i64(after))})
                     free(inner)
                     free(taken)
-                elif starts_with(i.op, "alloc"):
+                elif is_alloc(i.op):
                     append(slots, i)
                 else:
                     append(body, i)
@@ -341,7 +345,7 @@ func listing() -> &str:
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        cut: &list[bool] = heap([]) # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
+        cut: &list[bool] = heap([]) # the temps that hold the address of a slot chop cuts into registers: what goes through them doesn't stay
         for t in p.temps..=p.last:
             append(cut, false)
         for k in p.params..p.params + p.count:
@@ -352,218 +356,109 @@ func listing() -> &str:
         room := 0
         frame := declared(p.node) == "noinline"
         for i in comp.code[p.code:p.end]:
-            if starts_with(i.op, "alloc"):
+            if is_alloc(i.op):
                 room += i.a.n
                 cut[i.to - p.temps] = i.a.n <= CUT
-            elif i.op == "add" and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
+            elif i.op == Oadd and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
                 cut[i.to - p.temps] = true
-            elif not (i.ghost or starts_with(i.op, "load") and cut_at(cut, i.a, p.temps) or starts_with(i.op, "store") and cut_at(cut, i.b, p.temps) or i.op == "blit" and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+            elif not (i.ghost or is_load(i.op) and cut_at(cut, i.a, p.temps) or is_store(i.op) and cut_at(cut, i.b, p.temps) or i.op == Oblit and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
                 stays += 1
-            frame = frame or i.op == "call" and i.a.kind == Global and comp.globals[i.a.n] == "$flag_frame" # it reads the frame of its caller, panic for the chain
+            frame = frame or i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == "$flag_frame" # it reads the frame of its caller, panic for the chain
         free(cut)
         append(sizes, stays)
         append(rooms, room)
         append(framed, frame)
+    # the backend reads no ghost, nor a label after the end of a block that only jumps on: the jumps to it land where it
+    # jumps
+    moved: &list[i64] = heap([]) # where a jump to each label goes on to, or 0
+    defer free(moved)
+    for l in 0..=comp.labels:
+        append(moved, 0)
+    for f in 0..comp.procs.len:
+        p := comp.procs[f]
+        kept := p.code
+        for i in comp.code[p.code:p.end]:
+            if i.ghost:
+                continue
+            if i.op == Ojump and kept > p.code + 1 and comp.code[kept - 1].op == Olabel and comp.code[kept - 2].op >= Ojump and comp.code[kept - 2].op <= Ohalt and landing(moved, i.a.n) != comp.code[kept - 1].a.n:
+                kept -= 1
+                moved[comp.code[kept].a.n] = i.a.n
+                continue
+            comp.code[kept] = i
+            kept += 1
+        p.end = p.code
+        for k in p.code..kept:
+            i := comp.code[k]
+            if i.op == Ojump:
+                i.a.n = landing(moved, i.a.n)
+            elif i.op == Obranch:
+                i.b.n = landing(moved, i.b.n)
+                i.c.n = landing(moved, i.c.n)
+            elif i.op == Otable:
+                for j in i.first..i.first + i.count:
+                    comp.passes[j].arg.n = landing(moved, comp.passes[j].arg.n)
+            if not (i.op == Ojump and k + 1 < kept and comp.code[k + 1].op == Olabel and comp.code[k + 1].a.n == i.a.n): # it would only fall through
+                comp.code[p.end] = i
+                p.end += 1
+        comp.procs[f] = p
     live: &list[bool] = heap([])
     defer free(live)
     work: &list[i64] = heap([])
     defer free(work)
     for f in 0..comp.procs.len:
         p := comp.procs[f]
-        append(live, p.export or comp.insts[p.inst].taken_as != VOID)
+        append(live, exported(p) or comp.insts[p.inst].taken_as != VOID)
         if live[f]:
             append(work, f)
-    shaped := comp.shared
-    asked := comp.global_ids["$flag_shapes"] ifnull -1 # what load calls for the table of the program
+    used: &list[Arg] = heap([])
+    defer free(used)
     while work.len > 0:
         p := comp.procs[trust pop(work)]
         for i in comp.code[p.code:p.end]:
-            shaped = shaped or i.a.n == asked and i.a.kind == Global and i.op == "call"
-            g := callee(i, ids)
-            if g < comp.procs.len and not live[g]:
-                live[g] = true
-                append(work, g)
+            for a in operands(i, used): # where a function it calls or takes by address is
+                g := comp.procs.len
+                if a.kind == Global:
+                    g = ids[comp.globals[a.n]] ifnull g
+                if g < comp.procs.len and not live[g]:
+                    live[g] = true
+                    append(work, g)
     written: &list[Proc] = heap([])
     for index, f in comp.procs:
         if live[index]:
             append(written, f)
     comp.procs = written
-    out: &str = heap("")
-    moved: &list[i64] = heap([])
-    for l in 0..=comp.labels:
-        append(moved, 0)
-    dropped: &list[bool] = heap([])
-    for i in comp.code:
-        append(dropped, i.ghost)
-    for t in 0..comp.reached:
-        if aggregate(t):
-            out += "type :t" + t + " = align " + comp.types[t].align + " { " + comp.types[t].size + " }\n"
-    out += comp.c_defs
-    out += comp.data
-    if shaped: # a library, or a program that loads one, carries the types it made with a hash of their shapes, which load compares
-        privs: &map[i64, bool] = heap({}) # the declarations that are priv
-        for sym in comp.syms:
-            if sym.priv:
-                privs[sym.node] = true
-        rows: &list[&strview] = heap([])
-        tags: &list[u64] = heap([]) # the tag of each row and its place, to sort the rows by tag
-        for t in 0..comp.types.len:
-            ty := comp.types[t]
-            k := comp.nodes[ty.decl].kind
-            if ty.decl != 0 and not (privs[ty.decl] ifnull false) and (k == Struct or k == Fat or k == Void):
-                shape: &str = heap("")
-                shape += "" + ty.kind + " " + ty.size + " " + ty.align + " " + ty.packed + " " + ty.error
-                for f in comp.items[ty.first:ty.first + ty.count]:
-                    shape += ", " + f.name + " " + f.n + " " + f.shared + " " + comp.types[f.type].tag
-                append(tags, u64(ty.tag) << 32 or u64(rows.len))
-                append(rows, "w " + ty.tag + ", w 0, l " + hash(view(shape)) as i64 + ", l $flag.shape." + rows.len)
-                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + ty.name + "\", b 0 }\n"
-        for a in 1..comp.syms.len: # an alias and an enum, by the tag of their union
-            sym := comp.syms[a]
-            if comp.nodes[sym.node].kind == Alias and not sym.priv and not generic(sym.node):
-                name: &str = heap("")
-                if sym.module.len > 0:
-                    name += sym.module + "."
-                name += sym.name
-                tag := tag_of_shape(view(name))
-                target := comp.types[trust make_type(a, [], false, 0)]
-                append(tags, u64(tag) << 32 or u64(rows.len))
-                append(rows, "w " + tag + ", w " + i64(target.kind == Union) + ", l " + i64(target.tag) + ", l $flag.shape." + rows.len)
-                out += "data $flag.shape." + (rows.len - 1) + " = { b \"" + name + "\", b 0 }\n"
-        sort(tags)
-        shapes: &str = heap("")
-        for t in tags:
-            shapes += ", " + rows[i64(t and 0xffff_ffff)]
-        out += read_only(true) + "data $flag.shapes = { l " + rows.len + shapes + " }\nexport function l $flag_shapes() {\n@start\n\tret $flag.shapes\n}\n"
-    out += "data $flag.functions = { l " + comp.procs.len + ", l $\"" + label_prefix() + comp.procs[-1].name[1:] + ".end\""
-    places: &str = heap("")
-    place := 16 + 16 * comp.procs.len
-    for f in comp.procs:
-        hidden := f.node == 0 or comp.insts[f.inst].library
-        out += ", l " + f.name + ", w " + place + ", w " + i64(hidden)
-        if not hidden:
-            at := declared_at(f)
-            shown := proc_name(f) + ", " + comp.files[file_of(at)].path + ":" + line_of(at)
-            place += shown.len + 1
-            places += ", "
-            text_bytes(places, shown)
-            places += "b 0"
-    out += places + " }\n"
-    out += "function l $flag_frame() {\n@start\n\t%f =l frame\n\t%c =l loadl %f\n\tret %c\n}\n" # the frame of its caller, its own is gone when it returns
-    out += "function l $flag_functions() {\n@start\n\tret $flag.functions\n}\n"
-    for f in comp.procs:
-        out += "dbgfile \"" + replace(replace(view(comp.files[f.file].path), "\\", "\\\\"), "\"", "\\\"") + "\"\n"
-        if f.export:
-            out += "export "
-        out += "function "
-        if f.cls != 0:
-            put_cls(out, f.cls)
-            out += " "
-        out += f.name + "("
-        for k in f.params..f.params + f.count:
-            if k > f.params:
-                out += ", "
-            put_cls(out, comp.passes[k].cls)
-            out += " "
-            put_arg(out, comp.passes[k].arg, f.temps)
-        out += ") {\n@start\n"
-        ended := false
-        for k in f.code..f.end:
-            i := comp.code[k]
-            next := kept(dropped, k + 1, f.end)
-            if i.op == "@" and ended and next < f.end and comp.code[next].op == "jmp" and landing(moved, comp.code[next].a.n) != i.a.n:
-                moved[i.a.n] = comp.code[next].a.n
-                dropped[k] = true
-                dropped[next] = true
-            if not dropped[k]:
-                ended = i.op == "jmp" or i.op == "jnz" or i.op == "ret" or i.op == "hlt"
-        shown := 0
-        line := 0
-        slotted := not comp.debug
-        for k in f.code..f.end:
-            i := comp.code[k]
-            if not slotted and not starts_with(i.op, "alloc"):
-                slotted = true # the allocs are first, and QBE says where each one went
-                for m in f.mentions..f.mentioned:
-                    slot := comp.mentions[m].pointer
-                    if slot == 0:
-                        slot = comp.mentions[m].temp
-                    out += "\tdbgslot "
-                    put_arg(out, Arg{Temp, i64(slot)}, f.temps)
-                    out += ", " + m + "\n"
-                shown = declared_at(f) # the prologue takes this line, so a debugger stops after it with the parameters in place
-                line = line_of(shown)
-                out += "\tdbgloc " + line + ", " + (shown - line_start(shown) + 1) + "\n"
-            next := kept(dropped, k + 1, f.end)
-            if dropped[k] or i.op == "jmp" and next < f.end and comp.code[next].op == "@" and comp.code[next].a.n == landing(moved, i.a.n):
-                continue
-            if i.pos != 0 and i.pos != shown and i.op != "@" and not starts_with(i.op, "alloc"):
-                shown = i.pos
-                if line_of(i.pos) != line:
-                    line = line_of(i.pos)
-                    out += "\tdbgloc " + line + ", " + (i.pos - line_start(i.pos) + 1) + "\n"
-            if i.op == "@":
-                out += "@L" + (i.a.n - i64(f.labels)) + "\n"
-                if comp.debug:
-                    shown = 0 # a block starts a row of the line table, so a debugger stops where a jump lands
-                    line = 0
-                continue
-            out += "\t"
-            if i.op == "jmp":
-                out += "jmp @L" + (landing(moved, i.a.n) - i64(f.labels)) + "\n"
-                continue
-            if i.op == "jnz":
-                out += "jnz "
-                put_arg(out, i.a, f.temps)
-                out += ", @L" + (landing(moved, i.b.n) - i64(f.labels)) + ", @L" + (landing(moved, i.c.n) - i64(f.labels)) + "\n"
-                continue
-            if i.to != 0:
-                out += "%t" + (i.to - f.temps) + " ="
-                put_cls(out, i.cls)
-                out += " "
-            out += i.op
-            if i.op == "call":
-                out += " "
-                put_arg(out, i.a, f.temps)
-                out += "("
-                for j in i.first..i.first + i.count:
-                    if j > i.first:
-                        out += ", "
-                    p := comp.passes[j]
-                    if p.cls == 0:
-                        out += "..."
-                    else:
-                        put_cls(out, p.cls)
-                        out += " "
-                        put_arg(out, p.arg, f.temps)
-                out += ")\n"
-                continue
-            if i.a.kind != Empty:
-                out += " "
-                put_arg(out, i.a, f.temps)
-            if i.b.kind != Empty:
-                out += ", "
-                put_arg(out, i.b, f.temps)
-            if i.c.kind != Empty:
-                out += ", "
-                put_arg(out, i.c, f.temps)
-            out += "\n"
-        out += "}\n"
-    return out
+
+func landing(moved: &list[i64], to: i64) -> i64:
+    while moved[to] != 0:
+        to = moved[to]
+    return to
+
+# what the outside calls: main and the exports of the program, those of the library are reached from the code that gives them to C by address
+func exported(p: Proc) -> bool:
+    return p.node != 0 and (p.inst == comp.entry or p.export and not comp.insts[p.inst].library)
+
+# what an instruction reads, into used: a, b, c and the arguments of a call
+func operands(i: Ins, used: *&list[Arg]) -> &listview[Arg]:
+    clear(used)
+    append(used, ptr([i.a, i.b, i.c]))
+    if i.op == Ocall:
+        for given in comp.passes[i.first:i.first + i.count]:
+            append(used, given.arg)
+    return used.*
 
 func callee(i: Ins, ids: &map[&strview, i64]) -> i64:
-    if i.op != "call" or i.a.kind != Global or i.ghost:
+    if i.op != Ocall or i.a.kind != Global or i.ghost:
         return comp.procs.len
     return ids[comp.globals[i.a.n]] ifnull comp.procs.len
 
-# the inlined bodies of one function share their slots: those of another may give their address to a call, and QBE would keep the shared slot whole
+# the inlined bodies of one function share their slots: those of another may give their address to a call, and the backend would keep the shared slot whole
 func pooled(slot: Ins, callee: i64, pool: *&list[Ins], taken: *&list[i64]) -> Arg:
     k := 0
     while k < pool.len and (pool[k].a.n != slot.a.n or pool[k].op != slot.op or pool[k].first != u32(callee) or contains(taken.*, k)):
         k += 1
     if k == pool.len:
         comp.temps += 1
-        append(pool, Ins{op = slot.op, cls = L, to = comp.temps, a = slot.a, first = u32(callee)})
+        append(pool, Ins{op = slot.op, cls = Int64, to = comp.temps, a = slot.a, first = u32(callee)})
     append(taken, k)
     return Arg{Temp, i64(pool[k].to)}
 
@@ -585,73 +480,21 @@ func named(a: Arg, names: &list[Arg], first: u32) -> Arg:
 func renamed(i: Ins, names: &list[Arg], first: u32, labels: i64) -> Ins:
     if i.to != 0:
         i.to = u32(names[i.to - first].n)
-    if i.op == "@" or i.op == "jmp":
+    if i.op == Olabel or i.op == Ojump:
         i.a.n += labels
-    if i.op == "jnz":
+    if i.op == Obranch:
         i.b.n += labels
         i.c.n += labels
     i.a = named(i.a, names, first)
     i.b = named(i.b, names, first)
     i.c = named(i.c, names, first)
-    if i.op == "call":
+    if i.op == Ocall or i.op == Otable: # the arguments of a call, or the labels of a jump table
         from := comp.passes.len
         for k in i.first..i.first + i.count:
             given := comp.passes[k]
+            if i.op == Otable:
+                given.arg.n += labels
             given.arg = named(given.arg, names, first)
             append(comp.passes, given)
         i.first = u32(from)
     return i
-
-func kept(dropped: &list[bool], k: i64, end: i64) -> i64:
-    while k < end and dropped[k]:
-        k += 1
-    return k
-
-func landing(moved: &list[i64], to: i64) -> i64:
-    while moved[to] != 0:
-        to = moved[to]
-    return to
-
-func put_cls(out: *&str, c: u32):
-    if c >= CAGG:
-        out.* += ":c" + (c - CAGG)
-        return
-    if c >= AGG:
-        out.* += ":t" + (c - AGG)
-        return
-    switch c:
-    case W:
-        out.* += "w"
-    case L:
-        out.* += "l"
-    case S:
-        out.* += "s"
-    case D:
-        out.* += "d"
-    case SB:
-        out.* += "sb"
-    case UB:
-        out.* += "ub"
-    case SH:
-        out.* += "sh"
-    case V:
-        out.* += "v"
-    case:
-        out.* += "uh"
-
-func put_arg(out: *&str, a: Arg, first: u32):
-    switch a.kind:
-    case Temp:
-        out.* += "%t" + (a.n - i64(first))
-    case Const:
-        out.* += a.n
-    case Global:
-        if comp.shared and comp.system == "linux" and starts_with(comp.globals[a.n], "thread "):
-            out.* += "extern " # initial-exec, the place of thread data comes from the GOT
-        out.* += comp.globals[a.n]
-    case Single:
-        out.* += f32(a.n as f64) as u32 # QBE reads the bits of a float from an integer
-    case Double:
-        out.* += a.n
-    case:
-        return

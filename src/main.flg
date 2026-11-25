@@ -54,6 +54,7 @@ type Sym:
     packed: bool
     export: bool
     library: bool
+    type: i64 # of a type that is not generic
 
 type enum TypeKind:
     Void, Bool, Int, Uint, Float, Ptr, Func, Bytes, Struct, Fat, Union, Untagged, Array, Simd, Thread, Given, Atomic
@@ -95,6 +96,7 @@ type Inst:
     library: bool
     depth: i64
     taken_as: i64
+    params: i64 # where the types of its parameters start in comp.items, VOID for the ... of C
 
 type enum ArgKind:
     Empty, Temp, Const, Single, Double, Global
@@ -104,8 +106,8 @@ type Arg:
     n: i64
 
 type Ins:
-    op: &strview
-    cls: u32
+    op: i64
+    cls: i64
     to: u32
     a: Arg
     b: Arg
@@ -120,10 +122,32 @@ type Ins:
     member: u32
 
 type Pass:
-    cls: u32
+    cls: i64
     arg: Arg
     number: bool
     value: i64 # of a parameter, the struct or array that the function takes by value, else VOID
+
+type enum PieceKind:
+    Zeros, Number, Address, Text, File
+
+type Piece:
+    kind: PieceKind
+    size: i64 # of a number, 1, 2, 4 or 8 bytes
+    n: i64 # the number, how many zeros, or what the address adds
+    text: &strview = "" # the bytes, the path of the file, or the name of what the address points to
+
+type CField: # a field of a type that crosses the C ABI by value, as the calling conventions read it
+    kind: u8 # b, h, w, l, s or d, or c for a type of C, type
+    type: i64
+    count: i64
+
+type Data:
+    name: &strview
+    align: i64 = 8
+    first: i64 # its pieces in comp.pieces
+    count: i64
+    fixed: bool # the program only reads it
+    thread: bool # each thread has its own, and the code names it thread $name
 
 type Mention:
     temp: u32
@@ -135,7 +159,7 @@ type Mention:
 
 type Proc:
     name: &strview
-    cls: u32
+    cls: i64
     file: i64
     params: i64
     count: i64
@@ -216,8 +240,9 @@ context comp:
     resolving: &list[i64] = heap([])
     spelled: i64
     c_types: &list[i64] = heap([])
-    c_defs: &str = heap("")
-    data: &str = heap("")
+    c_fields: &list[CField] = heap([]) # those of each of c_types, after each one with no count
+    data: &list[Data] = heap([])
+    pieces: &list[Piece] = heap([])
     texts: &list[i64] = heap([])
     stored: &map[&strview, i64] = heap({})
     globals: &list[&strview] = heap([])
@@ -262,7 +287,6 @@ context comp:
     asked: i64
     defined: &list[i64] = heap([])
     hover: &str = heap("")
-    assembly: &str = heap("") # written after what QBE writes: the files of @embed and the DWARF
     system: &strview = ""
     machine: &strview = ""
     choosing: bool
@@ -276,7 +300,6 @@ extern "c":
     func realpath(path: cstr, into: *u8) -> cstr
     func _wfullpath(into: wstr, path: wstr, size: i64) -> wstr
     func getpid() -> i32
-    func qbe_main(count: i32, args: *cstr) -> i32
     func flag_embedded(index: i64, name: *cstr, size: *i64) -> *bytes
     func flag_version() -> cstr
     func flag_stamp() -> cstr
@@ -365,18 +388,8 @@ func main() -> i32:
                     return 1
             print(real_path(view(folder)))
             return 0
-        elif ends_with(a, ".flg"):
+        elif ends_with(a, ".flg") or is_dir(a): # a folder gives its files once the overlay is read
             append(inputs, a)
-        elif is_dir(a):
-            before := inputs.len
-            found := walk_dir(a)
-            if found is &listview[&strview]:
-                for path in found:
-                    if ends_with(path, ".flg"):
-                        append(inputs, path)
-            if inputs.len == before:
-                eprint(comp.err, "directory ", a, " contains no .flg files")
-                return 2
         elif a == "run" or a == "test":
             line: &str = heap("flagc " + a)
             for j in 1..arguments.len:
@@ -421,13 +434,15 @@ func main() -> i32:
     if running and comp.shared:
         eprint(comp.err, "'", arguments[1], "' executes a program, but '-shared' builds a shared library; build with '-o' and load it from a host program")
         return 2
-    backends := {"linux-x86_64": "amd64_sysv", "linux-arm64": "arm64", "linux-riscv64": "rv64", "macos-x86_64": "amd64_apple", "macos-arm64": "arm64_apple", "windows-x86_64": "amd64_win"}
-    backend := backends[target]
-    if backend is null:
-        eprint(comp.err, "unknown target ", target, "; supported targets are: linux-x86_64, linux-arm64, linux-riscv64, macos-x86_64, macos-arm64, windows-x86_64")
+    targets := ["linux-x86_64", "linux-arm64", "linux-riscv64", "macos-x86_64", "macos-arm64", "windows-x86_64", "wasm-wasm32", "wasm-wasm64"]
+    if not contains(ptr(targets), target):
+        eprint(comp.err, "unknown target ", target, "; supported targets are: ", join(ptr(targets), ", "))
         return 2
     comp.system = target[:trust find(target, "-")]
     comp.machine = target[comp.system.len + 1:]
+    if running and comp.system == "wasm":
+        eprint(comp.err, "'", arguments[1], "' executes a program, but -target ", target, " builds a WebAssembly module; build with '-o' and run it in a WebAssembly host that supports WASI")
+        return 2
     texts: &map[&strview, &strview] = heap({})
     if overlay.len > 0:
         given := read_file(overlay)
@@ -449,11 +464,35 @@ func main() -> i32:
             from := path_end + size_end + 2
             put(texts, real_path(rest_of[:path_end]), rest_of[from:from + size])
             rest_of = rest_of[from + size:]
+    files: &list[&strview] = heap([]) # the inputs, with the .flg files of each folder, saved or in the overlay, in order
+    for input in inputs:
+        if ends_with(input, ".flg"):
+            append(files, input)
+            continue
+        found: &list[&strview] = heap([])
+        walked := walk_dir(input)
+        if walked is &listview[&strview]:
+            for path in walked:
+                if ends_with(path, ".flg"):
+                    append(found, path)
+        root := real_path(input)
+        for e in texts:
+            if ends_with(e.key, ".flg") and starts_with(e.key, root) and e.key.len > root.len + 1:
+                inner := e.key[root.len:]
+                if items(inner)[0] == '/' or items(inner)[0] == '\\':
+                    append(found, join_path(input, inner))
+        if found.len == 0:
+            eprint(comp.err, "directory ", input, " contains no .flg files")
+            return 2
+        sort(found)
+        append(files, found[:])
     fleeting := running and output.len == 0
     suffix: &strview = ".out"
     if comp.system == "windows":
         suffix = ".exe"
-    if comp.shared:
+    if comp.system == "wasm":
+        suffix = ".wasm"
+    elif comp.shared:
         suffixes := {"linux": ".so", "macos": ".dylib", "windows": ".dll"}
         suffix = trust suffixes[comp.system]
     if fleeting:
@@ -513,8 +552,8 @@ func main() -> i32:
     put(loaded, real_path(view(core)), 0)
     if add_file(core, read_source(view(core), texts), true) is Fail:
         return 1
-    for input in inputs:
-        if load(input, loaded, texts) is Fail:
+    for path in files:
+        if load(path, loaded, texts) is Fail:
             return 1
     # the folders of the uses in quotes go before the library, whose modules give way to those of the program
     done := 0
@@ -634,23 +673,18 @@ func main() -> i32:
         return 1
     if check:
         return 0
-    ssa: &str = heap(output)
-    ssa += ".ssa"
-    asm: &str = heap(output)
-    asm += ".s"
-    if write_file(view(ssa), listing()) is FsError:
-        eprint(comp.err, "failed to write QBE IR file ", ssa)
-        return 1
-    args := array[cstr, 8]{"qbe", "-t", cstr(backend), "-o", c_text(asm), c_text(ssa), 0 as cstr, 0 as cstr}
-    if comp.debug:
-        args[5] = "-g"
-        args[6] = c_text(ssa)
-    if qbe_main(6 + i32(comp.debug), ptr(args[0])) != 0:
-        return 1
-    if comp.debug:
-        comp.assembly += dwarf()
-    if append_file(view(asm), comp.assembly) is FsError:
-        eprint(comp.err, "failed to write assembly file ", asm)
+    if comp.system == "wasm":
+        module := assemble()
+        if module is Fail:
+            return 1
+        if write_file(view(output), module) is FsError:
+            eprint(comp.err, "failed to write WebAssembly module ", output)
+            return 1
+        return 0
+    asm_file: &str = heap(output)
+    asm_file += ".s"
+    if write_file(view(asm_file), assembly()) is FsError:
+        eprint(comp.err, "failed to write assembly file ", asm_file)
         return 1
     cc: &list[&strview] = heap([])
     compiler: &strview = "cc"
@@ -661,14 +695,14 @@ func main() -> i32:
         if part.len > 0:
             append(cc, part)
     linking: &strview = "; flagc links using a C compiler (set the CC environment variable to choose one)"
-    source := view(asm)
+    source := view(asm_file)
     object: &str = heap(output)
     object += ".o"
-    apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
+    apart := comp.debug and comp.system == "macos" and comp.procs.len > 0 # dsymutil reads the DWARF from the object, so it outlives the link
     if apart:
         assembling: &list[&strview] = heap([])
         append(assembling, cc)
-        append(assembling, ptr(["-c", "-o", view(object), view(asm)]))
+        append(assembling, ptr(["-c", "-o", view(object), view(asm_file)]))
         if not ran(assembling, linking):
             return 1
         source = view(object)
@@ -685,7 +719,7 @@ func main() -> i32:
             append(folders, rest[k + 1])
     append(folders, comp.library)
     for f in comp.files:
-        if not f.library:
+        if not f.library and is_dir(dir_of(view(f.path))): # a file of the overlay may sit in a folder not made yet
             append(folders, dir_of(view(f.path)))
     for f in folders:
         append(link, "-L" + f)
@@ -716,8 +750,7 @@ func main() -> i32:
     if apart and exists(view(output)) and not ran(ptr(["dsymutil", view(output)]), ", -debug on macOS keeps the DWARF in " + output + ".dSYM with dsymutil"):
         return 1
     if not keep:
-        _ = remove_file(view(ssa))
-        _ = remove_file(view(asm))
+        _ = remove_file(view(asm_file))
         if apart:
             _ = remove_file(view(object))
     if not running:
@@ -862,10 +895,15 @@ func real_path(path: &strview) -> &strview where not @windows():
     found := realpath(cstr(path), 0 as *u8)
     if found as u64 != 0:
         return view(found)
-    folder := realpath(cstr(dir_of(path)), 0 as *u8)
-    if folder as u64 == 0:
+    folder := dir_of(path)
+    if folder == "./":
+        here := realpath(".", 0 as *u8)
+        if here as u64 == 0:
+            return path
+        return heap(join_path(view(here), path))
+    if folder == "/" or folder == path:
         return path
-    return heap(join_path(view(folder), base_name(path)))
+    return heap(join_path(real_path(folder[:-1]), base_name(path)))
 
 func real_path(path: &strview) -> &strview where @windows():
     found := _wfullpath(0 as wstr, wstr(path), 0)
@@ -874,7 +912,7 @@ func real_path(path: &strview) -> &strview where @windows():
     return heap(tmp(found))
 
 # a file of the program, loaded once, and its place among the files
-func load(path: &strview, loaded: &map[&strview, i64], texts: &map[&strview, &strview]) -> i64|Fail:
+func load(path: &strview, loaded: *&map[&strview, i64], texts: &map[&strview, &strview]) -> i64|Fail:
     real := real_path(path)
     known := loaded[real]
     if known is i64:

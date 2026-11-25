@@ -8,6 +8,7 @@ I8 = 3
 I32 = 5
 I64 = 6
 U8 = 7
+U32 = 9
 U64 = 10
 F32 = 11
 F64 = 12
@@ -382,9 +383,12 @@ func resolve(n: i64) -> i64|Fail:
         c := n + 1
         while c < node_end(n):
             if comp.nodes[c].kind == Var:
-                append(parts, try concrete(try resolve(c + 1), tok.at))
+                t := try concrete(try resolve(c + 1), tok.at)
+                if comp.types[t].kind == Atomic:
+                    return fail("a function cannot take " + comp.types[t].name + " by value; atomics cannot be copied, so take '*" + comp.types[t].name + "'", at_of(c))
+                append(parts, t)
             else:
-                ret = try concrete(try result_type(c), tok.at)
+                ret = try concrete(try returned_type(c), tok.at)
             c = node_end(c)
         if tok.text == "extern":
             for p in parts:
@@ -405,6 +409,13 @@ func result_type(n: i64) -> i64|Fail:
     if comp.nodes[n].kind == TName and comp.nodes[n].module.len == 0 and text(n) == "never" and node_end(n) == n + 1:
         return NEVER
     return resolve(n)
+
+# what a function gives back, which an atomic cannot be: it stays where it is
+func returned_type(n: i64) -> i64|Fail:
+    t := try result_type(n)
+    if comp.types[t].kind == Atomic:
+        return fail("cannot return " + comp.types[t].name + " by value; atomics cannot be copied, so return '*" + comp.types[t].name + "'", at_of(n))
+    return t
 
 func instance(n: i64, fat: bool) -> i64|Fail:
     node := comp.nodes[n]
@@ -654,7 +665,7 @@ func make_type(s: i64, args: &listview[Item], fat: bool, at: i64) -> i64|Fail:
     slots := comp.slots.len
     held := comp.held.len
     born := zero(made, alloc(made))
-    known: &str = heap("")
+    known: &list[Piece] = heap([])
     defer free(known)
     unknown := 0
     if born is null:

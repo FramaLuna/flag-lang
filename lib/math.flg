@@ -4,8 +4,13 @@ PI = 3.141592653589793
 TAU = 6.283185307179586
 E = 2.718281828459045
 
-extern "m":
+extern "m": # on wasm, instructions of its own
     func sqrt(x: f64) -> f64
+    func floor(x: f64) -> f64
+    func ceil(x: f64) -> f64
+    func trunc(x: f64) -> f64
+
+extern "m" where not @wasm():
     func sin(x: f64) -> f64
     func cos(x: f64) -> f64
     func tan(x: f64) -> f64
@@ -15,10 +20,7 @@ extern "m":
     func log(x: f64) -> f64
     func log2(x: f64) -> f64
     func log10(x: f64) -> f64
-    func floor(x: f64) -> f64
-    func ceil(x: f64) -> f64
     func round(x: f64) -> f64
-    func trunc(x: f64) -> f64
     func asin(x: f64) -> f64
     func acos(x: f64) -> f64
     func atan(x: f64) -> f64
@@ -107,3 +109,695 @@ priv func next_random() -> u64:
     z = (z xor (z >> 30)) * 0xbf58_476d_1ce4_e5b9
     z = (z xor (z >> 27)) * 0x94d0_49bb_1331_11eb
     return z xor (z >> 31)
+
+# WebAssembly has no libm, so these are those of fdlibm as musl writes them: each within one unit in the last place
+
+func round(x: f64) -> f64 where @wasm(): # half away from zero
+    t := trunc(x)
+    if abs(x - t) >= 0.5:
+        return t + (1.0 if x > 0.0 else -1.0)
+    return t
+
+func fmod(x: f64, y: f64) -> f64 where @wasm(): # exact, by the bits: x less a whole number of y, with the sign of x
+    ux := x as u64
+    uy := y as u64
+    ex := i64(ux >> 52 and 0x7ff)
+    ey := i64(uy >> 52 and 0x7ff)
+    sign := ux and u64(1) << 63
+    if uy << 1 == 0 or y != y or ex == 0x7ff:
+        return nan
+    if ux << 1 <= uy << 1:
+        return 0.0 * x if ux << 1 == uy << 1 else x
+    if ex == 0: # a subnormal, with its first bit where the hidden one goes
+        i := ux << 12
+        while i >> 63 == 0:
+            ex -= 1
+            i = i << 1
+        ux = ux << u64(1 - ex)
+    else:
+        ux = ux and (u64(1) << 52) - 1 or u64(1) << 52
+    if ey == 0:
+        i := uy << 12
+        while i >> 63 == 0:
+            ey -= 1
+            i = i << 1
+        uy = uy << u64(1 - ey)
+    else:
+        uy = uy and (u64(1) << 52) - 1 or u64(1) << 52
+    while ex >= ey: # long division, a bit at a time
+        i := ux - uy
+        if i == 0:
+            return 0.0 * x
+        if i >> 63 == 0:
+            ux = i
+        if ex == ey:
+            break
+        ux = ux << 1
+        ex -= 1
+    while ux >> 52 == 0:
+        ux = ux << 1
+        ex -= 1
+    if ex > 0:
+        ux = ux - (u64(1) << 52) or u64(ex) << 52
+    else:
+        ux = ux >> u64(1 - ex)
+    return (ux or sign) as f64
+
+func hypot(x: f64, y: f64) -> f64 where @wasm():
+    ux := x as u64 and (u64(1) << 63) - 1
+    uy := y as u64 and (u64(1) << 63) - 1
+    if ux < uy:
+        swapped := ux
+        ux = uy
+        uy = swapped
+    ex := i64(ux >> 52)
+    ey := i64(uy >> 52)
+    if ey == 0x7ff: # hypot(inf, nan) is inf
+        return uy as f64
+    if ex == 0x7ff or uy == 0:
+        return ux as f64
+    if ex - ey > 64:
+        return ux as f64 + uy as f64
+    a := ux as f64
+    b := uy as f64
+    z := 1.0 # scaled so the squares neither overflow nor lose their low bits
+    if ex > 0x3ff + 510:
+        z = power(700)
+        a *= power(-700)
+        b *= power(-700)
+    elif ey < 0x3ff - 450:
+        z = power(-700)
+        a *= power(700)
+        b *= power(700)
+    ha, la := product(a, a)
+    hb, lb := product(b, b)
+    return z * sqrt(lb + la + hb + ha)
+
+# a times b, in a high part and a low one that hold it whole: wasm has no fused multiply, so each splits in halves of 26 bits
+priv func product(a: f64, b: f64) -> (f64, f64) where @wasm():
+    c := a * 134217729.0 # 2^27 + 1
+    ah := a - c + c
+    al := a - ah
+    d := b * 134217729.0
+    bh := b - d + d
+    bl := b - bh
+    high := a * b
+    return {high, ((ah * bh - high) + ah * bl + al * bh) + al * bl}
+
+priv func power(n: i64) -> f64 where @wasm(): # 2^n, for a normal n
+    return (u64(0x3ff + n) << 52) as f64
+
+# x times 2^n, rounded once
+priv func scalbn(x: f64, n: i64) -> f64 where @wasm():
+    if n > 1023:
+        x *= power(1023)
+        n -= 1023
+        if n > 1023:
+            x *= power(1023)
+            n = min(n - 1023, 1023)
+    elif n < -1022: # toward the subnormals in steps that stay normal, so only the last one rounds
+        x *= power(-1022 + 53)
+        n += 1022 - 53
+        if n < -1022:
+            x *= power(-1022 + 53)
+            n = max(n + 1022 - 53, -1022)
+    return x * power(n)
+
+# x with its low 32 bits cleared, so that a product of it with a few bits is exact
+priv func cleared(x: f64) -> f64 where @wasm():
+    return (x as u64 and 0xffff_ffff_0000_0000) as f64
+
+priv func with_high(x: f64, high: i32) -> f64 where @wasm():
+    return (u64(u32(high)) << 32 or (x as u64 and 0xffff_ffff)) as f64
+
+# x is k ln2 + r, and e^r by its series in two parts, which holds some 100 bits: it rounds as glibc does, where the kernel of fdlibm is an ulp off at times, as at 1
+func exp(x: f64) -> f64 where @wasm():
+    if x != x:
+        return x
+    if x > 7.09782712893383973096e+02:
+        return inf
+    if x < -7.45133219101941108420e+02:
+        return 0.0
+    k := i64(x * 1.44269504088896338700e+00 + (0.5 if x > 0.0 else -0.5))
+    high := x - f64(k) * 6.93147180369123816490e-01 # exact, ln2 high has bits to spare
+    low := f64(k) * 1.90821492927058770002e-10
+    r := high - low # and tail, which hold x less k ln2
+    tail := (high - r) - low
+    p := 1.0 # 1 + r (1 + r / 2 (1 + r / 3 (...))), from the 18th term, past which the rest is under 2^-84
+    q := 0.0
+    for n in reverse 1..19:
+        m, e := product(r, p)
+        e += r * q + tail * p
+        d := m / f64(n)
+        dh, dl := product(d, f64(n))
+        rest := ((m - dh) - dl + e) / f64(n)
+        p = 1.0 + d
+        q = ((1.0 - p) + d) + rest
+    return scalbn(p + q, k)
+
+func log(x: f64) -> f64 where @wasm():
+    return logarithm(x, 1.0, 0.0, 6.93147180369123816490e-01, 1.90821492927058770002e-10)
+
+func log2(x: f64) -> f64 where @wasm():
+    return logarithm(x, 1.44269504072144627571e+00, 1.67517131648865118353e-10, 1.0, 0.0)
+
+func log10(x: f64) -> f64 where @wasm():
+    return logarithm(x, 4.34294481878168880939e-01, 2.50829467116452752298e-11, 3.01029995663611771306e-01, 3.69423907715893078616e-13)
+
+# the logarithm of x in a base: x is 2^k (1 + f), and the high and low parts of the natural log of 1 + f take the high and low parts of 1 / ln base, as k takes those of the log of 2 in the base
+priv func logarithm(x: f64, scale_high: f64, scale_low: f64, two_high: f64, two_low: f64) -> f64 where @wasm():
+    u := x as u64
+    hx := u32(u >> 32)
+    k: i64 = 0
+    if hx < 0x0010_0000 or hx >> 31 != 0:
+        if u << 1 == 0:
+            return -inf
+        if hx >> 31 != 0:
+            return nan
+        k = -54 # a subnormal, scaled up
+        x *= power(54)
+        u = x as u64
+        hx = u32(u >> 32)
+    elif hx >= 0x7ff0_0000:
+        return x
+    elif hx == 0x3ff0_0000 and u << 32 == 0:
+        return 0.0
+    hx += 0x3ff0_0000 - 0x3fe6_a09e # 1 + f from sqrt(2) / 2 to sqrt(2)
+    k += i64(hx >> 20) - 0x3ff
+    hx = (hx and 0x000f_ffff) + 0x3fe6_a09e
+    f := (u64(hx) << 32 or (u and 0xffff_ffff)) as f64 - 1.0
+    half := 0.5 * f * f
+    s := f / (2.0 + f)
+    z := s * s
+    w := z * z
+    r := z * (6.666666666666735130e-01 + w * (2.857142874366239149e-01 + w * (1.818357216161805012e-01 + w * 1.479819860511658591e-01))) + w * (3.999999999940941908e-01 + w * (2.222219843214978396e-01 + w * 1.531383769920937332e-01))
+    high := cleared(f - half)
+    low := f - high - half + s * (half + r)
+    y := f64(k) * two_high
+    value := high * scale_high
+    rest := f64(k) * two_low + (low + high) * scale_low + low * scale_high
+    sum := y + value
+    rest += (y - sum) + value
+    return rest + sum
+
+func pow(x: f64, y: f64) -> f64 where @wasm():
+    hx := i32((x as u64) >> 32)
+    lx := u32(x as u64 and 0xffff_ffff)
+    hy := i32((y as u64) >> 32)
+    ly := u32(y as u64 and 0xffff_ffff)
+    ix := hx and 0x7fff_ffff
+    iy := hy and 0x7fff_ffff
+    if iy == 0 and ly == 0 or hx == 0x3ff0_0000 and lx == 0: # x^0, and 1^y even for a nan y
+        return 1.0
+    if ix > 0x7ff0_0000 or ix == 0x7ff0_0000 and lx != 0 or iy > 0x7ff0_0000 or iy == 0x7ff0_0000 and ly != 0:
+        return x + y
+    integral: i32 = 0 # what y is when x is negative: 0 not an integer, 1 an odd one, 2 an even one
+    if hx < 0 and iy >= 0x4340_0000:
+        integral = 2
+    elif hx < 0 and iy >= 0x3ff0_0000:
+        k := (iy >> 20) - 0x3ff
+        if k > 20 and (ly >> u32(52 - k)) << u32(52 - k) == ly:
+            integral = 2 - i32((ly >> u32(52 - k)) and 1)
+        elif k <= 20 and ly == 0 and (iy >> (20 - k)) << (20 - k) == iy:
+            integral = 2 - ((iy >> (20 - k)) and 1)
+    if ly == 0 and iy == 0x7ff0_0000: # y is inf or -inf
+        if ix == 0x3ff0_0000 and lx == 0:
+            return 1.0
+        if ix >= 0x3ff0_0000:
+            return y if hy >= 0 else 0.0
+        return 0.0 - y if hy < 0 else 0.0
+    if ly == 0 and iy == 0x3ff0_0000:
+        return 1.0 / x if hy < 0 else x
+    if ly == 0 and hy == 0x4000_0000:
+        return x * x
+    if ly == 0 and hy == 0x3fe0_0000 and hx >= 0:
+        return sqrt(x)
+    ax := abs(x)
+    if lx == 0 and (ix == 0x7ff0_0000 or ix == 0 or ix == 0x3ff0_0000): # x is 0, inf or 1, of either sign
+        z := ax
+        if hy < 0:
+            z = 1.0 / z
+        if hx < 0 and ix == 0x3ff0_0000 and integral == 0:
+            return nan
+        if hx < 0 and integral == 1:
+            return -z
+        return z
+    if hx < 0 and integral == 0:
+        return nan
+    s := -1.0 if hx < 0 and integral == 1 else 1.0 # the sign of the result
+    t1 := 0.0 # t1 + t2 is the log2 of |x|
+    t2 := 0.0
+    if iy > 0x41e0_0000: # |y| over 2^31
+        if iy > 0x43f0_0000 and ix <= 0x3fef_ffff: # over 2^64, it overflows or underflows
+            return inf if hy < 0 else 0.0
+        if iy > 0x43f0_0000 and ix >= 0x3ff0_0000:
+            return inf if hy > 0 else 0.0
+        if ix < 0x3fef_ffff:
+            return s * inf if hy < 0 else s * 0.0
+        if ix > 0x3ff0_0000:
+            return s * inf if hy > 0 else s * 0.0
+        t := ax - 1.0 # x is within 2^-20 of 1: log by t - t^2 / 2 + t^3 / 3 - t^4 / 4
+        w := t * t * (0.5 - t * (0.3333333333333333333333 - t * 0.25))
+        th := cleared(t) # so its product with the 24 bits of 1 / ln2 is exact, which fdlibm took t to be
+        u := 1.44269502162933349609e+00 * th
+        v := (t - th) * 1.44269502162933349609e+00 + t * 1.92596299112661746887e-08 - w * 1.44269504088896338700e+00
+        t1 = cleared(u + v)
+        t2 = v - (t1 - u)
+    else:
+        n: i32 = 0
+        if ix < 0x0010_0000: # a subnormal, scaled up
+            ax *= power(53)
+            n = -53
+            ix = i32((ax as u64) >> 32)
+        n += (ix >> 20) - 0x3ff
+        j := ix and 0x000f_ffff
+        ix = j or 0x3ff0_0000
+        k: i32 = 0 # 1 when |x| is nearer 1.5 than 1, then 1.5 takes the place of 1
+        if j > 0x3988e and j < 0xbb67a:
+            k = 1
+        elif j >= 0xbb67a:
+            n += 1
+            ix -= 0x0010_0000
+        ax = with_high(ax, ix)
+        base := 1.5 if k == 1 else 1.0
+        u := ax - base
+        v := 1.0 / (ax + base)
+        ss := u * v # (x - base) / (x + base), in a high part and a low one
+        sh := cleared(ss)
+        th := with_high(0.0, ((ix >> 1) or 0x2000_0000) + 0x0008_0000 + (k << 18))
+        tl := ax - (th - base)
+        sl := v * ((u - sh * th) - sh * tl)
+        s2 := ss * ss
+        r := s2 * s2 * (5.99999999999994648725e-01 + s2 * (4.28571428578550184252e-01 + s2 * (3.33333329818377432918e-01 + s2 * (2.72728123808534006489e-01 + s2 * (2.30660745775561754067e-01 + s2 * 2.06975017800338417784e-01)))))
+        r += sl * (sh + ss)
+        s2 = sh * sh
+        th = cleared(3.0 + s2 + r)
+        tl = r - ((th - 3.0) - s2)
+        u = sh * th
+        v = sl * th + tl * ss
+        ph := cleared(u + v)
+        pl := v - (ph - u)
+        zh := 9.61796700954437255859e-01 * ph # 2 / (3 ln2), in a high part and a low one
+        dh := 5.84962487220764160156e-01 if k == 1 else 0.0 # log2 1.5, in two parts
+        zl := -7.02846165095275826516e-09 * ph + pl * 9.61796693925975554329e-01 + (1.35003920212974897128e-08 if k == 1 else 0.0)
+        t := f64(n)
+        t1 = cleared(((zh + zl) + dh) + t)
+        t2 = zl - (((t1 - t) - dh) - zh)
+    y1 := cleared(y) # y times t1 + t2, as y1 + (y - y1)
+    pl := (y - y1) * t1 + y * t2
+    ph := y1 * t1
+    z := pl + ph
+    j := i32((z as u64) >> 32)
+    i := u32(z as u64 and 0xffff_ffff)
+    if j >= 0x4090_0000 and (j != 0x4090_0000 or i != 0 or pl + 8.0085662595372944372e-17 > z - ph): # z past 1024
+        return s * inf
+    if u32(j) >= 0xc090_cc00 and (u32(j) != 0xc090_cc00 or i != 0 or pl <= z - ph): # z below -1075
+        return s * 0.0
+    m := j and 0x7fff_ffff
+    k := (m >> 20) - 0x3ff
+    n: i32 = 0
+    if m > 0x3fe0_0000: # |z| over 0.5: n is z rounded to an integer, and z keeps the rest
+        n = j + (0x0010_0000 >> (k + 1))
+        k = ((n and 0x7fff_ffff) >> 20) - 0x3ff
+        whole := with_high(0.0, n and not (0x000f_ffff >> k))
+        n = ((n and 0x000f_ffff) or 0x0010_0000) >> (20 - k)
+        if j < 0:
+            n = 0 - n
+        ph -= whole
+    t := cleared(pl + ph) # 2^z by z ln2, in parts
+    u := t * 6.93147182464599609375e-01
+    v := (pl - (t - ph)) * 6.93147180559945286227e-01 + t * -1.90465429995776804525e-09
+    z = u + v
+    w := v - (z - u)
+    t = z * z
+    t1 = z - t * (1.66666666666666019037e-01 + t * (-2.77777777770155933842e-03 + t * (6.61375632143793436117e-05 + t * (-1.65339022054652515390e-06 + t * 4.13813679705723846039e-08))))
+    r := (z * t1) / (t1 - 2.0) - (w + z * w)
+    z = 1.0 - (r - z)
+    j = i32((z as u64) >> 32) + (n << 20)
+    if j >> 20 <= 0: # a subnormal
+        return s * scalbn(z, i64(n))
+    return s * with_high(z, j)
+
+func sin(x: f64) -> f64 where @wasm():
+    ix := u32((x as u64) >> 32) and 0x7fff_ffff
+    if ix < 0x3e50_0000: # |x| under 2^-26
+        return x
+    if ix <= 0x3fe9_21fb: # under pi / 4
+        return sine(x, 0.0, false)
+    if ix >= 0x7ff0_0000:
+        return x - x
+    y0, y1, n := reduced(x)
+    switch n and 3:
+    case 0:
+        return sine(y0, y1, true)
+    case 1:
+        return cosine(y0, y1)
+    case 2:
+        return -sine(y0, y1, true)
+    case:
+        return -cosine(y0, y1)
+
+func cos(x: f64) -> f64 where @wasm():
+    ix := u32((x as u64) >> 32) and 0x7fff_ffff
+    if ix < 0x3e46_a09e: # |x| under 2^-27 sqrt(2)
+        return 1.0
+    if ix <= 0x3fe9_21fb:
+        return cosine(x, 0.0)
+    if ix >= 0x7ff0_0000:
+        return x - x
+    y0, y1, n := reduced(x)
+    switch n and 3:
+    case 0:
+        return cosine(y0, y1)
+    case 1:
+        return -sine(y0, y1, true)
+    case 2:
+        return -cosine(y0, y1)
+    case:
+        return sine(y0, y1, true)
+
+func tan(x: f64) -> f64 where @wasm():
+    ix := u32((x as u64) >> 32) and 0x7fff_ffff
+    if ix < 0x3e40_0000: # |x| under 2^-27
+        return x
+    if ix <= 0x3fe9_21fb:
+        return tangent(x, 0.0, false)
+    if ix >= 0x7ff0_0000:
+        return x - x
+    y0, y1, n := reduced(x)
+    return tangent(y0, y1, (n and 1) != 0)
+
+# sin of x + y, |x| under pi / 4, where y is a small correction when tail
+priv func sine(x: f64, y: f64, tail: bool) -> f64 where @wasm():
+    z := x * x
+    w := z * z
+    r := 8.33333333332248946124e-03 + z * (-1.98412698298579493134e-04 + z * 2.75573137070700676789e-06) + z * w * (-2.50507602534068634195e-08 + z * 1.58969099521155010221e-10)
+    v := z * x
+    if not tail:
+        return x + v * (-1.66666666666666324348e-01 + z * r)
+    return x - ((z * (0.5 * y - v * r) - y) + v * 1.66666666666666324348e-01)
+
+priv func cosine(x: f64, y: f64) -> f64 where @wasm():
+    z := x * x
+    w := z * z
+    r := z * (4.16666666666666019037e-02 + z * (-1.38888888888741095749e-03 + z * 2.48015872894767294178e-05)) + w * w * (-2.75573143513906633035e-07 + z * (2.08757232129817482790e-09 - z * 1.13596475577881948265e-11))
+    half := 0.5 * z
+    w = 1.0 - half
+    return w + (((1.0 - w) - half) + (z * r - x * y))
+
+# tan of x + y, or -1 / tan when odd
+priv func tangent(x: f64, y: f64, odd: bool) -> f64 where @wasm():
+    hx := u32((x as u64) >> 32)
+    big := (hx and 0x7fff_ffff) >= 0x3fe5_9428 # |x| from 0.6744: then tan(pi / 4 - x)
+    negative := hx >> 31 != 0
+    if big and negative:
+        x = -x
+        y = -y
+    if big:
+        x = (7.85398163397448278999e-01 - x) + (3.06161699786838301793e-17 - y)
+        y = 0.0
+    z := x * x
+    w := z * z
+    r := 1.33333333333201242699e-01 + w * (2.18694882948595424599e-02 + w * (3.59207910759131235356e-03 + w * (5.88041240820264096874e-04 + w * (7.81794442939557092300e-05 - w * 1.85586374855275456654e-05))))
+    v := z * (5.39682539762260521377e-02 + w * (8.86323982359930005737e-03 + w * (1.45620945432529025516e-03 + w * (2.46463134818469906812e-04 + w * (7.14072491382608190305e-05 + w * 2.59073051863633712884e-05)))))
+    s := z * x
+    r = y + z * (s * (r + v) + y) + s * 3.33333333333334091986e-01
+    w = x + r
+    if big:
+        sign := -1.0 if odd else 1.0
+        v = sign - 2.0 * (x + (r - w * w / (w + sign)))
+        return -v if negative else v
+    if not odd:
+        return w
+    w0 := cleared(w) # -1 / (x + r), in parts so it stays within an ulp
+    v = r - (w0 - x)
+    a := -1.0 / w
+    a0 := cleared(a)
+    return a0 + a * (1.0 + a0 * w0 + a0 * v)
+
+# x less n times pi / 2, in a high part and a low one, and n: by pi / 2 in three parts while |x| is under 2^20 pi / 2, past it by the bits of 2 / pi
+priv func reduced(x: f64) -> (f64, f64, i64) where @wasm():
+    ix := u32((x as u64) >> 32) and 0x7fff_ffff
+    if ix < 0x4139_21fb:
+        fn := x * 6.36619772367581382433e-01 + 6755399441055744.0 - 6755399441055744.0 # x over pi / 2, rounded: 1.5 times 2^52 drops the fraction
+        r := x - fn * 1.57079632673412561417e+00
+        w := fn * 6.07710050650619224932e-11
+        y0 := r - w
+        ex := i64(ix >> 20)
+        if ex - i64((y0 as u64) >> 52 and 0x7ff) > 16: # it cancels: a second round, good to 118 bits
+            t := r
+            w = fn * 6.07710050630396597660e-11
+            r = t - w
+            w = fn * 2.02226624879595063154e-21 - ((t - r) - w)
+            y0 = r - w
+            if ex - i64((y0 as u64) >> 52 and 0x7ff) > 49: # and a third, good to 151, which covers every double
+                t = r
+                w = fn * 2.02226624871116645580e-21
+                r = t - w
+                w = fn * 8.47842766036889956997e-32 - ((t - r) - w)
+                y0 = r - w
+        return {y0, (r - y0) - w, i64(fn)}
+    if ix >= 0x7ff0_0000:
+        return {x - x, x - x, 0}
+    # the bits of |x| in three pieces of 24, from 2^e0 down
+    z := ((x as u64 and (u64(1) << 52) - 1) or u64(0x3ff + 23) << 52) as f64
+    e0 := i64(ix >> 20) - (0x3ff + 23)
+    pieces: array[f64, 3]
+    for i in 0..2:
+        pieces[i] = f64(i32(z))
+        z = (z - pieces[i]) * 16777216.0
+    pieces[2] = z
+    count := 3
+    while pieces[count - 1] == 0.0:
+        count -= 1
+    # what follows is __kernel_rem_pio2 of fdlibm: the product of |x| and 2 / pi in pieces of 24 bits, of which only the fraction and the low bits of the whole part count
+    jx := count - 1
+    jv := max((e0 - 3) / 24, 0)
+    q0 := e0 - 24 * (jv + 1)
+    f: array[f64, 20]
+    q: array[f64, 20]
+    iq: array[i32, 20]
+    for i in 0..=jx + 4:
+        f[i] = 0.0 if jv - jx + i < 0 else f64(TWO_OVER_PI[jv - jx + i])
+    for i in 0..=4:
+        for j in 0..=jx:
+            q[i] += pieces[j] * f[jx + i - j]
+    jz := 4
+    n: i32 = 0
+    high: i32 = 0 # 1 or 2 when the fraction is over 0.5
+    while true:
+        z = q[jz]
+        for i in 0..jz: # q into integers of 24 bits, the lowest first
+            fw := f64(i32(z / 16777216.0))
+            iq[i] = i32(z - 16777216.0 * fw)
+            z = q[jz - 1 - i] + fw
+        z = scalbn(z, q0)
+        z -= 8.0 * floor(z * 0.125)
+        n = i32(z)
+        z -= f64(n)
+        high = 0
+        if q0 > 0:
+            i := iq[jz - 1] >> i32(24 - q0)
+            n += i
+            iq[jz - 1] -= i << i32(24 - q0)
+            high = iq[jz - 1] >> i32(23 - q0)
+        elif q0 == 0:
+            high = iq[jz - 1] >> 23
+        elif z >= 0.5:
+            high = 2
+        if high > 0: # the fraction is 1 less it
+            n += 1
+            carry := false
+            for i in 0..jz:
+                if carry:
+                    iq[i] = 0xff_ffff - iq[i]
+                elif iq[i] != 0:
+                    carry = true
+                    iq[i] = 0x100_0000 - iq[i]
+            if q0 == 1:
+                iq[jz - 1] = iq[jz - 1] and 0x7f_ffff
+            elif q0 == 2:
+                iq[jz - 1] = iq[jz - 1] and 0x3f_ffff
+            if high == 2:
+                z = 1.0 - z
+                if carry:
+                    z -= scalbn(1.0, q0)
+        lost: i32 = 0 # bits past those it took, when the fraction came out 0
+        for i in reverse 4..jz:
+            lost = lost or iq[i]
+        if z != 0.0 or lost != 0:
+            break
+        k := 1
+        while iq[4 - k] == 0:
+            k += 1
+        for i in jz + 1..=jz + k: # more pieces of 2 / pi
+            f[jx + i] = f64(TWO_OVER_PI[jv + i])
+            for j in 0..=jx:
+                q[i] += pieces[j] * f[jx + i - j]
+        jz += k
+    if z == 0.0:
+        jz -= 1
+        q0 -= 24
+        while iq[jz] == 0:
+            jz -= 1
+            q0 -= 24
+    else:
+        z = scalbn(z, 0 - q0)
+        if z >= 16777216.0:
+            fw := f64(i32(z / 16777216.0))
+            iq[jz] = i32(z - 16777216.0 * fw)
+            jz += 1
+            q0 += 24
+            iq[jz] = i32(fw)
+        else:
+            iq[jz] = i32(z)
+    fw := scalbn(1.0, q0)
+    for i in reverse 0..=jz:
+        q[i] = fw * f64(iq[i])
+        fw /= 16777216.0
+    sum := 0.0
+    tail: array[f64, 20] # the pieces times pi / 2
+    for i in reverse 0..=jz:
+        fw = 0.0
+        for k in 0..=min(4, jz - i):
+            fw += PI_OVER_TWO[k] * q[i + k]
+        tail[jz - i] = fw
+    for i in reverse 0..=jz:
+        sum += tail[i]
+    rest := tail[0] - sum
+    for i in 1..=jz:
+        rest += tail[i]
+    if high != 0:
+        sum = -sum
+        rest = -rest
+    if x < 0.0:
+        return {-sum, -rest, -i64(n and 7)}
+    return {sum, rest, i64(n and 7)}
+
+priv TWO_OVER_PI: array[i32, 66] = [0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62, 0x95993C, 0x439041, 0xFE5163, 0xABDEBB, 0xC561B7, 0x246E3A, 0x424DD2, 0xE00649, 0x2EEA09, 0xD1921C, 0xFE1DEB, 0x1CB129, 0xA73EE8, 0x8235F5, 0x2EBB44, 0x84E99C, 0x7026B4, 0x5F7E41, 0x3991D6, 0x398353, 0x39F49C, 0x845F8B, 0xBDF928, 0x3B1FF8, 0x97FFDE, 0x05980F, 0xEF2F11, 0x8B5A0A, 0x6D1F6D, 0x367ECF, 0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D, 0x7527BA, 0xC7EBE5, 0xF17B3D, 0x0739F7, 0x8A5292, 0xEA6BFB, 0x5FB11F, 0x8D5D08, 0x560330, 0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3, 0x91615E, 0xE61B08, 0x659985, 0x5F14A0, 0x68408D, 0xFFD880, 0x4D7327, 0x310606, 0x1556CA, 0x73A8C9, 0x60E27B, 0xC08C6B] # the bits of 2 / pi, 24 at a time
+
+priv PI_OVER_TWO: array[f64, 5] = [1.570796251296997, 7.549789415861596e-08, 5.390302529957765e-15, 3.282003415807913e-22, 1.270655753080676e-29] # pi / 2 in pieces of 24 bits
+
+func asin(x: f64) -> f64 where @wasm():
+    hx := u32((x as u64) >> 32)
+    ix := hx and 0x7fff_ffff
+    if ix >= 0x3ff0_0000: # |x| from 1, or nan
+        if ix == 0x3ff0_0000 and (x as u64 and 0xffff_ffff) == 0:
+            return x * 1.57079632679489655800e+00
+        return nan
+    if ix < 0x3fe0_0000: # under 0.5
+        if ix < 0x3e50_0000:
+            return x
+        return x + x * arc(x * x)
+    z := (1.0 - abs(x)) * 0.5
+    s := sqrt(z)
+    r := arc(z)
+    y := 0.0
+    if ix >= 0x3fef_3333: # over 0.975
+        y = 1.57079632679489655800e+00 - (2.0 * (s + s * r) - 6.12323399573676603587e-17)
+    else:
+        f := cleared(s) # f + c is sqrt(z)
+        c := (z - f * f) / (s + f)
+        y = 0.5 * 1.57079632679489655800e+00 - (2.0 * s * r - (6.12323399573676603587e-17 - 2.0 * c) - (0.5 * 1.57079632679489655800e+00 - 2.0 * f))
+    return -y if hx >> 31 != 0 else y
+
+func acos(x: f64) -> f64 where @wasm():
+    hx := u32((x as u64) >> 32)
+    ix := hx and 0x7fff_ffff
+    if ix >= 0x3ff0_0000:
+        if ix == 0x3ff0_0000 and (x as u64 and 0xffff_ffff) == 0:
+            return 2.0 * 1.57079632679489655800e+00 if hx >> 31 != 0 else 0.0
+        return nan
+    if ix < 0x3fe0_0000:
+        if ix <= 0x3c60_0000: # |x| under 2^-57
+            return 1.57079632679489655800e+00
+        return 1.57079632679489655800e+00 - (x - (6.12323399573676603587e-17 - x * arc(x * x)))
+    if hx >> 31 != 0: # under -0.5
+        z := (1.0 + x) * 0.5
+        s := sqrt(z)
+        w := arc(z) * s - 6.12323399573676603587e-17
+        return 2.0 * (1.57079632679489655800e+00 - (s + w))
+    z := (1.0 - x) * 0.5
+    s := sqrt(z)
+    f := cleared(s)
+    c := (z - f * f) / (s + f)
+    return 2.0 * (f + arc(z) * s + c)
+
+# the rational function of asin and acos
+priv func arc(z: f64) -> f64 where @wasm():
+    p := z * (1.66666666666666657415e-01 + z * (-3.25565818622400915405e-01 + z * (2.01212532134862925881e-01 + z * (-4.00555345006794114027e-02 + z * (7.91534994289814532176e-04 + z * 3.47933107596021167570e-05)))))
+    q := 1.0 + z * (-2.40339491173441421878e+00 + z * (2.02094576023350569471e+00 + z * (-6.88283971605453293030e-01 + z * 7.70381505559019352791e-02)))
+    return p / q
+
+func atan(x: f64) -> f64 where @wasm():
+    hx := u32((x as u64) >> 32)
+    ix := hx and 0x7fff_ffff
+    negative := hx >> 31 != 0
+    if ix >= 0x4410_0000: # |x| from 2^66
+        if x != x:
+            return x
+        return -1.57079632679489655800e+00 if negative else 1.57079632679489655800e+00
+    id := -1 # the atan it is near: of 0.5, 1, 1.5 or inf
+    if ix < 0x3fdc_0000: # under 0.4375
+        if ix < 0x3e40_0000:
+            return x
+    else:
+        x = abs(x)
+        if ix < 0x3fe6_0000: # under 11 / 16
+            id = 0
+            x = (2.0 * x - 1.0) / (2.0 + x)
+        elif ix < 0x3ff3_0000: # under 19 / 16
+            id = 1
+            x = (x - 1.0) / (x + 1.0)
+        elif ix < 0x4003_8000: # under 2.4375
+            id = 2
+            x = (x - 1.5) / (1.0 + 1.5 * x)
+        else:
+            id = 3
+            x = -1.0 / x
+    z := x * x
+    w := z * z
+    s1 := z * (3.33333333333329318027e-01 + w * (1.42857142725034663711e-01 + w * (9.09088713343650656196e-02 + w * (6.66107313738753120669e-02 + w * (4.97687799461593236017e-02 + w * 1.62858201153657823623e-02)))))
+    s2 := w * (-1.99999999998764832476e-01 + w * (-1.11111104054623557880e-01 + w * (-7.69187620504482999495e-02 + w * (-5.83357013379057348645e-02 + w * -3.65315727442169155270e-02))))
+    if id < 0:
+        return x - x * (s1 + s2)
+    highs := [4.63647609000806093515e-01, 7.85398163397448278999e-01, 9.82793723247329054082e-01, 1.57079632679489655800e+00]
+    lows := [2.26987774529616870924e-17, 3.06161699786838301793e-17, 1.39033110312309984516e-17, 6.12323399573676603587e-17]
+    z = highs[id] - (x * (s1 + s2) - lows[id] - x)
+    return -z if negative else z
+
+func atan2(y: f64, x: f64) -> f64 where @wasm():
+    if x != x or y != y:
+        return x + y
+    hx := u32((x as u64) >> 32)
+    hy := u32((y as u64) >> 32)
+    lx := u32(x as u64 and 0xffff_ffff)
+    ly := u32(y as u64 and 0xffff_ffff)
+    if hx == 0x3ff0_0000 and lx == 0: # x is 1
+        return atan(y)
+    m := (hy >> 31) or (hx >> 30 and 2) # 2 times the sign of x, plus the sign of y
+    ix := hx and 0x7fff_ffff
+    iy := hy and 0x7fff_ffff
+    pi := 3.1415926535897931160E+00
+    if iy == 0 and ly == 0:
+        return y if m < 2 else pi if m == 2 else -pi
+    if ix == 0 and lx == 0:
+        return -pi / 2.0 if (m and 1) != 0 else pi / 2.0
+    if ix == 0x7ff0_0000 and iy == 0x7ff0_0000:
+        return [pi / 4.0, -pi / 4.0, 3.0 * pi / 4.0, -3.0 * pi / 4.0][m]
+    if ix == 0x7ff0_0000:
+        return [0.0, -0.0, pi, -pi][m]
+    if ix + (64 << 20) < iy or iy == 0x7ff0_0000: # |y / x| over 2^64
+        return -pi / 2.0 if (m and 1) != 0 else pi / 2.0
+    z := 0.0
+    if (m and 2) == 0 or iy + (64 << 20) >= ix: # under 2^-64 with x negative, z is 0
+        z = atan(abs(y / x))
+    switch m:
+    case 0:
+        return z
+    case 1:
+        return -z
+    case 2:
+        return pi - (z - 1.2246467991473531772E-16)
+    case:
+        return (z - 1.2246467991473531772E-16) - pi

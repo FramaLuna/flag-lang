@@ -1,0 +1,25 @@
+# the Mandelbrot set in text, four points at a time in a simd, which WebAssembly holds in one v128:
+#   flagc examples/mandelbrot.flg -target wasm-wasm32 -o mandelbrot.wasm && node tests/wasm.js mandelbrot.wasm
+# or on any host of WASI, like wasmtime mandelbrot.wasm
+# wasm-wasm64 takes node --experimental-wasm-memory64 before Node 24, and plain flagc run shows it here
+func main():
+    shades := " .:-=+*#%@"
+    steps := simd[i32, 4]([0, 1, 2, 3])
+    for row in 0..24:
+        line: &str = heap("")
+        defer free(line)
+        ci := simd[f32, 4](f32(row) / 10.0 - 1.2)
+        for column in 0..18:
+            cr := simd[f32, 4](steps) * 0.0375 + simd[f32, 4](f32(column) * 0.15 - 2.1)
+            zr := simd[f32, 4](0.0)
+            zi := simd[f32, 4](0.0)
+            count := simd[i32, 4](0)
+            for i in 0..60:
+                inside := zr * zr + zi * zi <= 4.0
+                if not any(inside):
+                    break
+                count = select(inside, count + 1, count)
+                zr, zi = zr * zr - zi * zi + cr, 2.0 * zr * zi + ci
+            for n in array[i32, 4](count):
+                line += shades[n * 9 / 60:n * 9 / 60 + 1]
+        print(line)

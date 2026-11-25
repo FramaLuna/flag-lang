@@ -1,0 +1,340 @@
+# Calls with many arguments of every numeric type and of structs of every shape, by value both ways, directly, through
+# a function value or a thread, and on Linux to and from C: each prints the hash of what the callee received and
+# returned, and this program what that must be.
+use fs
+use math
+use os
+
+Calls = 60
+
+Kinds = ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64"]
+CKinds = ["int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t", "uint64_t", "float", "double"]
+F32 = 8
+Shapes = 10 # a type below is a kind, from it on a struct of fuzz.shapes
+
+type Field:
+    kind: i64
+    count: i64 # 0 for one value, else the length of an array
+
+type Shape:
+    from: i64 # its fields in fuzz.fields
+    to: i64
+
+context fuzz:
+    flag: &str = heap("")
+    c: &str = heap("")
+    externs: &str = heap("")
+    fields: &list[Field] = heap([])
+    shapes: &list[Shape] = heap([])
+    values: &list[i64] = heap([]) # of the leaves in order: an integer as its bits, a float times 8
+    next: i64 # the leaf of fuzz.values to read or make next
+    h: i64 # the hash the leaves read so far give
+
+func cut(kind: i64, v: i64) -> i64:
+    switch kind:
+    case 0:
+        return i64(i8(v))
+    case 1:
+        return i64(u8(v))
+    case 2:
+        return i64(i16(v))
+    case 3:
+        return i64(u16(v))
+    case 4:
+        return i64(i32(v))
+    case 5:
+        return i64(u32(v))
+    return v
+
+func type_name(into: *&str, t: i64, c: bool):
+    if t < Shapes:
+        into.* += CKinds[t] if c else Kinds[t]
+    else:
+        into.* += "S"
+        into.* += t - Shapes
+
+# a random value of a kind, written as a literal
+func value(into: *&str, kind: i64, c: bool):
+    v := random(-400000, 400000)
+    if kind < F32:
+        switch random(0, 3):
+        case 0:
+            v = [0, 1, -1, 127, 128, 255, 32767, 32768, 65535, 2147483647, -2147483648, -9223372036854775808][random(0, 11)]
+        case 1:
+            v = random(-300, 300)
+        case 2:
+            v = random(-9223372036854775808, 9223372036854775807)
+        v = cut(kind, v)
+    append(fuzz.values, v)
+    into.* += ("(" + CKinds[kind] + ")") if c else (Kinds[kind] + "(")
+    if kind >= F32:
+        into.* += f64(v) / 8.0
+    elif c or kind == 7:
+        into.* += u64(v)
+        into.* += "ull" if c else ""
+    else:
+        into.* += v
+    into.* += "" if c else ")"
+
+# each leaf of a value of type t named name, in order: hashed into h, or when made, set from h
+func leaves(into: *&str, t: i64, name: &strview, c: bool, made: bool):
+    if t < Shapes:
+        leaf(into, t, name, c, made)
+        return
+    s := fuzz.shapes[t - Shapes]
+    for f in s.from..s.to:
+        field := fuzz.fields[f]
+        path: &str = heap(name)
+        defer free(path)
+        path += ".f"
+        path += f - s.from
+        if field.count == 0:
+            leaf(into, field.kind, path, c, made)
+        for k in 0..field.count:
+            element: &str = heap(path)
+            defer free(element)
+            element += "["
+            element += k
+            element += "]"
+            leaf(into, field.kind, element, c, made)
+
+func leaf(into: *&str, kind: i64, name: &strview, c: bool, made: bool):
+    h := fuzz.h
+    if made:
+        shift := fuzz.next * 5 % 60
+        into.* += "    " + name + " = "
+        into.* += ("(" + CKinds[kind] + ")(") if c else (Kinds[kind] + "(")
+        into.* += "(int64_t)h >> " if c else "h >> "
+        into.* += shift
+        if kind >= F32:
+            into.* += " & 0xfffff) - 500000;\n" if c else " and 0xfffff) - " + Kinds[kind] + "(500000)\n"
+            append(fuzz.values, ((h >> shift and 0xfffff) - 500000) * 8)
+        else:
+            into.* += ");\n" if c else ")\n"
+            append(fuzz.values, cut(kind, h >> shift))
+        fuzz.next += 1
+        return
+    into.* += "    h = mix(h, " if c else "    h = (h xor "
+    if kind == F32:
+        into.* += ("fbits(" + name + ")") if c else ("i64(" + name + " as u32)")
+    elif kind > F32:
+        into.* += ("dbits(" + name + ")") if c else ("(" + name + " as i64)")
+    else:
+        into.* += ("(int64_t)" + name) if c else ("i64(" + name + ")")
+    into.* += ");\n" if c else ") * 1099511628211\n"
+    v := fuzz.values[fuzz.next]
+    if kind == F32:
+        v = i64(f32(f64(v) / 8.0) as u32)
+    elif kind > F32:
+        v = (f64(v) / 8.0) as i64
+    fuzz.h = (h xor v) * 1099511628211
+    fuzz.next += 1
+
+func main():
+    seed(5)
+    expected: &str = heap("")
+    defer free(expected)
+    calls: &str = heap("")
+    defer free(calls)
+    with_c := @linux()
+    for s in 0..8:
+        start := fuzz.fields.len
+        shape := random(0, 9)
+        if shape == 0: # floats of one kind, which some systems pass in float registers
+            kind := random(F32, F32 + 1)
+            for f in 0..random(1, 4):
+                append(fuzz.fields, Field{kind, 0})
+        elif shape == 1:
+            append(fuzz.fields, Field{random(F32, F32 + 1), random(1, 4)})
+        elif shape < 4: # an integer and a float, which riscv64 passes in one register of each
+            append(fuzz.fields, Field{random(0, F32 - 1), 0})
+            append(fuzz.fields, Field{random(F32, F32 + 1), 0})
+            if shape == 3:
+                swap(fuzz.fields, start, start + 1)
+        else:
+            for f in 0..random(1, 7):
+                append(fuzz.fields, Field{random(0, F32 + 1), 0 if random(0, 1) == 0 else random(1, 5)})
+        append(fuzz.shapes, Shape{start, fuzz.fields.len})
+        fuzz.flag += "type S"
+        fuzz.flag += s
+        fuzz.flag += ":\n"
+        fuzz.c += "typedef struct {"
+        for f in start..fuzz.fields.len:
+            field := fuzz.fields[f]
+            fuzz.flag += "    f"
+            fuzz.flag += f - start
+            fuzz.flag += ": "
+            fuzz.c += " " + CKinds[field.kind] + " f"
+            fuzz.c += f - start
+            if field.count > 0:
+                fuzz.flag += "array[" + Kinds[field.kind] + ", "
+                fuzz.flag += field.count
+                fuzz.flag += "]"
+                fuzz.c += "["
+                fuzz.c += field.count
+                fuzz.c += "]"
+            else:
+                fuzz.flag += Kinds[field.kind]
+            fuzz.flag += "\n"
+            fuzz.c += ";"
+        fuzz.c += " } S"
+        fuzz.c += s
+        fuzz.c += ";\n"
+    counts := [1, 2, 3, 5, 8, 9, 10, 12, 16, 20]
+    for n in 0..Calls:
+        fuzz.values.len = 0
+        types: &list[i64] = heap([])
+        defer free(types)
+        for k in 0..counts[random(0, counts.len - 1)]:
+            append(types, random(0, Shapes + fuzz.shapes.len - 1) if random(0, 2) == 0 else random(0, Shapes - 1))
+        result := random(0, Shapes + fuzz.shapes.len - 1)
+        side := random(0, 2) if with_c else 0 # 1 calls a function of C, and in 2 C calls one of Flag
+        c := side == 1
+        # the caller, which draws the arguments
+        caller: &str = heap("")
+        defer free(caller)
+        how := random(0, 5) # 0 calls through a function value, 1 in a thread, which cannot start in C
+        if c and how == 1:
+            how = 2
+        if side == 2:
+            caller += "int64_t call"
+            caller += n
+            caller += "(void) {\n    "
+            type_name(caller, result, true)
+            caller += " v = callee"
+        else:
+            caller += "\nnoinline func call"
+            caller += n
+            caller += "() -> i64:\n    "
+            caller += "fv := callee" if how == 0 else ("t := parallel callee" if how == 1 else "v := callee")
+        caller += n
+        caller += "\n    v := fv(" if how == 0 and side != 2 else "("
+        for k in 0..types.len:
+            caller += ", " if k > 0 else ""
+            t := types[k]
+            if t < Shapes:
+                value(caller, t, side == 2)
+                continue
+            caller += "(S" if side == 2 else "S"
+            caller += t - Shapes
+            caller += "){" if side == 2 else "{"
+            shape := fuzz.shapes[t - Shapes]
+            for f in shape.from..shape.to:
+                field := fuzz.fields[f]
+                caller += ", " if f > shape.from else ""
+                if field.count == 0:
+                    value(caller, field.kind, side == 2)
+                    continue
+                caller += "{" if side == 2 else "["
+                for e in 0..field.count:
+                    caller += ", " if e > 0 else ""
+                    value(caller, field.kind, side == 2)
+                caller += "}" if side == 2 else "]"
+            caller += "}"
+        caller += ");\n    uint64_t h = 0;\n" if side == 2 else ")\n"
+        if how == 1 and side != 2:
+            caller += "    v := wait(t)\n"
+        if side != 2:
+            caller += "    h: i64 = 0\n"
+        # the callee, which hashes what it got and makes its result from the hash
+        signature: &str = heap("(")
+        defer free(signature)
+        prototype: &str = heap("")
+        defer free(prototype)
+        type_name(prototype, result, true)
+        prototype += " callee"
+        prototype += n
+        prototype += "("
+        for k in 0..types.len:
+            signature += ", " if k > 0 else ""
+            signature += "a"
+            signature += k
+            signature += ": "
+            type_name(signature, types[k], false)
+            prototype += ", " if k > 0 else ""
+            type_name(prototype, types[k], true)
+            prototype += " a"
+            prototype += k
+        signature += ") -> "
+        type_name(signature, result, false)
+        prototype += ")"
+        callee: &str = heap("")
+        defer free(callee)
+        callee += "    uint64_t h = 0;\n" if c else "    h: i64 = 0\n"
+        fuzz.h = 0
+        fuzz.next = 0
+        for k in 0..types.len:
+            name: &str = heap("a")
+            defer free(name)
+            name += k
+            leaves(callee, types[k], name, c, false)
+        h := fuzz.h
+        fuzz.values.len = 0
+        fuzz.next = 0
+        if result >= Shapes:
+            callee += "    S" if c else "    r: S"
+            callee += result - Shapes
+            callee += " r;\n" if c else "\n"
+            leaves(callee, result, "r", c, true)
+            callee += "    return r;\n" if c else "    return r\n"
+        elif result >= F32:
+            if c:
+                callee += "    return (" + CKinds[result] + ")(((int64_t)h >> 7) & 0xffffff) * 0.5;\n"
+            else:
+                callee += "    return " + Kinds[result] + "((h >> 7) and 0xffffff) * " + Kinds[result] + "(0.5)\n"
+            append(fuzz.values, (h >> 7 and 0xffffff) * 4)
+        else:
+            callee += ("    return (" + CKinds[result] + ")h;\n") if c else ("    return " + Kinds[result] + "(h)\n")
+            append(fuzz.values, cut(result, h))
+        # the caller hashes what it got back
+        fuzz.h = 0
+        fuzz.next = 0
+        leaves(caller, result, "v", side == 2, false)
+        caller += "    return h;\n}\n" if side == 2 else "    return h\n"
+        if side == 1:
+            fuzz.c += prototype + " {\n" + callee + "}\n"
+            fuzz.externs += "    func callee"
+            fuzz.externs += n
+            fuzz.externs += signature + "\n"
+        else:
+            fuzz.flag += "\nexport func callee" if side == 2 else "\nnoinline func callee"
+            fuzz.flag += n
+            fuzz.flag += signature + ":\n" + callee
+        if side == 2:
+            fuzz.c += prototype + ";\n" + caller
+            fuzz.externs += "    func call"
+            fuzz.externs += n
+            fuzz.externs += "() -> i64\n"
+        else:
+            fuzz.flag += caller
+        calls += "    print(call"
+        calls += n
+        calls += "())\n"
+        expected += fuzz.h
+        expected += "\n"
+    if fuzz.externs.len > 0:
+        fuzz.flag += "\nextern \"c\":\n" + fuzz.externs
+    fuzz.flag += "\nfunc main():\n" + calls
+    path := dir_of(args()[0]) + "fuzz_calls_case.flg"
+    if write_file(path, fuzz.flag) is FsError:
+        panic("cannot write " + path)
+    command: &list[&strview] = heap([env("FLAGC") ifnull "build/flagc", "run", path])
+    defer free(command)
+    cpath := dir_of(args()[0]) + "fuzz_calls_case.c"
+    if with_c:
+        mix := "#include <stdint.h>\n#include <string.h>\nstatic uint64_t mix(uint64_t h, int64_t d) { return (h ^ d) * 1099511628211ull; }\n"
+        bits := "static int64_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }\nstatic int64_t dbits(double f) { int64_t u; memcpy(&u, &f, 8); return u; }\n"
+        if write_file(cpath, mix + bits + fuzz.c) is FsError:
+            panic("cannot write " + cpath)
+        append(command, "-cc")
+        append(command, cpath)
+    said: &str = heap("")
+    defer free(said)
+    code := output(command, said)
+    if code is FsError or code != 0 or said != expected:
+        print(path, " printed:")
+        print(said)
+        print("instead of:")
+        print(expected)
+    else:
+        print(Calls, " calls agree")

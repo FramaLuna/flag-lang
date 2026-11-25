@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -13,7 +17,11 @@ jobs:
         include:
           - os: ubuntu-latest
             shell: bash
+          - os: ubuntu-24.04-arm
+            shell: bash
           - os: macos-latest
+            shell: bash
+          - os: macos-15-intel
             shell: bash
           - os: windows-latest
             shell: msys2 {0}
@@ -24,27 +32,62 @@ jobs:
         shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gdb git diffutils
+          path-type: inherit
+          cache: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gdb git diffutils gzip
       - if: runner.os == 'Windows'
         run: echo "CC=gcc" >> "$GITHUB_ENV"
       - if: runner.os == 'Linux'
         run: command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y -qq gdb > /dev/null; }
       - run: ./build.sh package
-      - if: runner.os == 'Linux'
-        run: ./build.sh sanitize
-      - if: runner.os != 'Windows'
-        run: ./build.sh cross
       - run: ./test.sh build/flagc 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
       - if: failure()
         run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log
       - uses: actions/upload-artifact@v7
         with:
-          name: flag-${{ runner.os }}
+          name: flag-${{ runner.os }}-${{ runner.arch }}
           path: build/flag-*.tar.gz
+
+  # the x86_64 flagc and a cross gcc build each test for riscv64, and qemu runs only the test program
+  riscv64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: riscv64
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-riscv64-linux-gnu > /dev/null
+      - run: ./build.sh
+      # the glibc of Ubuntu 26.04 guards the stack of each thread with madvise(MADV_GUARD_INSTALL), which qemu-user
+      # takes and ignores, so a thread that overflows its stack writes past it; the tests of that run on the other systems
+      - run: ./test.sh build/flagc linux-riscv64 2>&1 | tee build/test.log; ! grep "^FAIL" build/test.log | grep -v "^FAIL thread_stack_"
+        env:
+          CC: riscv64-linux-gnu-gcc
+          QEMU_LD_PREFIX: /usr/riscv64-linux-gnu
+      - if: failure()
+        run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log
+
+  # flagc bootstraps from the riscv64 seed and builds itself, all under qemu
+  riscv64-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: riscv64
+      - run: docker run --rm --platform linux/riscv64 -v "$PWD:/flag" -w /flag ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y -qq gcc gzip > /dev/null && ./build.sh'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

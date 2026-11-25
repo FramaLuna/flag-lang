@@ -1,0 +1,20 @@
+# a library of wasm32 gives and takes a pointer as an i32, a number in JavaScript, and an i64 as a BigInt
+context store:
+    data: array[u8, 16]
+
+export func origin() -> *u8:
+    return 16 as *u8
+
+export func counted(p: *u8, n: i64) -> i64:
+    return n + i64((p as *bytes + n) as u64 - p as u64)
+
+func filled() -> *bytes:
+    for k in 0..16:
+        store.data[k] = u8(k)
+    return ptr(store.data) as *bytes
+
+export func first() -> u8:
+    return ((filled() + 3) as *u8).*
+
+export func twice() -> i64:
+    return counted(origin(), 21)

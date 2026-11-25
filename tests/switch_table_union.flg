@@ -1,0 +1,38 @@
+# Members with the fixed tags of the built-in types are dense: the switch on the tag jumps through a table, and a tag that
+# no member has stops the program.
+type Value = null|bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64
+
+noinline func name(v: *Value) -> &strview:
+    switch v.*:
+    case null:
+        return "null"
+    case bool:
+        return "bool"
+    case i8:
+        return "i8"
+    case i16:
+        return "i16"
+    case i32:
+        return "i32"
+    case i64:
+        return "i64"
+    case u8:
+        return "u8"
+    case u16:
+        return "u16"
+    case u32:
+        return "u32"
+    case u64:
+        return "u64"
+    case f32, f64:
+        return "float"
+
+func main():
+    values: array[Value, 12] = [null, true, i8(1), i16(2), i32(3), i64(4), u8(5), u16(6), u32(7), u64(8), f32(9.0), 10.0]
+    for k in 0..values.len:
+        print(name(ptr(values[k])))
+    flush()
+    words := [6, 0, 0, 0]
+    print(name(ptr(words) as u64 as *Value))
+    words = [13, 0, 0, 0]
+    print(name(ptr(words) as u64 as *Value))

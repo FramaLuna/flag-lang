@@ -1,0 +1,15 @@
+# In a library a context field is reached through an add to an address from the GOT, which changes the flags that a
+# comparison set for the jump after it.
+use fs
+use os
+
+func main():
+    library := dir_of(args()[0]) + "library_context_flags_game.so"
+    code := run(ptr([env("FLAGC") ifnull "build/flagc", "tests/library_context_flags_game.flg", "-shared", "-o", library]))
+    if code is FsError or code != 0:
+        panic("cannot build " + library)
+    loaded := load_library(library)
+    if loaded is LoadError:
+        panic("" + loaded)
+    step := trust symbol(loaded, "step") as extern func(i64, i64) -> i64
+    print(step(1, 2), " ", step(2, 1))

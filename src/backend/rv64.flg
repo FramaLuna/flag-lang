@@ -1,0 +1,968 @@
+T0 = 1 # t0 to t5, a0 to a7, s1 to s11
+T5 = 6
+A0 = 7
+FP = 26 # fp, sp, gp, tp, ra
+FT0 = 31 # ft0 to ft10, fa0 to fa7, fs0 to fs11
+FA0 = 42
+T6 = 62 # the scratch of the emitter, t6 and ft11
+FT11 = 63
+
+RV64_NAMES: array[&strview, 64] = ["", "t0", "t1", "t2", "t3", "t4", "t5", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "fp", "sp", "gp", "tp", "ra", "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "ft8", "ft9", "ft10", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7", "fs0", "fs1", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "t6", "ft11"]
+
+# t0 to t5, a0 to a7, fa0 to fa7, ft0 to ft10
+RV64_CALLER_SAVED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 42, 43, 44, 45, 46, 47, 48, 49, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+# s1 to s11, fs0 to fs11
+RV64_CALLEE_SAVED = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+
+RV64: Machine = Machine{first_int = T0, ints = 30, first_float = FT0, floats = 31, always_live = 0x1f << FP, caller_saved = RV64_CALLER_SAVED, caller_saved_count = [14, 19], return_regs = rv64_return_regs, arg_regs = rv64_arg_regs, lower_narrow = drop_narrow, lower_calls = rv64_calls, select = rv64_select, emit_function = rv64_emit_function, emit_end = elf_end, local_prefix = ".L", symbol_prefix = ""}
+
+# the bits of the second argument of a call, a RefCall: 0..1 int registers returned, 2..3 float registers returned, 4..7
+# int registers passed, 8..11 float registers passed, 12 t5 passes an environment
+func rv64_return_regs(r: Ref, p: *array[i64, 2]) -> u64:
+    p[0] = ref_value(r) and 3
+    p[1] = ref_value(r) >> 2 and 3
+    b: u64 = 0
+    for n in 0..p[0]:
+        b = b or reg_bit(A0 + n)
+    for n in 0..p[1]:
+        b = b or reg_bit(FA0 + n)
+    return b
+
+func rv64_arg_regs(r: Ref, p: *array[i64, 2]) -> u64:
+    ngp := ref_value(r) >> 4 and 15
+    nfp := ref_value(r) >> 8 and 15
+    t5 := ref_value(r) >> 12 and 1
+    p[0] = ngp + t5
+    p[1] = nfp
+    b := u64(t5) << T5
+    for n in 0..ngp:
+        b = b or reg_bit(A0 + n)
+    for n in 0..nfp:
+        b = b or reg_bit(FA0 + n)
+    return b
+
+# the classes of the fields of t from off, at most two and not of a union, or -1; how many are floats
+func rv64_float_fields(t: i64, off: i64, c: *Passing) -> i64:
+    ty := ptr(asm.layouts[t])
+    if ty.is_union:
+        return -1
+    for f in ty.fields:
+        if f.type == FieldEnd:
+            break
+        if f.type == FieldPad:
+            off += f.size
+        elif f.type == FieldType:
+            if rv64_float_fields(f.size, off, c) == -1:
+                return -1
+        else:
+            n := c.float_count + c.int_count
+            if n == 2:
+                return -1
+            switch f.type:
+            case FieldI64:
+                c.cls[n] = Int64
+                c.int_count += 1
+            case FieldF32:
+                c.cls[n] = Float32
+                c.float_count += 1
+            case FieldF64:
+                c.cls[n] = Float64
+                c.float_count += 1
+            case:
+                c.cls[n] = Int32
+                c.int_count += 1
+            c.offset[n] = off
+            off += f.size
+    return c.float_count
+
+# how an aggregate t passes from the registers gp and fp on: up to two fields, floats in float registers when fpabi,
+# up to 16 bytes in general purpose registers, or else a pointer to a copy
+func rv64_classify(c: *Passing, t: i64, fpabi: bool, gp: i64, fp: i64):
+    ty := ptr(asm.layouts[t])
+    if ty.align > 4:
+        panic("riscv64 aggregate alignment exceeds 16 bytes in " + fn.name)
+    c.layout = t
+    c.how = 0
+    c.int_count = 0
+    c.float_count = 0
+    if ty.opaque or ty.size > 16 or ty.size == 0:
+        c.how = ByPointer
+        c.cls[0] = Int64
+        c.offset[0] = 0
+        c.int_count = 1
+    elif not fpabi or rv64_float_fields(t, 0, c) <= 0:
+        n := 0
+        while 8 * n < ty.size:
+            c.cls[n] = Int64
+            c.offset[n] = 8 * n
+            n += 1
+        c.float_count = 0
+        c.int_count = n
+    c.reg_count = c.float_count + c.int_count
+    for n in 0..c.reg_count:
+        if bank(c.cls[n]) == 0:
+            c.reg[n] = gp
+            gp += 1
+        else:
+            c.reg[n] = fp
+            fp += 1
+
+# the classes of the arguments or parameters ins, and the registers they take as the second argument of a call
+func rv64_classify_args(ins: &listview[Instr], ca: *&list[Passing], retptr: bool) -> i64:
+    gp := A0 # the next registers
+    fp := FA0
+    ngp := 8 # and how many are left
+    nfp := 8
+    vararg := false
+    env := 0
+    if retptr:
+        gp += 1
+        ngp -= 1
+    ca.len = 0
+    for i in ins:
+        c: Passing
+        switch i.op:
+        case Oparam, Oarg:
+            c.cls[0] = i.cls
+            if not vararg and bank(i.cls) == 1 and nfp > 0:
+                nfp -= 1
+                c.reg[0] = fp
+                fp += 1
+            elif ngp > 0:
+                if bank(i.cls) == 1:
+                    c.how = FloatAsInt
+                ngp -= 1
+                c.reg[0] = gp
+                gp += 1
+            else:
+                c.how = FirstOnStack
+        case Oargvariadic:
+            vararg = true
+        case Oparamaggregate, Oargaggregate:
+            t := ref_value(i.arg[0])
+            rv64_classify(ptr(c), t, true, gp, fp)
+            if c.float_count > nfp or c.int_count > ngp:
+                rv64_classify(ptr(c), t, false, gp, fp)
+            if c.int_count <= ngp:
+                ngp -= c.int_count
+                nfp -= c.float_count
+                gp += c.int_count
+                fp += c.float_count
+            elif ngp > 0: # the first half in the last register, the second on the stack
+                c.how = c.how or SecondOnStack
+                c.reg_count = 1
+                ngp -= 1
+                gp += 1
+            else:
+                c.how = c.how or FirstOnStack
+                if c.reg_count > 1:
+                    c.how = c.how or SecondOnStack
+                c.reg_count = 0
+        case Oparamenv, Oargenv:
+            c.reg[0] = T5
+            c.cls[0] = Int64
+            env = 1
+        append(ca, c)
+    return env << 12 or (gp - A0) << 4 or (fp - FA0) << 8
+
+# lowers the call at i1 of b, with its arguments from i0
+func rv64_lower_call(b: i64, i0: i64, i1: i64, allocs: *&list[Instr]):
+    ins := fn.blocks[b].ins
+    call := ins[i1]
+    cr: Passing
+    if call.arg[1] != EMPTY:
+        rv64_classify(ptr(cr), ref_value(call.arg[1]), true, A0, FA0)
+    ca: &list[Passing] = heap([])
+    defer free(ca)
+    cty := rv64_classify_args(ins[i0:i1], ca, (cr.how and ByPointer) != 0)
+    stk := 0
+    for k in 0..ca.len:
+        c := ca[k]
+        if ins[i0 + k].op == Oargvariadic:
+            continue
+        if (c.how and ByPointer) != 0:
+            r := new_temp(Int64)
+            ins[i0 + k].arg[0] = r
+            ins[i0 + k].op = Oarg
+            alloc_slot(r, c.layout, (asm.layouts[c.layout].size + 7) and -8, allocs)
+        if (c.how and FirstOnStack) != 0:
+            stk += 8
+        if (c.how and SecondOnStack) != 0:
+            stk += 8
+    stk += stk and 15
+    if stk != 0:
+        emit(Ostackalloc, Int64, EMPTY, intern(0 - stk), EMPTY)
+    if call.arg[1] != EMPTY:
+        if fn.temps[call.to].result_slot == EMPTY:
+            alloc_slot(call.to, cr.layout, (asm.layouts[cr.layout].size + 7) and -8, allocs)
+        else:
+            call.to = fn.temps[call.to].result_slot
+        cty = cty or cr.float_count << 2 or cr.int_count
+        if (cr.how and ByPointer) != 0:
+            # spill and assign_registers expect a call followed by copies from registers, so a dummy one goes after it
+            emit(Ocopy, Int32, EMPTY, A0, EMPTY)
+        else:
+            tmp: &list[Ref] = heap([])
+            defer free(tmp)
+            store_temps(tmp, cr.reg_count, ptr(cr), call.to)
+            for n in 0..cr.reg_count:
+                emit(Ocopy, cr.cls[n], tmp[n], u32(cr.reg[n]), EMPTY)
+    elif bank(call.cls) == 0:
+        emit(Ocopy, call.cls, call.to, A0, EMPTY)
+        cty = cty or 1
+    else:
+        emit(Ocopy, call.cls, call.to, FA0, EMPTY)
+        cty = cty or 1 << 2
+    emit(Ocall, 0, EMPTY, call.arg[0], ref(RefCall, cty))
+    if (cr.how and ByPointer) != 0: # where the aggregate returned goes
+        emit(Ocopy, Int64, A0, call.to, EMPTY)
+    for k in 0..ca.len:
+        i := ins[i0 + k]
+        c := ptr(ca[k])
+        if i.op == Oargvariadic or (c.how and FirstOnStack) != 0:
+            continue
+        if i.op == Oargaggregate:
+            load_regs(c, i.arg[1])
+        elif (c.how and FloatAsInt) != 0:
+            kc := Int64 if wide(c.cls[0]) != 0 else Int32
+            r := new_temp(kc)
+            emit(Ocopy, kc, u32(c.reg[0]), r, EMPTY)
+            c.reg[0] = i64(r)
+        else:
+            emit(Ocopy, c.cls[0], u32(c.reg[0]), i.arg[0], EMPTY)
+    for k in 0..ca.len:
+        i := ins[i0 + k]
+        c := ca[k]
+        if (c.how and FloatAsInt) != 0:
+            emit(Ocast, Int64 if wide(c.cls[0]) != 0 else Int32, u32(c.reg[0]), i.arg[0], EMPTY)
+        if (c.how and ByPointer) != 0:
+            emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[c.layout].size), EMPTY)
+            emit(Oblit, 0, EMPTY, i.arg[1], i.arg[0])
+    if stk == 0:
+        return
+    off := 0
+    r := new_temp(Int64)
+    for k in 0..ca.len:
+        i := ins[i0 + k]
+        c := ca[k]
+        if i.op == Oargvariadic or (c.how and OnStack) == 0:
+            continue
+        if i.op == Oarg:
+            r1 := new_temp(Int64)
+            emit(Ostorei32 + i.cls, Int32, EMPTY, i.arg[0], r1)
+            if i.cls == Int32: # the i32 of an i64 temp has arbitrary high bits, see rv64_fix_arg
+                x := fn.out.len - 1
+                w := new_temp(Int64)
+                fn.out[x].op = Ostorei64
+                fn.out[x].arg[0] = w
+                emit(Oexti32, Int64, w, i.arg[0], EMPTY)
+            emit(Oadd, Int64, r1, r, intern(off))
+            off += 8
+        if i.op == Oargaggregate:
+            if (c.how and FirstOnStack) != 0:
+                r1 := new_temp(Int64)
+                r2 := new_temp(Int64)
+                emit(Ostorei64, 0, EMPTY, r2, r1)
+                emit(Oadd, Int64, r1, r, intern(off))
+                emit(Oload, Int64, r2, i.arg[1], EMPTY)
+                off += 8
+            if (c.how and SecondOnStack) != 0:
+                r1 := new_temp(Int64)
+                r2 := new_temp(Int64)
+                emit(Ostorei64, 0, EMPTY, r2, r1)
+                emit(Oadd, Int64, r1, r, intern(off))
+                r1 = new_temp(Int64)
+                emit(Oload, Int64, r2, r1, EMPTY)
+                emit(Oadd, Int64, r1, i.arg[1], intern(8))
+                off += 8
+    emit(Ostackalloc, Int64, r, intern(stk), EMPTY)
+
+# lowers parameters, calls and returns as the lp64d convention of risc-v takes them
+func rv64_calls():
+    ins := fn.blocks[fn.start].ins
+    npar := 0
+    while npar < ins.len and is_param(ins[npar].op):
+        npar += 1
+    fn.out.len = 0
+    for k in reverse npar..ins.len:
+        emit(ins[k])
+    cr: Passing # of the aggregate returned
+    if fn.ret_layout >= 0:
+        rv64_classify(ptr(cr), fn.ret_layout, true, A0, FA0)
+        if (cr.how and ByPointer) != 0:
+            fn.ret_address = new_temp(Int64)
+            emit(Ocopy, Int64, fn.ret_address, A0, EMPTY)
+    ca: &list[Passing] = heap([])
+    defer free(ca)
+    cty := rv64_classify_args(ins[:npar], ca, (cr.how and ByPointer) != 0)
+    none: array[i64, 2]
+    fn.used_regs = rv64_arg_regs(ref(RefCall, cty), ptr(none))
+    allocs: &list[Instr] = heap([]) # the allocs the start block gets
+    defer free(allocs)
+    tmp: &list[Ref] = heap([])
+    defer free(tmp)
+    for k in 0..npar:
+        c := ptr(ca[k])
+        if (c.how and FloatAsInt) != 0: # a float that came in an integer register
+            r := ins[k].to
+            kc := c.cls[0]
+            c.cls[0] = Int64 if wide(kc) != 0 else Int32
+            ins[k].to = new_temp(kc)
+            emit(Ocast, kc, r, ins[k].to, EMPTY)
+        if ins[k].op == Oparamaggregate and (c.how and ByPointer) == 0 and c.reg_count != 0:
+            n := c.reg_count
+            if (c.how and SecondOnStack) != 0:
+                c.cls[1] = Int64
+                c.offset[1] = 8
+                n = 2
+            store_temps(tmp, n, c, ins[k].to)
+            alloc_slot(ins[k].to, c.layout, (asm.layouts[c.layout].size + 7) and -8, allocs)
+    for k in reverse 0..allocs.len:
+        emit(allocs[k])
+    allocs.len = 0
+    t := 0
+    s := 2
+    for k in 0..npar:
+        i := ins[k]
+        c := ca[k]
+        if i.op == Oparamaggregate and (c.how and ByPointer) == 0:
+            if c.reg_count == 0:
+                fn.temps[i.to].slot = i32(0 - s)
+                s += 2 if (c.how and SecondOnStack) != 0 else 1
+                continue
+            for n in 0..c.reg_count:
+                emit(Ocopy, c.cls[n], tmp[t], u32(c.reg[n]), EMPTY)
+                t += 1
+            if (c.how and SecondOnStack) != 0:
+                emit(Oload, Int64, tmp[t], ref(RefSlot, 0 - s), EMPTY)
+                t += 1
+                s += 1
+        elif (c.how and FirstOnStack) != 0:
+            emit(Oload, c.cls[0], i.to, ref(RefSlot, 0 - s), EMPTY)
+            s += 1
+        else:
+            emit(Ocopy, c.cls[0], i.to, u32(c.reg[0]), EMPTY)
+    take_emitted(fn.start)
+    b := fn.start
+    while true:
+        b = fn.blocks[b].next
+        if b == 0:
+            b = fn.start # do it last
+        fn.out.len = 0
+        j := i64(fn.blocks[b].exit.type)
+        if is_return(j) and j != Jreturn:
+            r := fn.blocks[b].exit.arg
+            fn.blocks[b].exit.type = Jreturn
+            cty = 0
+            if j == Jreturnaggregate:
+                if (cr.how and ByPointer) != 0:
+                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
+                    emit(Oblit, 0, EMPTY, r, fn.ret_address)
+                else:
+                    load_regs(ptr(cr), r)
+                    cty = cr.float_count << 2 or cr.int_count
+            elif bank(j - Jreturni32) == 0:
+                emit(Ocopy, j - Jreturni32, A0, r, EMPTY)
+                cty = 1
+            else:
+                emit(Ocopy, j - Jreturni32, FA0, r, EMPTY)
+                cty = 1 << 2
+            fn.blocks[b].exit.arg = ref(RefCall, cty)
+        lower_block(b, allocs, rv64_lower_call)
+        take_emitted(b)
+        if b == fn.start:
+            break
+
+# whether argument n of op is an address it reads or writes
+func is_address_arg(n: i64, op: i64) -> bool:
+    if is_load(op) or op == Ocall:
+        return n == 0
+    return is_store(op) and n == 1
+
+# r, argument n of an instruction op (or of a phi or a jump, n < 0), made what risc-v takes as of class k; what it needs
+# goes before
+func rv64_fix_arg(r: Ref, k: i64, op: i64, n: i64) -> Ref:
+    switch ref_kind(r):
+    case RefConstant:
+        c := fn.constants[ref_value(r)]
+        if c.type == Addressed and ((c.access and ThroughGot) != 0 or c.access == ThreadData and c.bits != 0):
+            # the address comes from the GOT, or is thread data, whose offset GNU as counts twice for a local symbol in
+            # %tprel_hi(s+8), and the offset is added to it
+            r1 := new_temp(Int64)
+            r0 := r1
+            if c.bits != 0:
+                r0 = new_temp(Int64)
+                emit(Oadd, Int64, r1, r0, intern(c.bits))
+                rv64_fix_out(fn.out.len - 1, 1, Int64)
+            c.bits = 0
+            emit(Ocopy, Int64, r0, intern(c), EMPTY)
+            return r1
+        if c.type == Addressed and is_address_arg(n, op):
+            return r
+        # add, and, or, xor, the shifts and the comparisons take an immediate of 12 bits
+        imm := op == Oadd or op >= Oand and op <= Oshl or op == Olti32 or op == Oltu32 or op == Olti64 or op == Oltu64
+        if bank(k) == 0 and c.type == Numeric and imm and n == 1 and -2048 <= c.bits and c.bits < 2048:
+            return r
+        r1 := new_temp(k)
+        if bank(k) == 1:
+            # a float constant is read from memory
+            at := float_constant(u64(c.bits), 8 if wide(k) != 0 else 4)
+            emit(Oload, k, r1, intern(Immediate{type = Addressed, symbol = i32(intern("\"" + asm.machine.local_prefix + "fp" + at + "\""))}), EMPTY)
+        else:
+            emit(Ocopy, k, r1, r, EMPTY)
+        return r1
+    case RefTemp:
+        if is_register(r):
+            return r
+        s := i64(fn.temps[r].slot)
+        if s != -1: # an aggregate passed on the stack, or a fast local, in place when it can
+            if is_address_arg(n, op):
+                return ref(RefSlot, s)
+            r1 := new_temp(k)
+            emit(Oaddr, k, r1, ref(RefSlot, s), EMPTY)
+            return r1
+        if k == Int32 and fn.temps[r].cls == Int64:
+            r1 := new_temp(k)
+            emit(Oexti32, Int64, r1, r, EMPTY)
+            return r1
+        if k == Int64 and fn.temps[r].cls == Int32:
+            # an i32 read as an i64 has its high bits zero, as on amd64 and arm64: value numbering gives a phi of 0 and
+            # 1 the i32 its branch reads
+            r1 := new_temp(Int64)
+            emit(Oextu32, Int64, r1, r, EMPTY)
+            return r1
+    return r
+
+# rv64_fix_arg on argument n of the instruction at x of fn.out
+func rv64_fix_out(x: i64, n: i64, k: i64):
+    r := rv64_fix_arg(fn.out[x].arg[n], k, i64(fn.out[x].op), n)
+    fn.out[x].arg[n] = r
+
+# to becomes the negation of a new temp, which it returns
+func negate(to: Ref) -> Ref:
+    r := new_temp(Int32)
+    emit(Oxor, Int32, to, r, intern(1))
+    return r
+
+func rv64_select_instr(i: Instr):
+    if is_alloc(i.op):
+        x := fn.out.len
+        stack_alloc(i.to, i.arg[0])
+        rv64_fix_out(x, 0, Int64)
+        return
+    k := 0
+    op := 0
+    if is_compare(i.op, ptr(k), ptr(op)):
+        # a comparison is a slt or sltu, or a seqz or snez of a xor, or one of the floats, and a xor with 1 negates it
+        sign := false
+        swap := false
+        neg := false
+        switch op:
+        case Eqi, Nei:
+            r := new_temp(k)
+            emit(Orv64seqz if op == Eqi else Orv64snez, i.cls, i.to, r, EMPTY)
+            emit(Oxor, k, r, i.arg[0], i.arg[1])
+            x := fn.out.len - 1
+            rv64_fix_out(x, 0, k)
+            rv64_fix_out(x, 1, k)
+            return
+        case Gei:
+            sign = true
+            neg = true
+        case Gti:
+            sign = true
+            swap = true
+        case Lei:
+            sign = true
+            swap = true
+            neg = true
+        case Lti:
+            sign = true
+        case Geu:
+            neg = true
+        case Gtu:
+            swap = true
+        case Leu:
+            swap = true
+            neg = true
+        case INT_CONDITIONS + Orderedf, INT_CONDITIONS + Unorderedf:
+            if op == INT_CONDITIONS + Unorderedf:
+                i.to = negate(i.to)
+            r0 := new_temp(i.cls)
+            r1 := new_temp(i.cls)
+            emit(Oand, i.cls, i.to, r0, r1)
+            eq := Oeqf64 if wide(k) != 0 else Oeqf32
+            emit(eq, i.cls, r0, i.arg[0], i.arg[0])
+            x := fn.out.len - 1
+            rv64_fix_out(x, 0, k)
+            rv64_fix_out(x, 1, k)
+            emit(eq, i.cls, r1, i.arg[1], i.arg[1])
+            x = fn.out.len - 1
+            rv64_fix_out(x, 0, k)
+            rv64_fix_out(x, 1, k)
+            return
+        case INT_CONDITIONS + Nef:
+            neg = true
+            i.op = Oeqf64 if wide(k) != 0 else Oeqf32
+        if op < INT_CONDITIONS:
+            i.op = Olti64 if sign else Oltu64
+        if swap:
+            r := i.arg[0]
+            i.arg[0] = i.arg[1]
+            i.arg[1] = r
+        if neg:
+            i.to = negate(i.to)
+        emit(i)
+        x := fn.out.len - 1
+        rv64_fix_out(x, 0, k)
+        rv64_fix_out(x, 1, k)
+        return
+    k = i64(i.cls)
+    switch i.op:
+    case Onop:
+        pass
+    case Oatomicexpected:
+        # a0 holds the value given and then the one memory had, and the copy after the atomic keeps a0 out of other
+        # hands
+        emit(Ocopy, k, A0, i.arg[0], EMPTY)
+        rv64_fix_out(fn.out.len - 1, 0, k)
+    case Oatomicadd, Oatomicswap, Oatomiccompareswap:
+        to: Ref = EMPTY
+        if i.to != EMPTY and fn.temps[i.to].used != 0:
+            to = i.to
+        emit(Ocopy, k, to, A0, EMPTY)
+        emit(i.op, k, EMPTY, i.arg[0], i.arg[1] if i.op == Oatomiccompareswap else EMPTY)
+        x := fn.out.len - 1
+        if i.op != Oatomiccompareswap:
+            emit(Ocopy, k, A0, i.arg[1], EMPTY)
+            rv64_fix_out(fn.out.len - 1, 0, k)
+        rv64_fix_out(x, 0, Int64)
+        rv64_fix_out(x, 1, k)
+    case Odebugslot:
+        i.arg[0] = ref(RefSlot, i64(fn.temps[i.arg[0]].slot))
+        emit(i)
+    case:
+        emit(i)
+        x := fn.out.len - 1
+        rv64_fix_out(x, 0, arg_class(i, 0))
+        rv64_fix_out(x, 1, arg_class(i, 1))
+
+# constants only where allowed, i32 values sign-extended where an i64 reads them and the reverse, and fast locals: the
+# constant allocs of the first block
+func rv64_select():
+    slot_allocs()
+    b := fn.start
+    while b != 0:
+        fn.out.len = 0
+        pair: array[i64, 2]
+        for s in successors(b, ptr(pair)):
+            p := fn.blocks[s].phi
+            while p != 0:
+                a := phi_arg_index(p, b)
+                r := rv64_fix_arg(fn.phis[p].arg[a], i64(fn.phis[p].cls), Ocopy, -1)
+                fn.phis[p].arg[a] = r
+                p = fn.phis[p].next
+        if fn.blocks[b].exit.type == Jbranch:
+            r := rv64_fix_arg(fn.blocks[b].exit.arg, Int32, Ocopy, -1)
+            fn.blocks[b].exit.arg = r
+        for k in reverse 0..fn.blocks[b].ins.len:
+            rv64_select_instr(fn.blocks[b].ins[k])
+        take_emitted(b)
+        b = fn.blocks[b].next
+
+RV64_FORMS: array[Form, 90] = [
+    Form{Oadd, AnyInt, "add%k %=, %0, %1"},
+    Form{Oadd, AnyClass, "fadd.%k %=, %0, %1"},
+    Form{Osub, AnyInt, "sub%k %=, %0, %1"},
+    Form{Osub, AnyClass, "fsub.%k %=, %0, %1"},
+    Form{Oneg, AnyInt, "neg%k %=, %0"},
+    Form{Oneg, AnyClass, "fneg.%k %=, %0"},
+    Form{Odiv, AnyInt, "div%k %=, %0, %1"},
+    Form{Odiv, AnyClass, "fdiv.%k %=, %0, %1"},
+    Form{Orem, AnyInt, "rem%k %=, %0, %1"},
+    Form{Orem, Int64, "rem %=, %0, %1"},
+    Form{Oudiv, AnyInt, "divu%k %=, %0, %1"},
+    Form{Ourem, AnyInt, "remu%k %=, %0, %1"},
+    Form{Omul, AnyInt, "mul%k %=, %0, %1"},
+    Form{Omul, AnyClass, "fmul.%k %=, %0, %1"},
+    Form{Oand, AnyInt, "and %=, %0, %1"},
+    Form{Oor, AnyInt, "or %=, %0, %1"},
+    Form{Oxor, AnyInt, "xor %=, %0, %1"},
+    Form{Osar, AnyInt, "sra%k %=, %0, %1"},
+    Form{Oshr, AnyInt, "srl%k %=, %0, %1"},
+    Form{Oshl, AnyInt, "sll%k %=, %0, %1"},
+    Form{Olti64, AnyInt, "slt %=, %0, %1"},
+    Form{Oltu64, AnyInt, "sltu %=, %0, %1"},
+    Form{Oeqf32, AnyInt, "feq.s %=, %0, %1"},
+    Form{Ogef32, AnyInt, "fge.s %=, %0, %1"},
+    Form{Ogtf32, AnyInt, "fgt.s %=, %0, %1"},
+    Form{Olef32, AnyInt, "fle.s %=, %0, %1"},
+    Form{Oltf32, AnyInt, "flt.s %=, %0, %1"},
+    Form{Oeqf64, AnyInt, "feq.d %=, %0, %1"},
+    Form{Ogef64, AnyInt, "fge.d %=, %0, %1"},
+    Form{Ogtf64, AnyInt, "fgt.d %=, %0, %1"},
+    Form{Olef64, AnyInt, "fle.d %=, %0, %1"},
+    Form{Oltf64, AnyInt, "flt.d %=, %0, %1"},
+    Form{Ostorei8, Int32, "sb %0, %M1"},
+    Form{Ostorei16, Int32, "sh %0, %M1"},
+    Form{Ostorei32, Int32, "sw %0, %M1"},
+    Form{Ostorei64, AnyInt, "sd %0, %M1"},
+    Form{Ostoref32, Int32, "fsw %0, %M1"},
+    Form{Ostoref64, Int32, "fsd %0, %M1"},
+    Form{Oloadi8, AnyInt, "lb %=, %M0"},
+    Form{Oloadu8, AnyInt, "lbu %=, %M0"},
+    Form{Oloadi16, AnyInt, "lh %=, %M0"},
+    Form{Oloadu16, AnyInt, "lhu %=, %M0"},
+    Form{Oloadi32, AnyInt, "lw %=, %M0"},
+    Form{Oloadu32, Int32, "lw %=, %M0"}, # risc-v keeps the i32 values sign-extended in the registers
+    Form{Oloadu32, Int64, "lwu %=, %M0"},
+    Form{Oload, Int32, "lw %=, %M0"},
+    Form{Oload, Int64, "ld %=, %M0"},
+    Form{Oload, Float32, "flw %=, %M0"},
+    Form{Oload, Float64, "fld %=, %M0"},
+    Form{Oexti8, AnyInt, "sext.b %=, %0"},
+    Form{Oextu8, AnyInt, "zext.b %=, %0"},
+    Form{Oexti16, AnyInt, "sext.h %=, %0"},
+    Form{Oextu16, AnyInt, "zext.h %=, %0"},
+    Form{Oexti32, Int64, "sext.w %=, %0"},
+    Form{Oextu32, Int64, "zext.w %=, %0"},
+    Form{Otruncf64, Float32, "fcvt.s.d %=, %0"},
+    Form{Oextf32, Float64, "fcvt.d.s %=, %0"},
+    Form{Of32toi, Int32, "fcvt.w.s %=, %0, rtz"},
+    Form{Of32toi, Int64, "fcvt.l.s %=, %0, rtz"},
+    Form{Of32tou, Int32, "fcvt.wu.s %=, %0, rtz"},
+    Form{Of32tou, Int64, "fcvt.lu.s %=, %0, rtz"},
+    Form{Of64toi, Int32, "fcvt.w.d %=, %0, rtz"},
+    Form{Of64toi, Int64, "fcvt.l.d %=, %0, rtz"},
+    Form{Of64tou, Int32, "fcvt.wu.d %=, %0, rtz"},
+    Form{Of64tou, Int64, "fcvt.lu.d %=, %0, rtz"},
+    Form{Oi32tof, AnyClass, "fcvt.%k.w %=, %0"},
+    Form{Ou32tof, AnyClass, "fcvt.%k.wu %=, %0"},
+    Form{Oi64tof, AnyClass, "fcvt.%k.l %=, %0"},
+    Form{Ou64tof, AnyClass, "fcvt.%k.lu %=, %0"},
+    Form{Ocast, Int32, "fmv.x.w %=, %0"},
+    Form{Ocast, Int64, "fmv.x.d %=, %0"},
+    Form{Ocast, Float32, "fmv.w.x %=, %0"},
+    Form{Ocast, Float64, "fmv.d.x %=, %0"},
+    Form{Ocopy, AnyInt, "mv %=, %0"},
+    Form{Ocopy, AnyClass, "fmv.%k %=, %0"},
+    Form{Oswap, AnyInt, "mv %?, %0\n\tmv %0, %1\n\tmv %1, %?"},
+    Form{Oswap, AnyClass, "fmv.%k %?, %0\n\tfmv.%k %0, %1\n\tfmv.%k %1, %?"},
+    Form{Orv64seqz, AnyInt, "seqz %=, %0"},
+    Form{Orv64snez, AnyInt, "snez %=, %0"},
+    Form{Ocall, Int32, "jalr %0"},
+    Form{Oatomicload, Int32, "fence rw,rw\n\tlw %=, %M0\n\tfence r,rw"},
+    Form{Oatomicload, Int64, "fence rw,rw\n\tld %=, %M0\n\tfence r,rw"},
+    Form{Oatomicstorei32, Int32, "fence rw,w\n\tsw %0, %M1"},
+    Form{Oatomicstorei64, Int32, "fence rw,w\n\tsd %0, %M1"},
+    # a0 holds the value given and then the one memory had, t6 what memory has
+    Form{Oatomicadd, Int32, "amoadd.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicadd, Int64, "amoadd.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicswap, Int32, "amoswap.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicswap, Int64, "amoswap.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    # lr.w extends the sign, so the value it compares with does too
+    Form{Oatomiccompareswap, Int32, "sext.w %=, %=\n1:\n\tlr.w.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.w.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"},
+    Form{Oatomiccompareswap, Int64, "1:\n\tlr.d.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.d.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"}
+]
+
+# the offset of a slot from fp: the parameters on the stack are above it
+func rv64_slot_offset(r: Ref) -> i64:
+    s := ref_signed(r)
+    assert s <= fn.slots, "a slot of " + fn.name + " lies past its frame"
+    if s < 0:
+        return 8 * (0 - s)
+    return -4 * (fn.slots - s)
+
+func rv64_emit_symbol(c: Immediate):
+    assert (c.access and ThreadData) == 0, "thread data of " + fn.name + " is read as a plain symbol"
+    out(asm.symbols[c.symbol])
+    if c.bits != 0:
+        out("+")
+        asm.text += c.bits
+
+# the instruction i as fmt says: %= %0 %1 are the result and the arguments, %M before them their memory, %k the class
+# and %? the scratch
+func rv64_emit_format(fmt: &strview, i: *Instr):
+    s := items(fmt)
+    out("\t")
+    x := 0
+    while x < s.len:
+        c := s[x]
+        x += 1
+        if c != '%':
+            add_byte(asm.text, c)
+            continue
+        c = s[x]
+        x += 1
+        switch c:
+        case '?':
+            out("t6" if bank(i.cls) == 0 else "ft11")
+        case 'k':
+            if i.cls != Int64:
+                add_byte(asm.text, "wlsd"[i.cls])
+        case 'M':
+            r := i.arg[s[x] - '0']
+            x += 1
+            switch ref_kind(r):
+            case RefTemp:
+                out("0(" + RV64_NAMES[r] + ")")
+            case RefConstant:
+                rv64_emit_symbol(fn.constants[ref_value(r)])
+                # a store, or a load of a float, takes a register for the address
+                if is_store(i.op) or is_load(i.op) and bank(i.cls) == 1:
+                    out(", t6")
+            case RefSlot:
+                asm.text += rv64_slot_offset(r)
+                out("(fp)")
+        case:
+            r := i.to if c == '=' else i.arg[c - '0']
+            if ref_kind(r) == RefConstant:
+                asm.text += fn.constants[ref_value(r)].bits
+            else:
+                out(RV64_NAMES[r])
+    out("\n")
+
+func rv64_load_immediate(c: Immediate, r: i64, k: i64):
+    rn := RV64_NAMES[r]
+    if c.type == Numeric:
+        out("\tli " + rn + ", ")
+        asm.text += c.bits if wide(k) != 0 else c.bits << 32 >> 32
+        out("\n")
+        return
+    off: &strview = ""
+    if c.bits != 0:
+        off = "+" + c.bits
+    sym := asm.symbols[c.symbol]
+    switch c.access:
+    case Direct:
+        out("\tlla " + rn + ", ")
+        rv64_emit_symbol(c)
+        out("\n")
+    case ThroughGot: # lga spelled out, clang 14 lacks it
+        out("1:\n\tauipc " + rn + ", %got_pcrel_hi(")
+        rv64_emit_symbol(c)
+        out(")\n\tld " + rn + ", %pcrel_lo(1b)(" + rn + ")\n")
+    case ThreadData:
+        out("\tlui " + rn + ", %tprel_hi(" + sym + ")" + off + "\n")
+        out("\tadd " + rn + ", " + rn + ", tp, %tprel_add(" + sym + ")" + off + "\n")
+        out("\taddi " + rn + ", " + rn + ", %tprel_lo(" + sym + ")" + off + "\n")
+    case ThreadThroughGot: # initial-exec: the offset from tp is in the GOT
+        out("\tla.tls.ie " + rn + ", " + sym + "\n\tadd " + rn + ", " + rn + ", tp\n")
+
+# a symbol that is not plain, or a slot past the reach of an offset of 12 bits, goes in t6 for an access to memory
+func rv64_fix_memory(r: Ref) -> Ref:
+    if ref_kind(r) == RefConstant and fn.constants[ref_value(r)].type == Addressed and fn.constants[ref_value(r)].access != Direct:
+        rv64_load_immediate(fn.constants[ref_value(r)], T6, Int64)
+        return T6
+    if ref_kind(r) == RefSlot:
+        s := rv64_slot_offset(r)
+        if s < -2048 or s > 2047:
+            out("\tli t6, ")
+            asm.text += s
+            out("\n\tadd t6, fp, t6\n")
+            return T6
+    return r
+
+func rv64_emit_instr(i: Instr):
+    switch i.op:
+    case Onop:
+        return
+    case Osar, Oshr, Oshl:
+        # an immediate count takes 5 bits for i32 and 6 for i64, as the hardware takes the count in a register
+        if ref_kind(i.arg[1]) == RefConstant:
+            i.arg[1] = intern(fn.constants[ref_value(i.arg[1])].bits and (31 if i.cls == Int32 else 63))
+    case Ocopy:
+        if i.to == i.arg[0]:
+            return
+        if ref_kind(i.to) == RefSlot:
+            switch ref_kind(i.arg[0]):
+            case RefConstant: # through ft11, t6 may hold an address
+                rv64_load_immediate(fn.constants[ref_value(i.arg[0])], T6, i64(i.cls))
+                out("\tfmv." + ("d" if wide(i.cls) != 0 else "w") + ".x ft11, t6\n")
+                i.arg[0] = FT11
+                i.op = Ostoref64 if wide(i.cls) != 0 else Ostoref32
+            case RefSlot:
+                rv64_emit_instr(Instr{op = Oload, cls = Float64 if wide(i.cls) != 0 else Float32, to = FT11, arg = [i.arg[0], EMPTY]})
+                i.arg[0] = FT11
+                i.op = Ostoref64 if wide(i.cls) != 0 else Ostoref32
+            case:
+                i.op = i32(Ostorei32 + i64(i.cls))
+            i.arg[1] = rv64_fix_memory(i.to)
+            i.to = EMPTY
+            i.cls = Int32 # the class of a store, its width is in the op
+        elif ref_kind(i.arg[0]) == RefConstant:
+            rv64_load_immediate(fn.constants[ref_value(i.arg[0])], i64(i.to), i64(i.cls))
+            return
+        elif ref_kind(i.arg[0]) == RefSlot:
+            i.op = Oload
+            i.arg[0] = rv64_fix_memory(i.arg[0])
+    case Oatomicadd, Oatomicswap, Oatomiccompareswap:
+        i.to = A0
+    case Oaddr:
+        rn := RV64_NAMES[i.to]
+        s := rv64_slot_offset(i.arg[0])
+        if 0 - s < 2048:
+            out("\tadd " + rn + ", fp, ")
+            asm.text += s
+        else:
+            out("\tli " + rn + ", ")
+            asm.text += s
+            out("\n\tadd " + rn + ", fp, " + rn)
+        out("\n")
+        return
+    case Ocall:
+        if ref_kind(i.arg[0]) == RefConstant:
+            out("\tcall " + asm.symbols[fn.constants[ref_value(i.arg[0])].symbol] + "\n")
+            return
+    case Ostackalloc:
+        rv64_emit_format("sub sp, sp, %0", ptr(i))
+        if i.to != EMPTY:
+            rv64_emit_format("mv %=, sp", ptr(i))
+        return
+    case Odebugline:
+        emit_line(ref_value(i.arg[0]), ref_value(i.arg[1]))
+        return
+    case Odebugslot:
+        emit_slot(i.arg[1], rv64_slot_offset(i.arg[0]))
+        return
+    case Odebugmark:
+        emit_mark(i.arg[0])
+        return
+    case Oframe:
+        rv64_emit_format("mv %=, fp", ptr(i))
+        return
+    case:
+        if is_load(i.op):
+            i.arg[0] = rv64_fix_memory(i.arg[0])
+        elif is_store(i.op):
+            i.arg[1] = rv64_fix_memory(i.arg[1])
+    rv64_emit_format(format(RV64_FORMS[:], i), ptr(i))
+
+func rv64_lower_sp(n: i64):
+    if n <= 2048:
+        out("\tadd sp, sp, -")
+        asm.text += n
+    else:
+        out("\tli t6, ")
+        asm.text += n
+        out("\n\tsub sp, sp, t6")
+    out("\n")
+
+#   Stack-frame layout:
+#
+#   +=============+
+#   |  saved ra   |
+#   |  saved fp   |
+#   +-------------+ <- fp
+#   |    ...      |
+#   | spill slots |
+#   |    ...      |
+#   +-------------+
+#   |    ...      |
+#   |   locals    |
+#   |    ...      |
+#   +-------------+
+#   |   padding   |
+#   +-------------+
+#   | callee-save |
+#   |  registers  |
+#   +=============+
+func rv64_emit_function():
+    emit_function_symbol(16)
+    out("\tsd fp, -16(sp)\n\tsd ra, -8(sp)\n\tadd fp, sp, -16\n")
+    if comp.debug:
+        out("\t.cfi_def_cfa fp, 16\n\t.cfi_offset ra, -8\n\t.cfi_offset fp, -16\n")
+    frame := (16 + 4 * fn.slots + 15) and -16
+    for r in RV64_CALLEE_SAVED:
+        if (fn.used_regs and reg_bit(r)) != 0:
+            frame += 8
+    frame = (frame + 15) and -16
+    if not probing(frame):
+        rv64_lower_sp(frame)
+    else:
+        if frame >= 4096:
+            out("\tli t6, ")
+            asm.text += frame / 4096
+            out("\n1:\n\tadd sp, sp, -2048\n\tadd sp, sp, -2048\n\tsd zero, 0(sp)\n\tadd t6, t6, -1\n\tbnez t6, 1b\n")
+        if frame % 4096 != 0:
+            rv64_lower_sp(frame % 4096)
+            out("\tsd zero, 0(sp)\n")
+    off := 0
+    for r in RV64_CALLEE_SAVED:
+        if (fn.used_regs and reg_bit(r)) != 0:
+            out("\t" + ("sd " if r < FT0 else "fsd ") + RV64_NAMES[r] + ", ")
+            asm.text += off
+            out("(sp)\n")
+            if comp.debug:
+                out("\t.cfi_offset " + RV64_NAMES[r] + ", ")
+                asm.text += off - frame
+                out("\n")
+            off += 8
+    lbl := false
+    b := fn.start
+    while b != 0:
+        if lbl or fn.blocks[b].preds.len > 1:
+            out(".L")
+            asm.text += asm.blocks + fn.blocks[b].id
+            out(":\n")
+        for i in fn.blocks[b].ins:
+            rv64_emit_instr(i)
+        p := ptr(fn.blocks[b])
+        lbl = true
+        j := i64(p.exit.type)
+        if j == Jhalt:
+            out("\tunimp\n")
+        elif j == Jtable:
+            if ref_kind(p.exit.arg) == RefSlot:
+                slot := Instr{arg = [rv64_fix_memory(p.exit.arg), EMPTY]}
+                rv64_emit_format("ld t6, %M0", ptr(slot))
+                p.exit.arg = T6
+            out("\tjr " + RV64_NAMES[p.exit.arg] + "\n")
+        elif j == Jreturn:
+            if fn.dynamic_alloc:
+                if frame - 16 <= 2048:
+                    out("\tadd sp, fp, -")
+                    asm.text += frame - 16
+                else:
+                    out("\tli t6, ")
+                    asm.text += frame - 16
+                    out("\n\tsub sp, fp, t6")
+                out("\n")
+            off = 0
+            for r in RV64_CALLEE_SAVED:
+                if (fn.used_regs and reg_bit(r)) != 0:
+                    out("\t" + ("ld " if r < FT0 else "fld ") + RV64_NAMES[r] + ", ")
+                    asm.text += off
+                    out("(sp)\n")
+                    off += 8
+            if comp.debug:
+                out("\t.cfi_remember_state\n")
+            out("\tadd sp, fp, 16\n\tld ra, 8(fp)\n\tld fp, 0(fp)\n")
+            if comp.debug:
+                out("\t.cfi_def_cfa sp, 0\n\t.cfi_restore ra\n\t.cfi_restore fp\n")
+            out("\tret\n")
+            if comp.debug:
+                out("\t.cfi_restore_state\n")
+        else:
+            if j == Jbranch:
+                neg := false
+                if p.next == p.no:
+                    s := p.yes
+                    p.yes = p.no
+                    p.no = s
+                    neg = true
+                if ref_kind(p.exit.arg) == RefSlot:
+                    cond := Instr{arg = [rv64_fix_memory(p.exit.arg), EMPTY]}
+                    rv64_emit_format("lw t6, %M0", ptr(cond))
+                    p.exit.arg = T6
+                out("\tb" + ("ne" if neg else "eq") + "z " + RV64_NAMES[p.exit.arg] + ", .L")
+                asm.text += asm.blocks + fn.blocks[p.no].id
+                out("\n")
+            if p.yes != p.next:
+                out("\tj .L")
+                asm.text += asm.blocks + fn.blocks[p.yes].id
+                out("\n")
+            else:
+                lbl = false
+        b = p.next
+    emit_function_end(".L")
