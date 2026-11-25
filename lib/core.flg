@@ -2602,12 +2602,22 @@ priv func crashed(what: &strview, c: Crash, code: i32) -> never:
     trace(c)
     _exit(code)
 
-# what was written goes out, without memory and without waiting for a lock, and the locks it takes stay taken: the program ends
+# what was written goes out, without memory, and the locks it takes stay taken: the program ends
 priv func drain():
-    if try_lock(io.table):
+    if lock_soon(io.table):
         for s in io.table.value.streams:
-            if s as u64 != 0 and try_lock(s.writing):
+            if s as u64 != 0 and lock_soon(s.writing):
                 drain(s)
+
+# takes l, waiting a moment while another thread holds it, which may be in the middle of a write; a lock this thread
+# holds stays as it is, since what holds it stopped halfway
+priv func lock_soon(l: *Lock[$T]) -> bool:
+    for k in 0..10_000_000:
+        if try_lock(l):
+            return true
+        if get(l.owner) == me():
+            return false
+    return false
 
 # the functions of yours in the chain of calls, read from the frame pointers and written without memory of its own
 priv func trace(c: Crash) where not @wasm():
