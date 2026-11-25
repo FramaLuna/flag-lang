@@ -385,8 +385,9 @@ func rv64_fix_arg(r: Ref, k: i64, op: i64, n: i64) -> Ref:
     switch ref_kind(r):
     case RefConstant:
         c := fn.constants[ref_value(r)]
-        if c.type == Addressed and (c.access and ThroughGot) != 0:
-            # the address comes from the GOT, and the offset is added to it
+        if c.type == Addressed and ((c.access and ThroughGot) != 0 or c.access == ThreadData and c.bits != 0):
+            # the address comes from the GOT, or is thread data, whose offset GNU as counts twice for a local symbol in
+            # %tprel_hi(s+8), and the offset is added to it
             r1 := new_temp(Int64)
             r0 := r1
             if c.bits != 0:
