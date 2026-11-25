@@ -50,7 +50,7 @@ context wasm:
     nest: &list[i64] = heap([]) # what encloses the code, the innermost last: the block a wasm block ends before or a loop starts at, -1 for what no jump leaves
 
 # the WebAssembly module of the program, with bulk memory, simd and the conversions that saturate: wasm64 with Memory64,
-# or wasm32, whose memory instructions take the low half of an address, and where a host gives and gets a pointer as an i32
+# or wasm32, whose memory instructions take the low half of an address, and where a pointer crosses the host as an i32
 func assemble() -> &str|Fail:
     wasm.wide = comp.machine == "wasm64"
     shrink()
@@ -690,7 +690,8 @@ func stripped(name: &strview) -> &strview:
 func located(name: &strview) -> i64:
     return wasm.places[name] ifnull trust wasm.elements[name]
 
-# the code of the block x, by its place in fn.order, and of the blocks it dominates, in a loop when a jump back lands on x
+# the code of the block x, by its place in fn.order, and of the blocks it dominates, in a loop when a jump back lands on
+# x
 func tree(x: i64):
     if wasm.header[x]:
         wasm.out += "\x03\x40" # loop

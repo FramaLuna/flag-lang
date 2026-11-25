@@ -715,7 +715,7 @@ func fix_arg(r: Ref, k: i64, op: i64, n: i64, cls: i64) -> Ref:
         r1 = new_temp(Int64)
         emit(Ocopy, Int64, r1, r0, EMPTY)
     elif op != Ocopy and k == Int64 and ref_kind(r0) == RefConstant and c.type != Addressed and c.bits != c.bits << 32 >> 32:
-        # a constant wider than 32 bits goes through a long temporary, an address is 32 bits in the small code model
+        # a constant wider than 32 bits goes through an i64 temporary, an address is 32 bits in the small code model
         r1 = new_temp(Int64)
         emit(Ocopy, Int64, r1, r0, EMPTY)
     elif s != -1:
@@ -906,8 +906,8 @@ func amd64_select_instr(i: Instr):
         emit(Oextu32, Int64, r0, i.arg[0], EMPTY)
         fix_out(fn.out.len - 1, 0, k)
     case Ou64tof:
-        # past the i64 range the u64 halves, keeping its low bit for the rounding, converts as an i64 and doubles through
-        # its exponent
+        # past the i64 range the u64 halves, keeping its low bit for the rounding, converts as an i64 and doubles
+        # through its exponent
         r0 := new_temp(k)
         kc := Int64
         sh := 52
@@ -1177,7 +1177,8 @@ func match_address(a: *Addressing, r: Ref) -> bool:
     return true
 
 # constants only where allowed, immediates in 32 bits, the registers that divisions and shifts take, fast locals (the
-# constant allocs of the first block) and complex addressing modes; the use counts amd64_select_instr reads must be sound
+# constant allocs of the first block) and complex addressing modes; the use counts amd64_select_instr reads must be
+# sound
 func amd64_select():
     slot_allocs()
     num := ptr(amd64.matched)
