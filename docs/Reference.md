@@ -2072,9 +2072,9 @@ func main():
 | Target | Backend | Tier |
 |---|---|---|
 | `linux-x86_64` | `amd64_sysv` | First class |
-| `linux-arm64` | `arm64` | Second class |
+| `linux-arm64` | `arm64` | First class |
 | `linux-riscv64` | `rv64` | Second class |
-| `macos-x86_64` | `amd64_apple` | Second class |
+| `macos-x86_64` | `amd64_apple` | First class |
 | `macos-arm64` | `arm64_apple` | First class |
 | `windows-x86_64` | `amd64_win` | First class |
 | `wasm-wasm32` | `wasm` | Second class |
@@ -2083,7 +2083,7 @@ func main():
 Every backend is part of `flagc`: the native ones are in `src/backend/` (see [The backend](#the-backend)), and `src/wasm.flg` writes a WebAssembly module itself. Every native target has a bootstrap seed in `boot/`, so `./build.sh` starts from it on any of them (see [Building the compiler](#building-the-compiler)).
 
 - **First-class targets** have release archives and CI building the compiler and running all tests natively.
-- **Second-class targets** are compiled and assembled on every change (compiler, tests, and examples via `./build.sh cross`), without native execution in CI. A target moves to the first class when CI runs on it. `wasm-wasm32` and `wasm-wasm64` have their own tests, which `./test.sh` runs under `node` when it finds one, and for `wasm64` one with 64-bit memory (see [WebAssembly](#webassembly)).
+- **Second-class targets** have no release archive. CI builds the compiler for `linux-riscv64` and runs the tests under qemu, and runs the tests of `wasm-wasm32` and `wasm-wasm64` under Node on every first-class system; `./test.sh` runs them under `node` when it finds one, and for `wasm64` one with 64-bit memory (see [WebAssembly](#webassembly)). A target moves to the first class when CI runs it natively and the release carries its archive.
 
 By default, `flagc` targets the host platform. On `x86_64`, programs using `simd` require `x86-64-v2` (see [SIMD](#simd)). Use platform builtins (in a `where` or in any expression) and `where` blocks to specialize code per platform, as the standard library does.
 
@@ -2179,7 +2179,7 @@ error: unexpected end of line; expected ':'
 
 - `./build.sh seed`: regenerates the six seeds in `boot/`, one per native target, using `-target`. A seed is rewritten only when its assembly changes, since `gzip` on another system may compress the same text to other bytes. The seeds are refreshed for a release or when one can no longer build `src`, since git cannot store a compressed seed as a difference and each refresh adds about 9 MB to the history.
 - `./build.sh package`: creates `build/flag-<version>-<system>-<machine>.tar.gz`.
-- `./build.sh cross`: compiles `flagc`, all tests, and all examples for second-class targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it, so every system's `where` blocks and `rv64`'s lane-by-lane path compile on every change.
+- `./build.sh cross`: compiles `flagc`, all tests, and all examples for other targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it, so every system's `where` blocks and `rv64`'s lane-by-lane path compile on every change.
 
 #### Running the test suite (`./test.sh build/flagc`)
 

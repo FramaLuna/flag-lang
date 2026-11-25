@@ -80,7 +80,9 @@ Download the archive for your system from [releases](https://github.com/FramaLun
 | Platform | Archive |
 | --- | --- |
 | Linux (`x86_64`) | `flag-0.6.3-linux-x86_64.tar.gz` |
+| Linux (`arm64`) | `flag-0.6.3-linux-arm64.tar.gz` |
 | macOS (`arm64`) | `flag-0.6.3-macos-arm64.tar.gz` |
+| macOS (`x86_64`) | `flag-0.6.3-macos-x86_64.tar.gz` |
 | Windows (`x86_64`) | `flag-0.6.3-windows-x86_64.tar.gz` |
 
 Unpack it and add its `bin` folder to your `PATH`:
