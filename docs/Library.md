@@ -2,15 +2,15 @@
 
 Every function of the standard library, module by module.
 
-`core` is always available without `use`. Every other module is loaded with `use name`; `flagc` finds it in its built-in library, so you do not pass any extra file. If your program declares a module with the same name as a standard module, your files see yours while the standard library keeps its own. External packages are loaded with `use "path"` (see [Files, folders and the library](Reference.md#files-folders-and-the-library)).
+`core` is always available without `use`. Load any other standard module with `use name`; `flagc` finds it in its built-in library, so you pass no extra files. If your program declares a module with the same name as a standard module, your files see yours while the standard library keeps its own. External packages are loaded with `use "path"` (see [Files, folders and the library](Reference.md#files-folders-and-the-library)).
 
 - [How to read this](#how-to-read-this)
 - [core](#core): [The program](#the-program), [Files](#files), [Threads](#threads), [Memory](#memory), [Temporary memory](#temporary-memory), [Arenas](#arenas), [Lists and listviews](#lists-and-listviews), [Arrays](#arrays), [Numbers](#numbers), [simd](#simd), [Text](#text), [Printing and formatting](#printing-and-formatting), [Maps](#maps), [Fixed maps](#fixed-maps), [Indexes of your own types](#indexes-of-your-own-types), [C text](#c-text)
 - [fs](#fs): files, folders, and paths
-- [os](#os): program environment, [other programs](#other-programs), random bytes, [libraries](#libraries), and time
+- [os](#os): program environment, [other programs](#other-programs), [random bytes](#random-bytes), [libraries](#libraries), and [time](#time)
 - [json](#json): reading and writing JSON
-- [net](#net): TCP connections, [UDP](#udp), and waiting on multiple sockets
-- [math](#math): floating-point math and random numbers
+- [net](#net): TCP connections, [UDP](#udp), and [waiting for many](#waiting-for-many)
+- [math](#math): floating-point math and [random numbers](#random-numbers)
 - [utf8](#utf8): UTF-8 character helpers
 - [bits](#bits): fixed-size bit sets
 - [ring](#ring): double-ended queue
@@ -20,20 +20,20 @@ Every function of the standard library, module by module.
 
 ## How to read this
 
-Each function is listed with its parameters and return type. `$I` stands for any integer type: the `Integer` type alias from `core`, which you can also use in your own `where` clauses (`where $I is Integer`). Functions with the same name and different parameter types are overloads; each call picks the overload that fits best.
+Each function is listed with its parameter types, default values, and return type. `$I` stands for any integer type, matching the `Integer` type alias in `core` (`i8|i16|i32|i64|u8|u16|u32|u64`), which you can also use in your own `where` clauses (`where $I is Integer`). Functions with the same name and different parameter types are overloads; each call picks the overload that fits best.
 
 **Memory ownership** of returned values is marked with four terms:
 
 | Term | Lifetime and ownership |
 |---|---|
-| **yours** | Allocated on the heap; you own it and must release it with `free`. |
-| **temporary** | Allocated in scratch memory; lives until the enclosing `with scratch():` block ends (see [Temporary memory](Reference.md#temporary-memory)). Copy it to a `&str` or `&list` to keep it longer. |
-| **in the arena** | Allocated in the `Arena` you passed; lives until `free` or `clear` is called on that arena (see [Arenas](#arenas)). |
-| **a view** | Points into memory you passed in; valid only while that source lives and does not move. |
+| **yours** | Allocated on the heap. You own it and must release it with `free`. |
+| **temporary** | Allocated in scratch memory. Lives until the enclosing `with scratch():` block ends (see [Temporary memory](Reference.md#temporary-memory)). Copy it to a `&str` or `&list` to keep it longer. |
+| **in the arena** | Allocated in the `Arena` you passed. Lives until `free` or `clear` is called on that arena (see [Arenas](#arenas)). |
+| **a view** | Points into memory you passed in. Valid only while that source lives and does not move. |
 
 Functions that can fail return their error type in a union. Each module documents the error types it uses.
 
-Functions that abort the program on an invalid argument, such as an out-of-bounds index, a `File` that is not open (its descriptor is negative), or an uninitialized `Thread`, also have a trailing `place: &strview = @here()` parameter. That parameter is omitted from most signatures below so they stay concise; it lets the runtime error point at your call site and can only be passed by name (`place = p`).
+Functions that abort on an invalid argument (such as an out-of-bounds index, a `File` with a negative descriptor, or an uninitialized `Thread`) also take a trailing `place: &strview = @here()` parameter. That parameter is omitted from most signatures below to keep them short. It lets the runtime error point at your call site and can only be passed by name (`place = p`).
 
 ---
 
@@ -41,50 +41,30 @@ Functions that abort the program on an invalid argument, such as an out-of-bound
 
 ### The program
 
-- `print(values...)`: writes the values in order to `stdout`, followed by a newline. All arguments are evaluated first (just like a regular call), formatted into one line, and written with a single `write(stdout, line)` so lines from concurrent threads never interleave. Because `print` accepts mixed types, it is built into the language; user functions collect extra arguments of a single type with `..items: T` (see [Extra arguments](Reference.md#extra-arguments)).
+- `print(values...)`: writes each value in order to `stdout`, followed by a newline. Arguments are evaluated first (as in any call), formatted into one line, and written in a single `write(stdout, line)` so concurrent threads never interleave lines. Because `print` accepts mixed types, it is built into the language; user functions collect extra arguments of one type with `..items: T` (see [Extra arguments](Reference.md#extra-arguments)).
 - `eprint(values...)`: same as `print`, written to `stderr`.
-- `panic(message: &strview, place: &strview = @here()) -> never`: writes `flag: <message>`, the source location, and the call stack to `stderr`, then exits with code `134` (see [Runtime errors](Reference.md#runtime-errors)). A function with its own `place` parameter can forward it (`panic(message, place = place)`) to blame its caller; passing `place = ""` omits the location line and prints only the call stack.
-- `on_panic(hook: func(&strview, &strview))`: registers a callback that `panic` runs after printing the message and call stack and before exiting. It receives `(message, place)` for every exit-134 runtime error, including compiler-generated checks. Calling `on_panic` again replaces the previous hook, and the hook may terminate the program with `exit`. A `-shared` library has its own `core`, so the host program's `on_panic` hook does not run for runtime errors inside a loaded library.
-- `exit(code: i32) -> never`: terminates the program with `code`. Pending file output is flushed, but `defer` statements do not run.
+- `panic(message: &strview, place: &strview = @here()) -> never`: flushes pending output, writes `flag: <message>`, the source location, and (on native targets) the call stack to `stderr`, and exits with code `134` (see [Runtime errors](Reference.md#runtime-errors)). A function with its own `place` parameter can forward it (`panic(message, place = place)`) to blame its caller. Passing `place = ""` omits the location line and prints only the call stack.
+- `on_panic(hook: func(&strview, &strview))`: registers a callback that `panic` runs after printing the message and call stack and before exiting. It receives `(message, place)` for every exit-134 runtime error, including compiler-generated checks. Calling `on_panic` again replaces the previous hook, and the hook may end the program with `exit`. A `-shared` library has its own `core`, so the host's hook does not run for panics inside a loaded library.
+- `exit(code: i32) -> never`: flushes pending file output and exits with `code`. `defer` statements do not run.
 
 Command-line arguments live in `args()` in [os](#os), or in `@argc()` and `@argv()` on WebAssembly, where `os` does not build.
 
 ### Files
 
-A `File` represents an open file descriptor. `stdin`, `stdout`, and `stderr` are always open; they are constants of `core`, so no local variable may shadow their names. To open files by path, use `open_file` and `create_file` in [fs](#fs).
-
-#### Buffering and flushing
-
-Writes are buffered and sent to the OS in larger chunks so many small writes stay fast. Buffered output is flushed automatically:
-
-- when 64 KiB have accumulated,
-- when you call `flush` or `close`,
-- before starting another program,
-- when the program ends (returning from `main`, `exit`, `panic`, or a failed `assert`),
-- before the program blocks to wait: reading from any file, `ready`, `accept` or `receive` in [net](#net), reading from an empty `Channel`, `wait` on a thread or process, `sleep`, or `main` ending while threads still run, so prompts and logs appear before waiting, even when redirected to a file,
-- at every newline when the file is a terminal or `stderr`.
-
-`stdout` and `stderr` preserve the order of your calls, and both flush before reading from `stdin`. A crash flushes pending output before printing the crash report, whereas a signal such as Ctrl-C discards buffered output. On WebAssembly every file flushes at each newline, and a trap, which ends the module before its code runs again, loses the text written since the last newline. If another thread is actively writing to a file, automatic flushes (`flush()`, waits, exit, runtime errors, and crashes) flush every other file without blocking on that one, so a thread stuck sending to a slow peer cannot stall the rest of the program.
+A `File` wraps an open OS file descriptor (`File{fd}`). `stdin` (`File{0}`), `stdout` (`File{1}`), and `stderr` (`File{2}`) are always open. Because they are constants of `core`, no local variable may shadow their names. To open files by path, use `open_file` and `create_file` in [fs](#fs).
 
 #### File functions
 
-- `write(f: File, value: $T)`: formats `value` (as `print` does, without a newline) and writes it to `f`: `write(stdout, "name? ")`. Write raw bytes as text with `write(f, view(bytes))`. Values are formatted in thread-local temporary memory first and handed to the file whole, so concurrent writes from different threads never interleave.
-- `read_line(f: File) -> &strview|null|FsError`: reads the next line without its trailing `\n` or `\r\n`, **temporary**, or `null` at end of file. All other bytes are preserved, including zero bytes. Because every line allocates temporary memory, wrap line-reading loops in `with scratch():` (see the example below).
-- `read(f: File, into: *&str, size: i64) -> i64|FsError`: appends up to `size` bytes to `into` and returns the count read (`0` at end of file, or immediately when `size` is `0`). A negative `size` aborts the program.
-- `flush(f: File) -> FsError?`: flushes buffered writes now and returns the first write error since the previous `flush`. Failed writes do not prevent later writes, and writes that the OS cannot accept yet block until it can; call `try flush(out)` (or check its return value) when you need to confirm all output succeeded.
+- `write(f: File, value: $T)` and `write(f: File, text: &strview)`: formats `value` (as `print` does, without a newline) and writes it to `f`, e.g. `write(stdout, "name? ")`. Write raw bytes as text with `write(f, view(bytes))`. Values are formatted in thread-local temporary memory first and handed to the file whole, so concurrent writes from different threads never interleave.
+- `read_line(f: File) -> &strview|null|FsError`: reads the next line without its trailing `\n` or `\r\n` (**temporary**), or returns `null` at end of file. All other bytes are kept, including zero bytes. Wrap line-reading loops in `with scratch():` so temporary lines do not pile up.
+- `read(f: File, into: *&str, size: i64) -> i64|FsError`: appends up to `size` bytes to `into` and returns the count read (`0` at end of file, or immediately when `size` is `0`). A negative `size` aborts with `flag: 'read' size must be non-negative, got -1`.
+- `flush(f: File) -> FsError?`: sends buffered writes to the OS now and returns the first write error since the previous `flush`. Failed writes do not stop later writes, and writes the OS cannot accept yet block until it can. Call `try flush(out)` or check the return value to confirm output succeeded.
 - `flush()`: flushes every open file that is not currently being written by another thread.
-- `close(f: File)`: flushes buffered writes and closes `f`. `with file:` closes it automatically via `operator with`. `close` does not report write errors (call `flush` first to check them). If another thread is blocked reading `f`, `close` waits for that read to finish (on a `Socket`, closing interrupts the read, which sees end of input). Because a `File` holds a raw OS file descriptor like C, the OS gives that number to the next file that opens, and the old `File` then reads and writes that file; do not use a `File` after closing it.
-- `ready(f: File, seconds: f64 = 0.0) -> bool`: reports whether reading `f` will return data or end of file without blocking. Waits up to `seconds` (`0.0` polls immediately; a negative value waits indefinitely). Flushes pending writes first.
-- `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]`: waits until at least one file in `files` is ready or `seconds` elapses, returning the indices of the ready files (**temporary**, empty on timeout).
-- `File{fd}`: wraps a file descriptor obtained from C. A negative descriptor aborts the program: `flag: File{-1} is not an open file descriptor`.
-- `file(fd: i32, path: &strview) -> File`: wraps `fd` and attaches `path` so errors name it (`cannot write notes.txt: No space left on device`). This is how `open_file` constructs its `File`.
-
-#### Non-blocking reads, standard output errors, and pipes
-
-- **Non-blocking reads**: `ready` lets a game loop or server poll a child process's output or `stdin` without stalling a frame (when `ready(p.output)` is true, `_ = read(p.output, log, 65536)` does not wait). A `read` after `ready` will not block, though `read_line` still waits until a full line or end of file arrives. On Windows, only sockets support OS waiting, so `ready` re-checks pipes and consoles every millisecond; a console becomes ready on any keypress, though reading it may still wait for Enter.
-- **Unchecked `stdout` errors**: If writing to `stdout` fails and no `flush(stdout)` consumed the error, the program prints `flag: cannot write the standard output: No space left on device` at exit and changes a `0` exit code (including `exit(0)`) to `1`. Non-zero exit codes are kept as-is.
-- **Broken pipes**: On Linux and macOS, writing to a pipe whose reader has closed (such as `program | head` once `head` exits) terminates the program silently with `SIGPIPE`, matching C (see [Runtime errors](Reference.md#runtime-errors)). Sockets in `net` and pipes to child processes you launch return an error instead.
-- **Read-ahead and inheritance**: `stdin` buffers ahead, so a child process started after reading `stdin` will not see bytes already buffered. Files opened by the standard library are not inherited by child processes, even when another thread spawns a process concurrently.
+- `close(f: File)`: flushes buffered writes and closes `f`. `with file:` closes it automatically via `operator with`. `close` does not report write errors, so call `flush` first if you need to check them. If another thread is blocked reading `f`, `close` waits for that read to finish (on a `Socket`, closing interrupts the read, which sees end of input). Never use a `File` after closing it: like C, the OS reuses that descriptor number for the next file that opens, and the old `File` would read and write that new file.
+- `ready(f: File, seconds: f64 = 0.0) -> bool`: reports whether reading `f` will return data or end of file without blocking. Waits up to `seconds` (`0.0` polls immediately; a negative value waits indefinitely). Flushes pending writes first on native targets. On WebAssembly, validates `f` and returns `true` immediately.
+- `ready(files: &listview[File], seconds: f64 = 0.0) -> &listview[i64]`: waits until at least one file in `files` is ready or `seconds` elapses, returning the indices of the ready files (**temporary**, empty on timeout). On WebAssembly, validates every file and returns all indices immediately.
+- `File{fd}`: wraps a file descriptor obtained from C. A negative descriptor aborts: `flag: File{-1} is not an open file descriptor`.
+- `file(fd: i32, path: &strview) -> File`: wraps `fd` and attaches `path` so errors name it (`cannot write notes.txt: No space left on device`). This is how `open_file` builds its `File`. Aborts on a negative `fd`.
 
 ```flag
 use fs
@@ -125,6 +105,26 @@ func main():
         print("hello ", name)
 ```
 
+#### Buffering, flushing, and pipes
+
+Writes are buffered and sent to the OS in larger chunks so many small writes stay fast. Buffered output flushes automatically:
+
+- when 64 KiB have accumulated,
+- when you call `flush` or `close`,
+- before starting another program,
+- when the program ends (returning from `main`, `exit`, `panic`, or a failed `assert`),
+- before blocking or polling: reading from any file, `ready`, `accept` or `receive` in [net](#net), reading from an empty `Channel`, `wait` on a thread or process, `done` on a `Process`, `sleep`, or `main` ending while threads still run (so prompts and logs appear before waiting, even when redirected to a file),
+- at every newline when the file is a terminal or `stderr`.
+
+Details to keep in mind:
+
+- **Stream order and crashes**: `stdout` and `stderr` preserve call order, and both flush before reading from `stdin`. A crash flushes pending output before printing the crash report, while a signal such as Ctrl-C discards buffered output. On WebAssembly, every file flushes at each newline, and a trap ends the module before its code runs again, losing text written since the last newline.
+- **Concurrent writers**: if another thread is actively writing to a file, automatic flushes (`flush()`, waits, exit, runtime errors, and crashes) skip that file and flush every other file without blocking. A thread stuck sending to a slow peer cannot stall the rest of the program.
+- **Non-blocking reads**: `ready` lets a game loop or server poll a child process's output or `stdin` without stalling a frame. A `read` after `ready` returns `true` does not block (`_ = read(p.output, log, 65536)` after `ready(p.output)`); `read_line` still waits until a full line or end of file arrives. On Windows, only sockets support OS waiting, so `ready` re-checks pipes and consoles every millisecond. A Windows console becomes ready on any keypress, though reading it may still wait for Enter.
+- **Unchecked `stdout` errors**: if writing to `stdout` fails and no `flush(stdout)` consumed the error, the program prints `flag: cannot write the standard output: No space left on device` at exit and turns a `0` exit code (including `exit(0)`) into `1`. Non-zero exit codes are kept as-is.
+- **Broken pipes**: on Linux and macOS, writing to a pipe whose reader has closed (such as `program | head` once `head` exits) terminates the program silently with `SIGPIPE`, matching C (see [Runtime errors](Reference.md#runtime-errors)). Sockets in `net` and pipes to child processes you launch return an error instead.
+- **Read-ahead and inheritance**: `stdin` buffers ahead, so a child process started after reading `stdin` will not see bytes already buffered. Files opened by the standard library are not inherited by child processes, even when another thread spawns a process concurrently.
+
 #### `FsError` and OS error codes
 
 OS failures in `core`, `fs`, and `os` return `FsError`:
@@ -136,39 +136,41 @@ type error FsError:
     path: &strview   # the path, program, or address passed in
 ```
 
-Printing an `FsError` formats all three fields using the OS message for `code`, for example `cannot open notes.txt: No such file or directory`. For a failed `read`, `read_line`, or `flush`, `path` is a **temporary** copy of the path the file was opened or created with, or that `file` gave, or `the standard input`, `the standard output`, or `the error output` for the standard streams. A negative `code` represents an error with no `errno` equivalent (such as a Windows error code that does not map to `errno`). On WebAssembly `code` is the error number of WASI, which differs from `errno`, and prints as `WASI error 8`.
+Printing an `FsError` formats all three fields using the OS message for `code`, for example `cannot open notes.txt: No such file or directory`. For a failed `read`, `read_line`, or `flush`, `path` is a **temporary** copy of the path given to `open_file`, `create_file`, or `file`, or `the standard input`, `the standard output`, or `the error output` for the standard streams.
 
-- `errno() -> i32`: the error code of the last failed C call, or on WebAssembly of the last failed call of WASI. Useful after your own `extern` calls: `eprint(FsError{errno(), "lock", path})`.
+A negative `code` holds an error with no `errno` equivalent (such as a Windows error code that does not map to `errno`). `TIMED_OUT` (`-10060`) is a constant of `core` for expired timeouts on every system, printed as `the timeout ran out` in place of the OS message (`cannot read: the timeout ran out`). On WebAssembly, `code` is the WASI error number, which differs from `errno` and prints as `WASI error 8`.
+
+- `errno() -> i32`: error code of the last failed C call, or on WebAssembly of the last failed WASI call. Useful after your own `extern` calls: `eprint(FsError{errno(), "lock", path})`.
 - `windows_errno(code: u32) -> i32`: maps a Windows `GetLastError()` code to its C `errno`, or returns `-i32(code)` when no `errno` matches: `FsError{windows_errno(GetLastError()), "lock", path}`.
 
 ### Threads
 
-`parallel f(x)` and `Thread[T]` are built into the language (see [Threads](Reference.md#threads)). `core` provides synchronization and thread control:
+`parallel f(x)` and `Thread[T]` are built into the language (see [Threads](Reference.md#threads)). `core` provides thread waiting, locks, and channels. All `core` file functions (including `print`) are safe to call from any thread.
 
 #### Waiting on threads
 
-- `wait(t: Thread[$T]) -> $T`: waits for `t` to finish and returns its result (`null` for `Thread[null]`). It frees the thread's control block (so each thread may be waited only once) and transfers the thread's temporaries into the waiting thread's scratch memory. Declaring your own `wait` for `Thread` is a compile error (`'wait' on Thread is built into the language and cannot be redeclared`), while `wait` for any other type is a normal overload. Calling `wait` on a zero-initialized `Thread` aborts: `flag: 'wait' called on an uninitialized (never started) Thread`.
-- `done(t: Thread[$T]) -> bool`: returns `true` if `t` has finished, without blocking. A subsequent `wait(t)` returns immediately. Data written by the thread is only safe to read after `wait(t)`, not after `done(t)` (reading in between is a data race, and `-memory` warns). Calling `done` on an uninitialized `Thread` aborts: `flag: 'done' called on an uninitialized (never started) Thread`.
+- `wait(t: Thread[$T]) -> $T`: waits for `t` to finish and returns its result (`null` for `Thread[null]`). Frees the thread's control block (so each thread may be waited only once) and transfers its temporaries into the waiting thread's scratch memory. Declaring your own `wait` for `Thread` is a compile error (`'wait' on Thread is built into the language and cannot be redeclared`); `wait` for any other type is a normal overload. Calling `wait` on a zero-initialized `Thread` aborts: `flag: 'wait' called on an uninitialized (never started) Thread`.
+- `done(t: Thread[$T]) -> bool`: returns `true` if `t` has finished, without blocking, so a following `wait(t)` returns immediately. Data written by the thread is only safe to read after `wait(t)`, not after `done(t)` (reading in between is a data race, and `-memory` warns). Calling `done` on an uninitialized `Thread` aborts: `flag: 'done' called on an uninitialized (never started) Thread`.
 
 #### Locks (`Lock[$T]`)
 
-`Lock[$T]` guards a value stored in its `.value` field so only one thread accesses it at a time. Use `Lock[null]` to guard a section of code with no associated value. Writing bare `Lock` is a compile error: `Lock requires one type argument for the guarded value: Lock[i64], or Lock[null] when guarding code only`.
+`Lock[$T]` guards a value in its `.value` field so only one thread accesses it at a time. Use `Lock[null]` to guard code with no value. Writing bare `Lock` fails to compile: `Lock requires one type argument for the guarded value: Lock[i64], or Lock[null] when guarding code only`.
 
-A `Lock` works at zero with no initialization (`count: Lock[i64]`, then `count.value += 1` inside `with lock(count):`). Locks are reentrant: a thread that already holds a lock can acquire it again without deadlocking, including across calls between a host program and a loaded Flag library.
+A `Lock` works at zero with no initialization (`count: Lock[i64]`, then `count.value += 1` inside `with lock(count):`). Locks are reentrant: a thread that already holds a lock can acquire it again without deadlocking, including across calls between a host program and a loaded Flag library. On WebAssembly, there is one thread and a `Lock` never waits.
 
-Pass locks by pointer (`*Lock[$T]`), since copying a `Lock` produces an independent lock. Under `-memory`, the checker warns if `.value` is accessed outside `with lock(x):` while another thread uses that lock (locks held by a caller count for functions it calls), or if an active lock is copied.
+Pass locks by pointer (`*Lock[$T]`), because copying a `Lock` makes an independent lock. Under `-memory`, the checker warns if `.value` is accessed outside `with lock(x):` while another thread uses that lock (locks held by a caller count for functions it calls), or if an active lock is copied.
 
 - `lock(l: *Lock[$T]) -> Locked`: waits until no other thread holds `l`, then acquires it.
 - `operator with(held: Locked)`: releases the lock when the `with lock(x):` block exits.
 
 #### Channels (`Channel[$T, $$size]`)
 
-`Channel[$T, $$size]` is a fixed-capacity, thread-safe queue holding up to `size` values inline (no heap allocation, ready to use at zero; declare it where it lives and pass `*Channel`). `size` must be at least 1: `send`, `receive` and `for` on a channel of size `0` fail to compile with `a channel holds at least one value, its size cannot be 0`.
+`Channel[$T, $$size]` is a fixed-capacity, thread-safe queue holding up to `size` values inline. It does no heap allocation and works at zero; declare it where it lives and pass `*Channel`. `size` must be at least `1`: `send`, `receive`, and `for` on a channel of size `0` fail to compile with `a channel holds at least one value, its size cannot be 0`.
 
-Its internal lock is exposed as `c.queue`. If a thread holds `with lock(c.queue):` and then blocks in `send` or `receive`, the program aborts rather than deadlocking: `flag: deadlock: channel blocked while holding its own queue lock ('with lock(c.queue)'), preventing other threads from making progress`.
+Its internal lock is exposed as `c.queue`. Blocking in `send` or `receive` while holding `with lock(c.queue):` aborts instead of deadlocking: `flag: deadlock: channel blocked while holding its own queue lock ('with lock(c.queue)'), preventing other threads from making progress`. On WebAssembly, any blocking `send` or `receive` aborts: `flag: deadlock: channel blocked on the only thread; no other thread can send or receive`.
 
 - `send(c: *Channel[$T, $$size], v: $T)`: appends `v`, blocking while the channel is full. Sending on a closed channel aborts: `flag: cannot send on a closed channel`.
-- `receive(c: *Channel[$T, $$size]) -> $T|null`: removes and returns the oldest value, flushing pending output before blocking if empty. Returns `null` once the channel is closed and empty. On a channel of `T?`, a sent `null` looks identical to closure; iterate with `for v in c` instead.
+- `receive(c: *Channel[$T, $$size]) -> $T|null`: removes and returns the oldest value, flushing pending output before blocking if empty. Returns `null` once the channel is closed and empty. On a channel of `T?`, a sent `null` looks the same as closure; iterate with `for v in c` instead.
 - `close(c: *Channel[$T, $$size])`: closes `c`. Queued values can still be received; afterward `receive` returns `null`. `with c:` calls `close(c)` when the block exits.
 - `for v in c`: receives values until `c` is closed and empty.
 
@@ -176,13 +178,11 @@ Its internal lock is exposed as `c.queue`. If a thread holds `with lock(c.queue)
 
 `atomic[T]` holds an `i32`, `u32`, `i64`, `u64`, or pointer updated lock-free by concurrent threads. Like `simd`, it and its operations belong to the language (see [Atomics](Reference.md#atomics)):
 
-- `get(a) -> T`: atomic load
-- `set(a, v)`: atomic store
-- `add(a, n) -> T`: atomic fetch-and-add (returns the previous value)
-- `swap(a, v) -> T`: atomic exchange (returns the previous value)
-- `compare_swap(a, old, new) -> bool`: writes `new` only if `a` equals `old`, returning whether it succeeded
-
-All `core` file functions (including `print`) are safe to call from any thread.
+- `get(a) -> T`: atomic load.
+- `set(a, v)`: atomic store.
+- `add(a, n) -> T`: atomic fetch-and-add, returning the previous value.
+- `swap(a, v) -> T`: atomic exchange, returning the previous value.
+- `compare_swap(a, old, new) -> bool`: writes `new` only if `a` equals `old`, returning whether it succeeded.
 
 ```flag
 use os
@@ -225,13 +225,13 @@ func main():
 #### Heap allocation
 
 - `heap(v: $T) -> *$T`: copies `v` onto the heap (**yours**).
-- `heap(text: &strview) -> &str`: allocates an owning `&str` copy on the heap (**yours**), e.g. `heap("text")`.
-- `heap(items: &listview[$T]) -> &list[$T]`: allocates an owning `&list` copy (**yours**).
-- `heap(items: array[$T, $$n]) -> &list[$T]`: allocates an owning `&list` copied from an array or literal (**yours**). The literal determines the element type: `heap([u8(1), 2])` is `&list[u8]`.
-- `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`: allocates an owning `&map` copied from a fixed map or map literal (**yours**), e.g. `heap({"a": 1})`.
-- `heap(pairs: &map[$K, $V]) -> &map[$K, $V]`: allocates a copy of a `&map` (**yours**).
+- `heap(text: &strview) -> &str`: owning `&str` copy (**yours**), e.g. `heap("text")`.
+- `heap(items: &listview[$T]) -> &list[$T]`: owning `&list` copy (**yours**).
+- `heap(items: array[$T, $$n]) -> &list[$T]`: owning `&list` copied from an array or literal (**yours**). The literal sets the element type: `heap([u8(1), 2])` is `&list[u8]`.
+- `heap(pairs: fixmap[$K, $V, $$n]) -> &map[$K, $V]`: owning `&map` copied from a fixed map or map literal (**yours**), e.g. `heap({"a": 1})`.
+- `heap(pairs: &map[$K, $V]) -> &map[$K, $V]`: owning copy of a `&map` (**yours**).
 - `heap(items: emptyarray) -> &list[never]`, `heap(pairs: emptyfixmap) -> &map[never, never]`, and `heap("")`: empty heap-backed owners that do not allocate until they grow (`names: &list[&strview] = heap([])`). `&list[never]` converts to any `&list[T]`, and `&map[never, never]` to any `&map[K, V]`.
-- `free(p: *$T)`: releases a single heap allocation returned by `heap(v: $T)`. If `p` points to a `&str`, `&list`, `&map`, or `Arena` (for example from `heap(Arena{})`), `free(p)` invokes that type's `free` instead; cast to `free(p as *bytes)` to free the outer heap block itself. Memory allocated in an `Arena` is freed by its arena, not `free(p)`. Freeing a stack variable is a compile error: `cannot free stack memory x; free() only releases heap allocations`.
+- `free(p: *$T)`: releases a heap allocation returned by `heap(v: $T)`. If `p` points to a `&str`, `&list`, `&map`, or `Arena` (for example from `heap(Arena{})`), `free(p)` calls that type's own `free` instead; cast to `free(p as *bytes)` to free the outer heap block itself. Arena allocations are freed by their arena, not `free(p)`. Freeing a stack variable fails to compile: `cannot free stack memory x; free() only releases heap allocations`.
 
 #### Language primitives
 
@@ -242,7 +242,7 @@ func main():
 
 `core` exposes these C standard library functions directly (`*bytes` corresponds to `void *`, `cstr` to `char *`):
 
-| Function | Signature |
+| Group | Signatures |
 |---|---|
 | Allocation | `malloc(size: i64) -> *bytes`, `calloc(count: i64, size: i64) -> *bytes`, `realloc(at: *bytes, size: i64) -> *bytes`, `free(at: *bytes)` |
 | Memory ops | `memcpy(to: *bytes, from: *bytes, size: i64) -> *bytes`, `memmove(to: *bytes, from: *bytes, size: i64) -> *bytes`, `memset(to: *bytes, byte: i32, size: i64) -> *bytes`, `memcmp(a: *bytes, b: *bytes, size: i64) -> i32`, `memchr(at: *bytes, byte: i32, size: i64) -> *bytes` |
@@ -250,13 +250,13 @@ func main():
 
 `*bytes` supports byte-level pointer arithmetic with `+` and `-`, so `memcpy(to + 8, from, n)` writes 8 bytes past `to` (see [Arithmetic](Reference.md#arithmetic)).
 
-On WebAssembly there is no C library: `core` writes these functions in Flag over the memory of the module, except `snprintf`, which is missing (see [WebAssembly](Reference.md#webassembly)).
+On WebAssembly there is no C library: `memcpy`, `memmove`, and `memset` are WebAssembly instructions; `malloc`, `calloc`, `realloc`, `free`, `memcmp`, `memchr`, `strlen`, and `strtod` are written in Flag in `core` over the module's memory; and `snprintf` is not available (see [WebAssembly](Reference.md#webassembly)).
 
 #### Out of memory and `try_reserve`
 
 - `out_of_memory() -> never`: flushes pending output without allocating, writes `flag: out of memory` to `stderr`, and exits immediately with code `9`. The library calls it when allocation fails, and you can call it after your own `malloc`.
 
-Programs that must recover from allocation failure (such as a game engine loading a level) can preallocate with `try_reserve`, which returns `NoMemory` instead of exiting, and then populate the container without allocating. `try_reserve` is available on `&list`, `&str`, `&map`, and `Arena`.
+Programs that must recover from allocation failure (such as a game engine loading a level) can preallocate with `try_reserve`, which returns `NoMemory` instead of exiting, and then fill the container without allocating. `try_reserve` is available on `&list`, `&str`, `&map`, and `Arena`.
 
 ```flag
 type Enemy:
@@ -269,7 +269,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
     return null
 ```
 
-`try_reserve` allocates a new block and copies existing data into it, leaving the original data intact if allocation fails. A negative size or a byte count that overflows `i64` also returns `NoMemory` without asking the OS, whereas `reserve` aborts with `flag: out of memory`.
+For `&list`, `&str`, and `&map`, `try_reserve` allocates a new block and copies existing data into it, leaving the original intact if allocation fails. For `Arena`, it ensures room without copying existing data. A negative size or a byte count that overflows `i64` returns `NoMemory` without asking the OS, whereas `reserve` aborts with `flag: out of memory`.
 
 ### Temporary memory
 
@@ -280,7 +280,7 @@ func load(enemies: *&list[Enemy], count: i64) -> NoMemory?:
 
 ### Arenas
 
-An `Arena` carves allocations from large heap blocks and frees them all at once. It starts empty and allocates blocks of 64 KiB (or larger when a single request exceeds 64 KiB). A `&str`, `&list`, or `&map` created in an arena grows inside that arena, and calling `free` on it only empties it without freeing memory.
+An `Arena` carves allocations from large heap blocks and frees them all at once. It starts empty and allocates blocks of 64 KiB, or larger when a single request exceeds 64 KiB. A `&str`, `&list`, or `&map` created in an arena grows inside that arena, and calling `free` on it only empties it without freeing memory.
 
 - `arena(a: *Arena, v: $T) -> *$T`: copies `v` **in the arena**, like `heap(v)`.
 - `arena(a: *Arena, text: &strview) -> &str`: copies `text` **in the arena**.
@@ -291,36 +291,36 @@ An `Arena` carves allocations from large heap blocks and frees them all at once.
 - `arena(a: *Arena, items: emptyarray) -> &list[never]` and `arena(a: *Arena, pairs: emptyfixmap) -> &map[never, never]`: empty arena-backed owners (`enemies: &list[Enemy] = arena(level, [])`; see [Arenas](Reference.md#arenas)).
 - `clear(a: *Arena)`: resets the arena, releasing all allocations while keeping its blocks for reuse.
 - `free(a: *Arena)`: frees all blocks and resets the arena to empty, ready to reuse.
-- `reserve(a: *Arena, size: i64)`: ensures room for `size` bytes so subsequent allocations up to that size do not request a new heap block. Each allocation is rounded up to the arena's alignment.
+- `reserve(a: *Arena, size: i64)`: ensures room for `size` bytes so later allocations up to that size do not ask for a new heap block. Each allocation is rounded up to the arena's 16-byte alignment.
 - `try_reserve(a: *Arena, size: i64) -> NoMemory?`: same as `reserve`, returning `NoMemory` if the OS is out of memory.
 
-`Arena` fields: `count` (blocks currently in use), `used` (bytes used in the active block), and `blocks` (all allocated blocks). Printing an `Arena` shows `count` and `used`, never the contents of its blocks.
+`Arena` has fields `count` (blocks in use), `used` (bytes used in the active block), and `blocks` (all allocated blocks). Printing an `Arena` shows `count` and `used`, never the contents of its blocks.
 
-An `Arena` is not thread-safe without synchronization: give each thread its own arena, or guard shared access with a `Lock`.
+An `Arena` is not thread-safe on its own: give each thread its own arena, or guard shared access with a `Lock`.
 
 ### Lists and listviews
 
 A `&listview[$T]` is a non-owning view of elements; a `&list[$T]` is an owning, growable list. Lists get their backing memory from `heap` or `arena` (`heap([])` for an empty heap list), `[]` is the empty listview, and any `&list[$T]` converts implicitly to `&listview[$T]`. Growing an uninitialized list aborts: `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])` (see [Fat pointers](Reference.md#fat-pointers)).
 
-#### Built-in operations (lists and listviews)
+#### Built-in operations
 
-- `s[i]`: reads or assigns element `i`. A compile-time-known negative index (literal or constant) counts from the end (`s[-1]` is the last element). Any out-of-bounds index, including a runtime-computed negative index, aborts the program (see [Runtime errors](Reference.md#runtime-errors)).
+- `s[i]`: reads or assigns element `i`. A compile-time-known negative index (literal or constant) counts from the end (`s[-1]` is the last element). Any out-of-bounds index, including a runtime-computed negative index, aborts (see [Runtime errors](Reference.md#runtime-errors)).
 - `s[a:b]`: **a view** of elements `a` through `b - 1`. Compile-time negative bounds count from the end; `s[a:]` runs to the end and `s[:b]` starts at `0`. Invalid bounds (`a > b` or out of range) abort.
 - `for x in s`, `for i, x in s`, and `for x in reverse s`: iterate over elements.
 - `a == b`: compares element by element; `print` formats as `[1, 2, 3]`.
 
-#### Mutating lists (`&list[$T]`)
+#### Mutating `&list[$T]`
 
-- `append(l: *&list[$T], v: $T)`: appends `v`. The first allocation reserves room for 8 elements, and capacity doubles thereafter.
+- `append(l: *&list[$T], v: $T)`: appends `v`. The first allocation reserves room for 8 elements, and capacity doubles after that.
 - `append(l: *&list[$T], items: &listview[$T])`: appends all elements of `items` (safe even when `items` views `l` itself).
 - `reserve(l: *&list[$T], want: i64)`: ensures capacity for at least `want` elements so appends up to `want` do not allocate.
 - `try_reserve(l: *&list[$T], want: i64) -> NoMemory?`: same, returning `NoMemory` without modifying `l` if allocation fails (see [Memory](#memory)).
-- `insert(l: *&list[$T], at: $I, v: $T)`: inserts `v` at `at` (up to `l.len`), shifting later elements right. Like all position-taking functions, `at` counts from `0` and a negative index aborts.
+- `insert(l: *&list[$T], at: $I, v: $T)`: inserts `v` at `at` (`0` to `l.len`), shifting later elements right. Like all position-taking functions, `at` counts from `0` and a negative index aborts.
 - `pop(l: *&list[$T]) -> $T|null`: removes and returns the last element, or `null` if empty. On a `&list[T?]`, a stored `null` looks the same as empty; check `l.len` first.
 - `remove(l: *&list[$T], at: $I) -> $T`: removes and returns the element at `at`, shifting later elements left.
 - `clear(l: *&list[$T])`: sets length to `0`, keeping allocated capacity.
 - `free(l: *&list[$T])`: releases the list's memory and resets it to empty (in an arena, resets it without freeing). Does not free elements that own memory; free those first.
-- `l = items`: when `items` is a `&listview[$T]`, copies its elements into `l`, reusing `l`'s buffer. Assigning one `&list` to another shares the same backing buffer instead of copying; write `l = other[:]` to copy into `l`, or `heap(items)` for a new list.
+- `l = items` (`items: &listview[$T]`): copies `items` into `l`, reusing `l`'s buffer. Assigning one `&list` to another shares its buffer instead of copying; write `l = other[:]` to copy into `l`, or `heap(items)` for a new list.
 
 #### Searching, sorting, and reordering (`&listview[$T]` and `&list[$T]`)
 
@@ -333,7 +333,7 @@ A `&listview[$T]` is a non-owning view of elements; a `&list[$T]` is an owning, 
 - `flip(items: &listview[$T])`: reverses the elements in place.
 - `swap(s: &listview[$T], i: $I, j: $I)`: swaps elements `i` and `j`.
 
-Pass an array to any listview function via `ptr`: `sort(ptr(values))`.
+Pass an array to any listview function with `ptr`: `sort(ptr(values))`.
 
 ### Arrays
 
@@ -350,7 +350,7 @@ Arrays do not support element-wise arithmetic; use [simd](#simd) for lane-wise o
 - `abs(x: $T) -> $T`: absolute value for signed integers (`i8`, `i16`, `i32`, `i64`) and floats (`f32`, `f64`). For the most negative value of a signed integer type there is no positive counterpart, so it wraps back to itself (`abs(i8(-128))` is `-128`). For floats, `abs` clears the sign bit like C's `fabs`, so `abs(-0.0)` is `0.0` and a negative NaN becomes positive.
 - `lerp(a: $T, b: $T, t: $T) -> $T`: linear interpolation for `f32` and `f64` (`a` when `t` is `0.0`, `b` when `t` is `1.0`).
 
-Transcendental and rounding functions (`sqrt`, `sin`, `floor`, etc.) are in [math](#math).
+Transcendental and rounding functions (`sqrt`, `sin`, `floor`, etc.) live in [math](#math).
 
 ### simd
 
@@ -367,48 +367,48 @@ These lane-wise operations are built into the language alongside `simd` operator
 
 ### Text
 
-A `&strview` is a read-only view of bytes; a `&str` is owning, growable text. Text literals have type `&strview`, and `&str` converts implicitly to `&strview`. Text stores raw bytes, and the library interprets it as UTF-8.
+A `&strview` is a read-only view of bytes; a `&str` is owning, growable text. Text literals have type `&strview`, and `&str` converts implicitly to `&strview`. Text stores raw bytes, and the library interprets it as UTF-8. Growing an uninitialized `&str` aborts: `flag: this &str has no memory to grow in: give it heap("") or arena(a, "")`.
 
 #### Built-in operations
 
 - `s[i] -> u8`: byte at index `i` (compile-time negative indices count from the end). Assigning `s[i] = b` works on `&str`, while `&strview` is read-only (`&strview is read-only; mutate the owning &str instead`).
 - `s[a:b] -> &strview`: **a view** of bytes `a` through `b - 1` (`s[a:]` to the end, `s[:b]` from `0`).
-- `for c in s` and `for c in reverse s`: yields each UTF-8 character as a `&strview`. Any byte that does not belong to a valid UTF-8 sequence (including overlong encodings, surrogates, and code points above `U+10FFFF`) is yielded alone as a 1-byte view. Forward and reverse iteration produce the exact same pieces, matching `count_chars`, `valid_utf8`, and `first_code` in [utf8](#utf8).
+- `for c in s` and `for c in reverse s`: yields each UTF-8 character as a `&strview`. Any byte outside a valid UTF-8 sequence (including overlong encodings, surrogates, and code points above `U+10FFFF`) is yielded alone as a 1-byte view. Forward and reverse iteration produce the exact same pieces, matching `count_chars`, `valid_utf8`, and `first_code` in [utf8](#utf8).
 - `a == b` and `a < b`: compare byte by byte.
 - `"a" + x`: concatenates text with any printable value (**temporary**).
 
 #### Building and modifying `&str`
 
-- `s += x`: appends any printable value to `s`.
-- `s = text`: when `text` is a `&strview`, copies its bytes into `s`, reusing `s`'s buffer. Assigning one `&str` to another shares the buffer instead of copying; write `s = view(other)` to copy into `s`, or `heap(text)` for a new `&str`.
-- `add_byte(s: *&str, b: u8)`: appends a single byte.
+- `s += x`: appends any printable value to `s` (safe even when appending a view into `s` itself).
+- `s = text` (`text: &strview`): copies `text` into `s`, reusing `s`'s buffer. Assigning one `&str` to another shares its buffer instead of copying; write `s = view(other)` to copy into `s`, or `heap(text)` for a new `&str`.
+- `add_byte(s: *&str, b: u8)`: appends one byte.
 - `add_char(s: *&str, code: u32)`: appends the Unicode code point encoded as UTF-8, substituting `U+FFFD` for surrogates and values above `0x10FFFF`.
-- `reserve(s: *&str, want: i64)`: ensures capacity for at least `want` bytes so appends up to `want` do not allocate.
+- `reserve(s: *&str, want: i64)`: ensures capacity for at least `want` bytes so appends up to `want` do not allocate. The first allocation reserves at least 32 bytes.
 - `try_reserve(s: *&str, want: i64) -> NoMemory?`: same, returning `NoMemory` on allocation failure.
 - `view(s: &str) -> &strview`: **a view** of `s`.
 - `free(s: *&str)`: releases `s`'s memory and leaves it empty (in an arena, empties it without freeing).
 
 #### Searching, slicing, and transforming
 
-- `find(s: &strview, part: &strview) -> i64|null`: byte index of the first occurrence of `part`.
-- `find_last(s: &strview, part: &strview) -> i64|null`: byte index of the last occurrence of `part`.
+- `find(s: &strview, part: &strview) -> i64|null`: byte index of the first occurrence of `part` (`0` when `part` is empty).
+- `find_last(s: &strview, part: &strview) -> i64|null`: byte index of the last occurrence of `part` (`s.len` when `part` is empty).
 - `contains(s: &strview, part: &strview) -> bool`: whether `part` occurs in `s`.
 - `starts_with(s: &strview, head: &strview) -> bool` and `ends_with(s: &strview, tail: &strview) -> bool`: prefix and suffix checks.
 - `trim(s: &strview) -> &strview`, `trim_start(s: &strview) -> &strview`, and `trim_end(s: &strview) -> &strview`: **a view** with ASCII whitespace (`' '`, `'\t'`, `'\n'`, `'\r'`) stripped from both ends, the start, or the end.
 - `split(s: &strview, separator: &strview) -> &listview[&strview]`: parts separated by `separator`, as views of `s` inside a **temporary** listview. Always returns at least one part; an empty separator returns `[s]`.
-- `words(s: &strview) -> &listview[&strview]`: non-empty runs separated by `' '`, `'\t'`, `'\n'`, and `'\r'`, as views of `s` inside a **temporary** listview, for example to count them with `counts[w] += 1` in `for w in words(text):`.
-- `replace(s: &strview, old: &strview, new: &strview) -> &strview`: replaces every occurrence of `old` with `new` (**temporary**).
+- `words(s: &strview) -> &listview[&strview]`: non-empty runs separated by `' '`, `'\t'`, `'\n'`, and `'\r'`, as views of `s` inside a **temporary** listview, e.g. to count them with `counts[w] += 1` inside `for w in words(text):`.
+- `replace(s: &strview, old: &strview, new: &strview) -> &strview`: replaces every occurrence of `old` with `new` (**temporary**). An empty `old` returns a temporary copy of `s`.
 - `join(parts: &listview[$T], separator: &strview) -> &strview`: joins any printable elements with `separator` between them (**temporary**).
 - `lower(s: &strview) -> &strview` and `upper(s: &strview) -> &strview`: converts ASCII letters to lowercase or uppercase (**temporary**).
-- `items(s: &strview) -> &listview[u8]`: **a view** of the underlying bytes. Writing through it into a text literal crashes the program because literals live in read-only memory.
+- `items(s: &strview) -> &listview[u8]`: **a view** of the underlying bytes. Writing through it into a text literal crashes on native targets because literals live in read-only memory (and modifies the literal on WebAssembly).
 - `view(bytes: &listview[u8]) -> &strview`: **a view** reinterpreting bytes as text.
 
 #### Parsing numbers
 
 All three parse the entire string with no leading or trailing whitespace, returning `null` if invalid:
 
-- `parse_int(s: &strview) -> i64|null`: decimal digits with an optional `+` or `-`; returns `null` if the value overflows `i64`.
-- `parse_float(s: &strview) -> f64|null`: decimal float with optional sign, decimal point, and exponent, or `inf`/`nan` (e.g. `1.5`, `-2e3`, `.5`, `-inf`).
+- `parse_int(s: &strview) -> i64|null`: decimal digits with an optional `+` or `-`; returns `null` on `i64` overflow.
+- `parse_float(s: &strview) -> f64|null`: decimal float with optional sign, decimal point, and exponent, or lowercase `inf`/`nan` with optional sign (e.g. `1.5`, `-2e3`, `.5`, `-inf`).
 - `parse_hex(s: &strview) -> u64|null`: 1 to 16 hexadecimal digits without a `0x` prefix.
 
 ### Printing and formatting
@@ -416,48 +416,50 @@ All three parse the entire string with no leading or trailing whitespace, return
 `print`, `eprint`, `+`, and `+=` on text format values using `operator +=(s: *&str, x: T)`. `core` provides formatters for:
 
 - **integers** (decimal) and **`bool`** (`true` or `false`),
-- **floats** (the fewest digits that round-trip to the same float, such as `0.1` and `2.0`, switching to scientific notation for very large or small numbers like `1e+16` and `1e-05`; non-finite values print as `inf`, `-inf`, and `nan`),
+- **floats**: the fewest digits that round-trip to the same float (such as `0.1` and `2.0`), switching to scientific notation for very large or small numbers (like `1e+16` and `1e-05`); non-finite values print as `inf`, `-inf`, and `nan`,
 - **pointers** (hexadecimal),
 - **lists and listviews** (`[1, 2]`), and **maps and fixed maps** (`{a: 1, b: 2}`).
 
 Three formatting helpers wrap values for `print` and `+`:
 
-- `fixed(value: f64, places: i32) -> Fixed` and `fixed(value: f32, places: i32) -> Fixed`: formats with `places` decimal digits, rounding ties to even (`fixed(2.5, 0)` is `2`). Values rounding to zero drop the minus sign (`fixed(-0.4, 0)` is `0`), and negative `places` count as `0`.
-- `hex(value: $I, digits: i32 = 0) -> Hex`: formats an integer in hexadecimal with a `0x` prefix and no leading zeros, using the bit width of its type for negative numbers (`hex(255)` is `0xff`, `hex(i8(-1))` is `0xff`, and `hex(-1)` is `0xffffffffffffffff` because an untyped literal is `i64`). `digits` zero-pads to at least that many hex digits without truncating longer values (`hex(u8(7), 2)` is `0x07`).
+- `fixed(value: f64, places: i32) -> Fixed` and `fixed(value: f32, places: i32) -> Fixed`: formats with `places` decimal digits, rounding ties to even (`fixed(2.5, 0)` is `2`). Values rounding to zero drop the minus sign (`fixed(-0.4, 0)` is `0`), negative `places` count as `0`, and non-finite values print as `inf`, `-inf`, or `nan`.
+- `hex(value: $I, digits: i32 = 0) -> Hex`: formats an integer in hexadecimal with a `0x` prefix and no leading zeros. Negative numbers use the bit width of their type (`hex(255)` is `0xff`, `hex(i8(-1))` is `0xff`, and `hex(-1)` is `0xffffffffffffffff` because an untyped literal is `i64`). `digits` zero-pads to at least that many hex digits without truncating longer values (`hex(u8(7), 2)` is `0x07`).
 - `pad(value: $T, width: i32) -> Padded[$T]`: pads any printable value with spaces to `width` characters on the left, or on the right when `width` is negative (`pad(42, 5)` is `   42`, `pad("ab", -4)` is `ab  `). Longer values are never truncated, and helpers compose (`pad(fixed(x, 2), 8)`).
 
 The compiler formats all other types automatically: structs as `Point{x = 1, y = 2}`, tuples as `(1, 2)`, arrays as `[1, 2]`, tagged unions as their active member, and void types by name. Declare your own `operator +=` to customize formatting (see [Printing](Overview.md#printing)).
 
 ### Maps
 
-A `&map[$K, $V]` is an owning hash map backed by `heap` or `arena` (`heap({})` for an empty map, `heap({"a": 1})` from a literal).
+A `&map[$K, $V]` is an owning hash map backed by `heap` or `arena` (`heap({})` for an empty map, `heap({"a": 1})` from a literal). Growing an uninitialized map aborts: `flag: this &map has no memory to grow in: give it heap({}) or arena(a, {})`.
 
 #### Map operations
 
-- `m[k] -> $V|null`: looks up `k` via `operator [](m: &map[$K, $V], key: $K) -> $V|null`, returning `null` if absent. On a `&map[K, T?]`, use `contains` to distinguish a missing key from a stored `null`.
+- `m[k] -> $V|null`: looks up `k` via `operator [](m: &map[$K, $V], key: $K) -> $V|null`, returning `null` if absent. On a `&map[K, T?]`, use `contains` to tell a missing key from a stored `null`.
 - `put(m: *&map[$K, $V], key: $K, value: $V)`: inserts or overwrites `key` (same as `m[k] = v`).
-- `m[k] += v`, `m[k].field = v`, and `m[k][j] = v`: look up `k` once and update the value in place, inserting a zero-initialized entry if `k` is missing (`counts[word] += 1`, `players[name].score += 10`). Because zero-initialized `&str`, `&list`, and `&map` values have no backing memory, initialize a new entry before growing it (`groups[k] = heap([])`, then `pairs[a][b] += 1` or `append(groups[k], v)`). Passing `m[k]` to a pointer parameter copies the value (zero if missing) and writes it back after the call, so `append(groups[k], v)` updates the list inside the map.
+- `m[k] += v`, `m[k].field = v`, and `m[k][j] = v`: look up `k` once and update the value in place, inserting a zero-initialized entry if `k` is missing (`counts[word] += 1`, `players[name].score += 10`). Passing `m[k]` to a pointer parameter copies the value (zero if missing) and writes it back after the call, so `append(groups[k], v)` updates the list inside the map.
 - `ptr(m[k])`: returns a pointer to the value slot in `m`, inserting a zero-initialized entry if `k` is absent. Invalidated if the map grows.
 - `contains(m: &map[$K, $V], key: $K) -> bool`: whether `key` is present.
 - `reserve(m: *&map[$K, $V], want: i64)`: ensures room for at least `want` keys so `put` calls up to `want` do not allocate.
 - `try_reserve(m: *&map[$K, $V], want: i64) -> NoMemory?`: same, returning `NoMemory` on allocation failure.
 - `remove(m: *&map[$K, $V], key: $K) -> $V|null`: removes `key` and returns its value, or `null` if absent.
 - `clear(m: *&map[$K, $V])`: removes all entries while keeping capacity (and frees owned `&str` keys).
-- `free(m: *&map[$K, $V])`: releases the table and leaves the map empty (in an arena, empties it without freeing). Does not free values or non-`&str` keys that own memory; free those first. Owned `&str` keys are freed automatically.
+- `free(m: *&map[$K, $V])`: releases the table and leaves the map empty (in an arena, empties it without freeing). Owned `&str` keys are freed automatically; values and non-`&str` keys that own memory are not, so free those first.
 - `for e in m`: yields each `entry[$K, $V]` (with `e.key` and `e.value`) in hash-table order.
-- `hash(key) -> u64`: computes a key's hash via `operator hash`. `core` defines `operator hash` for integers, floats (`0.0` and `-0.0` hash identically), and text; the compiler generates it for other hashable types (see [Operators](Reference.md#operators)).
+- `hash(key) -> u64`: computes a key's hash via `operator hash`. `core` defines `operator hash` for integers, floats (`0.0` and `-0.0` hash identically), text, and fixed maps; the compiler generates it for other hashable types (see [Operators](Reference.md#operators)).
+
+Because zero-initialized `&str`, `&list`, and `&map` values have no backing memory, initialize a new entry before growing it: `groups[k] = heap([])`, then `append(groups[k], v)`; or for a nested map, `pairs[a] = heap({})`, then `pairs[a][b] += 1`.
 
 #### Owned text keys (`&map[&str, $V]`)
 
-A `&map[&str, $V]` owns its keys and provides dedicated overloads accepting `&strview`:
+A `&map[&str, $V]` owns its keys and provides overloads accepting `&strview`:
 
-- `m[k] = v`, `put(m: *&map[&str, $V], key: &strview, value: $V)`, `m[k] += v`, and `ptr(m[k])` copy new keys into the map's allocator (even from a literal or `&strview`, e.g. `m["port"] = 80`).
+- `m[k] = v`, `put(m: *&map[&str, $V], key: &strview, value: $V)`, `m[k] += v`, and `ptr(m[k])` copy new keys into the map's allocator, even from a literal or `&strview` (`m["port"] = 80`).
 - `m[k]`, `contains(m: &map[&str, $V], key: &strview) -> bool`, and `remove(m: *&map[&str, $V], key: &strview) -> $V|null` accept a `&strview` directly (`contains(m, line[:4])`, `remove(m, "port")`).
-- `remove`, `clear`, and `free` automatically free the map's `&str` keys.
+- `remove`, `clear`, and `free` free the map's `&str` keys automatically.
 
 #### Key requirements
 
-Map keys must support `==` and `operator hash`. Numbers, text, `bool`, enums, pointers, arrays, and structs or tagged unions composed of them support both automatically. If a struct defines a custom `operator ==`, it must also define `operator hash` so equal keys hash equally; using it as a map key without one fails to compile with `Key defines 'operator ==' but not 'operator hash'; equal values must have equal hashes, so define 'operator hash' for Key`.
+Map keys must support `==` and `operator hash`. Numbers, text, `bool`, enums, pointers, arrays, fixed maps, and structs or tagged unions made of them support both automatically. If a struct defines a custom `operator ==`, it must also define `operator hash` so equal keys hash equally; using it as a map key without one fails to compile with `Key defines 'operator ==' but not 'operator hash'; equal values must have equal hashes, so define 'operator hash' for Key`.
 
 Because float `nan` is not `==` to itself, inserting `nan` as a key adds a new entry each time and can never be looked up again.
 
@@ -468,9 +470,10 @@ A `fixmap[$K, $V, $$max]` stores up to `max` entries inline in insertion order, 
 - `put(m: *fixmap[$K, $V, $$max], key: $K, value: $V) -> MapFull?`: inserts or updates `key`, returning `MapFull` if full. Because an assignment cannot propagate an error, `m[k] = v` does not compile on a fixed map; write `try put(m, k, v)`.
 - `m[k] -> $V|null`: looks up `k`.
 - `contains(m: *fixmap[$K, $V, $$max], key: $K) -> bool`: whether `key` is present.
-- `remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null`: removes `key` and returns its value, preserving the order of the remaining entries.
+- `remove(m: *fixmap[$K, $V, $$max], key: $K) -> $V|null`: removes `key` and returns its value, keeping the order of the remaining entries.
 - `clear(m: *fixmap[$K, $V, $$max])`: removes all entries.
-- `for e in m`: yields entries in insertion order.
+- `for e in m`: yields each `entry[$K, $V]` in insertion order.
+- `a == b`, `a != b`, and `hash(m) -> u64`: compare and hash by key-value entries regardless of insertion order, so a `fixmap` works as a map key. `print` formats as `{a: 1, b: 2}`.
 
 ### Indexes of your own types
 
@@ -510,14 +513,14 @@ operator [](g: *Grid, i: $I, place: &strview = @here()) -> *i32 where $I is Inte
 
 ## fs
 
-Files, folders, and paths. Streaming I/O uses `File` from [core](#files), and failures return `FsError` from `core`. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
+Files, folders, and paths. Streaming I/O uses `File` from [core](#files), and failures return `FsError` from `core`. `fs` does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 All files are opened in binary mode, so bytes are identical across platforms. On Windows, paths accept `/` or `\` and are passed to the OS as UTF-16, so Unicode names like `ñ` or `字` work everywhere.
 
 ### Reading and writing files
 
 - `open_file(path: &strview) -> File|FsError`: opens an existing file for reading.
-- `create_file(path: &strview, append: bool = false) -> File|FsError`: creates or truncates a file for writing. With `append = true`, preserves existing content and appends to the end.
+- `create_file(path: &strview, append: bool = false) -> File|FsError`: creates or truncates a file for writing. With `append = true`, keeps existing content and appends to the end.
 - `read_file(path: &strview) -> &str|FsError`: reads the entire file (**yours**).
 - `write_file(path: &strview, text: &strview) -> FsError?`: creates or truncates the file and writes `text`. Write raw bytes with `write_file(path, view(bytes))`.
 - `append_file(path: &strview, text: &strview) -> FsError?`: appends `text` to the file, creating it if it does not exist.
@@ -529,25 +532,27 @@ All files are opened in binary mode, so bytes are identical across platforms. On
 - `exists(path: &strview) -> bool`: whether a file or folder exists at `path`.
 - `is_dir(path: &strview) -> bool`: whether `path` is a folder (works even without read permission on the folder).
 - `file_size(path: &strview) -> i64|FsError`: size in bytes without opening the file (works even if unreadable). Returns an error for folders.
-- `modified_time(path: &strview) -> f64|FsError`: last modification time in seconds since 1970 (matching `now()` in `os`), with OS resolution (nanoseconds on Linux/macOS, 100 ns on Windows). Useful for hot-reloading assets: `if modified_time(path) iferror 0.0 != loaded_at:`.
+- `modified_time(path: &strview) -> f64|FsError`: last modification time in seconds since 1970 (matching `now()` in `os`), with OS resolution (nanoseconds on Linux and macOS, 100 ns on Windows). Useful for hot-reloading assets: `if modified_time(path) iferror 0.0 != loaded_at:`.
 - `list_dir(path: &strview) -> &listview[&strview]|FsError`: sorted entry names inside `path`, excluding `.` and `..` (**temporary**).
 - `walk_dir(folder: &strview) -> &listview[&strview]|FsError`: sorted paths of all files under `folder` recursively (**temporary**). Symlinks to folders (and junctions on Windows) are listed as entries and not traversed. Fails only if `folder` itself cannot be listed; unreadable subdirectories are skipped.
 - `make_dir(path: &strview) -> FsError?`: creates `path` and any missing parent folders; a folder that already exists is not an error. On failure, the error names the first folder that could not be created.
 - `remove_file(path: &strview) -> FsError?`: removes a file, an empty folder, or a symbolic link itself.
-- `rename_file(from: &strview, to: &strview) -> FsError?`: renames or moves `from` to `to`, replacing `to` if it is an existing file on every system.
+- `rename_file(from: &strview, to: &strview) -> FsError?`: renames or moves `from` to `to`, replacing `to` if it is an existing file on every system. On failure, `FsError.path` is `from + " to " + to` (**temporary**).
 
 #### Path helpers
 
-- `join_path(first: &strview, second: &strview) -> &strview`: joins two paths with a single `/` (**temporary**): `join_path("a/", "/b")` is `a/b`. Returns `second` when `first` is empty.
-- `base_name(path: &strview) -> &strview`: **a view** of the part after the last `/`: `base_name("docs/a.txt")` is `a.txt`.
+On Windows, all four treat both `/` and `\` as path separators.
+
+- `join_path(first: &strview, second: &strview) -> &strview`: joins two paths with a single `/` (**temporary**): `join_path("a/", "/b")` is `a/b`. Returns a temporary copy of `second` when `first` is empty.
+- `base_name(path: &strview) -> &strview`: **a view** of the part after the last separator: `base_name("docs/a.txt")` is `a.txt`.
 - `extension(path: &strview) -> &strview`: **a view** from the last `.` onward (`.txt`), or `""` if none. Leading dots on the filename are ignored, so `.bashrc` and `..` have no extension while `.config.json` has `.json`.
-- `dir_of(path: &strview) -> &strview`: **a view** up to and including the last `/` (`docs/`), or `./` if there is no directory component.
+- `dir_of(path: &strview) -> &strview`: **a view** up to and including the last separator (`docs/`), or `./` if there is no directory component.
 
 ---
 
 ## os
 
-Program environment, child processes, cryptographic random bytes, dynamic libraries, and time. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
+Program environment, child processes, cryptographic random bytes, dynamic libraries, and time. `os` does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 ### Program and environment
 
@@ -555,21 +560,23 @@ Program environment, child processes, cryptographic random bytes, dynamic librar
 - `env(name: &strview) -> &strview|null`: value of an environment variable (**a view**), or `null` if unset.
 - `executable() -> &strview`: full path to the running executable (**temporary**), or `""` if unavailable.
 - `current_dir() -> &strview`: current working directory (**temporary**), or `""` if unavailable.
-- `change_dir(path: &strview) -> FsError?`: changes the current working directory to `path`.
+- `change_dir(path: &strview) -> FsError?`: changes the current working directory to `path` (action `enter` on error).
 - `system_name() -> &strview`: `"Linux"`, `"Darwin"`, or `"Windows"`.
 - `cores() -> i64`: number of online CPU cores, useful for sizing worker thread pools.
 
-Standard input is `read_line(stdin)` in [core](#files). On all platforms, paths returned by `os` use `/`, and on Windows paths, arguments, and environment variables are converted from UTF-16 so your program always sees UTF-8.
+Standard input is `read_line(stdin)` in [core](#files). On all platforms, paths returned by `os` use `/`. On Windows, paths, arguments, and environment variables are converted from UTF-16 so your program always sees UTF-8.
 
 ### Other programs
 
-All buffered file output is flushed before launching a child process. If a process fails to start, these functions return an `FsError` with action `run` (`cannot run gcc: No such file or directory`). Every function takes an optional trailing `folder` parameter for the child's working directory (`""` inherits yours): `run(ptr(["git", "status"]), "../site")`. When `folder` is given, errors include it (`cannot run git in ../site: No such file or directory`), including when `folder` does not exist. On Linux and macOS, a process terminated by a signal returns `128 + signal`.
+All buffered file output flushes before launching a child process. If a process fails to start, these functions return an `FsError` with action `run` (`cannot run gcc: No such file or directory`).
+
+Every function takes an optional trailing `folder` parameter for the child's working directory (`""` inherits yours): `run(ptr(["git", "status"]), "../site")`. Spawn failures include `folder` when given (`cannot run git in ../site: No such file or directory`), including when `folder` does not exist. On Linux and macOS, a process terminated by a signal returns `128 + signal`.
 
 #### Running to completion
 
 - `run(command: &strview, folder: &strview = "") -> i32|FsError`: runs `command` through the shell (`/bin/sh -c`, or `cmd.exe /d /s /c` on Windows) and returns its exit code. A command not found by the shell returns the shell's exit code (`127` for `sh`).
-- `run(program: &listview[&strview], folder: &strview = "") -> i32|FsError`: runs `program[0]` directly without a shell, searching `PATH` and passing the remaining elements as exact arguments. An empty listview fails with `FsError`. On Windows, a name without an extension resolves as `.exe`, and `.bat`/`.cmd` files return `FsError` because `cmd.exe` would re-parse their arguments (run batch files via `run(command)` instead).
-- `output(command: &strview, into: *&str, folder: &strview = "") -> i32|FsError`: runs `command` via the shell, appends its combined `stdout` and `stderr` (with original line endings) to `into`, and returns its exit code. Both streams share one pipe (like `2>&1`) so output stays ordered; note that C programs buffer `stdout` when writing to a pipe until full or exiting.
+- `run(program: &listview[&strview], folder: &strview = "") -> i32|FsError`: runs `program[0]` directly without a shell, searching `PATH` and passing the remaining elements as exact arguments. An empty listview fails with `FsError`. On Windows, a name without an extension resolves as `.exe`, and `.bat`/`.cmd` files return `FsError` because `cmd.exe` would re-parse their arguments (run batch files with `run(command)` instead).
+- `output(command: &strview, into: *&str, folder: &strview = "") -> i32|FsError`: runs `command` via the shell, appends its combined `stdout` and `stderr` (with original line endings) to `into`, and returns its exit code. Both streams share one pipe (like `2>&1`) so output stays ordered; note that C programs buffer `stdout` on a pipe until the buffer fills or they exit.
 - `output(program: &listview[&strview], into: *&str, folder: &strview = "") -> i32|FsError`: same as above, without a shell.
 
 ```flag
@@ -587,14 +594,23 @@ func main():
 
 #### Interactive processes (`Process`)
 
-To communicate with a child process while it runs:
+Use `start` to talk to a child process while it runs:
+
+```flag
+type Process:
+    id: i64      # OS process ID (PID on Unix, handle on Windows); 0 before start or after wait
+    input: File  # child's stdin
+    output: File # child's stdout
+```
 
 - `start(program: &listview[&strview], folder: &strview = "") -> Process|FsError`: spawns `program` without a shell (like `run(program)`) and returns immediately with a `Process`. The child's `stderr` goes to yours.
-- `p.input` and `p.output`: `File` handles for the child's `stdin` and `stdout`, supporting `write`, `read_line`, `read`, `ready`, and `close`. Call `close(p.input)` to send end of input, and `close(p.output)` when done reading. Writes to `p.input` are buffered like any file and flush on `flush`, reads, `ready`, `done`, and `wait`; writing after the child exits yields a write error from `flush` rather than killing your process with `SIGPIPE`.
-- `done(p: Process) -> bool`: returns `true` if the child has exited, without blocking.
-- `wait(p: *Process) -> i32`: waits for the child to exit, returns its exit code, and resets `p.id` to `0`. A process can only be waited once. `wait` does not close `p.input` or `p.output`, so you can still drain remaining output; conversely, a child that reads until EOF will wait for `close(p.input)`, and a child writing more than a pipe buffer (64 KiB) will block until you read `p.output`.
+- `done(p: Process) -> bool`: flushes pending output and returns `true` if the child has exited, without blocking.
+- `wait(p: *Process) -> i32`: flushes pending output, waits for the child to exit, returns its exit code, and resets `p.id` to `0`. A process can only be waited once. `wait` does not close `p.input` or `p.output`, so you can still drain remaining output; conversely, a child reading until EOF waits for `close(p.input)`, and a child writing more than a pipe buffer (64 KiB) blocks until you read `p.output`.
 - `kill(p: Process)`: terminates the child immediately; `wait` then returns `137` (`128 + SIGKILL`) on every system.
-- `p.id`: OS process identifier (PID on Unix, handle on Windows). Calling `done`, `wait`, or `kill` when `p.id == 0` (never started or already waited) aborts: `flag: 'kill' called on a Process that is not running (never started or already waited)`. Waiting a copy of an already-waited `Process` also aborts on Linux/macOS (on Windows the handle may have been reused, so never copy a `Process` you wait on).
+
+`p.input` and `p.output` are `File` handles supporting `write`, `read_line`, `read`, `ready`, and `close`. Call `close(p.input)` to send end of input, and `close(p.output)` when done reading. Writes to `p.input` are buffered like any file and flush on `flush`, reads, `ready`, `done`, and `wait`; writing after the child exits returns a write error from `flush` instead of killing your process with `SIGPIPE`.
+
+Calling `done`, `wait`, or `kill` when `p.id == 0` (never started or already waited) aborts: `flag: 'kill' called on a Process that is not running (never started or already waited)`. Waiting a copy of an already-waited `Process` also aborts on Linux and macOS; on Windows the handle may have been reused, so never copy a `Process` you wait on.
 
 ```flag
 use os
@@ -617,11 +633,11 @@ func main():
 
 ### Random bytes
 
-- `random_bytes(into: &listview[u8])`: fills `into` with cryptographically secure random bytes from the OS (`getrandom` on Linux, `getentropy` on macOS, `BCryptGenRandom` on Windows), suitable for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. If the OS cannot provide random bytes, the program aborts with `flag: cannot read random bytes: ...` rather than returning weak data. (The pseudo-random generator in [math](#random-numbers) is not for secrets.)
+- `random_bytes(into: &listview[u8])`: fills `into` with cryptographically secure random bytes from the OS (`getrandom` on Linux, `getentropy` on macOS, `BCryptGenRandom` on Windows), suitable for keys and tokens: `key: array[u8, 32]` and `random_bytes(ptr(key))`. If the OS cannot provide random bytes, the program aborts with `flag: cannot read random bytes: ...` instead of returning weak data. (The pseudo-random generator in [math](#random-numbers) is not for secrets.)
 
 ### Libraries
 
-A shared library loaded at runtime, such as one compiled with `flagc -shared` (see [Libraries](Reference.md#libraries)), is represented by `Library`. Loading failures return `LoadError`, containing either the OS error (`cannot load ./game.so: cannot open shared object file: No such file or directory`) or a type-layout mismatch (`cannot load ./game.so: its State has other fields than the State of this program`).
+A shared library loaded at runtime, such as one compiled with `flagc -shared` (see [Libraries](Reference.md#libraries)), is represented by `Library`. Loading failures return `LoadError`, containing either the OS error (`cannot load ./game.so: cannot open shared object file: No such file or directory`) or a type-layout mismatch (`cannot load ./game.so: its State has other fields than the State of this program` or `cannot load ./game.so: its Mood has other variants than the Mood of this program`).
 
 ```flag
 type Library:
@@ -632,7 +648,7 @@ type error LoadError:
     reason: &strview # OS or type-check message, temporary
 ```
 
-- `load_library(path: &strview) -> Library|LoadError`: loads a shared library using `dlopen` on Linux/macOS (resolving all symbols immediately, kept local from subsequently loaded libraries) or `LoadLibraryW` on Windows. A path without `/` searches the system library paths; write `./game.so` for the current folder.
+- `load_library(path: &strview) -> Library|LoadError`: loads a shared library using `dlopen` on Linux and macOS (resolving all symbols immediately, kept local from subsequently loaded libraries) or `LoadLibraryW` on Windows. A path without `/` searches the system library paths; write `./game.so` for the current folder.
 - `symbol(library: Library, name: &strview) -> *bytes?`: returns the address of an exported function or variable, or `null` if not found. Cast function pointers with `as`: `step := trust symbol(game, "game_step") as extern func(*State, f64)`.
 - `close(library: Library)`: flushes the library's output, frees the closing thread's library scratch memory, and unloads it. `with library:` calls `close` when the block exits. Unloading invalidates all code and data pointers from the library, so close it only after every thread has left its code and no references remain.
 
@@ -655,7 +671,7 @@ func main():
 - `now() -> f64`: wall-clock seconds since the Unix epoch (1970-01-01), with fractional seconds.
 - `clock() -> f64`: monotonic seconds from an arbitrary start; never jumps backward, so use it to measure elapsed time.
 - `date() -> Date`: local calendar date and time.
-- `sleep(seconds: f64)`: pauses the calling thread for `seconds` (not cut short by signals). Flushes pending file output first.
+- `sleep(seconds: f64)`: flushes pending file output and pauses the calling thread for `seconds` (not cut short by signals).
 
 `Date` fields (all `i32`):
 
@@ -690,16 +706,16 @@ func main():
     print(integer(d, get(d, 0, "user.age")) ifnull 0) # 0, there is no age
 ```
 
-`parse_json` builds a flat list of nodes referencing slices of the input text, so the input text must stay alive while you use the `Document`. Each node is identified by its index (`i64|null`), starting at `0` for the root value. Missing or out-of-range indices yield `null` or empty results across every accessor, letting you chain lookups and check only at the end.
+`parse_json` builds a flat list of nodes pointing into the input text, so the input text must stay alive while you use the `Document`. Each node is identified by its index (`i64|null`), starting at `0` for the root value. Missing or out-of-range indices yield `null` or empty results across every accessor, so you can chain lookups and check only at the end.
 
 #### Parsing and freeing
 
-- `parse_json(text: &strview) -> Document|NotJson`: parses strict RFC 8259 JSON. Rejects leading zeros (`01`), trailing dots (`1.`), invalid escapes, unescaped control characters/newlines in strings, unpaired surrogates (`\ud83d`), trailing commas, and nesting deeper than 512 arrays/objects. Does not validate UTF-8 bytes inside strings; use `valid_utf8` in [utf8](#utf8) if needed.
+- `parse_json(text: &strview) -> Document|NotJson`: parses strict RFC 8259 JSON (**yours**; release with `free`). Rejects leading zeros (`01`), trailing dots (`1.`), invalid escapes, unescaped control characters or newlines in strings, unpaired surrogates (`\ud83d`), trailing commas, trailing text after the root value, and nesting deeper than 512 arrays and objects. Does not validate UTF-8 bytes inside strings; use `valid_utf8` in [utf8](#utf8) if needed.
 - `free(d: *Document)`: frees the node list (not the source text) and empties `d`.
 
 #### Navigating nodes
 
-- `get(d: Document, at: i64|null, path: &strview) -> i64|null`: looks up a key inside object `at`, following `.`-separated segments into nested objects (`"user.name"`). Keys are matched after decoding escapes. Keys containing literal `.` cannot be looked up with `get`.
+- `get(d: Document, at: i64|null, path: &strview) -> i64|null`: looks up a key inside object `at`, following `.`-separated segments into nested objects (`"user.name"`). Keys are matched after decoding escapes. Keys containing a literal `.` cannot be looked up with `get`.
 - `children(d: Document, at: i64|null)`: iterable for `for`, yielding the value node indices of an array or object in order (empty for any other kind).
 - `key(d: Document, at: i64|null) -> &strview`: decoded key name of object value `at` (**temporary**), or `""` if `at` is not an object value.
 - `count(d: Document, at: i64|null) -> i64`: number of elements in an array or entries in an object.
@@ -712,13 +728,13 @@ func main():
 - `number(d: Document, at: i64|null) -> f64|null`: floating-point value, or `null` if not `Number`.
 - `integer(d: Document, at: i64|null) -> i64|null`: integer value, or `null` if not `Number`, if it has a decimal point or exponent, or if it overflows `i64`.
 - `boolean(d: Document, at: i64|null) -> bool|null`: boolean value, or `null` if not `Boolean`.
-- `raw(d: Document, at: i64|null) -> &strview`: **a view** of the raw JSON slice for `at`.
+- `raw(d: Document, at: i64|null) -> &strview`: **a view** of the raw JSON slice for `at`, or `""` if missing.
 
 Because `text`, `number`, `integer`, and `boolean` return `null` on kind mismatch or missing nodes, defaults chain cleanly: `text(d, get(d, 0, "name")) ifnull "anonymous"`.
 
 #### Iterating object keys and writing JSON
 
-- `quoted(text: &strview) -> Quoted`: formats `text` as a properly quoted and escaped JSON string for `+`, `+=`, and `print`.
+- `quoted(text: &strview) -> Quoted`: formats `text` as a quoted and escaped JSON string for `+`, `+=`, and `print`.
 
 Build JSON output with `+=` and `quoted`; Flag's standard number formatting already produces valid JSON (except `nan` and `inf`, which JSON does not allow):
 
@@ -744,26 +760,33 @@ type error NotJson:
 
 `line` and `column` are 1-based, with `column` counting bytes like compiler diagnostics. Printing `NotJson` outputs e.g. `not JSON at line 3, column 14: expected ':' after the key`.
 
-`Document` exposes `text: &strview` and `nodes: &list[Node]`. Each `Node` has `kind: Kind`, `from: i64`, `to: i64` (`d.text[from:to]` is its raw JSON text), `size: i64` (total nodes covered including descendants), and `escaped: bool` (whether a `Text` node contains escapes). Inside an `Object`, each key is stored as a `Text` node immediately preceding its value node.
+`Document` exposes `text: &strview` and `nodes: &list[Node]`. Each `Node` has `kind: Kind`, `from: i64`, `to: i64` (`d.text[from:to]` is its raw JSON text), `size: i64` (total nodes covered including descendants), and `escaped: bool` (whether a `Text` node contains escapes). Inside an `Object`, each key is stored as a `Text` node immediately before its value node.
 
 ---
 
 ## net
 
-TCP connections, TCP servers, and UDP datagrams. `Socket` (one TCP connection), `Server` (a listening TCP socket), and `Udp` (a UDP port) are distinct types, separate from `File`. It does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
+TCP connections, TCP servers, and UDP datagrams. `Socket` (one TCP connection), `Server` (a listening TCP socket), and `Udp` (a UDP port) are distinct types, separate from `File`. `net` does not build for WebAssembly (see [WebAssembly](Reference.md#webassembly)).
 
 #### TCP connections and servers
 
 - `connect(host: &strview, port: u16) -> Socket|NetError`: opens a TCP connection to a hostname or IP address, trying each resolved address until one succeeds (`cannot connect to example.com:80: Connection refused`).
-- `listen(port: u16, host: &strview = "0.0.0.0") -> Server|NetError`: listens on `port` at `host`: `"0.0.0.0"` binds all IPv4 interfaces, `"127.0.0.1"` binds loopback only, and `"::"` binds all IPv6 interfaces. A hostname binds its first resolved address. Port `0` lets the OS pick an ephemeral port; read it with `port(server)`.
+- `listen(port: u16, host: &strview = "0.0.0.0") -> Server|NetError`: listens on `port` at `host`: `"0.0.0.0"` binds all IPv4 interfaces, `"127.0.0.1"` binds loopback only, and `"::"` binds all IPv6 interfaces. A hostname tries its resolved addresses until one binds. Port `0` lets the OS pick an ephemeral port; read it with `port(server)`.
 - `accept(server: Server) -> Socket|NetError`: flushes pending file output and blocks until a client connects.
 - `s.peer`: the remote [Address](#udp) of a `Socket` (the address `connect` reached or `accept` received); prints as `127.0.0.1:52144`.
 - `port(s: Server) -> u16`: the port `s` is listening on.
 - `close(s: Server)`: stops listening (`with server:` calls `close` automatically).
-- `timeout(s: Socket, seconds: f64)`: sets read and write timeouts on `s`. Exceeding the timeout returns a `NetError` with code `TIMED_OUT`. `0.0` (or less), `inf`, or any value of `1000000.0` seconds or more waits forever (the default for new sockets).
-- `write(s: Socket, value: $T)`, `read(s: Socket, into: *&str, size: i64) -> i64|NetError`, `read_line(s: Socket) -> &strview|null|NetError`, `flush(s: Socket) -> NetError?`, and `close(s: Socket)` (and `with s:`): behave like the corresponding [File](#files) operations, returning `NetError` instead of `FsError`.
+- `timeout(s: Socket, seconds: f64)`: sets read and write timeouts on `s`. Exceeding the timeout returns a `NetError` with code `TIMED_OUT`. `0.0` (or less), `inf`, `nan`, or `1000000.0` seconds or more waits forever (the default for new sockets).
 
-Writes to a `Socket` are buffered and flushed automatically on `flush` or before blocking, so a request always goes out before you wait for the reply. Writing to a peer that has closed returns `NetError` rather than terminating the program. On Windows, `net` initializes Winsock automatically.
+Reading, writing, and closing a `Socket` match [File](#files), returning `NetError` instead of `FsError`:
+
+- `write(s: Socket, value: $T)`
+- `read(s: Socket, into: *&str, size: i64) -> i64|NetError`
+- `read_line(s: Socket) -> &strview|null|NetError`
+- `flush(s: Socket) -> NetError?`
+- `close(s: Socket)` (and `with s:`)
+
+Writes to a `Socket` are buffered and flushed automatically on `flush` or before blocking, so a request always goes out before you wait for the reply. Writing to a closed peer returns `NetError` instead of terminating the program. On Windows, `net` initializes Winsock automatically.
 
 ```flag
 use net
@@ -787,11 +810,11 @@ type error NetError:
     address: &strview # host:port for connect/listen/send, host for address, port for udp, empty otherwise
 ```
 
-`NetError` formats like `FsError`. DNS lookup failures in `connect`, `listen`, or `address` carry a negative `getaddrinfo` code; on Windows, error codes are negated Winsock codes. `TIMED_OUT` (defined in `core`) is the portable code for an expired `timeout` on every system and prints as `cannot read: the timeout ran out`.
+`NetError` formats like `FsError`. When `address` is formatted from a host, `Address`, or port (`connect`, `listen`, `send`, `udp`), it is **temporary**. DNS lookup failures in `connect`, `listen`, or `address` carry a negative `getaddrinfo` code; on Windows, error codes are negated Winsock codes. `TIMED_OUT` (defined in `core`) is the portable code for an expired `timeout` on every system and prints as `cannot read: the timeout ran out`.
 
 ### UDP
 
-An `Udp` socket sends and receives datagrams, each one whole or not at all, over IPv6 with IPv4 mapping enabled, so one socket communicates with both IPv4 and IPv6 peers.
+An `Udp` socket sends and receives datagrams, each one whole or not at all, over IPv6 with IPv4 mapping enabled, so one socket talks to both IPv4 and IPv6 peers.
 
 - `udp(port: u16) -> Udp|NetError`: binds `port` on all interfaces (`0` lets the OS pick a free port).
 - `address(host: &strview, port: u16) -> Address|NetError`: resolves a hostname or literal IP (`127.0.0.1`, `::1`) to its first `Address`.
@@ -820,7 +843,7 @@ func main():
 
 ### Waiting for many
 
-- `ready(waiting: &listview[$T], seconds: f64 = 0.0) -> &listview[i64]` (where `@can_assign(Socket|Server|Udp, $T)`): waits up to `seconds` until at least one entry is ready to read without blocking (data or EOF on a `Socket`, an incoming connection on a `Server`, or a datagram on an `Udp`), returning the ready indices (**temporary**). `0.0` polls immediately; a negative value waits indefinitely. Elements can be any single type or union of `Socket`, `Server`, and `Udp`.
+- `ready(waiting: &listview[$T], seconds: f64 = 0.0) -> &listview[i64]` (where `@can_assign(Socket|Server|Udp, $T)`): waits up to `seconds` until at least one entry can be read without blocking (data or EOF on a `Socket`, an incoming connection on a `Server`, or a datagram on an `Udp`), returning the ready indices (**temporary**). `0.0` polls immediately; a negative value waits indefinitely. Elements can be any single type or union of `Socket`, `Server`, and `Udp`.
 - `ready(x: $T, seconds: f64 = 0.0) -> bool` (where `@can_assign(Socket|Server|Udp, $T)`): same for a single socket, server, or UDP port.
 
 ```flag
@@ -849,17 +872,17 @@ func serve(server: Server):
 
 ## math
 
-Links the C math library (`-lm`). On WebAssembly, `sqrt`, `floor`, `ceil`, and `trunc` are instructions of its own and the others are fdlibm's algorithms written in Flag, so `math` needs nothing of the host.
+Links the C math library (`-lm`). On WebAssembly, `sqrt`, `floor`, `ceil`, and `trunc` are WebAssembly instructions and the remaining functions are fdlibm's algorithms written in Flag, so `math` needs nothing from the host.
 
 #### Constants
 
-- `PI`, `TAU`, and `E`: constants of `math` (in a file that uses `math` without an alias, a variable cannot take these names). Infinity is the language literal `inf`.
+- `PI` (`3.141592653589793`), `TAU` (`6.283185307179586`), and `E` (`2.718281828459045`): constants of `math`. In a file that uses `math` without an alias, no local variable may take these names. Infinity is the language literal `inf`.
 
 #### Functions
 
-Each function comes in both `f64` (direct C math calls) and `f32` (returning `f32`) overloads. Angles are in radians, `log` is the natural logarithm, and `round` rounds halfway cases away from zero.
+Each function comes in both `f64` (direct C math calls on native targets) and `f32` (returning `f32`) overloads. Angles are in radians, `log` is the natural logarithm, and `round` rounds halfway cases away from zero.
 
-| Category | Functions |
+| Arity | Functions |
 |---|---|
 | One argument (`f64 -> f64`, `f32 -> f32`) | `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round`, `trunc` |
 | Two arguments (`(f64, f64) -> f64`, `(f32, f32) -> f32`) | `atan2(y, x)`, `pow(x, y)`, `hypot(x, y)`, `fmod(x, y)` |
@@ -868,9 +891,9 @@ Each function comes in both `f64` (direct C math calls) and `f32` (returning `f3
 
 ### Random numbers
 
-`math` provides a single program-wide splitmix64 pseudo-random sequence stored in an `atomic[u64]`. Every run starts from the same state until you call `seed`, and it is **not** suitable for cryptographic secrets (use `random_bytes` in [os](#random-bytes) instead).
+`math` provides one program-wide splitmix64 pseudo-random sequence stored in an `atomic[u64]`. Every run starts from the same state until you call `seed`, and it is **not** suitable for cryptographic secrets (use `random_bytes` in [os](#random-bytes) instead).
 
-All threads share the generator via atomic `add` (lock-free), so no two threads draw the same step and a `seed` in `main` affects all threads. With a fixed seed, the sequence is reproducible, though which thread receives each value depends on scheduling.
+All threads share the generator via atomic `add` (lock-free), so no two threads draw the same step and a `seed` in `main` affects all threads. With a fixed seed, the sequence is reproducible, though which thread gets each value depends on scheduling.
 
 - `seed(n: u64)`: resets the sequence to `n` for all threads. To vary by run, seed from the clock: `seed(u64(now() * 1000000.0))` (with `now` from `os`).
 - `random() -> f64`: uniform float in `[0.0, 1.0)`.
@@ -916,7 +939,7 @@ func main():
 
 ## ring
 
-A `&ring[$T]` is a growable circular buffer (deque) that pushes and pops at both ends in O(1) without shifting elements. Rings always allocate on the heap (arenas do not create rings).
+A `&ring[$T]` is a growable circular buffer (deque) that pushes and pops at both ends in O(1) without shifting elements. Rings always allocate on the heap; arenas do not create rings.
 
 ```flag
 use ring
@@ -930,13 +953,13 @@ func main():
     print(take(q), " ", q) # 0 [1, 2]
 ```
 
-- `ring(kind: type $T) -> &ring[$T]`: creates an empty ring (**yours**).
+- `ring(kind: type $T) -> &ring[$T]`: creates an empty ring (**yours**). Allocates on the first `append` or `prepend` (starting at 8 elements and doubling).
 - `append(r: *&ring[$T], v: $T)`: adds `v` to the back.
 - `prepend(r: *&ring[$T], v: $T)`: adds `v` to the front.
-- `pop(r: *&ring[$T]) -> $T|null`: removes and returns the last element, or `null` if empty.
-- `take(r: *&ring[$T]) -> $T|null`: removes and returns the first element, or `null` if empty.
+- `pop(r: *&ring[$T]) -> $T|null`: removes and returns the last element, or `null` if empty. On a `&ring[T?]`, check `r.len` first to tell a stored `null` from empty.
+- `take(r: *&ring[$T]) -> $T|null`: removes and returns the first element, or `null` if empty. On a `&ring[T?]`, check `r.len` first.
 - `clear(r: *&ring[$T])`: removes all elements while keeping allocated capacity.
-- `free(r: *&ring[$T])`: releases the ring's memory and leaves it empty.
+- `free(r: *&ring[$T])`: releases the ring's memory and leaves it empty. Does not free elements that own memory; free those first.
 - `r[i]`: element `i` from the front (readable and assignable); negative or out-of-range indices abort the program.
 - `for v in r`: iterates from front to back; `print` formats as `[1, 2]`.
 
@@ -944,9 +967,9 @@ func main():
 
 ## raylib
 
-Windows, 2D and 3D drawing, input, textures, and audio via [raylib](https://www.raylib.com).
+Windows, 2D and 3D drawing, input, textures, and audio via [raylib](https://www.raylib.com). `raylib` does not build for WebAssembly.
 
-The standard library bundles a prebuilt `libraylib.a` for Linux x86_64; on other systems, pass the folder of your own `libraylib.a` after `-cc`: `flagc game.flg -cc -Lfolder`. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
+The standard library bundles a prebuilt `libraylib.a` for Linux `x86_64`. On other systems, pass the folder of your own `libraylib.a` after `-cc`: `flagc game.flg -cc -Lfolder`. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
 
 Functions keep raylib's names and parameter order, so the [raylib cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) applies directly. String parameters take `cstr` (pass text literals directly, or wrap a `&str` with `c_text(label)`). `GetClipboardText` returns a `cstr` that is `NULL` when the clipboard has no text; `view` reads that as empty text. `LoadFontEx` takes `0 as *i32` for raylib's default character set.
 
@@ -982,6 +1005,6 @@ Functions keep raylib's names and parameter order, so the [raylib cheatsheet](ht
 #### Flag additions
 
 - `+` and `-` between two `Vector2` or two `Vector3` values, and `*` multiplying a `Vector2` or `Vector3` by an `f32`.
-- `length(v: Vector2) -> f32` and `normalize(v: Vector2) -> Vector2`.
+- `length(v: Vector2) -> f32` and `normalize(v: Vector2) -> Vector2` (returns `v` unchanged when its length is `0.0`).
 
 Any raylib function not listed above can be declared directly in your own `extern "raylib":` block.

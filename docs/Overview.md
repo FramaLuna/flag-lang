@@ -15,15 +15,15 @@ This is a tour of the Flag programming language. It assumes basic programming ex
 - [Fat pointers](#fat-pointers)
 - [Control flow](#control-flow)
 - [Functions](#functions)
+- [Error handling](#error-handling)
 - [Strings](#strings)
 - [Arrays](#arrays)
-- [SIMD](#simd)
 - [Lists](#lists)
 - [Maps](#maps)
+- [SIMD](#simd)
 - [Arenas](#arenas)
 - [Contexts](#contexts)
 - [Threads](#threads)
-- [Error handling](#error-handling)
 - [Modules](#modules)
 - [The standard library](#the-standard-library)
 - [Calling C](#calling-c)
@@ -47,7 +47,7 @@ func main() -> i32:
     return 0
 ```
 
-Save the file as `hello.flg` and run it directly with `flagc run`, which compiles and executes the program:
+Save the file as `hello.flg`. Run it directly with `flagc run`, which compiles and executes the program:
 
 ```sh
 flagc run hello.flg
@@ -73,16 +73,24 @@ a := 3 # this too
 
 Variables are declared inside functions and live in the block where they are declared (an `if`, a loop, or the function itself). At the top level of a file, a name is a [constant](#constants).
 
-Variables declared without an initial value start at zero:
+Variables declared without an initial value start at zero. Use `:=` to infer the type from the initial value:
 
 ```flag
 a: i32 # declares 'a' as i32, initialized to 0
 b: u32 = 3 # declares 'b' as u32 and sets it to 3
+c := 3 # 'c' has type i64
+d := 2.5 # 'd' has type f64
+```
+
+You cannot shadow a name that is already visible, not even inside an inner block:
+
+```flag
+a: i32
 if true:
     a: u32 # error: variable a is already declared in this scope
 ```
 
-You cannot shadow a name that is already visible, not even inside an inner block. This applies to local variables, parameters, `for` loop variables, and any constants or contexts visible to the function, whether your own, `core`'s (such as `stdout`), or those from a module imported with `use` without an alias:
+This rule covers local variables, parameters, `for` loop variables, and any visible constants or contexts. That includes your own, `core`'s (such as `stdout`), and those from a module imported with `use` without an alias:
 
 ```flag
 N = 3
@@ -91,49 +99,45 @@ func main():
     N := 5 # error: cannot declare variable N because it shadows an existing constant
 ```
 
-Functions and types can share names with variables: declaring `twice := 4` still leaves `twice(3)` calling the function.
+Functions and types can share names with variables: declaring `twice := 4` still lets `twice(3)` call the function.
 
-Use `:=` to infer the type from the initial value:
-
-```flag
-a := 3 # 'a' has type i64
-b := 2.5 # 'b' has type f64
-```
+### Implicit and explicit conversions
 
 Assignments perform a small set of implicit conversions:
 
 ```flag
-view: &strview = "hello" # a text literal has type &strview
-text: &str = heap(view) # heap copies the text into a new &str that you own
-back: &strview = text # a &str converts to &strview without copying
-text = "bye" # copies into the memory text already has
 small: u8 = 7
 n: i64 = small # smaller integers widen to larger ones
-maybe: i64|null = a # a value enters a union that includes its type
-l: &list[i64] = heap([1, 2]) # allocates a heap list with a copy of the array
+maybe: i64|null = n # a value enters a union that includes its type
+
+view: &strview = "hello" # a text literal has type &strview
+text: &str = heap(view) # heap allocates a new owned &str with a copy of view
+text = "bye" # copies into the memory text already has
+back: &strview = text # a &str converts to &strview without copying
+l: &list[i64] = heap([1, 2]) # heap allocates a list with a copy of the array
 ```
 
-A new owning container (such as `text: &str`) must get its memory from `heap` or an [arena](#arenas). Writing `text: &str = view` is a compile-time error:
+A new owning container (such as `text: &str` or `l: &list[i64]`) must get its memory from `heap` or an [arena](#arenas). Writing `text: &str = view` is a compile-time error:
 
-```
+```text
 error: new &str has no allocated memory to copy &strview into; wrap the value in heap(...) or arena(a, ...)
 ```
 
 All other conversions are explicit and written like a call to the target type:
 
 ```flag
-c := f64(a) / 2.0
-d := u8(a)
+half := f64(n) / 2.0
+byte := u8(n)
 ```
 
 ## Literals
 
-- **Integers**: `3`, `-3`, `0xff`, `0b101`. Underscores can separate digits (`1_000_000`). Integer literals adapt to the type expected by their context; on their own they default to `i64` (or `u64` above the maximum `i64`), so `n := 5` gives an `i64`; write `n: i32 = 5` for an `i32`. When either an integer or a float could accept an integer literal, it chooses the integer.
+- **Integers**: `3`, `-3`, `0xff`, `0b101`. Underscores can separate digits (`1_000_000`). An integer literal adapts to the type expected by its context, choosing an integer over a float when both fit. On its own it defaults to `i64` (or `u64` above the maximum `i64`), so `n := 5` is `i64` while `n: i32 = 5` is `i32`.
 - **Floats**: `2.5`, `1e3`. Standalone float literals default to `f64`. `inf` and `nan` are written just as `print` outputs them (for example, `low := -inf`). A compile-time computation between finite literals that produces `inf` or `nan` (such as `1.0 / 0.0`) is an error.
 - **Characters**: `'a'` is the numeric code of that character (`97`). It is an integer literal, so it works directly with `u8`.
-- **Text**: `"hello\n"` has type `&strview`. Supported escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\e`, and `\x41` for a byte by two hexadecimal digits. Text literals may span multiple lines, preserving line breaks and leading spaces as written.
+- **Text**: `"hello\n"` has type `&strview`. Supported escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\e`, and `\x41` for a byte written as two hexadecimal digits. Text literals may span multiple lines, preserving line breaks and leading spaces as written.
 - **Booleans and null**: `true`, `false`, and `null`.
-- **Arrays**: `[1, 2]` has type `array[i64, 2]`. If elements have different types, the array holds their union: `[1, "hola"]` is `array[i64|&strview, 2]`. `[]` is an `emptyarray`, which becomes either a zeroed array or an empty listview depending on the expected type; `x := []` alone has no type.
+- **Arrays**: `[1, 2]` has type `array[i64, 2]`. Mixed element types form a union: `[1, "hola"]` is `array[i64|&strview, 2]`. `[]` is an `emptyarray` that becomes a zeroed array or an empty listview depending on the expected type; `x := []` alone has no type.
 - **Maps**: `{"ana": 30, "bo": 25}` is a `fixmap[&strview, i64, 2]` holding only those entries, and `{}` is an `emptyfixmap` (see [Maps](#maps)).
 - **Structs and tuples**: `{1, 2}` or `{x = 1}` constructs the struct expected by its context (see [Structured types](#structured-types)). Where no struct is expected, `{1, "a"}` is a tuple of type `(i64, &strview)` (see [Returning multiple values](#returning-multiple-values)).
 
@@ -155,7 +159,7 @@ func main():
     words: &listview[u32] = ptr(SHADER)
 ```
 
-A multiline text literal keeps its line breaks and indentation intact:
+A multiline text literal keeps its line breaks and indentation as written:
 
 ```flag
 USAGE = "usage: flagc file.flg
@@ -181,7 +185,7 @@ LIMIT: u8 = 10
 names: array[&strview, 3] = ["one", "two", "three"]
 ```
 
-Constants cannot change; mutable global state belongs in a [context](#contexts). Nothing executes before `main`, so everything declared outside functions is resolved at compile time.
+Constants cannot change; mutable global state belongs in a [context](#contexts). Nothing runs before `main`, so everything declared outside functions is resolved at compile time.
 
 ## Operators
 
@@ -189,7 +193,7 @@ Constants cannot change; mutable global state belongs in a [context](#contexts).
 - **Comparisons**: `==`, `!=`, `<`, `>`, `<=`, `>=`. Comparisons do not chain: `a < b < c` is an error that tells you to write `a < b and b < c`.
 - **Logic**: `and`, `or`, and `not` on `bool`. `and` and `or` short-circuit and skip the right-hand side when the left-hand side already decides the result.
 - **Bitwise**: `and`, `or`, `xor`, and `not` on integers operate bit by bit, and `<<` and `>>` shift bits. Because `and`, `or`, and `xor` have lower precedence than comparisons, wrap bit tests in parentheses: `(flags and MASK) != 0`. Shifts bind tighter than comparisons.
-- **Conditional**: `a if c else b` evaluates to `a` when `c` is true and `b` otherwise; only the chosen branch runs. Both branches take the type the context expects, so `1 if x else -1` works as an `i32` variable, field, return value, or argument.
+- **Conditional**: `a if c else b` evaluates to `a` when `c` is true and `b` otherwise; only the chosen branch runs. Both branches adopt the type the context expects, so `1 if x else -1` works as an `i32` variable, field, return value, or argument.
 - **Assignments**: `=`, `+=`, `-=`, `*=`, `/=`, `%=`.
 
 ```flag
@@ -203,8 +207,8 @@ mode := "-check" if check else "run"
 
 ### Evaluation order and numeric rules
 
-- **Left-to-right evaluation**: expressions run left to right and each variable is read in its turn. Suppose `x` is `1` and `bump` adds `10` to `x` and returns the new value (`11`): `x + bump(ptr(x))` evaluates to `1 + 11` (`12`), even though `bump` modifies `x`. An assignment evaluates its right-hand side first, so `x += bump(ptr(x))` adds `11` to the updated `x`, producing `22`.
-- **Mixing integer types**: two different integer types can be combined when one holds every possible value of the other, and the operation runs in the wider type (so `u8 + i32` produces `i32`). Otherwise (for example `u64` with `i64`, or an integer with a float), convert one side explicitly (see [Variables and assignments](#variables-and-assignments)). A literal adapts to the type of the other side.
+- **Left-to-right evaluation**: expressions run left to right, and each variable is read in its turn. If `x` is `1` and `bump` adds `10` to `x` and returns `11`, then `x + bump(ptr(x))` evaluates to `1 + 11` (`12`), even though `bump` modifies `x`. An assignment evaluates its right-hand side first, so `x += bump(ptr(x))` adds `11` to the updated `x`, giving `22`.
+- **Mixing integer types**: two different integer types mix only when one holds every value of the other, and the operation runs in the wider type (so `u8 + i32` is `i32`). Otherwise (such as `u64` with `i64`, or an integer with a float), convert one side explicitly (see [Implicit and explicit conversions](#implicit-and-explicit-conversions)). A literal adapts to the type of the other side.
 - **Integer comparisons**: comparisons accept any two integer types and compare their mathematical values, so `i64(-1) < u64(0)` is `true`.
 - **Shifts, overflow, and division**: a shift keeps the type of its left-hand operand. Integer overflow wraps around, and integer division by zero stops the program with a runtime error.
 - **`not` precedence**: `not` binds everything up to the next `and`, `or`, or `xor`, so `not x == 3` means `not (x == 3)`. Before arithmetic it requires parentheses, `(not x) + 1`, because `not x + 1` would be ambiguous.
@@ -221,7 +225,7 @@ mode := "-check" if check else "run"
 
 Lengths, counts, and positions are always `i64`; Flag has no `usize`.
 
-Calls starting with `@` are answered by the compiler at compile time; for example, `@sizeof(T)` returns the size of `T` in bytes, and `@here()` returns the current source location as text.
+Calls starting with `@` are answered by the compiler at compile time. For example, `@sizeof(T)` returns the size of `T` in bytes, and `@here()` returns the current source location as text.
 
 Flag lets you declare three kinds of user types (void, structured, and union/enum), plus type aliases.
 
@@ -255,7 +259,7 @@ b := User{age = 30, name = heap("bo")}
 
 Fat pointers have no valid zero value (see [Fat pointers](#fat-pointers)), so omitting `name` in `User{age = 30}` is a compile-time error:
 
-```
+```text
 error: missing required field name in User (&str has no default zero value); set it in the literal or add a field default
 ```
 
@@ -315,7 +319,7 @@ Structured types are values: assigning them or passing them to a function copies
 
 ### Aliases
 
-An alias gives another name to an existing type; the two names are completely interchangeable:
+An alias gives another name to an existing type. The two names are completely interchangeable:
 
 ```flag
 type Id = u32
@@ -351,15 +355,15 @@ Flag also supports untagged unions written with `||`, though they are not recomm
 
 #### Enums
 
-An enum is a union of void types. There are two equivalent ways to declare one:
+An enum is a union of void types. There are two equivalent ways to declare one.
 
-1. **Union syntax** (defines `Red`, `Green`, and `Blue` as void types, or reuses them if they are already defined as void types):
+**Union syntax** defines `Red`, `Green`, and `Blue` as void types, or reuses them if they are already defined as void types:
 
 ```flag
 type enum Color = Red|Green|Blue
 ```
 
-2. **Block syntax** (equivalent to the form above):
+**Block syntax** is equivalent to the form above:
 
 ```flag
 type enum Color:
@@ -408,7 +412,7 @@ func main():
     one := 0x3f800000 as f32 # an integer literal adopts the target size, yielding 1.0
 ```
 
-`as` can also extract a member from a union without checking its tag. If the union actually holds a different member, those bytes are read as the requested type anyway, so check with `is` first.
+`as` can also extract a member from a union without checking its tag. If the union holds a different member, those bytes are read as the requested type anyway, so check with `is` first.
 
 ## Pointers
 
@@ -438,10 +442,10 @@ func main():
     free(h)
 ```
 
-When a function expects `*T` and you pass a `T` (with no overload taking `T`), the compiler passes its address automatically:
-- Pass a variable when the function mutates its argument; passing any other expression mutates a temporary.
-- A temporary lives like a variable declared on that line until its enclosing block ends, so `l: &listview[i32] = ptr([1, 2, 3])` remains valid for the rest of that block.
-- Inside a loop, the next iteration overwrites the temporary, so copy anything you need to keep into memory of its own. `-memory` warns if a pointer to a temporary is used after its block ends.
+Two rules govern taking addresses automatically and taking the address of a temporary:
+
+- **Auto-addressing for `*T` parameters**: when a function expects `*T` and you pass a `T` (with no overload taking `T`), the compiler passes its address automatically. Pass a variable when the function mutates its argument; passing any other expression mutates a temporary instead.
+- **Temporary lifetime**: a temporary created for `ptr(...)` or auto-addressing lives like a variable declared on that line until its enclosing block ends. So `l: &listview[i32] = ptr([1, 2, 3])` stays valid for the rest of that block. Inside a loop, the next iteration overwrites the temporary, so copy anything you need to keep into memory of its own. `-memory` warns if a pointer to a temporary is used after its block ends.
 
 `null` is not a pointer; a pointer that may be absent has type `*T?`.
 
@@ -471,6 +475,8 @@ a: &list[i32]
 | `&list[T]` | Owner | Growable list that you own |
 | `&map[K, V]` | Owner | Hash map that you own |
 
+### Initialization and ownership
+
 A fat pointer must receive memory before you use it: owners get theirs from `heap` or `arena`, and views get theirs from the data they reference. `heap([])`, `heap("")`, and `heap({})` create empty heap owners that do not allocate until they grow:
 
 ```flag
@@ -478,17 +484,20 @@ a: &list[i32] = heap([])
 append(a, 1)
 ```
 
+If an owner is not initialized:
+
 - Using a fat pointer that no path initialized is a compile-time error:
   `a is used before being initialized (&list[i32] has no default zero value); initialize it: a: &list[i32] = heap([])`
-- Growing an owner that might lack memory (because only some paths initialized it) halts at runtime:
+- Growing an owner that only some paths initialized halts at runtime if it has no memory:
   `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`
 - `-memory` catches that ahead of time with a warning:
   `append cannot grow a; it may not have allocated memory to grow (initialize with heap([]))`
 
 Ownership and view conversions follow three rules:
+
 - **Releasing memory**: owned fat pointers (`&str`, `&list`, `&map`) must be released with `free` when you are done with them (`defer` helps), or live in an [arena](#arenas) that releases everything at once.
 - **Owner to view**: a `&str` works wherever a `&strview` is expected, and a `&list` works wherever a `&listview` is expected, without copying.
-- **View to owner**: going the other way copies: `heap(v)` or `arena(a, v)` creates a new owner with a copy of `v`, and assigning `t = v` copies into an owner that already has memory. Calls never copy implicitly, so a view cannot be passed to a `&str` or `&list` parameter.
+- **View to owner**: going the other way copies. `heap(v)` or `arena(a, v)` creates a new owner with a copy of `v`, and assigning `t = v` copies into an owner that already has memory. Function calls never copy implicitly, so a view cannot be passed to a `&str` or `&list` parameter.
 
 You can define your own fat pointers with `type fatptr`, such as `&ring` in the `ring` module:
 
@@ -501,7 +510,7 @@ type fatptr ring[$T]:
 
 ### Passing them to functions
 
-Passing a fat pointer by value copies its pointer and metadata. The underlying elements are shared, but if the function grows the copy, the caller's original fat pointer will not see the change.
+Passing a fat pointer by value copies its pointer and metadata. Both copies share the underlying elements, but if the function grows its copy, the caller's fat pointer will not see the new length or reallocated buffer.
 
 To let a function modify or grow the caller's fat pointer, declare the parameter as `*&T`. You still pass the fat pointer directly; the compiler takes `ptr(...)` automatically, just as with any pointer (see [Pointers](#pointers)). Indexing and `for` loops work directly through `*&T`, like fields:
 
@@ -559,6 +568,8 @@ Check multiple union members at once by writing a union after `is`:
 if color is Red|Blue:
     pass # color has type Red|Blue here
 ```
+
+Other ways to narrow a union:
 
 - `==` and `!=` against `null` or any void type narrow just like `is`, so `if x != null:` works too.
 - `not` flips narrowing: `if not color is Red:` narrows `color` to `Green|Blue`.
@@ -624,7 +635,7 @@ for c in "hello":
     print(c)
 ```
 
-Use `reverse` to iterate backward. Whether it works depends on the iterable: ranges, arrays, lists, listviews, and text support it:
+Use `reverse` to iterate backward. Ranges, arrays, lists, listviews, and text support it:
 
 ```flag
 for element in reverse iterable:
@@ -645,15 +656,15 @@ for s in names:
     free(s) # frees each string and leaves it empty in the list
 ```
 
-Where the loop variable cannot be mutated (such as a character view of text or a map entry copy), assigning to it is an error that explains what to write instead:
+Where the loop variable cannot be mutated (such as a character view of text or a map entry copy), assigning to it is an error that tells you what to write instead:
 
-```
+```text
 error: cannot assign to map loop variable e; it is a copy and would not update ages (assign directly via ages[e.key] = v)
 ```
 
 Do not grow a list while iterating over it, because reallocation moves its elements.
 
-To make your own type iterable, give it `operator for` and `operator next`. `for` calls `operator for` with your value, then calls `operator next` with a pointer to what it returned, until `operator next` returns `IterationEnd`. `reverse` calls `operator reverse` instead of `operator for`:
+To make your own type iterable, give it `operator for` and `operator next`. `for` calls `operator for` with your value, then calls `operator next` with a pointer to what it returned until `operator next` returns `IterationEnd`. `reverse` calls `operator reverse` instead of `operator for`:
 
 ```flag
 type Countdown:
@@ -692,7 +703,9 @@ case:
     print("other")
 ```
 
-`switch` also works on text. When switching on a union, the cases name its member types and narrow the variable inside each case just like `is`. A union `switch` must cover every member type or include a default `case:`, which narrows to the remaining types:
+`switch` also works on text.
+
+When switching on a union, the cases name its member types and narrow the variable inside each case just like `is`. A union `switch` must cover every member type or include a default `case:`, which narrows to the remaining types:
 
 ```flag
 type enum Color = Red|Green|Blue
@@ -748,7 +761,7 @@ func main():
     append(names, "ana")
 ```
 
-A `defer` cannot contain `return`, `break`, `continue`, or `try`, and cannot be a declaration or another `defer`. A deferred call that can return an error must explicitly handle it; for example, `defer _ = remove_file(path)` discards the error on purpose.
+A `defer` cannot contain `return`, `break`, `continue`, or `try`, and cannot be a declaration or another `defer`. A deferred call that can return an error must handle it explicitly; for example, `defer _ = remove_file(path)` discards the error on purpose.
 
 ### With
 
@@ -766,7 +779,7 @@ func main():
         print("inside the room")
 ```
 
-An `operator with` that can return an error cannot be used with `with` because the error would be lost; write a regular closing function and call it yourself instead.
+An `operator with` that can return an error cannot be used with `with` because the error would be lost. Write a regular closing function and call it yourself instead.
 
 ## Functions
 
@@ -775,7 +788,7 @@ func add(a: i32, b: i32) -> i32:
     return a + b
 ```
 
-In a call, `(` must immediately follow the name with no space (`add(1, 2)`), whereas keywords must have a space before `(` (`not (a and b)`, `if (x) or (y)`). Writing `add (1, 2)` or `not(x)` produces an error showing the valid form.
+In a call, `(` must immediately follow the name with no space (`add(1, 2)`). Keywords must have a space before `(` (`not (a and b)`, `if (x) or (y)`). Writing `add (1, 2)` or `not(x)` produces an error showing the valid form.
 
 ### Parameters
 
@@ -837,7 +850,7 @@ C variadic functions use `...` instead (see [Calling C](#calling-c)).
 
 ### Returning multiple values
 
-A function returns multiple values as a tuple: an anonymous struct written with its element types in parentheses, such as `(i32, i32)`. `return a, b` constructs it, and declarations or assignments unpack it:
+A function returns multiple values as a tuple: an anonymous struct written with its element types in parentheses, such as `(i32, i32)`. `return a, b` constructs the tuple, and declarations or assignments unpack it:
 
 ```flag
 func split(text: &strview) -> (i64, i64):
@@ -856,7 +869,7 @@ Errors cannot go inside a tuple; place them alongside it in a union (`-> (i64, i
 
 ### Functions that never return
 
-A function that never returns, such as `panic` or `exit`, declares `-> never`. Code after a call to it is unreachable, so it narrows unions like `return`, and on the right-hand side of `ifnull` or `iferror` it leaves the unwrapped value:
+A function that never returns, such as `panic` or `exit`, declares `-> never`. Code after a call to it is unreachable, so it narrows unions like `return`. On the right-hand side of `ifnull` or `iferror`, it leaves the unwrapped value:
 
 ```flag
 func fail(why: &strview) -> never:
@@ -869,7 +882,7 @@ func main():
 
 ### Overloading
 
-Functions can share a name with different parameter types. A call picks the overload that matches every argument at least as well as every other overload and at least one argument strictly better. Integers widen as in assignments, and exact type matches win:
+Functions can share a name with different parameter types. A call picks the overload that matches every argument at least as well as every other candidate, and matches at least one argument strictly better. Integers widen as in assignments, and exact type matches win:
 
 ```flag
 func describe(n: i32) -> &strview:
@@ -888,7 +901,7 @@ func main():
 
 ### Operator overloading
 
-You can overload binary `+ - * / % == < << >> and or xor` (two parameters) and unary `not` (one parameter) for your types. `!=`, `>`, `<=`, and `>=` are derived automatically from `==` and `<`, and `a += b` uses `+`:
+You can overload binary `+ - * / % == < << >> and or xor` (two parameters) and unary `not` (one parameter) for your types. `!=`, `>`, `<=`, and `>=` are derived automatically from `==` and `<`, and `+=`, `-=`, `*=`, `/=`, and `%=` use their corresponding binary operators (while `operator +=` on `*&str` customizes formatting; see [Printing](#printing)):
 
 ```flag
 type V:
@@ -915,7 +928,7 @@ func main():
     boiling: Celsius = 212.0 # 100.0 degrees
 ```
 
-`T(x)` converts the way an assignment does, which includes converting to numbers: with `operator =(x: f64, c: Celsius) -> f64`, `f64(boiling)` evaluates to `100.0`.
+`T(x)` converts the way an assignment does, including converting to numbers: with `operator =(x: f64, c: Celsius) -> f64`, `f64(boiling)` evaluates to `100.0`.
 
 ### Indexing
 
@@ -933,7 +946,7 @@ func main():
     g[4] = 7
 ```
 
-Other syntax features call protocol operators too, such as `operator for` for `for` loops and `operator with` for `with` blocks, all documented in [Protocol operators](Reference.md#protocol-operators). Operators cannot be called by name, so types that you also close manually provide a regular function alongside them (such as `close(f)` on `File`).
+Other syntax features call protocol operators too, such as `operator for` for `for` loops and `operator with` for `with` blocks; all of them are documented in [Protocol operators](Reference.md#protocol-operators). Operators cannot be called by name, so types that you also close manually provide a regular function alongside them (such as `close(f)` on `File`).
 
 ### Generics
 
@@ -969,7 +982,7 @@ func main():
 
 ### Where
 
-`where` selects overloads at compile time using conditions on the types and numbers of the call, and on constants:
+`where` selects overloads at compile time using conditions on the call's types and compile-time numbers, and on constants:
 
 ```flag
 func kind(v: $T) -> &strview where $T is u8|u16|u32:
@@ -982,7 +995,12 @@ func wide(v: $T) -> bool where @sizeof($T) >= 8:
     return true
 ```
 
-You can also test the target platform with `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, `@wasm32()`, and `@wasm64()`, or check assignability with `@can_assign(&str, $T)`. These builtins evaluate to a compile-time `bool` and work in ordinary expressions too (`if @windows():`), though `if` still type-checks both branches on every platform. By contrast, `a if c else b` with a compile-time `c` only checks and evaluates the chosen side, so `19 if @linux() else 8` remains an integer literal that fits `i32`.
+You can also test the target platform with `@linux()`, `@macos()`, `@windows()`, `@wasm()`, `@x86_64()`, `@arm64()`, `@riscv64()`, `@wasm32()`, and `@wasm64()`, or check assignability with `@can_assign(&str, $T)`.
+
+These builtins evaluate to a compile-time `bool` and work in ordinary expressions too:
+
+- `if @windows():` still type-checks both branches on every platform.
+- `a if c else b` with a compile-time `c` only checks and evaluates the chosen side, so `19 if @linux() else 8` stays an integer literal that fits `i32`.
 
 A `where` at the start of a line opens a conditional block that exists only when its condition holds. Inside a function it wraps statements (such as OS-specific C calls); at the top level it wraps declarations and can test only the OS or CPU:
 
@@ -1040,7 +1058,7 @@ func main():
         print(step(6))
 ```
 
-Structs can store function values in fields and invoke them directly:
+Structs can store function values in fields and call them directly:
 
 ```flag
 type Button:
@@ -1099,355 +1117,6 @@ inline func scale(v: V, k: f64) -> V:
 - Small structs like `V` live in registers, so `acc = acc + scale(V{1.0, 2.0}, 0.5)` in a loop runs as fast as the equivalent loop in C.
 
 See [Inlining](Reference.md#inlining) for the exact rules and size limits.
-
-## Strings
-
-Flag has two text types: `&strview` (a view of text) and `&str` (owned, growable text). Every text literal is a `&strview`.
-
-```flag
-name: &str = heap("ana") # copies the text into an owned &str on the heap
-defer free(name)
-name += " and bo" # appends to the owned text
-print(name.len, " ", name[0:3]) # 10 ana
-```
-
-Assigning a `&strview` to a `&str` copies into the `&str`'s memory (`name = "bo"`), while assigning one `&str` to another makes both share the same memory.
-
-`+` concatenates text with any printable value, formatting numbers automatically:
-
-```flag
-line := "hi " + name + ", you are " + 30
-```
-
-The results of `+` and functions like `upper`, `split`, `join`, and `replace` are temporary values living in scratch memory that you do not `free`. Inside a `with scratch():` block, all temporaries created in that block are released when the block exits:
-
-```flag
-for i in 0..1000000:
-    with scratch():
-        print("line " + i)
-```
-
-Indexing and slicing operate on bytes:
-- `s[i]` returns a `u8` byte, and `s[a:b]` returns a `&strview` slice.
-- `s[i] = b` mutates a `&str`. A `&strview` is read-only: text literals live in read-only program memory, so copy to a `&str` to modify one.
-- Negative literal or constant indexes count from the end: `s[-1]` is the last byte and `s[-3:-1]` are the two before it.
-- Omitting the start defaults to `0`, and omitting the end goes to the end: `s[2:]` skips the first two bytes and `s[-3:]` keeps the last three.
-
-Functions like `find`, `contains`, `split`, `join`, `replace`, `trim`, and `parse_int` are documented in [Text](Library.md#text).
-
-`@embed("logo.png")` reads a file at compile time (resolved relative to the source file's folder) and embeds it directly into the executable as a `&strview`, like a text literal:
-
-```flag
-FONT = @embed("fonts/mono.ttf")
-```
-
-### Printing
-
-`print` (to standard output) and `eprint` (to standard error) take any number of values and print them consecutively followed by a newline. Structs, unions, arrays, lists, and maps all format themselves automatically.
-
-Core provides three formatting helpers:
-- `fixed(x, digits)`: formats a float with a fixed number of decimal places
-- `hex(n)` / `hex(n, width)`: formats an integer in hexadecimal, optionally zero-padded to `width` digits
-- `pad(value, width)`: pads a formatted value with spaces to `width`
-
-```flag
-print(fixed(3.14159, 2), " ", hex(255), " ", hex(10, 4), " [", pad(7, 3), "]") # 3.14 0xff 0x000a [  7]
-```
-
-- `write(stdout, x)` prints a single value without a trailing newline.
-- Each `print` outputs its entire line at once, so concurrent threads never interleave lines.
-- Standard output is buffered in large chunks for speed and flushed automatically before waiting (for input, a network connection, another thread, or `sleep`), so prompts and logs appear while the program waits.
-- `print` and `eprint` preserve call order, and buffered output is flushed on normal exit, `exit`, runtime errors (such as out-of-bounds), and crashes. A signal such as Ctrl-C discards buffered output (see [Files](Library.md#files)).
-
-To customize how your own type prints, overload `operator +=` for `*&str`:
-
-```flag
-operator +=(s: *&str, p: Point):
-    s.* += "(" + p.x + ", " + p.y + ")"
-```
-
-## Arrays
-
-An array has a fixed length that is part of its type. Like structs, arrays are values, so assigning one copies all of its elements:
-
-```flag
-a := [1, 2, 3] # array[i64, 3]
-b: array[u8, 16] # starts zeroed
-c := array[i32, 2]{4, 5} # explicit array type
-a[0] = 10 # bounds-checked; out-of-bounds stops the program
-print(a[-1], " ", a.len) # negative literal indexes count from the end: 3 3
-for x in a:
-    print(x)
-```
-
-List and listview functions (such as `sort`) accept an array by its address:
-
-```flag
-sort(ptr(a))
-```
-
-Two arrays of the same type compare element by element with `==`. Arrays hold values and do not support element-wise arithmetic; use `simd` for vectorized math.
-
-## SIMD
-
-`simd[T, n]` packs `n` numbers into one or two 16-byte registers and applies operators across all lanes at once:
-
-```flag
-a: simd[f32, 4] = [1.0, 2.0, 3.0, 4.0]
-b := simd[f32, 4](0.5) # broadcasts 0.5 to every lane
-c := a * b + 1.0 # a scalar next to a simd broadcasts to every lane
-print(c) # [1.5, 2.0, 2.5, 3.0]
-c[0] = 9.0 # individual lane access requires a compile-time constant index
-m := a > 2.0 # mask of type simd[bool32, 4] with lanes matching the width of a
-print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true, true] [0.0, 0.0, 3.0, 4.0] true 10.0
-```
-
-Supported lane layouts:
-
-| Lane types | 16-byte `simd` | 32-byte `simd` |
-|---|---|---|
-| `f32`, `i32`, `u32` | 4 lanes | 8 lanes |
-| `f64`, `i64`, `u64` | 2 lanes | 4 lanes |
-| `i16`, `u16` | 8 lanes | 16 lanes |
-| `i8`, `u8` | 16 lanes | 32 lanes |
-
-- Comparisons return masks, `select` picks lanes from either side based on a mask, and `min`, `max`, `abs`, and `sqrt` operate lane by lane.
-- On x86_64 and arm64, each operation compiles to one or a few hardware instructions (two for 32-byte vectors) while keeping values in registers, so 4-lane code runs roughly 4x faster than scalar code.
-- Wider vectors are represented as arrays of `simd`, such as `array[simd[f32, 8], 4]`.
-- Load from and store back to a list using a matching-length slice: `v: simd[f32, 4] = values[i:i + 4]` and `values[i:i + 4] = v * 2.0`.
-
-See [SIMD](Reference.md#simd) for the complete rules.
-
-## Lists
-
-A `&list[T]` is a growable list backed by `heap` or an `arena`. `heap([])` creates an empty heap list, and `heap` on an array or listview creates a heap list with a copy of its elements:
-
-```flag
-empty: &list[i64] = heap([])
-start := heap([1, 2, 3]) # &list[i64] on the heap
-bytes := heap([u8(1), 2]) # element type comes from the literal, not the target variable
-```
-
-```flag
-nums: &list[i32] = heap([])
-defer free(nums)
-append(nums, 5)
-append(nums, 3)
-insert(nums, 0, 9) # [9, 5, 3]
-sort(nums) # [3, 5, 9]
-print(nums[0], " ", nums.len, " ", nums[0:2]) # 3 3 [3, 5]
-print(nums[-1], " ", nums[-2]) # 9 5 (negative literal indexes count from the end)
-last := pop(nums) # removes and returns the last element, or null if empty
-first := remove(nums, 0) # removes and returns the element at index 0
-```
-
-Only negative indexes known at compile time (literals or constants) count from the end. A negative index computed at runtime is out of bounds like any other (`nums[i - 1]` with `i == 0` stops the program), and position-taking functions like `insert` and `remove` always count from the start.
-
-Other operations include `find` (returns index or `null`), `contains`, `flip` (reverses in place), and `binary_search` for sorted lists; see [Lists and listviews](Library.md#lists-and-listviews). Lists and listviews compare element by element with `==`.
-
-## Maps
-
-A `&map[K, V]` is a hash map. You can start it empty (`heap({})`) or copy from a map literal (which on its own is a `fixmap` that holds just its pairs):
-
-```flag
-ages := heap({"bo": 25}) # &map[&strview, i64]
-defer free(ages)
-ages["ana"] = 30 # equivalent to put(ages, "ana", 30)
-age := ages["ana"] # i64|null (null if "ana" is missing)
-if age is i64:
-    print("ana is ", age)
-ages["cy"] += 1 # a missing key starts at zero, so this counts
-for e in ages:
-    print(e.key, " ", e.value)
-```
-
-Key behaviors:
-- Core also provides `contains`, `remove` (returns the removed value or `null`), and `clear`.
-- **Owned string keys**: a `&map[&str, V]` owns its keys. Inserting a new key copies it (even from a `&strview`, as in `ports[line[:4]] = 80`), and `remove`, `clear`, and `free` release the keys automatically.
-- **Pointers into a map**: `ptr(ages["ana"])` returns a pointer to the stored value, inserting a zero value if the key is missing. Like a pointer into a list, it becomes invalid if the map grows.
-- **In-place updates**: mutating a field or element of a map entry updates it in place and inserts a zero value if the key is missing (`players[name].score += 10`, or `pairs[a][b] += 1` when the value type is valid at zero, such as an array). Because the zero value of a `&list`, `&str`, or `&map` has no allocated memory, give a new key memory before growing it: `groups[k] = heap([])`, then `append(groups[k], v)` (and similarly `pairs[a] = heap({})` before `pairs[a][b] += 1` for a nested `&map`).
-- **Valid key types**: numbers, text, `bool`, enums, pointers, arrays, structs and unions made from them, or any type defining `==` and `operator hash`.
-
-A `fixmap[K, V, N]` is a fixed-capacity map storing up to `N` entries inline in insertion order. It never allocates and does not need `free`. `put` returns `MapFull` if there is no room for a new key:
-
-```flag
-colors: fixmap[&strview, u32, 4] = {"red": 0xff0000}
-if put(colors, "green", 0x00ff00) is MapFull:
-    print("no room")
-print(colors["red"], " ", colors.len)
-```
-
-## Arenas
-
-An `Arena` allocates memory in large blocks and releases everything in it at once. Allocation is fast, and `free` on the arena frees every object created in it:
-
-```flag
-type Enemy:
-    hp: i32
-
-func main():
-    level: Arena # starts empty
-    defer free(level) # releases everything in level
-    boss := arena(level, Enemy{hp = 100}) # *Enemy in level (like heap(v))
-    enemies: &list[Enemy] = arena(level, []) # empty list backed by level
-    append(enemies, Enemy{hp = 10}) # grows inside level
-    name: &str = arena(level, "boss") # text backed by level
-    name += " final" # grows inside level too
-    counts := arena(level, {"orc": 2}) # &map[&strview, i64] in level
-    print(boss.hp, " ", enemies.len, " ", name, " ", counts)
-```
-
-A `&list`, `&str`, or `&map` created in an arena remembers that arena and grows inside it. Calling `free` on such a container empties it without freeing memory; the arena handles release. `heap` continues to allocate from the heap as usual.
-
-`clear(a)` releases all allocations inside the arena while keeping its blocks for reuse, which fits per-frame game allocations:
-
-```flag
-frame: Arena
-defer free(frame)
-while running:
-    clear(frame)
-    visible: &list[*Enemy] = arena(frame, []) # lives for this frame only
-```
-
-The scratch memory used by temporaries is also an arena (marked by `with scratch():`), with one per thread. An arena you create cannot be shared across [threads](#threads) without a `Lock`. See [Arenas](Reference.md#arenas) for the exact rules.
-
-## Contexts
-
-A `context` is per-thread global state accessible from every function. Its fields start at zero or at their default value, and each thread gets its own copy. Because no code runs to initialize fields, fat-pointer fields must specify a default:
-
-```flag
-context app:
-    depth: u32
-    level: i32 = 3
-    names: &list[&strview] = heap([])
-
-func deeper():
-    app.depth += 1
-```
-
-There are two additional context variants for multithreaded programs:
-- `inherited context`: each thread spawned with `parallel` starts with a copy of the spawning thread's context rather than fresh defaults.
-- `shared context`: a single instance shared across all threads, with its initial state written directly into program data by the compiler.
-
-```flag
-inherited context log:
-    level: i32 = 1
-
-shared context stats:
-    visits: Lock[i64]
-```
-
-## Threads
-
-`parallel f(x)` runs `f(x)` in a new thread and returns a `Thread[T]`, where `T` is `f`'s return type. `wait(t)` waits for the thread to finish and returns its result:
-
-```flag
-use os
-
-func sum(from: i64, to: i64) -> i64:
-    total: i64 = 0
-    for i in from..to:
-        total += i
-    return total
-
-func main():
-    pieces: &list[Thread[i64]] = heap([])
-    defer free(pieces)
-    n := cores() # number of system processors
-    for k in 0..n:
-        append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
-    total: i64 = 0
-    for p in pieces:
-        total += wait(p)
-    print(total)
-```
-
-Arguments are evaluated in the calling thread and copied to the new thread. The return value can be anything: owned text, an error, or even a temporary, since `wait` merges the child thread's scratch temporaries into the waiting thread's scratch memory as if a normal call had created them.
-
-`done(t)` checks whether a thread has finished without blocking, so you can, for example, load a game level while drawing a loading screen:
-
-```flag
-level := parallel load("castle.map")
-while not done(level):
-    draw_loading_screen()
-start(try wait(level))
-```
-
-Writing `parallel f(x)` as a standalone statement detaches the thread. `main` waits for all detached threads before running its `defer` statements, so they can safely reference data kept by `main`. Any stored `Thread` handle must be read (via `wait` or `done`), and `-memory` warns if one is never waited. A function that can return an error cannot be detached, because its error would be lost.
-
-### Synchronization
-
-Each thread has its own contexts and scratch memory, while a `shared context` is shared across threads. Flag provides three synchronization primitives:
-
-1. **`Lock[T]`**: allows one thread at a time to access the guarded `value` field (`Lock[null]` guards code without a value):
-
-```flag
-shared context stats:
-    visits: Lock[i64]
-
-func visit():
-    with lock(stats.visits):
-        stats.visits.value += 1
-```
-
-2. **`atomic[T]`**: a number or pointer shared across threads without a lock. It is not read or written as a regular value; instead use `get`, `set`, `add`, `swap`, and `compare_swap`, each compiling to inline processor instructions:
-
-```flag
-shared context stats:
-    served: atomic[i64]
-
-func serve():
-    add(stats.served, 1)
-```
-
-3. **`Channel[T, N]`**: a bounded queue that passes values between threads, blocking when full or empty. It keeps the values inside itself, so it lives where you declare it:
-
-```flag
-func worker(jobs: *Channel[&str, 16]):
-    for name in jobs: # runs until the channel is closed
-        print("working on ", name)
-        free(name)
-
-func main():
-    jobs: Channel[&str, 16]
-    workers: &list[Thread[null]] = heap([])
-    defer free(workers)
-    for k in 0..4:
-        append(workers, parallel worker(jobs))
-    for name in ["a.txt", "b.txt", "c.txt"]:
-        send(jobs, heap(name)) # worker frees what it receives, so send owned text
-    close(jobs)
-    for w in workers:
-        wait(w)
-```
-
-### Visibility and thread checks
-
-Writes made by one thread become visible to another across `parallel`, `wait`, a `Lock`, a `Channel`, or an `atomic`. `done` only reports that the thread finished; read its writes only after calling `wait`.
-
-`-memory` also checks multithreaded code for:
-- Data races: two threads accessing the same memory concurrently while at least one modifies it, outside a shared lock or atomic.
-- Threads that are never waited or are waited twice.
-- Pointers to local variables passed to threads that outlive the function.
-- Temporaries whose `with scratch():` block may release them while a thread still uses them.
-- Copying an active `Lock`, `Channel`, or `Arena` (pass a pointer instead).
-
-```flag
-func add(count: *i64):
-    count.* += 1
-
-func main():
-    count: i64
-    a := parallel add(ptr(count))
-    add(ptr(count))
-    wait(a)
-```
-
-Compiling with `-memory` reports:
-
-```
-warning: data race: count is accessed while a concurrent thread writes it with no synchronization; guard it with Lock[T] or wait() before accessing
-```
 
 ## Error handling
 
@@ -1531,9 +1200,9 @@ for text in texts:
 
 ### When the program fails
 
-Unrecoverable errors, such as out-of-bounds indexing, division by zero, failed `assert`, or `panic`, halt the program and print what happened, where it happened, and the call chain of your functions:
+Unrecoverable errors (out-of-bounds indexing, division by zero, a failed `assert`, or `panic`) halt the program and print what happened, where it happened, and the call chain of your functions:
 
-```
+```text
 flag: index 5 out of bounds for length 3
   --> main.flg:12:11
   in parse_line, main.flg:9
@@ -1542,6 +1211,7 @@ flag: index 5 out of bounds for length 3
 ```
 
 `assert` checks a condition and prints the evaluated values when it fails:
+
 - `assert total == 4` halts with `flag: total == 4 is false, total is 3`.
 - `assert f is File` halts with `flag: f is FsError, not File: cannot open config.txt: No such file or directory`.
 - A message after a comma replaces the default output: `assert total > 0, "the total cannot be empty"`.
@@ -1551,6 +1221,367 @@ To log a failure or save state before exiting, pass a callback to `on_panic`: it
 Crashes print the same call chain: dereferencing a null pointer prints `flag: invalid memory access at 0x0`, and unbounded recursion prints `flag: stack overflow`. An error in a [thread](#threads) shows that thread's call chain. Small functions inlined into their caller (see [Inline](#inline)) do not get a separate line unless marked `noinline`.
 
 To inspect a running program, build with `-debug` and run it under `gdb` or `lldb`: they display variables with their Flag types and stop at source lines (see [Debugging](Reference.md#debugging)). With `-debug`, inlining is disabled so every function appears in the call chain.
+
+## Strings
+
+Flag has two text types: `&strview` (a read-only view of text) and `&str` (owned, growable text). Every text literal is a `&strview`.
+
+```flag
+name: &str = heap("ana") # copies the text into an owned &str on the heap
+defer free(name)
+name += " and bo" # appends to the owned text
+print(name.len, " ", name[0:3]) # 10 ana
+```
+
+Assigning a `&strview` to a `&str` copies into the `&str`'s memory (`name = "bo"`). Assigning one `&str` to another makes both share the same memory.
+
+`+` concatenates text with any printable value, formatting numbers automatically:
+
+```flag
+line := "hi " + name + ", you are " + 30
+```
+
+The results of `+` and functions like `upper`, `split`, `join`, and `replace` are temporary values living in scratch memory that you do not `free`. A `with scratch():` block releases all temporaries created inside it when it exits, so wrapping a loop body in one releases them on every iteration:
+
+```flag
+for i in 0..1000000:
+    with scratch():
+        print("line " + i)
+```
+
+Indexing and slicing operate on bytes:
+
+- `s[i]` returns a `u8` byte, and `s[a:b]` returns a `&strview` slice.
+- `s[i] = b` mutates a `&str`. A `&strview` is read-only: text literals live in read-only program memory, so copy to a `&str` to modify one.
+- Negative literal or constant indexes count from the end: `s[-1]` is the last byte and `s[-3:-1]` are the two before it.
+- Omitting the start defaults to `0`, and omitting the end goes to the end: `s[2:]` skips the first two bytes and `s[-3:]` keeps the last three.
+
+Functions like `find`, `contains`, `split`, `join`, `replace`, `trim`, and `parse_int` are documented in [Text](Library.md#text).
+
+`@embed("logo.png")` reads a file at compile time (resolved relative to the source file's folder) and embeds it directly into the executable as a `&strview`, like a text literal:
+
+```flag
+FONT = @embed("fonts/mono.ttf")
+```
+
+### Printing
+
+`print` (to standard output) and `eprint` (to standard error) take any number of values and print them consecutively followed by a newline. Structs, unions, arrays, lists, and maps all format themselves automatically.
+
+`core` provides three formatting helpers:
+
+- `fixed(x, digits)`: formats a float with a fixed number of decimal places
+- `hex(n)` / `hex(n, width)`: formats an integer in hexadecimal, optionally zero-padded to `width` digits
+- `pad(value, width)`: pads a formatted value with spaces to `width`
+
+```flag
+print(fixed(3.14159, 2), " ", hex(255), " ", hex(10, 4), " [", pad(7, 3), "]") # 3.14 0xff 0x000a [  7]
+```
+
+Output details:
+
+- `write(stdout, x)` prints a single value without a trailing newline.
+- Each `print` outputs its entire line at once, so concurrent threads never interleave lines.
+- Standard output is buffered in large chunks for speed and flushed automatically before waiting (for input, a network connection, another thread, or `sleep`), so prompts and logs appear while the program waits.
+- `print` and `eprint` preserve call order, and buffered output is flushed on normal exit, `exit`, runtime errors (such as out-of-bounds), and crashes. A signal such as Ctrl-C discards buffered output (see [Files](Library.md#files)).
+
+To customize how your own type prints, overload `operator +=` for `*&str`:
+
+```flag
+operator +=(s: *&str, p: Point):
+    s.* += "(" + p.x + ", " + p.y + ")"
+```
+
+## Arrays
+
+An array has a fixed length that is part of its type. Like structs, arrays are values, so assigning one copies all of its elements:
+
+```flag
+a := [1, 2, 3] # array[i64, 3]
+b: array[u8, 16] # starts zeroed
+c := array[i32, 2]{4, 5} # explicit array type
+a[0] = 10 # bounds-checked; out-of-bounds stops the program
+print(a[-1], " ", a.len) # negative literal indexes count from the end: 3 3
+for x in a:
+    print(x)
+```
+
+List and listview functions (such as `sort`) accept an array by its address:
+
+```flag
+sort(ptr(a))
+```
+
+Two arrays of the same type compare element by element with `==`. Arrays hold values and do not support element-wise arithmetic; use [SIMD](#simd) for vectorized math.
+
+## Lists
+
+A `&list[T]` is a growable list backed by `heap` or an `arena`. `heap([])` creates an empty heap list, and `heap` on an array or listview creates a heap list with a copy of its elements:
+
+```flag
+empty: &list[i64] = heap([])
+start := heap([1, 2, 3]) # &list[i64] on the heap
+bytes := heap([u8(1), 2]) # element type comes from the literal, not the target variable
+```
+
+```flag
+nums: &list[i32] = heap([])
+defer free(nums)
+append(nums, 5)
+append(nums, 3)
+insert(nums, 0, 9) # [9, 5, 3]
+sort(nums) # [3, 5, 9]
+print(nums[0], " ", nums.len, " ", nums[0:2]) # 3 3 [3, 5]
+print(nums[-1], " ", nums[-2]) # 9 5 (negative literal indexes count from the end)
+last := pop(nums) # removes and returns the last element, or null if empty
+first := remove(nums, 0) # removes and returns the element at index 0
+```
+
+Only negative indexes known at compile time (literals or constants) count from the end. A negative index computed at runtime is out of bounds like any other (`nums[i - 1]` with `i == 0` stops the program), and position-taking functions like `insert` and `remove` always count from the start.
+
+Other operations include `find` (returns index or `null`), `contains`, `flip` (reverses in place), and `binary_search` for sorted lists; see [Lists and listviews](Library.md#lists-and-listviews). Lists and listviews compare element by element with `==`.
+
+## Maps
+
+A `&map[K, V]` is a hash map. Start one empty with `heap({})` or copy from a map literal (which on its own is a `fixmap` holding just its pairs):
+
+```flag
+ages := heap({"bo": 25}) # &map[&strview, i64]
+defer free(ages)
+ages["ana"] = 30 # equivalent to put(ages, "ana", 30)
+age := ages["ana"] # i64|null (null if "ana" is missing)
+if age is i64:
+    print("ana is ", age)
+ages["cy"] += 1 # a missing key starts at zero, so this counts
+for e in ages:
+    print(e.key, " ", e.value)
+```
+
+Key behaviors:
+
+- **Core operations**: `contains`, `remove` (returns the removed value or `null`), and `clear`.
+- **Owned string keys**: a `&map[&str, V]` owns its keys. Inserting a new key copies it (even from a `&strview`, as in `ports[line[:4]] = 80`), and `remove`, `clear`, and `free` release the keys automatically.
+- **Pointers into a map**: `ptr(ages["ana"])` returns a pointer to the stored value, inserting a zero value if the key is missing. Like a pointer into a list, it becomes invalid if the map grows.
+- **In-place updates**: mutating a field or element of a map entry updates it in place and inserts a zero value if the key is missing. That works directly for types valid at zero, such as `players[name].score += 10` or `pairs[a][b] += 1` when the value is an array.
+- **Nested owners**: the zero value of a `&list`, `&str`, or `&map` has no allocated memory. Initialize a new entry before growing it: `groups[k] = heap([])` before `append(groups[k], v)`, or `pairs[a] = heap({})` before `pairs[a][b] += 1`.
+- **Valid key types**: numbers, text, `bool`, enums, pointers, arrays, structs and unions made from them, or any type defining `==` and `operator hash`.
+
+A `fixmap[K, V, N]` is a fixed-capacity map storing up to `N` entries inline in insertion order. It never allocates and does not need `free`. `put` returns `MapFull` if there is no room for a new key:
+
+```flag
+colors: fixmap[&strview, u32, 4] = {"red": 0xff0000}
+if put(colors, "green", 0x00ff00) is MapFull:
+    print("no room")
+print(colors["red"], " ", colors.len)
+```
+
+## SIMD
+
+`simd[T, n]` packs `n` numbers into one or two 16-byte registers and applies operators across all lanes at once:
+
+```flag
+a: simd[f32, 4] = [1.0, 2.0, 3.0, 4.0]
+b := simd[f32, 4](0.5) # broadcasts 0.5 to every lane
+c := a * b + 1.0 # a scalar next to a simd broadcasts to every lane
+print(c) # [1.5, 2.0, 2.5, 3.0]
+c[0] = 9.0 # individual lane access requires a compile-time constant index
+m := a > 2.0 # mask of type simd[bool32, 4] with lanes matching the width of a
+print(m, " ", select(m, a, 0.0), " ", any(m), " ", sum(a)) # [false, false, true, true] [0.0, 0.0, 3.0, 4.0] true 10.0
+```
+
+Supported lane layouts:
+
+| Lane types | 16-byte `simd` | 32-byte `simd` |
+|---|---|---|
+| `f32`, `i32`, `u32` | 4 lanes | 8 lanes |
+| `f64`, `i64`, `u64` | 2 lanes | 4 lanes |
+| `i16`, `u16` | 8 lanes | 16 lanes |
+| `i8`, `u8` | 16 lanes | 32 lanes |
+
+- Comparisons return masks, `select` picks lanes from either side based on a mask, and `min`, `max`, `abs`, and `sqrt` operate lane by lane.
+- On `x86_64` (SSE4.2), `arm64` (NEON), and WebAssembly (SIMD128), most operations compile to one or a few hardware vector instructions (two for 32-byte vectors) while keeping values in registers, so 4-lane code runs roughly 4x faster than scalar code.
+- Wider vectors are represented as arrays of `simd`, such as `array[simd[f32, 8], 4]`.
+- Load from and store back to a list using a matching-length slice: `v: simd[f32, 4] = values[i:i + 4]` and `values[i:i + 4] = v * 2.0`.
+
+See [SIMD](Reference.md#simd) for the complete rules.
+
+## Arenas
+
+An `Arena` allocates memory in large blocks and releases everything in it at once. Allocation is fast, and calling `free` on the arena frees every object created in it:
+
+```flag
+type Enemy:
+    hp: i32
+
+func main():
+    level: Arena # starts empty
+    defer free(level) # releases everything in level
+    boss := arena(level, Enemy{hp = 100}) # *Enemy in level (like heap(v))
+    enemies: &list[Enemy] = arena(level, []) # empty list backed by level
+    append(enemies, Enemy{hp = 10}) # grows inside level
+    name: &str = arena(level, "boss") # text backed by level
+    name += " final" # grows inside level too
+    counts := arena(level, {"orc": 2}) # &map[&strview, i64] in level
+    print(boss.hp, " ", enemies.len, " ", name, " ", counts)
+```
+
+A `&list`, `&str`, or `&map` created in an arena remembers that arena and grows inside it. Calling `free` on such a container empties it without freeing memory; the arena handles release. `heap` continues to allocate from the heap as usual.
+
+`clear(a)` releases all allocations inside the arena while keeping its blocks for reuse, which fits per-frame game allocations:
+
+```flag
+frame: Arena
+defer free(frame)
+while running:
+    clear(frame)
+    visible: &list[*Enemy] = arena(frame, []) # lives for this frame only
+```
+
+The scratch memory used by temporaries is also an arena (marked by `with scratch():`), with one per thread. An arena you create cannot be shared across [threads](#threads) without a `Lock`. See [Arenas](Reference.md#arenas) for the exact rules.
+
+## Contexts
+
+A `context` is per-thread global state accessible from every function. Its fields start at zero or at their default value, and each thread gets its own copy. Because no code runs to initialize fields, fat-pointer fields must specify a default:
+
+```flag
+context app:
+    depth: u32
+    level: i32 = 3
+    names: &list[&strview] = heap([])
+
+func deeper():
+    app.depth += 1
+```
+
+There are two additional context variants for multithreaded programs:
+
+- `inherited context`: each thread spawned with `parallel` starts with a copy of the spawning thread's context rather than fresh defaults.
+- `shared context`: a single instance shared across all threads, with its initial state written directly into program data by the compiler.
+
+```flag
+inherited context log:
+    level: i32 = 1
+
+shared context stats:
+    visits: Lock[i64]
+```
+
+## Threads
+
+`parallel f(x)` runs `f(x)` in a new thread and returns a `Thread[T]`, where `T` is `f`'s return type. `wait(t)` waits for the thread to finish and returns its result:
+
+```flag
+use os
+
+func sum(from: i64, to: i64) -> i64:
+    total: i64 = 0
+    for i in from..to:
+        total += i
+    return total
+
+func main():
+    pieces: &list[Thread[i64]] = heap([])
+    defer free(pieces)
+    n := cores() # number of system processors
+    for k in 0..n:
+        append(pieces, parallel sum(1000000 * k / n, 1000000 * (k + 1) / n))
+    total: i64 = 0
+    for p in pieces:
+        total += wait(p)
+    print(total)
+```
+
+Arguments are evaluated in the calling thread and copied to the new thread. The return value can be anything: owned text, an error, or even a temporary, because `wait` merges the child thread's scratch temporaries into the waiting thread's scratch memory as if a normal call had created them.
+
+`done(t)` checks whether a thread has finished without blocking, so you can, for example, load a game level while drawing a loading screen:
+
+```flag
+level := parallel load("castle.map")
+while not done(level):
+    draw_loading_screen()
+start(try wait(level))
+```
+
+Thread lifetime rules:
+
+- **Detached threads**: writing `parallel f(x)` as a standalone statement detaches the thread. `main` waits for all detached threads before running its `defer` statements, so they can safely reference data kept by `main`.
+- **Errors**: a function that can return an error cannot be detached, because its error would be lost.
+- **Handles**: any stored `Thread` handle must be read (via `wait` or `done`), and `-memory` warns if one is never waited.
+
+### Synchronization
+
+Each thread has its own contexts and scratch memory, while a `shared context` is shared across threads. Flag provides three synchronization primitives.
+
+**`Lock[T]`** allows one thread at a time to access its guarded `value` field (`Lock[null]` guards code without a value):
+
+```flag
+shared context stats:
+    visits: Lock[i64]
+
+func visit():
+    with lock(stats.visits):
+        stats.visits.value += 1
+```
+
+**`atomic[T]`** holds a number or pointer shared across threads without a lock. It is not read or written as a regular value; instead use `get`, `set`, `add`, `swap`, and `compare_swap`, each compiling to inline processor instructions:
+
+```flag
+shared context stats:
+    served: atomic[i64]
+
+func serve():
+    add(stats.served, 1)
+```
+
+**`Channel[T, N]`** is a bounded queue that passes values between threads, blocking when full or empty. It stores its values inline, so it lives where you declare it:
+
+```flag
+func worker(jobs: *Channel[&str, 16]):
+    for name in jobs: # runs until the channel is closed
+        print("working on ", name)
+        free(name)
+
+func main():
+    jobs: Channel[&str, 16]
+    workers: &list[Thread[null]] = heap([])
+    defer free(workers)
+    for k in 0..4:
+        append(workers, parallel worker(jobs))
+    for name in ["a.txt", "b.txt", "c.txt"]:
+        send(jobs, heap(name)) # worker frees what it receives, so send owned text
+    close(jobs)
+    for w in workers:
+        wait(w)
+```
+
+### Visibility and thread checks
+
+Writes made by one thread become visible to another across `parallel`, `wait`, a `Lock`, a `Channel`, or an `atomic`. `done` only reports that the thread finished; read its writes only after calling `wait`.
+
+`-memory` also checks multithreaded code for:
+
+- Data races: two threads accessing the same memory concurrently while at least one modifies it, outside a shared lock or atomic.
+- Threads that are never waited or are waited twice.
+- Pointers to local variables passed to threads that outlive the function.
+- Temporaries whose `with scratch():` block may release them while a thread still uses them.
+- Copying an active `Lock`, `Channel`, or `Arena` (pass a pointer instead).
+
+```flag
+func add(count: *i64):
+    count.* += 1
+
+func main():
+    count: i64
+    a := parallel add(ptr(count))
+    add(ptr(count))
+    wait(a)
+```
+
+Compiling with `-memory` reports:
+
+```text
+warning: data race: count is accessed while a concurrent thread writes it with no synchronization; guard it with Lock[T] or wait() before accessing
+```
 
 ## Modules
 
@@ -1592,7 +1623,9 @@ priv func foo():
 
 ### Packages and name resolution
 
-A package (third-party code or a separate part of your project) is a folder imported by a quoted path relative to the current file. The final folder names the module, and one of its files declares `module vec`. `flagc` loads the `.flg` files directly inside that folder (not subfolders), so `flagc run app/main.flg` is enough. `flagc` never downloads packages; a package is simply a copied folder or a git submodule:
+A package (third-party code or a separate part of your project) is a folder imported by a quoted path relative to the current file. The final folder names the module, and one of its files declares `module vec`. `flagc` loads the `.flg` files directly inside that folder (not subfolders), so `flagc run app/main.flg` is enough.
+
+`flagc` never downloads packages; a package is simply a copied folder or a git submodule:
 
 ```flag
 use "vendor/vec"
@@ -1600,6 +1633,8 @@ func main():
     a := vec.V2{3.0, 4.0}
     print(dot(a, a))
 ```
+
+Name resolution across modules follows three rules:
 
 - **Overloads across modules**: two used modules can define functions with the same name; argument types pick the right one. If both match equally well, the error tells you to qualify the call:
   `ambiguous call to size with (i32): multiple overloads match equally; qualify with a module name: a.size or b.size`
@@ -1674,7 +1709,7 @@ Every function is documented in the [Library](Library.md).
 
 ## Calling C
 
-Declare C functions in an `extern` block naming the library (`"c"` is the C standard library). Adding a `where` condition on the target OS links the library and exposes its declarations only on matching systems:
+Declare C functions in an `extern` block naming the library (`"c"` is the C standard library). Structs are passed using the C calling convention. Adding a `where` condition on the target OS links the library and exposes its declarations only on matching systems:
 
 ```flag
 extern "c":
@@ -1688,11 +1723,11 @@ extern "ws2_32" where @windows():
     func WSAStartup(version: u16, into: *bytes) -> i32
 ```
 
-A C string has type `cstr` (a pointer to null-terminated text):
+**C strings (`cstr`)**: a C string has type `cstr`, a pointer to null-terminated text:
+
 - Text literals convert to `cstr` automatically.
 - Other text uses `cstr(s)` (a temporary null-terminated copy in scratch memory) or `c_text(s)` (for a `&str`).
 - `view(c)` converts a `cstr` back into a `&strview`, and `print` displays its text.
-- Structs are passed using the C calling convention.
 
 ```flag
 extern "c":
@@ -1703,7 +1738,7 @@ func main():
     print(strlen(name), " ", strlen("abc"), " ", view(name))
 ```
 
-Use `= "symbol"` to bind a Flag declaration to a different C symbol name, which also lets you declare one C function under multiple typed signatures:
+**Custom symbol names, C globals, and library paths**: use `= "symbol"` to bind a Flag declaration to a different C symbol name, which also lets you declare one C function under multiple typed signatures:
 
 ```flag
 extern "objc":
@@ -1722,7 +1757,7 @@ extern "Metal.framework" where @macos():
 extern "libfreetype.so.6" where @linux():
 ```
 
-`export func` exposes a Flag function to C using its plain name and the C calling convention. Its value has type `extern func(...)`, which is how you pass callbacks to C:
+**Callbacks and C function pointers**: `export func` exposes a Flag function to C using its plain name and the C calling convention. Its value has type `extern func(...)`, which is how you pass callbacks to C:
 
 ```flag
 extern "c":
@@ -1740,7 +1775,7 @@ Calls through `extern func(...)` use the C ABI (including structs), so it repres
 
 `@offset_of(T, field)` gives a field's byte offset at compile time, just like `@sizeof` gives a type's size.
 
-Build a dynamically loadable shared library with `-shared`, and load it at runtime with `load_library` and `symbol` from [os](Library.md#libraries). This is how a program or game hot-reloads its code while running; see [Libraries](Reference.md#libraries).
+**Shared libraries**: build a dynamically loadable shared library with `-shared`, and load it at runtime with `load_library` and `symbol` from [os](Library.md#libraries). This is how a program or game hot-reloads its code while running; see [Libraries](Reference.md#libraries).
 
 ## Memory safety
 
@@ -1754,9 +1789,10 @@ flagc main.flg -o main -memory
 
 It is optional because it slows compilation.
 
-Outside `@trust`, a program that passes `-memory` without warnings will not leak memory, double-free, free non-heap memory, use freed memory, or have data races. This guarantee stops at `trust`, `as`, `*bytes` pointer arithmetic, mutating a narrowed variable through a pointer, null/zero pointers, and C code, aside from a few documented blind spots (see [The memory checker](Reference.md#the-memory-checker)).
+Outside `@trust`, a program that passes `-memory` without warnings will not leak memory, double-free, free non-heap memory, use freed memory, or have data races. This guarantee stops at a few trust boundaries (`trust`, `as`, `*bytes` pointer arithmetic, mutating a narrowed variable through a pointer, null/zero pointers, and C code) plus a small set of documented blind spots (see [The memory checker](Reference.md#the-memory-checker)).
 
 `-memory` warns about:
+
 - memory that is never freed
 - memory freed twice
 - memory used after being freed or after a list grew and reallocated
@@ -1766,11 +1802,12 @@ Outside `@trust`, a program that passes `-memory` without warnings will not leak
 - an owner that may grow without allocated memory because only some paths initialized it
 - two threads accessing the same memory concurrently while one modifies it, outside a lock held by both
 
-The checker tracks elements of a list, array, or map as none, some, or all freed, so freeing every element in a loop and then freeing the list is clean, whereas freeing only some elements warns (see [Elements](Reference.md#elements)). It also tracks active union members, so checking `if result is Bad: return` and then freeing the other member is clean.
+The checker tracks elements of a list, array, or map as none, some, or all freed. Freeing every element in a loop and then freeing the list is clean, whereas freeing only some elements warns (see [Elements](Reference.md#elements)). It also tracks active union members, so checking `if result is Bad: return` and then freeing the other member is clean.
 
 ### `@trust` and `@check`
 
 `@trust` suppresses `-memory` warnings in code you have manually verified:
+
 - At the end of a line, it covers that line and any block it opens.
 - On its own line, it covers everything after it at that indentation (so placing `@trust` at the top of a file trusts the entire file).
 
@@ -1784,7 +1821,7 @@ func main():
     print(x) @trust
 ```
 
-`@check` re-enables warnings inside a trusted region. `-memory` skips the trusted code that the checked code does not need, so trusting verified code also speeds up checking.
+`@check` re-enables warnings inside a trusted region. `-memory` skips trusted code that checked code does not need, so trusting verified code also speeds up checking.
 
 ## Compiling
 
@@ -1804,12 +1841,12 @@ Common flags:
 
 | Flag | Description |
 |---|---|
-| `-o name` | Output executable name (defaults to `a.out`, or `a.exe` on Windows; `flagc run` deletes the binary afterward unless `-o` is given) |
-| `-shared` | Build a shared library instead of an executable (see [Libraries](Reference.md#libraries)) |
+| `-o name` | Output path (defaults to `a.out`, `a.exe` on Windows, or `a.wasm` for WebAssembly; `flagc run` deletes the binary afterward unless `-o` is given) |
+| `-shared` | Build a shared library instead of an executable (see [Libraries](Reference.md#libraries)), or a WebAssembly module without `main` |
 | `-check` | Type-check without generating a binary |
 | `-memory` | Run the compile-time memory checker (see [Memory safety](#memory-safety)) |
-| `-debug` | Emit debug information for `gdb` and `lldb` (see [Debugging](Reference.md#debugging)) |
-| `-target target` | Cross-compile for another platform, e.g. `-target windows-x86_64`, or make a WebAssembly module with `-target wasm-wasm32` or `-target wasm-wasm64` (see [Platforms](Reference.md#platforms)) |
+| `-debug` | Emit debug information for `gdb` and `lldb` (see [Debugging](Reference.md#debugging)), or function names in a WebAssembly module |
+| `-target target` | Cross-compile for another platform, e.g. `-target windows-x86_64`, or write a WebAssembly module directly without a C compiler using `-target wasm-wasm32` or `-target wasm-wasm64` (see [Platforms](Reference.md#platforms)) |
 | `-cc ...` | Pass all remaining arguments directly to the C compiler (which assembles and links), e.g. `-cc -lm` or `-cc -static` |
 
 See [The command line](Reference.md#the-command-line) for all flags.
@@ -1835,7 +1872,7 @@ flagc test src -- gcd
 
 Words after `--` filter tests to those whose name contains at least one of those words. Any test running longer than 10 seconds is stopped (`-timeout` changes this limit). At the end, `flagc` reports every failing test with its location and output, and exits with status `1` if any test failed:
 
-```
+```text
 FAIL test_gcd, src/math.flg:3, exit code 134
 flag: gcd(12, 18) == 6 is false, gcd(12, 18) is 4
   --> src/math.flg:4:5

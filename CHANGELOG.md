@@ -2,48 +2,48 @@
 
 ## 0.7.0
 
-A minor release that adds WebAssembly as a target and brings the backend into Flag: `flagc -target wasm-wasm32` and `-target wasm-wasm64` write a WebAssembly module themselves, with no C compiler, and the native backend is QBE ported to Flag, with no C left in the compiler. Existing programs keep compiling.
+A minor release that adds WebAssembly targets and moves the backend into Flag. `flagc -target wasm-wasm32` and `-target wasm-wasm64` emit WebAssembly modules directly with no C compiler, and the native backend is now QBE ported to Flag with no C sources left in the compiler. Existing programs keep compiling.
 
 ### New Features
 
-- **WebAssembly:** `-target wasm-wasm32` builds a `.wasm` module with the 32-bit memory every engine runs, and `-target wasm-wasm64` one with Memory64. Flag is the same on both: pointers and lengths take 8 bytes, and only the memory instructions of `wasm32` take the low word of an address. `-shared` builds one without `main`, and `-debug` adds the names of its functions. See [WebAssembly](docs/Reference.md#webassembly).
-- **WASI:** a program exports `_start` and imports from `wasi_snapshot_preview1` only what its code reaches: `fd_write`, `fd_read`, `args_sizes_get` and `args_get` for `@argc()` and `@argv()`, and `proc_exit`. So a `wasm32` program runs unchanged on wasmtime or Node's `node:wasi`. On `wasm64` the host gives the same functions with 64-bit pointers and sizes. The function table is exported as `__indirect_function_table`, so a host can call back a function value it gets.
-- **Optimized WebAssembly:** each function goes through the same optimizations as on the native targets, and the module keeps the values in locals and on the stack: a `simd` is a `v128` of SIMD128, a dense `switch` jumps through a `br_table`, and an `if` that only chooses a value is a `select`.
-- **`@wasm()`, `@wasm32()` and `@wasm64()`:** platform builtins for the new targets, in expressions and in `where`.
-- **The library on WebAssembly:** `math` needs nothing of the host, floats print and parse with the same digits as on Linux, and the shadow stack takes 8 MiB, like a native main thread, and says `flag: stack overflow` when it runs out. `fs`, `os` and `net` do not build there.
+- **WebAssembly:** `-target wasm-wasm32` builds a `.wasm` module using standard 32-bit memory (supported by every engine), and `-target wasm-wasm64` builds one using Memory64. Flag behaves the same on both: pointers and lengths are 8 bytes, and on `wasm32` only memory instructions use the low word of an address. `-shared` builds a module without `main`, and `-debug` includes function names. See [WebAssembly](docs/Reference.md#webassembly).
+- **WASI:** Programs export `_start` and import from `wasi_snapshot_preview1` only the functions their code reaches: `fd_write`, `fd_read`, `args_sizes_get` and `args_get` (for `@argc()` and `@argv()`), and `proc_exit`. A `wasm32` program runs unchanged on wasmtime or Node's `node:wasi`; on `wasm64`, the host provides the same functions with 64-bit pointers and sizes. When a program uses function values, it exports `__indirect_function_table` so the host can call them back.
+- **Optimized WebAssembly:** Each function runs through the same optimization passes as native targets and keeps values in WebAssembly locals and on the stack. `simd` values lower to SIMD128 `v128`, dense `switch` statements use `br_table`, and value-selecting `if` branches lower to `select`.
+- **`@wasm()`, `@wasm32()`, and `@wasm64()`:** Platform builtins for the WebAssembly targets, usable in expressions and in `where`.
+- **The library on WebAssembly:** `math` needs no host imports, and floats format and parse with the same digits as on Linux. The shadow stack is 8 MiB (matching a native main thread) and prints `flag: stack overflow` when exhausted. `fs`, `os`, and `net` do not build on WebAssembly.
 
 ### Changed
 
-- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and the frontend writes their instructions directly, with no text IR and nothing translated in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets. The backend checks its own invariants, as QBE's asserts did, and stops with the rule that broke instead of writing wrong code. It names its passes, data and instructions in Flag's words, and [The backend](docs/Reference.md#the-backend) describes each file and the order of the passes.
-- **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (9.1 MB, where the three `.ssa` seeds of 0.6.3 took 18.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
-- **`-memory` follows bigger functions:** up to 1024 blocks of memory in a function, and fields that hold numbers no longer count, so big functions stay checked. The backend and the WebAssembly writer of `flagc` pass it with no `@trust`.
-- **More platforms in the releases:** Linux `arm64` and macOS `x86_64` are first-class targets: CI builds and tests them natively, and each release carries their archives. CI also builds the compiler and runs the tests on `riscv64` under qemu.
-- **WebAssembly tests on both widths:** each line of a test's `.args` builds it once more, and the WebAssembly tests build for `wasm32` and `wasm64`. `./test.sh` runs them through `tests/wasm.js`, a small WASI host, under `node`, and says how many it skipped when no `node` can run them.
+- **The backend is written in Flag:** QBE's passes (SSA construction, optimizations, calling conventions, instruction selection, register allocation, and assembly emission) are ported to Flag for `x86_64`, `arm64`, and `riscv64`. The frontend emits backend instructions directly in memory with no text IR or translation layer in between. The port was verified to emit byte-identical assembly to QBE across the compiler, tests, and examples on all six native targets. The backend checks its own invariants (as QBE's assertions did), stopping with the broken rule rather than emitting wrong code, and names its passes, data, and instructions in Flag's terms. See [The backend](docs/Reference.md#the-backend) for its files and pass order.
+- **QBE's C sources are gone:** `vendor/qbe` has been removed from the repository, along with `./build.sh sanitize` (which checked QBE's C code). The bootstrap seeds in `boot/` are now `gzip`-compressed assembly of `flagc` for each of the six native targets (9.0 MB total, down from 18.5 MB for the three `.ssa` seeds in 0.6.3), so every native host bootstraps from its own seed and `build.sh` needs `gzip`.
+- **`-memory` follows bigger functions:** The memory checker now tracks up to 1024 memory blocks per function, and numeric fields no longer consume a block, so larger functions stay checked. `flagc`'s WebAssembly writer passes `-memory` with no `@trust`, and the backend passes it with no file-level `@trust` (only a single `@trust` line).
+- **More platforms in the releases:** Linux `arm64` and macOS `x86_64` are now first-class targets, built and tested natively in CI with release archives included. CI also builds the compiler and runs the tests on `riscv64` under qemu.
+- **WebAssembly tests on both widths:** Each line of a test's `.args` file runs a separate build, so WebAssembly tests build for both `wasm32` and `wasm64`. `./test.sh` runs them under `node` through `tests/wasm.js` (a small WASI host) and reports how many were skipped when no compatible `node` is available.
 
 ### Performance
 
-- **Jump tables:** a `switch` on integers whose literal values are dense jumps through a table, with one load and one jump whatever the number of cases. With 256 cases it takes 47% fewer cycles on random values and 45% fewer on values in order, and a `switch` of 20,000 cases compiles in a third of the time with half the memory. The literals are counted by value, not by case, so a few cases with many values get a table too; a range like `'a'..='z'` of up to 128 numbers joins it, and a few values far from the rest no longer keep the others out. The table holds distances within the code, so it needs no relocation, also in a `-shared` library, and on WebAssembly it is a `br_table`.
-- **Spilling by distance:** when more values are alive than registers, the backend now moves to the stack the ones it needs again last, not the ones it uses least. A physics kernel takes 12% fewer cycles, and 43% fewer with every helper marked `inline`, which now makes it faster instead of slower.
+- **Jump tables:** An integer `switch` with dense literal values now dispatches through a jump table (one load and one jump regardless of case count). With 256 cases, this takes 47% fewer cycles on random inputs and 45% fewer on sequential inputs; a 20,000-case `switch` compiles in a third of the time with half the memory. Literals are counted by value rather than by case, so a few cases with many values qualify too, ranges of up to 128 numbers (such as `'a'..='z'`) join the table, and isolated outliers no longer keep the remaining values out. Tables store relative offsets within the code so they need no relocations (including in `-shared` libraries), and lower to `br_table` on WebAssembly.
+- **Spilling by distance:** When more values are live than registers, the backend now spills the values needed farthest in the future instead of those used least frequently. A physics kernel runs in 12% fewer cycles, and 43% fewer with every helper marked `inline` (which now speeds it up instead of slowing it down).
 
 ### Bug Fixes
 
-- **Variables that trade values in a loop:** when more values were alive than registers, an `i32` or `f32` kept on the stack could be copied with 8 bytes and overwrite its neighbor, giving wrong results on `x86_64`, and two integers on the stack made the assembler refuse the program.
-- **Comparisons in a library on `x86_64`:** reading a `context` field between a comparison and the `if` that tests it no longer makes the `if` take the wrong branch in a `-shared` library.
-- **`x86_64` flags after unsigned float conversions:** an `if` right after converting between a float and a `u64` no longer takes the wrong branch.
-- **Unused struct results:** calling a function that returns a large struct without reading the result no longer makes it write through an uninitialized register.
-- **Constant arrays indexed from a number other than 0 on macOS `arm64`:** reading `codes[n - 10]` from a constant array of bytes no longer makes the linker stop with `relocation ... is not supported`.
-- **Contexts on `riscv64`:** the fields of a `context` after its first one were read and written at a wrong place, since GNU as counted the place of the context twice, so a program could read the values of another context or stop with `this &list has no memory to grow in`.
-- **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops the compiler with an assertion.
-- **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
-- **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
-- **Assembler warnings on `x86_64`:** converting a float to `i64` in a function with values on the stack no longer makes the assembler warn `0x8000000000000000 shortened to 0x0000000000000000`.
-- **`main` with `where`:** a `main` whose `where` does not hold on the target is no longer the entry point, so `func main() where false:` fails with `missing entry point`, and with one `main` per system, like `where @linux()` and `where @windows()`, each build runs its own. Two that hold are an error.
-- **Atomic results:** a function declared `-> atomic[T]` is an error where it is declared, also when no `return` reaches it, and so is a function type that takes or returns an atomic by value.
-- **`-overlay` in folders:** a new `.flg` file that is not saved yet, inside a folder given on the command line, is part of the program at any depth, as in the folder of a quoted `use`.
-- **Stepping in a debugger:** `next` no longer skips the line a jump lands on when values move on the way there, like the line after a `switch`, and no longer stops twice on the first line of a loop. Stopping on a `switch` with a case that is not a literal shows the line of the `switch`, not that case's.
-- **Function values in `-memory`:** calling a function value whose type matches the program's first function no longer reports a false leak in contexts.
-- **`-memory` and `simd` lanes:** a load or store of a whole `simd` counts its 16 bytes, so a data race between it and a write to one of its lanes in another thread is reported.
-- **Growing elements through a runtime index:** `append(groups[i % 2], x)` in a loop no longer makes `-memory` warn use after free.
+- **Variables that trade values in a loop:** When more values were live than registers, an `i32` or `f32` on the stack could be copied as 8 bytes and overwrite its neighbor (producing wrong results on `x86_64`), and swapping two spilled integers produced assembly the assembler rejected.
+- **Comparisons in a library on `x86_64`:** In a `-shared` library, reading a `context` field between a comparison and the `if` testing it no longer causes the `if` to take the wrong branch.
+- **`x86_64` flags after unsigned float conversions:** An `if` right after converting between a float and a `u64` no longer takes the wrong branch.
+- **Unused struct results:** Calling a function that returns a large struct without reading the result no longer writes through an uninitialized register.
+- **Constant arrays indexed from a number other than 0 on macOS `arm64`:** Reading `codes[n - 10]` from a constant byte array no longer causes the linker to fail with `relocation ... is not supported`.
+- **Contexts on `riscv64`:** Fields of a `context` after the first were accessed at the wrong offset because GNU `as` counted the context's address twice, which could read another context's values or abort with `flag: this &list has no memory to grow in: give it heap([]) or arena(a, [])`.
+- **`riscv64` crash in the backend:** A nested conditional choosing between `1` and `0` (such as `x if all else 1 if n > 4 else 0`) no longer stops the compiler with an assertion.
+- **Debug information of the last function:** `-debug` omitted the last function of the program from DWARF (such as an `export func` that `main` never calls), leaving debuggers unable to see its parameters or call it.
+- **Programs of 16 files or more:** `flagc` no longer hangs when loading the 16th file of a program.
+- **Assembler warnings on `x86_64`:** Converting a float to `i64` in a function with spilled stack values no longer triggers the assembler warning `0x8000000000000000 shortened to 0x0000000000000000`.
+- **`main` with `where`:** A `main` whose `where` condition is false on the current target is no longer treated as the entry point, so `func main() where false:` fails with `error: missing entry point: expected a top-level 'func main()' with no parameters`. Programs can define one `main` per system (such as `where @linux()` and `where @windows()`), and two active `main` functions are an error.
+- **Atomic results:** A function declared `-> atomic[T]` now reports an error at the declaration even when no `return` reaches it, and function types that take or return an atomic by value are rejected too.
+- **`-overlay` in folders:** New `.flg` files that exist only in the `-overlay`, not saved yet, inside a folder given on the command line are now included in the program at any depth, matching the behavior in a quoted `use` folder.
+- **Stepping in a debugger:** `next` no longer skips the target line of a jump when values move along the edge (such as the line after a `switch`), and no longer stops twice on the first line of a loop. Stopping on a `switch` with a non-literal case now shows the `switch` line rather than that case's line.
+- **Function values in `-memory`:** Calling a function value whose type matches the program's first function no longer reports a false memory leak in contexts.
+- **`-memory` and `simd` lanes:** A load or store of a whole `simd` now counts its 16 bytes, so a data race between it and a write to one of its lanes in another thread is reported.
+- **Growing elements through a runtime index:** Calling `append(groups[i % 2], x)` in a loop no longer triggers a false `use after free:` warning in `-memory`.
 
 ## 0.6.3
 
@@ -150,7 +150,7 @@ Owners now start unallocated and acquire memory explicitly via `heap` or `arena`
 - **Explicit type parameters:** Added `type $T` to accept a type as an argument (e.g., `make(Point)`).
 - **Default values:** Struct fields can now have default values, and parameter defaults can reference earlier parameters.
 - **Variadic parameters:** `..items: T` collects trailing arguments as a view, supporting both `sum(1, 2, 3)` and spreading with `sum(..values)`.
-- **Conditional compilation blocks:** Added `where c:` blocks—usable at file root for OS/architecture targets, and inside functions for any compile-time `where` condition.
+- **Conditional compilation blocks:** Added `where c:` blocks, usable at file root for OS/architecture targets, and inside functions for any compile-time `where` condition.
 - **Bitwise & low-level additions:** Added `noinline func`, `operator not`, bitwise negation via `not` on integers, pointer arithmetic (`+`, `-`) on `*bytes`, and `as` to reinterpret between any two same-sized types without a tag.
 - **Directory packages:** `use "vendor/vec"` now loads a folder as a package.
 
@@ -183,7 +183,7 @@ Owners now start unallocated and acquire memory explicitly via `heap` or `arena`
 
 - **No file-level mutable variables:** Top-level `name: T = value` is always a constant. Mutable state belongs in a `context`, or a `shared context` when shared across threads.
 - **`Lock[T]` wraps protected data:** Locks now own what they guard (`with lock(count): count.value += 1`). Use `Lock[null]` to guard a section of code without a value.
-- **Explicit allocation only:** No literal allocates memory—`[1, 2]` is an array and `{1: 2}` is a `fixmap`. Owners start empty with no allocation (`heap([])`, `heap("")`, `heap({})`), and using an uninitialized owner or view is an error. Creating an owner (or converting a view into one) always goes through `heap(...)` or `arena(a, ...)`, which copy.
+- **Explicit allocation only:** No literal allocates memory: `[1, 2]` is an array and `{1: 2}` is a `fixmap`. Owners start empty with no allocation (`heap([])`, `heap("")`, `heap({})`), and using an uninitialized owner or view is an error. Creating an owner (or converting a view into one) always goes through `heap(...)` or `arena(a, ...)`, which copy.
 - **Map key ownership & pointers:** A `&map` with `&str` keys now owns its keys, and `ptr(m[k])` points directly into the map.
 - **Read-only strings:** `&strview` is strictly read-only, and text literals live in read-only memory.
 - **In-place iteration:** Iterating with `for` over an array, list, or listview yields each element in place rather than a copy.
@@ -193,7 +193,7 @@ Owners now start unallocated and acquire memory explicitly via `heap` or `arena`
 - **Negative indexing:** Only compile-time known negative indexes count from the end (`l[-1]`). Runtime negative indexes are out of bounds, as are negative positions passed to `insert`, `remove`, or `swap`.
 - **Operator hooks:** Indexing, slicing, `for`, `with`, and key hashing now dispatch to `operator []`, `operator []=`, `operator [:]`, `operator for`, `operator next`, `operator with`, and `operator hash` (replacing `at`, `put`, `slice`, `iter`, `next`, `close`, and `hash`).
 - **Operator precedence & evaluation order:** `not` now sits between `and` and `is` (as in Python), comparisons no longer chain, and subexpressions evaluate left to right, except that `+=` reads its target after the right side.
-- **`assert` & `wait`:** `assert c, message` is now a statement that narrows types for subsequent code and reports what evaluated to false. `wait(t)` is now a function—custom types opt in by declaring a `wait` for themselves.
+- **`assert` & `wait`:** `assert c, message` is now a statement that narrows types for subsequent code and reports what evaluated to false. `wait(t)` is now a function, and custom types opt in by declaring a `wait` for themselves.
 - **`reverse` vs. `flip`:** `reverse` is only valid after `in` in a `for` loop (where the loop counter tracks each element's index). Use `flip(l)` to reverse a list.
 - **Whitespace & formatting:** Function calls must place `(` directly after the callee with no space, while keywords require a space after them. Indentation may mix tabs and spaces when block structure doesn't depend on tab width, and text literals can span multiple lines.
 - **Compiler queries (`@`):** Compiler intrinsics now use `@`: `@sizeof`, `@offset_of`, and `@can_assign`. Target checks like `@linux()` evaluate to a `bool` in any expression, not just `where`.
@@ -214,15 +214,15 @@ Owners now start unallocated and acquire memory explicitly via `heap` or `arena`
 
 | 0.5 | 0.6 | Notes |
 |---|---|---|
-| `temp` | `tmp` | — |
-| `&slice` | `&listview` | — |
+| `temp` | `tmp` |  |
+| `&slice` | `&listview` |  |
 | `reverse(l)` | `flip(l)` | `reverse` is now `for ... in reverse` only |
-| `complement(b)` | `not b` | — |
-| `Process.join` | `wait` | — |
+| `complement(b)` | `not b` |  |
+| `Process.join` | `wait` |  |
 | `core.open`, `core.create` | `fs.open_file`, `fs.create_file` | Moved to `fs` |
 | `fs.remove`, `fs.rename`, `fs.walk`, `fs.modified` | `remove_file`, `rename_file`, `walk_dir`, `modified_time` | In `fs` |
-| `os.load` | `os.load_library` | — |
-| `json.parse` | `json.parse_json` | — |
+| `os.load` | `os.load_library` |  |
+| `json.parse` | `json.parse_json` |  |
 | `utf8.count`, `utf8.valid`, `utf8.code` | `count_chars`, `valid_utf8`, `first_code` | In `utf8` |
 | `math.min`, `max`, `clamp`, `abs`, `lerp` | core | Moved from `math` to core |
 | `core.cores` | `os.cores` | Moved from core to `os` |
@@ -241,7 +241,7 @@ Owners now start unallocated and acquire memory explicitly via `heap` or `arena`
 ### Performance
 
 - **Faster compiler checks:** Type-checking the compiler itself uses 5% fewer instructions, and long `elif` chains now type-check in linear time.
-- **Faster signed integer math:** Signed integer division and remainder by compile-time powers of two now lower to bit shifts—a loop of such divisions over `i64` runs 13× faster.
+- **Faster signed integer math:** Signed integer division and remainder by compile-time powers of two now lower to bit shifts: a loop of such divisions over `i64` runs 13× faster.
 
 ### Bug Fixes
 
