@@ -1,4 +1,4 @@
-# the instructions in the order of QBE, gvn hashes their numbers
+# the instructions, in an order the output depends on: value numbering hashes their numbers
 Onone = 0
 Oadd = 1
 Osub = 2
@@ -255,9 +255,9 @@ Jreturnaggregate = 9
 Jreturn = 10
 Jjump = 11
 Jbranch = 12
-Jflag = 13 # jf + a comparison: jump on the flags
+Jflag = 13 # plus a condition: jump on the flags
 Jhalt = 31
-Jtable = 32 # to the target of a jump table at the index in arg, which simpl() turns into its address
+Jtable = 32 # to the target of a jump table at the index in arg, which simplify turns into its address
 
 Eqi = 0
 Nei = 1
@@ -280,13 +280,12 @@ Orderedf = 6
 Unorderedf = 7
 CONDITIONS = 18
 
-Unknown = -1 # not known yet
+Unknown = -1
 Int32 = 0
 Int64 = 1
 Float32 = 2
 Float64 = 3
 Vector = 4 # 16 bytes of lanes, in a float register
-Invalid = -2 # an argument the instruction does not take
 
 RefTemp = 0
 RefConstant = 1
@@ -297,10 +296,10 @@ RefCall = 5
 RefAddress = 6
 EMPTY = 0 # no ref, the temp 0 that no register is
 UNDEF = 1 << 29 # the constant 0, a value never given
-ZERO = (1 << 29) + 1 # the constant 1, the bits 0
+ZERO = (1 << 29) + 1 # the constant 1, of bits 0
 
 BITS = 64
-FIRST_TEMP = 64 # the first temp that is not a register
+FIRST_TEMP = 64
 
 Unset = 0
 Numeric = 1
@@ -308,15 +307,15 @@ Addressed = 2
 
 Direct = 0
 ThreadData = 1 # local-exec thread data
-ThroughGot = 2 # through the GOT
+ThroughGot = 2
 ThreadThroughGot = 3 # initial-exec thread data
 
-ABot = 0
-ALoc = 1 # a slot of the stack
-ACon = 2
-AEsc = 3 # a slot whose address escapes
-ASym = 4
-AUnk = 6
+Nowhere = 0
+InSlot = 1 # a slot of the stack
+Absolute = 2
+EscapedSlot = 3 # a slot whose address escapes
+AtSymbol = 4
+Anywhere = 6
 
 NoAlias = 0
 MayAlias = 1
@@ -357,10 +356,10 @@ type Operation:
     commutes: bool
     associative: bool
     idempotent: bool
-    int_equality: bool # an eq or ne of words or longs
-    int_order: bool # an lt, gt, le or ge of words or longs
+    int_equality: bool
+    int_order: bool
     equal_result: bool # what it gives for two equal arguments
-    pinned: bool # gcm leaves it in its block
+    pinned: bool # code motion leaves it in its block
     memory_args: i8 # amd64: how many arguments may be in memory
     sets_zero: bool # amd64: sets the zero flag by its result
     keeps_flags: bool # amd64: leaves the flags
@@ -372,7 +371,7 @@ OPERATIONS: array[Operation, 241] = [
     Operation{"neg", [0, 1, 2, 3, -2, -1, -1, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 1, true, false},
     Operation{"div", [0, 1, 2, 3, -2, 0, 1, 2, 3, -2], true, true, true, false, false, false, false, false, false, false, 0, false, false},
     Operation{"rem", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"udiv", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], true, true, true, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"rderedf", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], true, true, true, false, false, false, false, false, false, false, 0, false, false},
     Operation{"urem", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
     Operation{"mul", [0, 1, 2, 3, -2, 0, 1, 2, 3, -2], true, true, true, true, false, false, false, false, false, false, 2, false, false},
     Operation{"and", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], true, false, false, true, true, true, false, false, false, false, 2, true, false},
@@ -381,72 +380,72 @@ OPERATIONS: array[Operation, 241] = [
     Operation{"sar", [0, 1, -2, -2, -2, 0, 0, -2, -2, -2], true, true, false, false, false, false, false, false, false, false, 1, true, false},
     Operation{"shr", [0, 1, -2, -2, -2, 0, 0, -2, -2, -2], true, true, false, false, false, false, false, false, false, false, 1, true, false},
     Operation{"shl", [0, 1, -2, -2, -2, 0, 0, -2, -2, -2], true, true, false, false, false, false, false, false, false, false, 1, true, false},
-    Operation{"ceqw", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, true, true, true, false, false, true, false, true, false, 0, true, false},
-    Operation{"cnew", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, true, false, true, false, false, true, false, false, false, 0, true, false},
-    Operation{"csgew", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"csgtw", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"cslew", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"csltw", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"cugew", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"cugtw", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"culew", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"cultw", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"ceql", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, true, false, false, true, false, true, false, 0, true, false},
-    Operation{"cnel", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, true, false, false, true, false, false, false, 0, true, false},
-    Operation{"csgel", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"csgtl", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"cslel", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"csltl", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"cugel", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"cugtl", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"culel", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
-    Operation{"cultl", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
-    Operation{"ceqs", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cges", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cgts", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cles", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"clts", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cnes", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cos", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cuos", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"ceqd", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cged", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cgtd", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cled", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cltd", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
-    Operation{"cned", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cod", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"cuod", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
-    Operation{"storeb", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"storeh", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"storew", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"storel", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"stores", [2, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"stored", [3, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"storev", [4, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loadsb", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loadub", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loadsh", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loaduh", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loadsw", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"loaduw", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"eqi32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, true, true, true, false, false, true, false, true, false, 0, true, false},
+    Operation{"nei32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, true, false, true, false, false, true, false, false, false, 0, true, false},
+    Operation{"gei32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"gti32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"lei32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"lti32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"geu32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"gtu32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"leu32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"ltu32", [0, 0, -2, -2, -2, 0, 0, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"eqi64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, true, false, false, true, false, true, false, 0, true, false},
+    Operation{"nei64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, true, false, false, true, false, false, false, 0, true, false},
+    Operation{"gei64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"gti64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"lei64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"lti64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"geu64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"gtu64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"leu64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, true, false, 0, true, false},
+    Operation{"ltu64", [1, 1, -2, -2, -2, 1, 1, -2, -2, -2], true, false, false, false, false, false, false, true, false, false, 0, true, false},
+    Operation{"eqf32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"gef32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"gtf32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"lef32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"ltf32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"nef32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"orderedf32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"unorderedf32", [2, 2, -2, -2, -2, 2, 2, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"eqf64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"gef64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"gtf64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"lef64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"ltf64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, true, false},
+    Operation{"nef64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"orderedf64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"unorderedf64", [3, 3, -2, -2, -2, 3, 3, -2, -2, -2], true, false, false, true, false, false, false, false, false, false, 0, true, false},
+    Operation{"storei8", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storei16", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storei32", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storei64", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storef32", [2, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storef64", [3, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"storevector", [4, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadi8", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadu8", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadi16", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadu16", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadi32", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"loadu32", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
     Operation{"load", [1, 1, 1, 1, 1, -1, -1, -1, -1, -1], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"extsb", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"extub", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"extsh", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"extuh", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"extsw", [-2, 0, -2, -2, -2, -2, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"extuw", [-2, 0, -2, -2, -2, -2, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"exts", [-2, -2, -2, 2, -2, -2, -2, -2, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"truncd", [-2, -2, 3, -2, -2, -2, -2, -1, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"stosi", [2, 2, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"stoui", [2, 2, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"dtosi", [3, 3, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"dtoui", [3, 3, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"swtof", [-2, -2, 0, 0, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"uwtof", [-2, -2, 0, 0, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"sltof", [-2, -2, 1, 1, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"ultof", [-2, -2, 1, 1, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"exti8", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"extu8", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"exti16", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"extu16", [0, 0, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"exti32", [-2, 0, -2, -2, -2, -2, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"extu32", [-2, 0, -2, -2, -2, -2, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"extf32", [-2, -2, -2, 2, -2, -2, -2, -2, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"truncf64", [-2, -2, 3, -2, -2, -2, -2, -1, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"f32toi", [2, 2, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"f32tou", [2, 2, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"f64toi", [3, 3, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"f64tou", [3, 3, -2, -2, -2, -1, -1, -2, -2, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"i32tof", [-2, -2, 0, 0, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"u32tof", [-2, -2, 0, 0, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"i64tof", [-2, -2, 1, 1, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"u64tof", [-2, -2, 1, 1, -2, -2, -2, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, false},
     Operation{"cast", [2, 3, 0, 1, -2, -1, -1, -1, -1, -2], true, false, false, false, false, false, false, false, false, false, 0, false, true},
     Operation{"alloc4", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"alloc8", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
@@ -454,159 +453,159 @@ OPERATIONS: array[Operation, 241] = [
     Operation{"vaarg", [1, 1, 1, 1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"vastart", [1, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"copy", [0, 1, 2, 3, 4, -1, -1, -1, -1, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vaddb", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vaddh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vaddw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vaddl", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vadds", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vaddd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubb", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubl", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubs", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsubd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmulh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmulw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmuls", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmuld", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vdivs", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vdivd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddi8", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddi16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddi32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddi64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vaddf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubi8", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubi16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubi32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubi64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsubf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmuli16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmuli32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmulf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmulf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vdivf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vdivf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
     Operation{"vand", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
     Operation{"vor", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
     Operation{"vxor", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshlh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshlw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshll", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshrh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshrw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vshrl", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsarh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsarw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceqb", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceqh", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceqw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceql", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceqs", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vceqd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcgtb", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcgth", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcgtw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcgtl", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vclts", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcltd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcles", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vcled", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmins", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmind", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmaxs", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vmaxd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsqrts", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsqrtd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplatb", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplath", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplatw", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplatl", [-2, -2, -2, -2, 1, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplats", [-2, -2, -2, -2, 2, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vsplatd", [-2, -2, -2, -2, 3, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vitos", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"dbgloc", [0, -2, -2, -2, -2, 0, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"dbgslot", [1, -2, -2, -2, -2, 0, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"dbgmark", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vshli16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vshli32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vshli64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vshri16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vshri32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vshri64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsari16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsari32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqi8", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqi16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqi32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqi64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"veqf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, true, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgti8", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgti16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgti32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgti64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vltf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vltf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vlef32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vlef64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vminf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vminf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmaxf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vmaxf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 4], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsqrtf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsqrtf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplati8", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplati16", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplati32", [-2, -2, -2, -2, 0, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplati64", [-2, -2, -2, -2, 1, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplatf32", [-2, -2, -2, -2, 2, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vsplatf64", [-2, -2, -2, -2, 3, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vi32tof32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, -1], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"debugline", [0, -2, -2, -2, -2, 0, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"debugslot", [1, -2, -2, -2, -2, 0, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"debugmark", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
     Operation{"frame", [-2, -1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
     Operation{"cpuid", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"aload", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"astorew", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"astorel", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"aadd", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"aswap", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicload", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicstorei32", [0, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicstorei64", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicadd", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicswap", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"nop", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
     Operation{"addr", [1, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"blit0", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, true, false},
-    Operation{"blit1", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, true, false},
-    Operation{"sel0", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"sel1", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"acas0", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"acas1", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"blit", [1, -2, -2, -2, -2, 1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, true, false},
+    Operation{"blitsize", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, true, false},
+    Operation{"condition", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"select", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomicexpected", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"atomiccompareswap", [1, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"swap", [0, 1, 2, 3, 4, 0, 1, 2, 3, 4], false, false, false, false, false, false, false, false, false, false, 1, false, false},
     Operation{"sign", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"salloc", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xidiv", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, false, false},
-    Operation{"xdiv", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, false, false},
-    Operation{"xcpuid", [-1, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"xcmp", [0, 1, 2, 3, -2, 0, 1, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 1, true, false},
-    Operation{"xtest", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, true, false},
-    Operation{"acmp", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"acmn", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"afcmp", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"reqz", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"rnez", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"vgetsb", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vgetub", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vgetsh", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vgetuh", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vgetsw", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"vgetuw", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"stackalloc", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64idiv", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, false, false},
+    Operation{"amd64div", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, false, false},
+    Operation{"amd64cpuid", [-1, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"amd64cmp", [0, 1, 2, 3, -2, 0, 1, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 1, true, false},
+    Operation{"amd64test", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 1, true, false},
+    Operation{"arm64cmp", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"arm64cmn", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"arm64fcmp", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"rv64seqz", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"rv64snez", [0, 1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"vgeti8", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgetu8", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgeti16", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgetu16", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgeti32", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"vgetu32", [4, 4, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
     Operation{"vget", [4, 4, 4, 4, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
     Operation{"vlane", [0, -2, -2, -2, -2, -1, -2, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vsetb", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vseth", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vsetw", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vsetl", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 1], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vsets", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"vsetd", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 3], false, false, false, false, false, false, false, false, false, true, 0, false, true},
-    Operation{"par", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"parsb", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"parub", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"parsh", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"paruh", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"parc", [-2, -1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"pare", [-2, -1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"vseti8", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vseti16", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vseti32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 0], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vseti64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 1], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vsetf32", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 2], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"vsetf64", [-2, -2, -2, -2, 4, -2, -2, -2, -2, 3], false, false, false, false, false, false, false, false, false, true, 0, false, true},
+    Operation{"param", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"parami8", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"paramu8", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"parami16", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"paramu16", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"paramaggregate", [-2, -1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"paramenv", [-2, -1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"arg", [0, 1, 2, 3, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"argsb", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"argub", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"argsh", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"arguh", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"argc", [-2, -1, -2, -2, -2, -2, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"arge", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"argv", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argi8", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argu8", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argi16", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argu16", [0, -2, -2, -2, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argaggregate", [-2, -1, -2, -2, -2, -2, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argenv", [-2, 1, -2, -2, -2, -2, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
+    Operation{"argvariadic", [-1, -1, -1, -1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
     Operation{"call", [1, 1, 1, 1, -2, -1, -1, -1, -1, -2], false, false, false, false, false, false, false, false, false, true, 0, false, false},
-    Operation{"flagieq", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagine", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagisge", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagisgt", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagisle", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagislt", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagiuge", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagiugt", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagiule", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagiult", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfeq", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfge", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfgt", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfle", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagflt", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfne", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfo", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"flagfuo", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
-    Operation{"xselieq", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xseline", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselisge", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselisgt", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselisle", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselislt", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xseliuge", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xseliugt", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xseliule", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xseliult", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfeq", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfge", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfgt", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfle", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselflt", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfne", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfo", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
-    Operation{"xselfuo", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false}
+    Operation{"flageqi", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagnei", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggei", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggti", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaglei", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaglti", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggeu", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggtu", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagleu", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagltu", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flageqf", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggef", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaggtf", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flaglef", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagltf", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagnef", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagorderedf", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"flagunorderedf", [-1, -1, -2, -2, -2, -1, -1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, true},
+    Operation{"amd64cmoveqi", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovnei", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgei", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgti", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovlei", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovlti", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgeu", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgtu", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovleu", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovltu", [0, 1, -2, -2, -2, 0, 1, -2, -2, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmoveqf", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgef", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovgtf", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovlef", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovltf", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovnef", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovorderedf", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false},
+    Operation{"amd64cmovunorderedf", [-2, -2, 2, 3, -2, -2, -2, 2, 3, -2], false, false, false, false, false, false, false, false, false, false, 0, false, false}
 ]
 
 type Instr:
@@ -619,9 +618,9 @@ type Exit:
     type: i32
     arg: Ref
 
-type Bitset: # a set of temps, by increasing index w its words t that are not zero, and always the first one, of registers
-    t: &list[u64] = heap([])
-    w: &list[u32] = heap([])
+type Bitset: # of a set of temps, registers or blocks, the words that are not zero and always the first, by their index
+    words: &list[u64] = heap([])
+    index: &list[u32] = heap([])
 
 type Phi:
     to: Ref
@@ -649,7 +648,7 @@ type BasicBlock:
     dom_to: i64
     frontier: &list[i64] = heap([])
     depth: i64
-    odom: i64 # the closest dominator in fewer loops
+    outer_dominator: i64 # the closest dominator in fewer loops
     preds: &list[i64] = heap([])
     live_in: Bitset
     live_out: Bitset
@@ -668,14 +667,14 @@ type Region: # where a temp points
     offset: i64
     access: i32
     symbol: i32
-    sz: i32 # of a slot, its bytes, or -1 past NBit
-    m: u64 # of a slot, the bytes stored to
+    size: i32 # of a slot, its bytes, or -1 past BITS
+    stored: u64 # of a slot, the bytes stored to
     slot: i32 # the temp whose region is the slot, 0 for none
 
 type Temporary:
     def: i64 # the instruction that defines it: its block << 32 or its place, 0 for none
     uses: &list[Usage] = heap([])
-    listed: bool # filluse gave it a list of uses, which adduse extends
+    listed: bool # fill_uses gave it a list of uses, which add_use extends
     defs: i32
     used: i32
     block: u32 # its block, 0xffff_ffff for none
@@ -690,7 +689,7 @@ type Temporary:
     alias: Region
     width: i32
     visit: i32
-    gcmbid: u32
+    scheduled: u32
 
 type Immediate:
     type: i32
@@ -706,7 +705,7 @@ type Addr: # amd64 addressing
 
 type Member:
     type: i32
-    len: i64 # or the index in asm.typ of FTyp
+    len: i64 # or, of a FieldType, its layout
 
 type Layout:
     opaque: bool
@@ -714,33 +713,33 @@ type Layout:
     align: i64
     size: i64
     members: i64
-    fields: &list[Member] = heap([]) # those of each union, each ended by FEnd
+    fields: &list[Member] = heap([]) # those of each union, each ended by FieldEnd
 
 type Version: # the name a temp has in the blocks a block dominates
-    r: Ref
-    b: i64
-    up: i64
+    name: Ref
+    block: i64
+    outer: i64
 
 type Machine:
     apple: bool
     windows: bool
-    first_int: i64 # the first general purpose register
+    first_int: i64
     ints: i64
-    first_float: i64 # the first float register
+    first_float: i64
     floats: i64
-    always_live: u64 # registers always live, as the stack pointers
-    caller_saved: array[i64, 43] # caller-save, then -1
+    always_live: u64 # registers, as the stack pointers
+    caller_saved: array[i64, 43] # then -1
     caller_saved_count: array[i64, 2]
     return_regs: func(Ref, *array[i64, 2]) -> u64
     arg_regs: func(Ref, *array[i64, 2]) -> u64
-    memory_args: bool # an instruction takes as many arguments in memory as optab says
-    abi0: func()
-    abi1: func()
-    isel: func()
+    memory_args: bool # an instruction takes as many arguments in memory as OPERATIONS says
+    lower_narrow: func()
+    lower_calls: func()
+    select: func()
     emit_function: func()
     emit_end: func()
-    local_prefix: &strview # how a label the assembler keeps to itself starts
-    symbol_prefix: &strview # how a symbol starts
+    local_prefix: &strview # of a label the assembler keeps to itself
+    symbol_prefix: &strview
     selects: bool
     half_saved: bool # a call keeps only the low half of a v register
 
@@ -770,24 +769,24 @@ context fn:
     marks: &list[i64] = heap([])
     out: &list[Instr] = heap([]) # what emit made, the last one runs first
     first_temp: i64 # the first temp of the proc being lowered
-    temp_of: &list[Ref] = heap([]) # the tmp of each of its temps
+    temp_of: &list[Ref] = heap([]) # the temp of each of its temps
     first_label: i64 # the label before its first
     block_of: &list[i64] = heap([]) # the block of each of its labels
     last: i64 # the block it defined last
-    con01: array[Ref, 2] # the constants 0 and 1
-    gvntbl: &list[Instr] = heap([]) # the instructions gvn met, by a hash of them
-    ilog: &list[Insert] = heap([]) # what loadopt inserts
-    inum: i64
-    thrsym: &list[i64] = heap([]) # the thread data each function reads, and the temps that hold their addresses
-    thrtmp: &list[Ref] = heap([])
-    thrins: &list[Instr] = heap([])
+    zero_one: array[Ref, 2] # the constants 0 and 1
+    values: &list[Instr] = heap([]) # the instructions gvn met, by a hash of them
+    inserts: &list[Insert] = heap([]) # what loadopt inserts
+    insert_count: i64
+    thread_symbols: &list[i64] = heap([]) # the thread data each function reads, and the temps that hold their addresses
+    thread_temps: &list[Ref] = heap([])
+    thread_instrs: &list[Instr] = heap([])
 
 context asm:
     machine: Machine = AMD64_SYSV
     text: &str = heap("")
     layouts: &list[Layout] = heap([])
-    layout_of: &list[i64] = heap([]) # the typ of each type of the program as :t, or -1
-    c_layout_of: &list[i64] = heap([]) # and as :c
+    layout_of: &list[i64] = heap([]) # of each type of the program, or -1
+    c_layout_of: &list[i64] = heap([]) # of each type of C, or -1
     symbols: &list[&strview] = heap([])
     symbol_ids: &map[&strview, i64] = heap({})
     globals: &list[Immediate] = heap([]) # the constant each global of comp names
@@ -892,7 +891,6 @@ func emit(op: i64, k: i64, to: Ref, a0: Ref, a1: Ref):
 func emit(i: Instr):
     append(fn.out, i)
 
-# the instructions of b become what emit made
 func take_emitted(b: i64):
     ins := ptr(fn.blocks[b].ins)
     ins.len = 0
@@ -904,7 +902,7 @@ func add_instr(ins: *&list[Instr], i: Instr):
     if i.op != Onop:
         append(ins, i)
 
-func swapped(c: i64) -> i64: # the comparison with its arguments swapped
+func swapped(c: i64) -> i64: # the condition with its arguments swapped
     return [Eqi, Nei, Lei, Lti, Gei, Gti, Leu, Ltu, Geu, Gtu, INT_CONDITIONS + Eqf, INT_CONDITIONS + Lef, INT_CONDITIONS + Ltf, INT_CONDITIONS + Gef, INT_CONDITIONS + Gtf, INT_CONDITIONS + Nef, INT_CONDITIONS + Orderedf, INT_CONDITIONS + Unorderedf][c]
 
 # merges the class k into pk, and says whether they clash
@@ -1044,10 +1042,10 @@ func stack_alloc(rt: Ref, rs: Ref):
             panic("unlikely alloc argument in " + fn.name)
 
 func clear(s: *Bitset):
-    s.t.len = 0
-    s.w.len = 0
-    append(s.t, 0)
-    append(s.w, 0)
+    s.words.len = 0
+    s.index.len = 0
+    append(s.words, 0)
+    append(s.index, 0)
 
 func popcount(b: u64) -> i64:
     b = (b and 0x5555_5555_5555_5555) + (b >> 1 and 0x5555_5555_5555_5555)
@@ -1062,13 +1060,13 @@ DEBRUIJN: array[u8, 64] = [0, 1, 2, 53, 3, 7, 54, 27, 4, 38, 41, 8, 34, 55, 48, 
 
 # the first word with an index of w or more
 func word_index(s: *Bitset, w: u32) -> i64:
-    if i64(w) < s.t.len and s.w[w] == w:
+    if i64(w) < s.words.len and s.index[w] == w:
         return i64(w) # no word missing up to w
     lo := 0
-    hi := s.t.len
+    hi := s.words.len
     while lo < hi:
         m := (lo + hi) / 2
-        if s.w[m] < w:
+        if s.index[m] < w:
             lo = m + 1
         else:
             hi = m
@@ -1076,8 +1074,8 @@ func word_index(s: *Bitset, w: u32) -> i64:
 
 func word_of(s: *Bitset, w: u32) -> u64:
     n := word_index(s, w)
-    if n < s.t.len and s.w[n] == w:
-        return s.t[n]
+    if n < s.words.len and s.index[n] == w:
+        return s.words[n]
     return 0
 
 func has(s: *Bitset, e: i64) -> bool:
@@ -1085,84 +1083,84 @@ func has(s: *Bitset, e: i64) -> bool:
 
 func count(s: *Bitset) -> i64:
     n := 0
-    for w in s.t:
+    for w in s.words:
         n += popcount(w)
     return n
 
 func include(s: *Bitset, e: i64):
     w := u32(e / BITS)
     n := word_index(s, w)
-    if n == s.t.len or s.w[n] != w:
-        insert(s.t, n, 0)
-        insert(s.w, n, w)
-    s.t[n] = s.t[n] or u64(1) << (e % BITS)
+    if n == s.words.len or s.index[n] != w:
+        insert(s.words, n, 0)
+        insert(s.index, n, w)
+    s.words[n] = s.words[n] or u64(1) << (e % BITS)
 
 func exclude(s: *Bitset, e: i64):
     w := u32(e / BITS)
     n := word_index(s, w)
-    if n == s.t.len or s.w[n] != w:
+    if n == s.words.len or s.index[n] != w:
         return
-    s.t[n] = s.t[n] and not (u64(1) << (e % BITS))
-    if n != 0 and s.t[n] == 0:
-        _ = remove(s.t, n)
-        _ = remove(s.w, n)
+    s.words[n] = s.words[n] and not (u64(1) << (e % BITS))
+    if n != 0 and s.words[n] == 0:
+        _ = remove(s.words, n)
+        _ = remove(s.index, n)
 
 func copy_set(a: *Bitset, b: *Bitset):
-    a.t = b.t[:]
-    a.w = b.w[:]
+    a.words = b.words[:]
+    a.index = b.index[:]
 
 func include_all(a: *Bitset, b: *Bitset):
-    n := a.t.len
+    n := a.words.len
     i := 0
-    for j in 0..b.t.len:
-        while i < a.t.len and a.w[i] < b.w[j]:
+    for j in 0..b.words.len:
+        while i < a.words.len and a.index[i] < b.index[j]:
             i += 1
-        if i == a.t.len or a.w[i] != b.w[j]:
+        if i == a.words.len or a.index[i] != b.index[j]:
             n += 1
-    i = a.t.len
-    while a.t.len < n:
-        append(a.t, 0)
-        append(a.w, 0)
-    j := b.t.len
+    i = a.words.len
+    while a.words.len < n:
+        append(a.words, 0)
+        append(a.index, 0)
+    j := b.words.len
     while j > 0: # merge from the end, in place
         n -= 1
-        if i > 0 and a.w[i - 1] >= b.w[j - 1]:
+        if i > 0 and a.index[i - 1] >= b.index[j - 1]:
             i -= 1
-            a.w[n] = a.w[i]
-            a.t[n] = a.t[i]
-            if a.w[n] == b.w[j - 1]:
+            a.index[n] = a.index[i]
+            a.words[n] = a.words[i]
+            if a.index[n] == b.index[j - 1]:
                 j -= 1
-                a.t[n] = a.t[n] or b.t[j]
+                a.words[n] = a.words[n] or b.words[j]
         else:
             j -= 1
-            a.w[n] = b.w[j]
-            a.t[n] = b.t[j]
+            a.index[n] = b.index[j]
+            a.words[n] = b.words[j]
 
 func intersect(a: *Bitset, b: *Bitset):
     n := 0
-    for i in 0..a.t.len:
-        a.t[n] = a.t[i] and word_of(b, a.w[i])
-        a.w[n] = a.w[i]
-        if n == 0 or a.t[n] != 0:
+    for i in 0..a.words.len:
+        a.words[n] = a.words[i] and word_of(b, a.index[i])
+        a.index[n] = a.index[i]
+        if n == 0 or a.words[n] != 0:
             n += 1
-    a.t.len = n
-    a.w.len = n
+    a.words.len = n
+    a.index.len = n
 
 # the first element of s at or past e, or -1
 func next_in(s: *Bitset, e: i64) -> i64:
     w := u32(e / BITS)
     t := word_index(s, w)
-    if t >= s.t.len:
+    if t >= s.words.len:
         return -1
-    b := s.t[t]
-    if s.w[t] == w:
+    b := s.words[t]
+    if s.index[t] == w:
         b = b and not ((u64(1) << (e % BITS)) - 1)
     while b == 0:
         t += 1
-        if t >= s.t.len:
+        if t >= s.words.len:
             return -1
-        b = s.t[t]
-    return BITS * i64(s.w[t]) + i64(DEBRUIJN[((b and 0 - b) * 0x022f_dd63_cc95_386d) >> 58]) # the lowest bit set
+        b = s.words[t]
+    return BITS * i64(s.index[t]) + i64(DEBRUIJN[((b and 0 - b) * 0x022f_dd63_cc95_386d) >> 58]) # the lowest bit set
 
 func new_block() -> i64:
     fn.block_count += 1
@@ -1177,7 +1175,7 @@ func new_block() -> i64:
     b.* = BasicBlock{ins = b.ins, frontier = b.frontier, preds = b.preds, targets = b.targets, table = b.table, live_in = b.live_in, live_out = b.live_out, gen = b.gen}
     return fn.block_count
 
-# the blocks b jumps to: the targets of its jump table, or s1 and s2 once, which pair holds for the view
+# the blocks b jumps to: the targets of its jump table, or yes and no once, which pair holds for the view
 func successors(b: i64, pair: *array[i64, 2]) -> &listview[i64]:
     p := ptr(fn.blocks[b])
     if p.exit.type == Jtable:
@@ -1199,7 +1197,7 @@ func fill_preds():
         pair: array[i64, 2]
         for s in successors(b, ptr(pair)):
             pred := ptr(fn.blocks[s].preds)
-            if pred.len == 0 or pred[-1] != b: # simpljmp can send two targets to one block
+            if pred.len == 0 or pred[-1] != b: # skip_jumps can send two targets to one block
                 append(pred, b)
         b = fn.blocks[b].next
 
@@ -1367,7 +1365,6 @@ func find_root(b: i64, uf: &list[i64]) -> i64:
         return uf[id]
     return b
 
-# a block that only jumps on is skipped
 func skip_jumps():
     ret := new_block()
     fn.blocks[ret].id = fn.ordered
@@ -1424,7 +1421,7 @@ func unvisit(b: i64):
         for s in successors(b, ptr(pair)):
             unvisit(s)
 
-type Route: # a block's jump, as simplcfg moves it
+type Route: # a block's exit, as simplify_flow moves it
     type: i32
     arg: Ref
     yes: i64
@@ -1574,7 +1571,7 @@ func new_version(t: i64) -> Ref:
     return new_temp(fn.temps[t].cls)
 
 func free_version(n: i64):
-    fn.versions[n].up = fn.free_version
+    fn.versions[n].outer = fn.free_version
     fn.free_version = n
 
 func rename_def(r: Ref, b: i64, stk: &list[i64]) -> Ref:
@@ -1585,7 +1582,7 @@ func rename_def(r: Ref, b: i64, stk: &list[i64]) -> Ref:
     fn.temps[r1].visit = i32(t)
     n := fn.free_version
     if n != 0:
-        fn.free_version = fn.versions[n].up
+        fn.free_version = fn.versions[n].outer
     else:
         n = fn.versions.len
         append(fn.versions, Version{})
@@ -1595,14 +1592,14 @@ func rename_def(r: Ref, b: i64, stk: &list[i64]) -> Ref:
 
 func version_in(t: i64, b: i64, stk: &list[i64]) -> Ref:
     n := stk[t]
-    while n != 0 and not dominates(fn.versions[n].b, b):
+    while n != 0 and not dominates(fn.versions[n].block, b):
         n1 := n
-        n = fn.versions[n].up
+        n = fn.versions[n].outer
         free_version(n1)
     stk[t] = n
     if n == 0:
         return UNDEF
-    return fn.versions[n].r
+    return fn.versions[n].name
 
 func rename_block(b: i64, stk: &list[i64]):
     p := fn.blocks[b].phi
@@ -1757,10 +1754,10 @@ func ssa():
     free(db)
     free(nd)
     free(d0)
-    free(u.t)
-    free(u.w)
-    free(defs.t)
-    free(defs.w)
+    free(u.words)
+    free(u.index)
+    free(defs.words)
+    free(defs.index)
     stk: &list[i64] = heap([]) # the versions of each temp, the innermost first
     defer free(stk)
     for t in 0..nt:
@@ -1769,7 +1766,7 @@ func ssa():
     for t in reverse 0..nt:
         while stk[t] != 0:
             v := stk[t]
-            stk[t] = fn.versions[v].up
+            stk[t] = fn.versions[v].outer
             free_version(v)
 
 func phi_misplaced(p: i64, b: i64, t: Ref) -> bool:
@@ -1861,7 +1858,7 @@ func class_of(c: i64) -> (i64, i64):
         return Aggregate, asm.layout_of[c - AGG]
     return c, -1
 
-# the temp of comp's temp n, or R for none
+# the temp of comp's temp n, or EMPTY for none
 func temp_ref(n: i64) -> Ref:
     if n == 0:
         return EMPTY

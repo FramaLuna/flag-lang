@@ -224,7 +224,7 @@ func assemble() -> &str|Fail:
     for p in comp.procs:
         with scratch():
             lower(p)
-            elimsb()
+            drop_narrow()
             # an aggregate passes by its address: the callee copies one it takes to a slot of its own, and gives one
             # back to the place the caller adds as its last parameter
             start := ptr(fn.blocks[fn.start].ins)
@@ -243,7 +243,7 @@ func assemble() -> &str|Fail:
                     t := ref_value(i.arg[0])
                     given := new_temp(Int64)
                     start[k] = Instr{op = Oparam, cls = Int64, to = given}
-                    stkblob(i.to, t, asm.layouts[t].size, added)
+                    alloc_slot(i.to, t, asm.layouts[t].size, added)
                     append(added, ptr([Instr{op = Oblit, arg = [given, i.to]}, Instr{op = Oblitsize, arg = [ref(RefInt, asm.layouts[t].size), EMPTY]}]))
             rest: &list[Instr] = heap(start[pars:])
             defer free(rest)
@@ -257,7 +257,7 @@ func assemble() -> &str|Fail:
                     fn.blocks[b].exit = Exit{Jreturn, EMPTY}
                 b = fn.blocks[b].next
             optimize(true)
-            simpl(false)
+            simplify(false)
             fill_uses()
             dead := true # what nothing reads goes, unless it does more than give a value
             while dead:

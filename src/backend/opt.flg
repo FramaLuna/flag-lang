@@ -1,5 +1,5 @@
-# the bytes and halves that pass to and from calls are words, with arbitrary high bits
-func elimsb():
+# the narrow values that pass to and from calls are i32, with arbitrary high bits
+func drop_narrow():
     b := fn.start
     while b != 0:
         ins := ptr(fn.blocks[b].ins)
@@ -12,7 +12,7 @@ func elimsb():
             fn.blocks[b].exit.type = Jreturni32
         b = fn.blocks[b].next
 
-func loadsz(i: Instr) -> i64:
+func load_size(i: Instr) -> i64:
     switch i.op:
     case Oloadi8, Oloadu8:
         return 1
@@ -24,7 +24,7 @@ func loadsz(i: Instr) -> i64:
         return 16
     return 8 if wide(i.cls) != 0 else 4
 
-func storesz(i: Instr) -> i64:
+func store_size(i: Instr) -> i64:
     switch i.op:
     case Ostorei8:
         return 1
@@ -54,12 +54,12 @@ func promote():
                 ok = false
                 break
             l := instr_at(u.at).*
-            if is_load(l.op) and (s == -1 or s == loadsz(l)):
-                s = loadsz(l)
+            if is_load(l.op) and (s == -1 or s == load_size(l)):
+                s = load_size(l)
                 continue
             argk := i64(OPERATIONS[l.op].arg_class[0])
-            if is_store(l.op) and i.to == l.arg[1] and i.to != l.arg[0] and (s == -1 or s == storesz(l)) and (cls == -1 or cls == argk):
-                s = storesz(l)
+            if is_store(l.op) and i.to == l.arg[1] and i.to != l.arg[0] and (s == -1 or s == store_size(l)) and (cls == -1 or cls == argk):
+                s = store_size(l)
                 cls = argk
                 continue
             ok = false
@@ -93,42 +93,42 @@ func promote():
             else:
                 l.op = l.op - Oloadi8 + Oexti8
 
-type Range: # [a, b) with 0 <= a
-    a: i64
-    b: i64
+type Range: # [from, to) with 0 <= from
+    from: i64
+    to: i64
 
 type Stored:
-    ip: i64
+    point: i64
     at: i64
 
 type Spot: # a slot of the stack as coalesce sees it
-    t: i64
-    sz: i64
-    m: u64
-    l: u64
-    r: Range
-    s: i64 # the spot it fuses into, -1 for none
-    st: &list[Stored] = heap([])
+    temp: i64
+    size: i64
+    stored: u64
+    live: u64
+    range: Range
+    into: i64 # the spot it fuses into, -1 for none
+    stores: &list[Stored] = heap([])
 
-func rin(r: Range, n: i64) -> bool:
-    return r.a <= n and n < r.b
+func within(r: Range, n: i64) -> bool:
+    return r.from <= n and n < r.to
 
-func rovlap(r0: Range, r1: Range) -> bool:
-    return r0.b != 0 and r1.b != 0 and r0.a < r1.b and r1.a < r0.b
+func overlap(r0: Range, r1: Range) -> bool:
+    return r0.to != 0 and r1.to != 0 and r0.from < r1.to and r1.from < r0.to
 
-func radd(r: *Range, n: i64):
-    if r.b == 0:
+func stretch(r: *Range, n: i64):
+    if r.to == 0:
         r.* = Range{n, n + 1}
-    elif n < r.a:
-        r.a = n
-    elif n >= r.b:
-        r.b = n + 1
+    elif n < r.from:
+        r.from = n
+    elif n >= r.to:
+        r.to = n + 1
 
 # the spot that r points into, and where
 func spot(r: Ref, sl: &list[Spot]) -> (i64, i64):
     a: Region
-    getalias(ptr(a), r)
-    if a.type != ALoc:
+    alias_of(ptr(a), r)
+    if a.type != InSlot:
         return -1, 0
     v := fn.temps[a.base].visit
     if v < 0:
@@ -140,28 +140,28 @@ func spot_load(r: Ref, x: u64, ip: i64, sl: &list[Spot]):
     if s >= 0:
         p := ptr(sl[s])
         # a read out of the slot reads all of it
-        p.l = p.l or (x << off if 0 <= off and off < BITS else 0xffff_ffff_ffff_ffff)
-        p.l = p.l and p.m
-        if p.l != 0:
-            radd(ptr(p.r), ip)
+        p.live = p.live or (x << off if 0 <= off and off < BITS else 0xffff_ffff_ffff_ffff)
+        p.live = p.live and p.stored
+        if p.live != 0:
+            stretch(ptr(p.range), ip)
 
 func spot_store(r: Ref, x: u64, ip: i64, at: i64, sl: &list[Spot]):
     s, off := spot(r, sl)
     if s >= 0:
         p := ptr(sl[s])
-        if p.l != 0:
-            radd(ptr(p.r), ip)
+        if p.live != 0:
+            stretch(ptr(p.range), ip)
             if 0 <= off and off < BITS:
-                p.l = p.l and not (x << off)
+                p.live = p.live and not (x << off)
         else:
-            append(p.st, Stored{ip, at})
+            append(p.stores, Stored{ip, at})
 
-func maxrpo(hd: i64, b: i64):
+func mark_loop_end(hd: i64, b: i64):
     if i64(fn.blocks[hd].loop) < fn.blocks[b].id:
         fn.blocks[hd].loop = i32(fn.blocks[b].id)
 
 # the slot of each call that returns an aggregate, made before coalesce so that calls can share them
-func callpads():
+func pad_calls():
     pads: &list[Instr] = heap([])
     defer free(pads)
     b := fn.start
@@ -205,9 +205,9 @@ func callpads():
     append(ins, rest[:])
 
 func before_spot(a: Spot, b: Spot) -> bool:
-    if a.sz != b.sz:
-        return b.sz < a.sz
-    return a.r.a < b.r.a
+    if a.size != b.size:
+        return b.size < a.size
+    return a.range.from < b.range.from
 
 # slots that are never live at the same time share their place
 func coalesce():
@@ -215,15 +215,15 @@ func coalesce():
     for n in FIRST_TEMP..fn.temp_count:
         t := ptr(fn.temps[n])
         t.visit = -1
-        if t.alias.type == ALoc and t.alias.slot == n and t.block == u32(fn.blocks[fn.start].id) and t.alias.sz != -1:
+        if t.alias.type == InSlot and t.alias.slot == n and t.block == u32(fn.blocks[fn.start].id) and t.alias.size != -1:
             t.visit = i32(sl.len)
-            append(sl, Spot{t = n, sz = i64(t.alias.sz), m = t.alias.m, s = -1})
+            append(sl, Spot{temp = n, size = i64(t.alias.size), stored = t.alias.stored, into = -1})
     # the liveness of the slots, in one pass
     b := fn.start
     while b != 0:
         fn.blocks[b].loop = -1
         b = fn.blocks[b].next
-    each_loop(maxrpo)
+    each_loop(mark_loop_end)
     bl: &list[i64] = heap([])
     br: &list[Range] = heap([])
     for n in 0..fn.ordered:
@@ -231,17 +231,17 @@ func coalesce():
     ip := 2147483647 - 1
     for n in reverse 0..fn.ordered:
         b = fn.order[n]
-        br[n].b = ip
+        br[n].to = ip
         ip -= 1
         pair: array[i64, 2]
         succ := successors(b, ptr(pair))
         for s in 0..sl.len:
-            sl[s].l = 0
+            sl[s].live = 0
             for x in succ:
                 m := fn.blocks[x].id
-                if m > n and rin(sl[s].r, br[m].a):
-                    sl[s].l = sl[s].m
-                    radd(ptr(sl[s].r), ip)
+                if m > n and within(sl[s].range, br[m].from):
+                    sl[s].live = sl[s].stored
+                    stretch(ptr(sl[s].range), ip)
         if fn.blocks[b].exit.type == Jreturnaggregate:
             ip -= 1
             spot_load(fn.blocks[b].exit.arg, 0xffff_ffff_ffff_ffff, ip, sl)
@@ -255,9 +255,9 @@ func coalesce():
                 spot_load(i.arg[1], 0xffff_ffff_ffff_ffff, ip, sl)
             if is_load(i.op):
                 ip -= 1
-                spot_load(i.arg[0], (u64(1) << loadsz(i)) - 1, ip, sl)
+                spot_load(i.arg[0], (u64(1) << load_size(i)) - 1, ip, sl)
             if is_store(i.op):
-                spot_store(i.arg[1], (u64(1) << storesz(i)) - 1, ip, at(b, k), sl)
+                spot_store(i.arg[1], (u64(1) << store_size(i)) - 1, ip, at(b, k), sl)
                 ip -= 1
             if i.op == Oblit:
                 sz := abs(ref_signed(fn.blocks[b].ins[k + 1].arg[0]))
@@ -270,21 +270,21 @@ func coalesce():
             if pad != EMPTY and (k == 0 or not is_arg(fn.blocks[b].ins[k - 1].op)):
                 ip -= 1
                 s, _ := spot(pad, sl)
-                if s >= 0 and sl[s].l != 0:
-                    radd(ptr(sl[s].r), ip)
-                    sl[s].l = 0
+                if s >= 0 and sl[s].live != 0:
+                    stretch(ptr(sl[s].range), ip)
+                    sl[s].live = 0
                 pad = EMPTY
         for s in 0..sl.len:
-            if sl[s].l != 0:
-                radd(ptr(sl[s].r), ip)
+            if sl[s].live != 0:
+                stretch(ptr(sl[s].range), ip)
                 if fn.blocks[b].loop != -1:
-                    radd(ptr(sl[s].r), br[fn.blocks[b].loop].b - 1)
-        br[n].a = ip
+                    stretch(ptr(sl[s].range), br[fn.blocks[b].loop].to - 1)
+        br[n].from = ip
     free(br)
     # kill dead stores
     for s in sl:
-        for st in s.st:
-            if not rin(s.r, st.ip):
+        for st in s.stores:
+            if not within(s.range, st.point):
                 i := instr_at(st.at)
                 if i.op == Oblit:
                     instr_at(st.at + 1).* = Instr{op = Onop}
@@ -293,10 +293,10 @@ func coalesce():
     stk: &list[i64] = heap([])
     kept := 0
     for s in 0..sl.len:
-        if sl[s].r.b == 0:
-            free(sl[s].st)
-            append(stk, sl[s].t)
-            fn.temps[sl[s].t].visit = -2
+        if sl[s].range.to == 0:
+            free(sl[s].stores)
+            append(stk, sl[s].temp)
+            fn.temps[sl[s].temp].visit = -2
         else:
             sl[kept] = sl[s]
             kept += 1
@@ -328,30 +328,30 @@ func coalesce():
     # fuse slots by decreasing size
     sort(sl, before_spot)
     for n in 0..sl.len:
-        if sl[n].s >= 0:
+        if sl[n].into >= 0:
             continue
-        sl[n].s = n
-        r := sl[n].r
+        sl[n].into = n
+        r := sl[n].range
         for s in n + 1..sl.len:
-            if sl[s].s >= 0 or sl[s].r.b == 0:
+            if sl[s].into >= 0 or sl[s].range.to == 0:
                 continue
-            if rovlap(r, sl[s].r):
+            if overlap(r, sl[s].range):
                 clash := false
                 for m in n..s:
-                    clash = clash or sl[m].s == n and rovlap(sl[m].r, sl[s].r)
+                    clash = clash or sl[m].into == n and overlap(sl[m].range, sl[s].range)
                 if clash:
                     continue
-            radd(ptr(r), sl[s].r.a)
-            radd(ptr(r), sl[s].r.b - 1)
-            sl[s].s = n
+            stretch(ptr(r), sl[s].range.from)
+            stretch(ptr(r), sl[s].range.to - 1)
+            sl[s].into = n
     # substitute fused slots
     for s in 0..sl.len:
-        t := ptr(fn.temps[sl[s].t])
-        t.visit = i32(s) # the visit link is stale, reset it before the spot() calls below
-        if sl[s].s == s:
+        t := ptr(fn.temps[sl[s].temp])
+        t.visit = i32(s) # the visit link is stale, reset it before the spot calls below
+        if sl[s].into == s:
             continue
         instr_at(t.def).* = Instr{op = Onop}
-        leader := sl[sl[s].s].t
+        leader := sl[sl[s].into].temp
         ts := ptr(fn.temps[leader])
         if t.def < ts.def: # the slot chosen has a def that dominates its new uses
             instr_at(t.def).* = instr_at(ts.def).*
@@ -363,7 +363,7 @@ func coalesce():
                 continue
             i := instr_at(u.at)
             for n in 0..2:
-                if i.arg[n] == u32(sl[s].t):
+                if i.arg[n] == u32(sl[s].temp):
                     i.arg[n] = u32(leader)
     for t in FIRST_TEMP..fn.temp_count:
         pad := fn.temps[t].pad
@@ -372,14 +372,14 @@ func coalesce():
             if m == -2:
                 fn.temps[t].pad = EMPTY
             elif m >= 0:
-                fn.temps[t].pad = u32(sl[sl[m].s].t)
+                fn.temps[t].pad = u32(sl[sl[m].into].temp)
     # fix newly overlapping blits
     for x in bl:
         i := instr_at(x)
         if i.op == Oblit:
             s, off0 := spot(i.arg[0], sl)
             s0, off1 := spot(i.arg[1], sl)
-            if s >= 0 and s0 >= 0 and sl[s].s == sl[s0].s:
+            if s >= 0 and s0 >= 0 and sl[s].into == sl[s0].into:
                 if off0 < off1:
                     j := instr_at(x + 1)
                     j.arg[0] = ref(RefInt, 0 - ref_signed(j.arg[0]))
@@ -388,40 +388,38 @@ func coalesce():
                     instr_at(x + 1).* = Instr{op = Onop}
     free(bl)
     for s in sl:
-        free(s.st)
+        free(s.stores)
     free(sl)
 
 # cut a small slot whose address only reaches loads, stores, blits and constant offsets into one slot per piece,
-# so promote() can turn the pieces into temporaries
-
-ChopMax = 48
+# so promote can turn the pieces into temporaries
 
 type Chop:
-    sz: i64
+    size: i64
     bad: bool
-    ret: bool # returned, so its pieces go back to it before the ret
-    cut: &list[u8] = heap([]) # a piece starts or ends here, 2 marks a v piece, 4 a cut a v piece can hold
-    rd: &list[bool] = heap([])
-    wr: &list[bool] = heap([])
+    returned: bool # so its pieces go back to it before the return
+    cut: &list[u8] = heap([]) # a piece starts or ends here, 2 marks a vector piece, 4 a cut a vector piece can hold
+    read: &list[bool] = heap([])
+    written: &list[bool] = heap([])
     cls: &list[i64] = heap([]) # -1 if unknown, 8 marks a class only read
     to: &list[Ref] = heap([])
     blits: &list[i64] = heap([]) # the ones that copy from or to it
 
 type Copied: # a blit from one chop to another
-    k: i64
-    m: i64
-    off: array[i64, 2]
-    sz: i64
+    from: i64
+    into: i64
+    offset: array[i64, 2]
+    size: i64
 
 context chopping:
     chops: &list[Chop] = heap([])
-    chopof: &list[i64] = heap([])
-    offof: &list[i64] = heap([])
+    chop_of: &list[i64] = heap([])
+    offset_of: &list[i64] = heap([])
     blits: &list[Copied] = heap([])
 
 func reach(t: i64, c: i64, off: i64) -> bool:
-    chopping.chopof[t] = c + 1
-    chopping.offof[t] = off
+    chopping.chop_of[t] = c + 1
+    chopping.offset_of[t] = off
     for u in fn.temps[t].uses[:fn.temps[t].used]:
         if u.type == ByExit and fn.blocks[fn.order[u.block]].exit.type == Jreturnaggregate and is_alloc(instr_at(fn.temps[t].def).op):
             continue
@@ -444,39 +442,39 @@ func reach(t: i64, c: i64, off: i64) -> bool:
             return false
     return true
 
-func chopat(r: Ref, off: *i64) -> i64:
-    if ref_kind(r) != RefTemp or i64(r) >= chopping.chopof.len or chopping.chopof[r] == 0:
+func chop_at(r: Ref, off: *i64) -> i64:
+    if ref_kind(r) != RefTemp or i64(r) >= chopping.chop_of.len or chopping.chop_of[r] == 0:
         return -1
-    c := chopping.chopof[r] - 1
+    c := chopping.chop_of[r] - 1
     if chopping.chops[c].bad:
         return -1
-    off.* = chopping.offof[r]
+    off.* = chopping.offset_of[r]
     return c
 
 # a blit gives each side the cuts of the other, and returns the sides that changed as bits
-func cutblit(bl: Copied) -> i64:
-    c := ptr(chopping.chops[bl.k])
-    c1 := ptr(chopping.chops[bl.m])
+func share_cuts(bl: Copied) -> i64:
+    c := ptr(chopping.chops[bl.from])
+    c1 := ptr(chopping.chops[bl.into])
     grew := 0
     if c.bad or c1.bad:
         return 0
-    for o in 0..=bl.sz:
-        x := c.cut[bl.off[0] + o] or c1.cut[bl.off[1] + o]
-        grew = grew or i64(x != c.cut[bl.off[0] + o]) or i64(x != c1.cut[bl.off[1] + o]) << 1
-        c.cut[bl.off[0] + o] = x
-        c1.cut[bl.off[1] + o] = x
+    for o in 0..=bl.size:
+        x := c.cut[bl.offset[0] + o] or c1.cut[bl.offset[1] + o]
+        grew = grew or i64(x != c.cut[bl.offset[0] + o]) or i64(x != c1.cut[bl.offset[1] + o]) << 1
+        c.cut[bl.offset[0] + o] = x
+        c1.cut[bl.offset[1] + o] = x
     return grew
 
 # a piece with no class takes the one of the piece on the other side, as only read
-func clsblit(bl: Copied) -> i64:
-    c := ptr(chopping.chops[bl.k])
-    c1 := ptr(chopping.chops[bl.m])
+func share_classes(bl: Copied) -> i64:
+    c := ptr(chopping.chops[bl.from])
+    c1 := ptr(chopping.chops[bl.into])
     grew := 0
     if c.bad or c1.bad:
         return 0
-    for o in 0..bl.sz:
-        p := bl.off[0] + o
-        q := bl.off[1] + o
+    for o in 0..bl.size:
+        p := bl.offset[0] + o
+        q := bl.offset[1] + o
         if c.cut[p] != 0 and (c.cls[p] < 0) != (c1.cls[q] < 0):
             if c.cls[p] < 0:
                 c.cls[p] = c1.cls[q] or 8
@@ -506,7 +504,7 @@ func carry(f: func(Copied) -> i64):
         for side in 0..2:
             if (x and 1 << side) == 0:
                 continue
-            c := chopping.blits[j].m if side == 1 else chopping.blits[j].k
+            c := chopping.blits[j].into if side == 1 else chopping.blits[j].from
             for b in chopping.chops[c].blits:
                 if not queued[b]:
                     queued[b] = true
@@ -515,34 +513,34 @@ func carry(f: func(Copied) -> i64):
         n -= 1
 
 # the next cut after p, and a piece ends with the slot
-func chopnext(c: *Chop, p: i64) -> i64:
+func next_cut(c: *Chop, p: i64) -> i64:
     p += 1
-    while p < c.sz and c.cut[p] == 0:
+    while p < c.size and c.cut[p] == 0:
         p += 1
     return p
 
-# the v piece that holds a lane at off, or -1
-func lanein(c: *Chop, off: i64, sz: i64) -> i64:
+# the vector piece that holds a lane at off, or -1
+func lane_piece(c: *Chop, off: i64, sz: i64) -> i64:
     p := off
     while c.cut[p] == 0:
         p -= 1
-    if sz >= 16 or chopnext(c, p) - p != 16:
+    if sz >= 16 or next_cut(c, p) - p != 16:
         return -1
     return p
 
-func chopcls(k: i64, sz: i64) -> i64:
+func class_for(k: i64, sz: i64) -> i64:
     if sz == 16:
         return Vector
     if sz < 8:
         return Float32 if k == Float32 and sz == 4 else Int32
     return Float64 if k == Float64 else Int64
 
-func piececls(c: *Chop, p: i64) -> i64:
+func piece_class(c: *Chop, p: i64) -> i64:
     if c.cls[p] >= 0:
         return c.cls[p] and 7
-    return chopcls(Unknown, chopnext(c, p) - p)
+    return class_for(Unknown, next_cut(c, p) - p)
 
-func chopst(k: i64, sz: i64) -> i64:
+func store_for(k: i64, sz: i64) -> i64:
     switch sz:
     case 1:
         return Ostorei8
@@ -555,24 +553,24 @@ func chopst(k: i64, sz: i64) -> i64:
     return Ostoref64 if k == Float64 else Ostorei64
 
 type Access: # the places an instruction reads or writes, a blit reads and writes
-    n: i64
-    r: array[Ref, 2]
-    sz: array[i64, 2]
-    wr: array[bool, 2]
+    count: i64
+    refs: array[Ref, 2]
+    sizes: array[i64, 2]
+    writes: array[bool, 2]
 
-func chopuse(b: i64, k: i64) -> Access:
+func access_of(b: i64, k: i64) -> Access:
     i := fn.blocks[b].ins[k]
     if is_load(i.op):
-        return Access{1, [i.arg[0], EMPTY], [loadsz(i), 0], [false, false]}
+        return Access{1, [i.arg[0], EMPTY], [load_size(i), 0], [false, false]}
     if is_store(i.op):
-        return Access{1, [i.arg[1], EMPTY], [storesz(i), 0], [true, false]}
+        return Access{1, [i.arg[1], EMPTY], [store_size(i), 0], [true, false]}
     if i.op == Oblit:
         sz := ref_signed(fn.blocks[b].ins[k + 1].arg[0])
         return Access{2, [i.arg[0], i.arg[1]], [sz, sz], [false, true]}
     return Access{}
 
 # where a blit reads or writes the piece at rel
-func chopref(k: i64, off: i64, r: Ref, rel: i64) -> Ref:
+func blit_ref(k: i64, off: i64, r: Ref, rel: i64) -> Ref:
     if k >= 0:
         return chopping.chops[k].to[off + rel]
     if rel == 0:
@@ -580,15 +578,15 @@ func chopref(k: i64, off: i64, r: Ref, rel: i64) -> Ref:
     return new_temp(Int64)
 
 func chop():
-    chopping.chopof.len = 0
-    chopping.offof.len = 0
+    chopping.chop_of.len = 0
+    chopping.offset_of.len = 0
     for t in 0..fn.temp_count:
-        append(chopping.chopof, 0)
-        append(chopping.offof, 0)
+        append(chopping.chop_of, 0)
+        append(chopping.offset_of, 0)
     for c in chopping.chops:
         free(c.cut)
-        free(c.rd)
-        free(c.wr)
+        free(c.read)
+        free(c.written)
         free(c.cls)
         free(c.to)
         free(c.blits)
@@ -599,13 +597,13 @@ func chop():
             continue
         s := fn.constants[ref_value(i.arg[0])].bits
         t := i64(i.to)
-        if s <= 0 or s > ChopMax or fn.temps[t].defs != 1:
+        if s <= 0 or s > CUT or fn.temps[t].defs != 1:
             continue
-        c := Chop{sz = s}
+        c := Chop{size = s}
         for p in 0..s:
             append(c.cut, 0)
-            append(c.rd, false)
-            append(c.wr, false)
+            append(c.read, false)
+            append(c.written, false)
             append(c.cls, -1)
             append(c.to, EMPTY)
         append(c.cut, 0)
@@ -616,62 +614,62 @@ func chop():
     b := fn.start
     while b != 0:
         o := 0
-        k := chopat(fn.blocks[b].exit.arg, ptr(o))
+        k := chop_at(fn.blocks[b].exit.arg, ptr(o))
         if fn.blocks[b].exit.type == Jreturnaggregate and k >= 0:
             c := ptr(chopping.chops[k])
-            c.ret = true
-            c.bad = c.bad or asm.layouts[fn.retty].size != c.sz
+            c.returned = true
+            c.bad = c.bad or asm.layouts[fn.retty].size != c.size
             c.cut[0] = c.cut[0] or 1
-            c.cut[c.sz] = c.cut[c.sz] or 1
+            c.cut[c.size] = c.cut[c.size] or 1
         for j in 0..fn.blocks[b].ins.len:
-            a := chopuse(b, j)
+            a := access_of(b, j)
             off: array[i64, 2]
-            for m in 0..a.n:
-                k = chopat(a.r[m], ptr(off[m]))
+            for m in 0..a.count:
+                k = chop_at(a.refs[m], ptr(off[m]))
                 if k < 0:
                     continue
                 c := ptr(chopping.chops[k])
-                if off[m] < 0 or a.sz[m] <= 0 or off[m] > c.sz - a.sz[m]:
+                if off[m] < 0 or a.sizes[m] <= 0 or off[m] > c.size - a.sizes[m]:
                     c.bad = true
-                elif a.n == 1 and a.sz[m] < 16:
+                elif a.count == 1 and a.sizes[m] < 16:
                     c.cut[off[m]] = c.cut[off[m]] or 4
-                    c.cut[off[m] + a.sz[m]] = c.cut[off[m] + a.sz[m]] or 4
+                    c.cut[off[m] + a.sizes[m]] = c.cut[off[m] + a.sizes[m]] or 4
                 else:
-                    c.cut[off[m]] = c.cut[off[m]] or 1 or u8(2 * i64(a.n == 1 and a.sz[m] == 16))
-                    c.cut[off[m] + a.sz[m]] = c.cut[off[m] + a.sz[m]] or 1
-            if a.n == 2:
-                k = chopat(a.r[0], ptr(off[0]))
+                    c.cut[off[m]] = c.cut[off[m]] or 1 or u8(2 * i64(a.count == 1 and a.sizes[m] == 16))
+                    c.cut[off[m] + a.sizes[m]] = c.cut[off[m] + a.sizes[m]] or 1
+            if a.count == 2:
+                k = chop_at(a.refs[0], ptr(off[0]))
                 m := -1
                 if k >= 0:
-                    m = chopat(a.r[1], ptr(off[1]))
+                    m = chop_at(a.refs[1], ptr(off[1]))
                 if k >= 0 and m >= 0:
                     if k == m:
                         chopping.chops[k].bad = true
                         continue
-                    append(chopping.blits, Copied{k, m, off, a.sz[0]})
+                    append(chopping.blits, Copied{k, m, off, a.sizes[0]})
         b = fn.blocks[b].next
     for n, bl in chopping.blits:
-        append(chopping.chops[bl.k].blits, n)
-        append(chopping.chops[bl.m].blits, n)
-    carry(cutblit)
+        append(chopping.chops[bl.from].blits, n)
+        append(chopping.chops[bl.into].blits, n)
+    carry(share_cuts)
     for k in 0..chopping.chops.len:
         c := ptr(chopping.chops[k])
         if c.bad:
             continue
         p := 0
-        while p < c.sz:
+        while p < c.size:
             if c.cut[p] == 0:
                 p += 1
                 continue
-            # a v piece holds the cuts of its lanes
-            if (c.cut[p] and 2) != 0 and p + 16 <= c.sz:
+            # a vector piece holds the cuts of its lanes
+            if (c.cut[p] and 2) != 0 and p + 16 <= c.size:
                 q := p + 1
                 while q < p + 16 and (c.cut[q] and 3) == 0:
                     q += 1
                 if q == p + 16:
                     for x in p + 1..p + 16:
                         c.cut[x] = 0
-            q := chopnext(c, p)
+            q := next_cut(c, p)
             s := 16 if (c.cut[p] and 2) != 0 else 8
             while s > q - p:
                 s /= 2
@@ -682,53 +680,53 @@ func chop():
     b = fn.start
     while b != 0:
         for j in 0..fn.blocks[b].ins.len:
-            a := chopuse(b, j)
+            a := access_of(b, j)
             i := fn.blocks[b].ins[j]
-            hard := a.n == 1 and not (a.wr[0] and ref_kind(i.arg[0]) == RefConstant and fn.constants[ref_value(i.arg[0])].type == Numeric)
-            for m in 0..a.n:
+            hard := a.count == 1 and not (a.writes[0] and ref_kind(i.arg[0]) == RefConstant and fn.constants[ref_value(i.arg[0])].type == Numeric)
+            for m in 0..a.count:
                 o := 0
-                k := chopat(a.r[m], ptr(o))
+                k := chop_at(a.refs[m], ptr(o))
                 if k < 0:
                     continue
                 c := ptr(chopping.chops[k])
-                p := lanein(c, o, a.sz[m])
+                p := lane_piece(c, o, a.sizes[m])
                 if p >= 0: # a lane is put into the rest of the piece
-                    if (o - p) % a.sz[m] != 0:
+                    if (o - p) % a.sizes[m] != 0:
                         c.bad = true
-                    c.rd[p] = true
-                    c.wr[p] = c.wr[p] or a.wr[m]
+                    c.read[p] = true
+                    c.written[p] = c.written[p] or a.writes[m]
                     continue
-                for x in o..o + a.sz[m]:
+                for x in o..o + a.sizes[m]:
                     if c.cut[x] == 0:
                         continue
                     if hard and x != o:
                         c.bad = true
-                    if a.wr[m]:
-                        c.wr[x] = true
+                    if a.writes[m]:
+                        c.written[x] = true
                     else:
-                        c.rd[x] = true
+                        c.read[x] = true
                 if not hard or c.bad:
                     continue
                 # stores choose the class, loads only when no store does
                 cl := 0
                 if is_store(i.op):
-                    cl = chopcls(i64(OPERATIONS[i.op].arg_class[0]), a.sz[m])
+                    cl = class_for(i64(OPERATIONS[i.op].arg_class[0]), a.sizes[m])
                 else:
-                    cl = chopcls(i64(i.cls), a.sz[m]) or 8
+                    cl = class_for(i64(i.cls), a.sizes[m]) or 8
                 if c.cls[o] < 0 or (c.cls[o] and 8) != 0 and (cl and 8) == 0:
                     c.cls[o] = cl
                 elif (cl and 8) == 0 and c.cls[o] != cl:
                     c.bad = true
         b = fn.blocks[b].next
-    carry(clsblit)
+    carry(share_classes)
     good := false
     for k in 0..chopping.chops.len:
         c := ptr(chopping.chops[k])
         if c.bad:
             continue
-        for p in 0..c.sz:
-            if c.cut[p] != 0 and (c.rd[p] or c.wr[p]):
-                c.rd[p] = c.rd[p] or c.ret
+        for p in 0..c.size:
+            if c.cut[p] != 0 and (c.read[p] or c.written[p]):
+                c.read[p] = c.read[p] or c.returned
                 c.to[p] = new_temp(Int64)
                 good = true
     if not good:
@@ -740,18 +738,18 @@ func chop():
             first += 1
         fn.out.len = 0
         o := 0
-        k := chopat(fn.blocks[b].exit.arg, ptr(o))
+        k := chop_at(fn.blocks[b].exit.arg, ptr(o))
         if fn.blocks[b].exit.type == Jreturnaggregate and k >= 0:
             c := ptr(chopping.chops[k])
-            for p in 0..c.sz:
-                if c.cut[p] != 0 and c.rd[p]:
-                    s := chopnext(c, p) - p
-                    cl := piececls(c, p)
+            for p in 0..c.size:
+                if c.cut[p] != 0 and c.read[p]:
+                    s := next_cut(c, p) - p
+                    cl := piece_class(c, p)
                     v := new_temp(cl)
                     dst := fn.blocks[b].exit.arg
                     if p != 0:
                         dst = new_temp(Int64)
-                    emit(chopst(cl, s), 0, EMPTY, v, dst)
+                    emit(store_for(cl, s), 0, EMPTY, v, dst)
                     if p != 0:
                         emit(Oadd, Int64, dst, fn.blocks[b].exit.arg, intern(p))
                     emit(Oloadu8 if s == 1 else Oloadu16 if s == 2 else Oload, cl, v, c.to[p], EMPTY)
@@ -761,10 +759,10 @@ func chop():
             i := fn.blocks[b].ins[j]
             if i.op == Oblitsize:
                 j -= 1
-                a := chopuse(b, j)
+                a := access_of(b, j)
                 off: array[i64, 2]
-                k = chopat(a.r[0], ptr(off[0]))
-                m := chopat(a.r[1], ptr(off[1]))
+                k = chop_at(a.refs[0], ptr(off[0]))
+                m := chop_at(a.refs[1], ptr(off[1]))
                 if k < 0 and m < 0:
                     emit(i)
                     emit(fn.blocks[b].ins[j])
@@ -773,35 +771,35 @@ func chop():
                 o = off[1] if m >= 0 else off[0]
                 pieces: &list[i64] = heap([])
                 piece := o
-                while piece < o + a.sz[0]:
+                while piece < o + a.sizes[0]:
                     append(pieces, piece)
-                    piece = chopnext(c, piece)
+                    piece = next_cut(c, piece)
                 for p in reverse pieces:
-                    s := chopnext(c, p) - p
-                    cl := piececls(c, p)
-                    src := chopref(k, off[0], a.r[0], p - o)
-                    dst := chopref(m, off[1], a.r[1], p - o)
+                    s := next_cut(c, p) - p
+                    cl := piece_class(c, p)
+                    src := blit_ref(k, off[0], a.refs[0], p - o)
+                    dst := blit_ref(m, off[1], a.refs[1], p - o)
                     v := new_temp(cl)
-                    emit(chopst(cl, s), 0, EMPTY, v, dst)
+                    emit(store_for(cl, s), 0, EMPTY, v, dst)
                     if m < 0 and p != o:
-                        emit(Oadd, Int64, dst, a.r[1], intern(p - o))
+                        emit(Oadd, Int64, dst, a.refs[1], intern(p - o))
                     emit(Oloadu8 if s == 1 else Oloadu16 if s == 2 else Oload, cl, v, src, EMPTY)
                     if k < 0 and p != o:
-                        emit(Oadd, Int64, src, a.r[0], intern(p - o))
+                        emit(Oadd, Int64, src, a.refs[0], intern(p - o))
                 free(pieces)
                 continue
             if is_alloc(i.op) or i.op == Oadd:
-                k = chopat(i.to, ptr(o))
+                k = chop_at(i.to, ptr(o))
                 if k >= 0:
-                    if is_alloc(i.op) and chopping.chops[k].ret:
+                    if is_alloc(i.op) and chopping.chops[k].returned:
                         emit(i)
                     continue
             if is_load(i.op):
-                k = chopat(i.arg[0], ptr(o))
+                k = chop_at(i.arg[0], ptr(o))
                 if k >= 0:
                     c := ptr(chopping.chops[k])
-                    s := loadsz(i)
-                    p := lanein(c, o, s)
+                    s := load_size(i)
+                    p := lane_piece(c, o, s)
                     if p < 0:
                         emit(i.op, i.cls, i.to, c.to[o], EMPTY)
                         continue
@@ -810,11 +808,11 @@ func chop():
                     emit(Oload, Vector, v, c.to[p], EMPTY)
                     continue
             if is_store(i.op):
-                k = chopat(i.arg[1], ptr(o))
+                k = chop_at(i.arg[1], ptr(o))
                 if k >= 0:
                     c := ptr(chopping.chops[k])
-                    s := storesz(i)
-                    p := lanein(c, o, s)
+                    s := store_size(i)
+                    p := lane_piece(c, o, s)
                     if p >= 0:
                         src := new_temp(Vector)
                         dst := new_temp(Vector)
@@ -823,17 +821,17 @@ func chop():
                         emit(Ovlane, Int32, EMPTY, ref(RefInt, (o - p) / s), EMPTY)
                         emit(Oload, Vector, src, c.to[p], EMPTY)
                         continue
-                    if chopnext(c, o) - o == s:
-                        emit(chopst(piececls(c, o), s), 0, EMPTY, i.arg[0], c.to[o])
+                    if next_cut(c, o) - o == s:
+                        emit(store_for(piece_class(c, o), s), 0, EMPTY, i.arg[0], c.to[o])
                         continue
                     bits := fn.constants[ref_value(i.arg[0])].bits
                     p = o
                     while p < o + s:
-                        q := chopnext(c, p)
+                        q := next_cut(c, p)
                         part := bits >> (8 * (p - o))
                         if q - p != 8:
                             part = part and (i64(1) << (8 * (q - p))) - 1
-                        emit(chopst(piececls(c, p), q - p), 0, EMPTY, intern(part), c.to[p])
+                        emit(store_for(piece_class(c, p), q - p), 0, EMPTY, intern(part), c.to[p])
                         p = q
                     continue
             emit(i)
@@ -841,15 +839,15 @@ func chop():
         if b == fn.start:
             for k2 in 0..chopping.chops.len:
                 c := ptr(chopping.chops[k2])
-                for p in 0..c.sz:
-                    if not c.bad and c.cut[p] != 0 and (c.rd[p] or c.wr[p]):
-                        s := chopnext(c, p) - p
-                        if c.rd[p] and s == 16:
+                for p in 0..c.size:
+                    if not c.bad and c.cut[p] != 0 and (c.read[p] or c.written[p]):
+                        s := next_cut(c, p) - p
+                        if c.read[p] and s == 16:
                             v := new_temp(Vector)
                             emit(Ostorevector, 0, EMPTY, v, c.to[p])
                             emit(Ovsplati32, Vector, v, intern(0), EMPTY)
-                        elif c.rd[p]:
-                            emit(chopst(piececls(c, p), s), 0, EMPTY, intern(0), c.to[p])
+                        elif c.read[p]:
+                            emit(store_for(piece_class(c, p), s), 0, EMPTY, intern(0), c.to[p])
                         emit(Oalloc4 if s <= 4 else Oalloc8 if s <= 8 else Oalloc16, Int64, c.to[p], intern(s), EMPTY)
         while j > 0:
             j -= 1
@@ -857,7 +855,7 @@ func chop():
         take_emitted(b)
         b = fn.blocks[b].next
 
-func getalias(a: *Region, r: Ref):
+func alias_of(a: *Region, r: Ref):
     switch ref_kind(r):
     case RefTemp:
         a.* = fn.temps[r].alias
@@ -866,11 +864,11 @@ func getalias(a: *Region, r: Ref):
     case RefConstant:
         c := fn.constants[ref_value(r)]
         if c.type == Addressed:
-            a.type = ASym
+            a.type = AtSymbol
             a.access = c.access
             a.symbol = c.symbol
         else:
-            a.type = ACon
+            a.type = Absolute
         a.offset = c.bits
         a.slot = 0
     case:
@@ -879,8 +877,8 @@ func getalias(a: *Region, r: Ref):
 func alias(p: Ref, op: i64, sp: i64, q: Ref, sq: i64, delta: *i64) -> i64:
     ap: Region
     aq: Region
-    getalias(ptr(ap), p)
-    getalias(ptr(aq), q)
+    alias_of(ptr(ap), p)
+    alias_of(ptr(aq), q)
     ap.offset += op
     # sp and sq are below 2^28, delta does not overflow
     delta.* = ap.offset - aq.offset
@@ -890,22 +888,22 @@ func alias(p: Ref, op: i64, sp: i64, q: Ref, sq: i64, delta: *i64) -> i64:
         if ap.base == aq.base and ovlap:
             return MustAlias
         return NoAlias
-    if ap.type == ASym and aq.type == ASym:
+    if ap.type == AtSymbol and aq.type == AtSymbol:
         # different symbols may alias, the same one does when they overlap
         if ap.access != aq.access or ap.symbol != aq.symbol:
             return MayAlias
         if ovlap:
             return MustAlias
         return NoAlias
-    if ap.type == ACon and aq.type == ACon or ap.type == aq.type and ap.base == aq.base:
+    if ap.type == Absolute and aq.type == Absolute or ap.type == aq.type and ap.base == aq.base:
         # with the same base, the offsets tell
         if ovlap:
             return MustAlias
         return NoAlias
     # an unknown one may alias anything but a local slot
-    if ap.type == AUnk and aq.type != ALoc:
+    if ap.type == Anywhere and aq.type != InSlot:
         return MayAlias
-    if aq.type == AUnk and ap.type != ALoc:
+    if aq.type == Anywhere and ap.type != InSlot:
         return MayAlias
     return NoAlias
 
@@ -913,32 +911,32 @@ func escapes(r: Ref) -> bool:
     if ref_kind(r) != RefTemp:
         return true
     a := fn.temps[r].alias
-    return (a.type and 1) == 0 or fn.temps[a.slot].alias.type == AEsc
+    return (a.type and 1) == 0 or fn.temps[a.slot].alias.type == EscapedSlot
 
-func esc(r: Ref):
+func mark_escaped(r: Ref):
     if ref_kind(r) == RefTemp:
         a := fn.temps[r].alias
         if (a.type and 1) != 0:
-            fn.temps[a.slot].alias.type = AEsc
+            fn.temps[a.slot].alias.type = EscapedSlot
 
-func storealias(r: Ref, sz: i64):
+func mark_stored(r: Ref, sz: i64):
     if ref_kind(r) == RefTemp:
         a := fn.temps[r].alias
         if a.slot != 0:
             m: u64 = 0xffff_ffff_ffff_ffff
             if sz < BITS and a.offset >= 0 and a.offset < BITS:
                 m = ((u64(1) << sz) - 1) << a.offset
-            fn.temps[a.slot].alias.m = fn.temps[a.slot].alias.m or m
+            fn.temps[a.slot].alias.stored = fn.temps[a.slot].alias.stored or m
 
-func fillalias():
+func fill_aliases():
     for t in 0..fn.temp_count:
-        fn.temps[t].alias.type = ABot
+        fn.temps[t].alias.type = Nowhere
     for n in 0..fn.ordered:
         b := fn.order[n]
         p := fn.blocks[b].phi
         while p != 0:
             a := ptr(fn.temps[fn.phis[p].to].alias)
-            a.type = AUnk
+            a.type = Anywhere
             a.base = i32(fn.phis[p].to)
             a.offset = 0
             a.slot = 0
@@ -950,92 +948,92 @@ func fillalias():
             if i.to != EMPTY:
                 a = ptr(fn.temps[i.to].alias)
                 if is_alloc(i.op):
-                    a.type = ALoc
+                    a.type = InSlot
                     a.slot = i32(i.to)
-                    a.sz = -1
+                    a.size = -1
                     if ref_kind(i.arg[0]) == RefConstant:
                         c := fn.constants[ref_value(i.arg[0])]
                         if c.type == Numeric and 0 <= c.bits and c.bits <= BITS:
-                            a.sz = i32(c.bits)
+                            a.size = i32(c.bits)
                 else:
-                    a.type = AUnk
+                    a.type = Anywhere
                     a.slot = 0
                 a.base = i32(i.to)
                 a.offset = 0
             if i.op == Ocopy:
-                getalias(a, i.arg[0])
+                alias_of(a, i.arg[0])
             if i.op == Oadd:
                 a0: Region
                 a1: Region
-                getalias(ptr(a0), i.arg[0])
-                getalias(ptr(a1), i.arg[1])
-                if a0.type == ACon:
+                alias_of(ptr(a0), i.arg[0])
+                alias_of(ptr(a1), i.arg[1])
+                if a0.type == Absolute:
                     a.* = a1
                     a.offset += a0.offset
-                elif a1.type == ACon:
+                elif a1.type == Absolute:
                     a.* = a0
                     a.offset += a1.offset
-            if (i.to == EMPTY or a.type == AUnk) and i.op != Oblit:
+            if (i.to == EMPTY or a.type == Anywhere) and i.op != Oblit:
                 if not is_load(i.op):
-                    esc(i.arg[0])
+                    mark_escaped(i.arg[0])
                 if not is_store(i.op) and i.op != Oargaggregate:
-                    esc(i.arg[1])
+                    mark_escaped(i.arg[1])
             if i.op == Oblit:
                 k += 1
-                storealias(i.arg[1], abs(ref_signed(fn.blocks[b].ins[k].arg[0])))
+                mark_stored(i.arg[1], abs(ref_signed(fn.blocks[b].ins[k].arg[0])))
             i = fn.blocks[b].ins[k]
             if is_store(i.op):
-                storealias(i.arg[1], storesz(i))
+                mark_stored(i.arg[1], store_size(i))
             if i.op == Ocall and fn.temps[i.to].pad != EMPTY:
-                storealias(fn.temps[i.to].pad, BITS)
+                mark_stored(fn.temps[i.to].pad, BITS)
             k += 1
         if fn.blocks[b].exit.type != Jreturnaggregate:
-            esc(fn.blocks[b].exit.arg)
+            mark_escaped(fn.blocks[b].exit.arg)
     b := fn.start
     while b != 0:
         p := fn.blocks[b].phi
         while p != 0:
             for r in fn.phis[p].arg:
-                esc(r)
+                mark_escaped(r)
             p = fn.phis[p].next
         b = fn.blocks[b].next
 
-LRoot = 0 # right above the original load
-LLoad = 1 # inserting a load is allowed
-LNoLoad = 2 # only scalar operations allowed
+AtLoad = 0 # right above the original load
+LoadAllowed = 1 # inserting a load is allowed
+NoLoad = 2 # only scalar operations allowed
 
-type Loc:
+type Site:
     type: i64
-    off: i64
+    at: i64
     block: i64
 
 type Slice:
     ref: Ref
-    off: i64
-    sz: i64
+    offset: i64
+    size: i64
     cls: i64 # of the load
 
 type Insert:
-    isphi: bool
-    num: i64
+    is_phi: bool
+    number: i64
     block: i64
-    off: i64
+    at: i64
     ins: Instr
-    m: Slice
-    p: i64
+    slice: Slice
+    phi: i64
 
 func mask_of(w: i64) -> u64:
     return (u64(1) << (8 * w - 1)) * 2 - 1
 
-func iins(cls: i64, op: i64, a0: Ref, a1: Ref, l: Loc) -> Ref:
-    append(fn.ilog, Insert{num = fn.inum, block = fn.blocks[l.block].id, off = l.off, ins = Instr{op = i32(op), cls = i32(cls), arg = [a0, a1]}})
-    fn.inum += 1
-    k := fn.ilog.len - 1
+func insert_instr(cls: i64, op: i64, a0: Ref, a1: Ref, l: Site) -> Ref:
+    append(fn.inserts, Insert{number = fn.insert_count, block = fn.blocks[l.block].id, at = l.at, ins = Instr{op = i32(op), cls = i32(cls), arg = [a0, a1]}})
+    fn.insert_count += 1
+    k := fn.inserts.len - 1
     r := new_temp(cls)
-    fn.ilog[k].ins.to = r
+    fn.inserts[k].ins.to = r
     return r
 
-func cast(r: Ref, cls: i64, l: Loc) -> Ref:
+func cast(r: Ref, cls: i64, l: Site) -> Ref:
     if ref_kind(r) == RefConstant:
         if cls == Int32 and fn.constants[ref_value(r)].type == Numeric:
             return intern(fn.constants[ref_value(r)].bits << 32 >> 32)
@@ -1045,90 +1043,90 @@ func cast(r: Ref, cls: i64, l: Loc) -> Ref:
         return r
     if wide(cls0) < wide(cls):
         if cls0 == Float32:
-            r = iins(Int32, Ocast, r, EMPTY, l)
-        r = iins(Int64, Oextu32, r, EMPTY, l)
+            r = insert_instr(Int32, Ocast, r, EMPTY, l)
+        r = insert_instr(Int64, Oextu32, r, EMPTY, l)
         if cls == Float64:
-            r = iins(Float64, Ocast, r, EMPTY, l)
+            r = insert_instr(Float64, Ocast, r, EMPTY, l)
     else:
         if cls0 == Float64 and cls != Int64:
-            r = iins(Int64, Ocast, r, EMPTY, l)
+            r = insert_instr(Int64, Ocast, r, EMPTY, l)
         if cls0 != Float64 or cls != Int32:
-            r = iins(cls, Ocast, r, EMPTY, l)
+            r = insert_instr(cls, Ocast, r, EMPTY, l)
     return r
 
-func mask(cls: i64, r: Ref, msk: u64, l: Loc) -> Ref:
+func mask(cls: i64, r: Ref, msk: u64, l: Site) -> Ref:
     r = cast(r, cls, l)
     c := intern(i64(msk))
-    return iins(cls, Oand, r, c, l)
+    return insert_instr(cls, Oand, r, c, l)
 
-func killsl(r: Ref, sl: Slice) -> bool:
+func clobbers(r: Ref, sl: Slice) -> bool:
     if ref_kind(sl.ref) != RefTemp:
         return false
     a := fn.temps[sl.ref].alias
     switch a.type:
-    case ALoc, AEsc, AUnk:
+    case InSlot, EscapedSlot, Anywhere:
         return u32(a.base) == r
-    case ACon, ASym:
+    case Absolute, AtSymbol:
         return false
     panic("unreachable")
 
-func reload(sl: Slice, msk: u64, il: Loc, oldl: i64, oldt: i64) -> Ref:
+func reload(sl: Slice, msk: u64, il: Site, oldl: i64, oldt: i64) -> Ref:
     fn.temp_count = oldt
-    fn.ilog.len = oldl
-    if il.type != LLoad:
+    fn.inserts.len = oldl
+    if il.type != LoadAllowed:
         return EMPTY
-    ld := [0, Oloadu8, Oloadu16, 0, Oloadu32, 0, 0, 0, Oload][sl.sz]
-    all := msk == mask_of(sl.sz)
-    cls := sl.cls if all else Int64 if sl.sz > 4 else Int32
+    ld := [0, Oloadu8, Oloadu16, 0, Oloadu32, 0, 0, 0, Oload][sl.size]
+    all := msk == mask_of(sl.size)
+    cls := sl.cls if all else Int64 if sl.size > 4 else Int32
     r := sl.ref
     # sl.ref may be dead here, its alias base is live
     if ref_kind(r) == RefTemp:
         a := fn.temps[r].alias
         switch a.type:
-        case ALoc, AEsc, AUnk:
+        case InSlot, EscapedSlot, Anywhere:
             r = u32(a.base)
             if a.offset != 0:
                 r1 := intern(a.offset)
-                r = iins(Int64, Oadd, r, r1, il)
-        case ACon, ASym:
+                r = insert_instr(Int64, Oadd, r, r1, il)
+        case Absolute, AtSymbol:
             r = intern(Immediate{type = Addressed, access = a.access, symbol = a.symbol, bits = a.offset})
         case:
             panic("unreachable")
-    r = iins(cls, ld, r, EMPTY, il)
+    r = insert_instr(cls, ld, r, EMPTY, il)
     if not all:
         r = mask(cls, r, msk, il)
     return r
 
 # a ref of the contents of the slice, all the bits set to 0 in the mask zeroed; an integer class when the mask does not
-# cover all the bits of the slice, else the class sl.cls; R when it fails
-func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
+# cover all the bits of the slice, else the class sl.cls; EMPTY when it fails
+func contents(sl: Slice, msk: u64, b: i64, i: i64, il: Site) -> Ref:
     # invariants:
-    # -1- b dominates il.blk; so we can use temporaries of b in il.blk
-    # -2- if il.type != LNoLoad, then il.blk postdominates the original load; so it is safe to load in il.blk
-    # -3- if il.type != LNoLoad, then b postdominates il.blk (and by 2, the original load)
+    # -1- b dominates il.block; so we can use temporaries of b in il.block
+    # -2- if il.type != NoLoad, then il.block postdominates the original load; so it is safe to load in il.block
+    # -3- if il.type != NoLoad, then b postdominates il.block (and by 2, the original load)
     assert dominates(b, il.block), "a load of " + fn.name + " takes a value from a block that does not dominate it"
-    oldl := fn.ilog.len
+    oldl := fn.inserts.len
     oldt := fn.temp_count
     if i < 0:
         i = fn.blocks[b].ins.len
-    cls := Int64 if sl.sz > 4 else Int32
-    msks := mask_of(sl.sz)
+    cls := Int64 if sl.size > 4 else Int32
+    msks := mask_of(sl.size)
     while i > 0:
         i -= 1
         x := fn.blocks[b].ins[i]
         # an atomic orders the memory others see, like a call
-        if killsl(x.to, sl) or (x.op == Ocall or is_atomic(x.op)) and escapes(sl.ref):
+        if clobbers(x.to, sl) or (x.op == Ocall or is_atomic(x.op)) and escapes(sl.ref):
             return reload(sl, msk, il, oldl, oldt)
         ld := is_load(x.op)
         sz := 0
         r1: Ref = EMPTY
         r: Ref = EMPTY
         if ld:
-            sz = loadsz(x)
+            sz = load_size(x)
             r1 = x.arg[0]
             r = x.to
         elif is_store(x.op):
-            sz = storesz(x)
+            sz = store_size(x)
             r1 = x.arg[1]
             r = x.arg[0]
         elif x.op == Oblitsize:
@@ -1141,24 +1139,24 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
         off := 0
         if sz > 8 and x.op != Oblit:
             # lanes are not forwarded
-            if alias(sl.ref, sl.off, sl.sz, r1, sz, ptr(off)) != NoAlias:
+            if alias(sl.ref, sl.offset, sl.size, r1, sz, ptr(off)) != NoAlias:
                 return reload(sl, msk, il, oldl, oldt)
             continue
-        switch alias(sl.ref, sl.off, sl.sz, r1, sz, ptr(off)):
+        switch alias(sl.ref, sl.offset, sl.size, r1, sz, ptr(off)):
         case MustAlias:
             sl1 := sl
             if x.op == Oblit:
                 sl1.ref = x.arg[0]
                 if off >= 0:
-                    sl1.off = off
+                    sl1.offset = off
                     sz -= off
                     off = 0
                 else:
-                    sl1.off = 0
-                    sl1.sz += off
-                if sz > sl1.sz:
-                    sz = sl1.sz
-                sl1.sz = sz
+                    sl1.offset = 0
+                    sl1.size += off
+                if sz > sl1.size:
+                    sz = sl1.size
+                sl1.size = sz
             msk1: u64 = 0
             op := Oshr
             end := 0
@@ -1173,38 +1171,38 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
             if (msk1 and msk) == 0:
                 continue
             if x.op == Oblit:
-                r = def(sl1, mask_of(sz), b, i, il)
+                r = contents(sl1, mask_of(sz), b, i, il)
                 if r == EMPTY:
                     return reload(sl, msk, il, oldl, oldt)
             if off != 0:
                 cls1 := cls
-                if op == Oshr and off + sl.sz > 4:
+                if op == Oshr and off + sl.size > 4:
                     cls1 = Int64
                 r = cast(r, cls1, il)
                 r1 = intern(8 * off)
-                r = iins(cls1, op, r, r1, il)
-            if (msk1 and msk) != msk1 or end < sl.sz:
+                r = insert_instr(cls1, op, r, r1, il)
+            if (msk1 and msk) != msk1 or end < sl.size:
                 r = mask(cls, r, msk1 and msk, il)
             if (msk and not msk1) != 0:
-                r1 = def(sl, msk and not msk1, b, i, il)
+                r1 = contents(sl, msk and not msk1, b, i, il)
                 if r1 == EMPTY:
                     return reload(sl, msk, il, oldl, oldt)
-                r = iins(cls, Oor, r, r1, il)
+                r = insert_instr(cls, Oor, r, r1, il)
             if msk == msks:
                 r = cast(r, sl.cls, il)
             return r
         case MayAlias:
             if not ld:
                 return reload(sl, msk, il, oldl, oldt)
-    for ist in fn.ilog:
-        if ist.isphi and ist.block == fn.blocks[b].id and ist.m.ref == sl.ref and ist.m.off == sl.off and ist.m.sz == sl.sz:
-            r := fn.phis[ist.p].to
+    for ist in fn.inserts:
+        if ist.is_phi and ist.block == fn.blocks[b].id and ist.slice.ref == sl.ref and ist.slice.offset == sl.offset and ist.slice.size == sl.size:
+            r := fn.phis[ist.phi].to
             if msk != msks:
                 return mask(cls, r, msk, il)
             return cast(r, sl.cls, il)
     p := fn.blocks[b].phi
     while p != 0:
-        if killsl(fn.phis[p].to, sl):
+        if clobbers(fn.phis[p].to, sl):
             # scanning predecessors in that case would be unsafe
             return reload(sl, msk, il, oldl, oldt)
         p = fn.phis[p].next
@@ -1215,23 +1213,23 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
         bp := fn.blocks[b].preds[0]
         l := il
         if fn.blocks[bp].no != 0 or fn.blocks[bp].targets.len > 1:
-            l.type = LNoLoad
-        r1 := def(sl, msk, bp, -1, l)
+            l.type = NoLoad
+        r1 := contents(sl, msk, bp, -1, l)
         if r1 == EMPTY:
             return reload(sl, msk, il, oldl, oldt)
         return r1
     r := new_temp(sl.cls)
     p = new_phi(r, sl.cls)
-    append(fn.ilog, Insert{isphi = true, block = fn.blocks[b].id, m = sl, p = p})
+    append(fn.inserts, Insert{is_phi = true, block = fn.blocks[b].id, slice = sl, phi = p})
     for np in 0..npred:
         append(fn.phis[p].arg, EMPTY)
         append(fn.phis[p].blocks, 0)
     for np in 0..npred:
         bp := fn.blocks[b].preds[np]
-        l := Loc{LNoLoad, fn.blocks[bp].ins.len, bp}
-        if fn.blocks[bp].no == 0 and fn.blocks[bp].targets.len <= 1 and il.type != LNoLoad and fn.blocks[bp].loop < fn.blocks[il.block].loop:
-            l.type = LLoad
-        r1 := def(sl, msks, bp, -1, l)
+        l := Site{NoLoad, fn.blocks[bp].ins.len, bp}
+        if fn.blocks[bp].no == 0 and fn.blocks[bp].targets.len <= 1 and il.type != NoLoad and fn.blocks[bp].loop < fn.blocks[il.block].loop:
+            l.type = LoadAllowed
+        r1 := contents(sl, msks, bp, -1, l)
         if r1 == EMPTY:
             return reload(sl, msk, il, oldl, oldt)
         fn.phis[p].arg[np] = r1
@@ -1243,40 +1241,40 @@ func def(sl: Slice, msk: u64, b: i64, i: i64, il: Loc) -> Ref:
 func before_insert(a: Insert, b: Insert) -> bool:
     if a.block != b.block:
         return a.block < b.block
-    if a.isphi or b.isphi:
-        return a.isphi and not b.isphi
-    if a.off != b.off:
-        return a.off < b.off
-    return a.num < b.num
+    if a.is_phi or b.is_phi:
+        return a.is_phi and not b.is_phi
+    if a.at != b.at:
+        return a.at < b.at
+    return a.number < b.number
 
 # a load of what a store or a load before it gave becomes a copy
-func loadopt():
-    fn.ilog.len = 0
-    fn.inum = 0
+func forward_loads():
+    fn.inserts.len = 0
+    fn.insert_count = 0
     b := fn.start
     while b != 0:
         for k in 0..fn.blocks[b].ins.len:
             i := fn.blocks[b].ins[k]
             if not is_load(i.op) or i.cls == Vector:
                 continue
-            sl := Slice{i.arg[0], 0, loadsz(i), i64(i.cls)}
+            sl := Slice{i.arg[0], 0, load_size(i), i64(i.cls)}
             if ref_kind(sl.ref) == RefTemp:
                 a := fn.temps[sl.ref].alias
-                if a.offset == a.offset << 48 >> 48 and (a.type == ALoc or a.type == AEsc or a.type == AUnk):
+                if a.offset == a.offset << 48 >> 48 and (a.type == InSlot or a.type == EscapedSlot or a.type == Anywhere):
                     sl.ref = u32(a.base)
-                    sl.off = a.offset
-            r := def(sl, mask_of(sl.sz), b, k, Loc{LRoot, k, b})
+                    sl.offset = a.offset
+            r := contents(sl, mask_of(sl.size), b, k, Site{AtLoad, k, b})
             fn.blocks[b].ins[k].arg[1] = r
         b = fn.blocks[b].next
-    sort(fn.ilog, before_insert)
-    append(fn.ilog, Insert{block = fn.ordered}) # a sentinel
+    sort(fn.inserts, before_insert)
+    append(fn.inserts, Insert{block = fn.ordered}) # a sentinel
     ib: &list[Instr] = heap([])
     defer free(ib)
     x := 0
     for n in 0..fn.ordered:
         b = fn.order[n]
-        while fn.ilog[x].block == n and fn.ilog[x].isphi:
-            p := fn.ilog[x].p
+        while fn.inserts[x].block == n and fn.inserts[x].is_phi:
+            p := fn.inserts[x].phi
             fn.phis[p].next = fn.blocks[b].phi
             fn.blocks[b].phi = p
             x += 1
@@ -1284,8 +1282,8 @@ func loadopt():
         ib.len = 0
         while true:
             i: Instr
-            if fn.ilog[x].block == n and fn.ilog[x].off == ni:
-                i = fn.ilog[x].ins
+            if fn.inserts[x].block == n and fn.inserts[x].at == ni:
+                i = fn.inserts[x].ins
                 x += 1
             else:
                 if ni == fn.blocks[b].ins.len:
@@ -1302,28 +1300,28 @@ func loadopt():
             append(ib, i)
         fn.blocks[b].ins = ib[:]
 
-type Ext:
-    zext: bool
-    nopw: i64 # is a no-op if arg width is <= nopw
-    usew: i64 # uses only the low usew bits of arg
+type Extension:
+    zero: bool
+    noop_width: i64 # a copy of an argument that wide
+    use_width: i64 # the low bits of the argument it uses
 
-func ext(i: Instr) -> Ext|null:
+func extension(i: Instr) -> Extension|null:
     switch i.op:
     case Oexti8:
-        return Ext{false, 7, 8}
+        return Extension{false, 7, 8}
     case Oextu8:
-        return Ext{true, 8, 8}
+        return Extension{true, 8, 8}
     case Oexti16:
-        return Ext{false, 15, 16}
+        return Extension{false, 15, 16}
     case Oextu16:
-        return Ext{true, 16, 16}
+        return Extension{true, 16, 16}
     case Oexti32:
-        return Ext{false, 31, 32}
+        return Extension{false, 31, 32}
     case Oextu32:
-        return Ext{true, 32, 32}
+        return Extension{true, 32, 32}
     return null
 
-func bitwidth(v: u64) -> i64:
+func bit_width(v: u64) -> i64:
     n := 0
     if v >> 32 != 0:
         n += 32
@@ -1345,7 +1343,7 @@ func bitwidth(v: u64) -> i64:
         v = v >> 1
     return n + i64(v)
 
-func unvisitphis():
+func unvisit_phis():
     b := fn.start
     while b != 0:
         p := fn.blocks[b].phi
@@ -1354,46 +1352,45 @@ func unvisitphis():
             p = fn.phis[p].next
         b = fn.blocks[b].next
 
-func uwl(r: Ref, w: i64) -> bool:
+func uses_within_walk(r: Ref, w: i64) -> bool:
     t := i64(r)
     for k in 0..fn.temps[t].used:
         u := fn.temps[t].uses[k]
         switch u.type:
         case ByPhi:
             p := ptr(fn.phis[u.at])
-            # gvn replaces a phi by another temp: the uses of the phi go to it, and its to becomes R
+            # value numbering replaces a phi by another temp: the uses of the phi go to it, and its to becomes EMPTY
             if p.visit != 0 or p.to == EMPTY:
                 continue
             p.visit = 1
-            if uwl(p.to, w):
+            if uses_within_walk(p.to, w):
                 continue
         case ByInstr:
             i := instr_at(u.at).*
-            if i.op == Ocopy and uwl(i.to, w):
+            if i.op == Ocopy and uses_within_walk(i.to, w):
                 continue
-            e := ext(i)
-            if e is Ext:
-                if e.usew <= w:
+            e := extension(i)
+            if e is Extension:
+                if e.use_width <= w:
                     continue
-                if uwl(i.to, w):
+                if uses_within_walk(i.to, w):
                     continue
             if i.op == Oand:
                 rc := i.arg[1] if r == i.arg[0] else i.arg[0]
                 v := 0
-                if bits_of(rc, ptr(v)) and bitwidth(u64(v)) <= w:
+                if bits_of(rc, ptr(v)) and bit_width(u64(v)) <= w:
                     continue
         return false
     return true
 
-# no more than w bits are used
-func usewidthle(r: Ref, w: i64) -> bool:
-    ok := uwl(r, w)
-    unvisitphis()
+func uses_within(r: Ref, w: i64) -> bool:
+    ok := uses_within_walk(r, w)
+    unvisit_phis()
     return ok
 
-func dwl(r: Ref, w: i64) -> bool:
+func defined_within_walk(r: Ref, w: i64) -> bool:
     v := 0
-    if bits_of(r, ptr(v)) and bitwidth(u64(v)) <= w:
+    if bits_of(r, ptr(v)) and bit_width(u64(v)) <= w:
         return true
     if w <= 0 or ref_kind(r) != RefTemp:
         return false
@@ -1409,43 +1406,42 @@ func dwl(r: Ref, w: i64) -> bool:
             return true
         ph.visit = i32(w)
         for n in 0..fn.phis[p].arg.len:
-            if not dwl(fn.phis[p].arg[n], w):
+            if not defined_within_walk(fn.phis[p].arg[n], w):
                 return false
         return true
     i := instr_at(t.def).*
     if i.op == Ocopy:
-        return dwl(i.arg[0], w)
+        return defined_within_walk(i.arg[0], w)
     if i.op == Oshr or i.op == Osar:
         if bits_of(i.arg[1], ptr(v)) and 0 < v and v <= 32:
             if i.op == Oshr and w + v >= 32:
                 return true
             if w < 32:
                 w = min(31 if i.op == Osar else 32, w + v)
-        return dwl(i.arg[0], w)
+        return defined_within_walk(i.arg[0], w)
     x := 0
     if is_compare(i.op, ptr(x), ptr(x)):
         return w >= 1
     if i.op == Oand:
-        return dwl(i.arg[0], w) or dwl(i.arg[1], w)
+        return defined_within_walk(i.arg[0], w) or defined_within_walk(i.arg[1], w)
     if i.op == Oor or i.op == Oxor:
-        return dwl(i.arg[0], w) and dwl(i.arg[1], w)
-    e := ext(i)
-    if e is Ext:
-        if e.zext and e.usew <= w:
+        return defined_within_walk(i.arg[0], w) and defined_within_walk(i.arg[1], w)
+    e := extension(i)
+    if e is Extension:
+        if e.zero and e.use_width <= w:
             return true
-        return dwl(i.arg[0], min(w, e.nopw))
+        return defined_within_walk(i.arg[0], min(w, e.noop_width))
     return false
 
-# is the ref narrower than w bits
-func defwidthle(r: Ref, w: i64) -> bool:
-    ok := dwl(r, w)
-    unvisitphis()
+func defined_within(r: Ref, w: i64) -> bool:
+    ok := defined_within_walk(r, w)
+    unvisit_phis()
     return ok
 
-func isw1(r: Ref) -> bool:
-    return defwidthle(r, 1)
+func is_bit(r: Ref) -> bool:
+    return defined_within(r, 1)
 
-func iscon(c: Immediate, w: bool, k: u64) -> bool:
+func equals(c: Immediate, w: bool, k: u64) -> bool:
     if c.type != Numeric:
         return false
     if w:
@@ -1453,7 +1449,7 @@ func iscon(c: Immediate, w: bool, k: u64) -> bool:
     return u32(u64(c.bits) and 0xffff_ffff) == u32(k and 0xffff_ffff)
 
 # the constant op makes of cl and cr, false when it cannot
-func foldint(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) -> bool:
+func fold_int(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) -> bool:
     typ := Numeric
     symtype := 0
     sym := 0
@@ -1483,9 +1479,9 @@ func foldint(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) ->
     elif cl.type == Addressed or cr.type == Addressed:
         return false
     if op == Odiv or op == Orem or op == Oudiv or op == Ourem:
-        if iscon(cr, w, 0):
+        if equals(cr, w, 0):
             return false
-        if (op == Odiv or op == Orem) and iscon(cr, w, 0xffff_ffff_ffff_ffff) and iscon(cl, w, 0x8000_0000_0000_0000 if w else 0xffff_ffff_8000_0000):
+        if (op == Odiv or op == Orem) and equals(cr, w, 0xffff_ffff_ffff_ffff) and equals(cl, w, 0x8000_0000_0000_0000 if w else 0xffff_ffff_8000_0000):
             return false
     sh := r and u64(63 if w else 31)
     x: u64 = 0
@@ -1617,23 +1613,23 @@ func foldint(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) ->
     res.* = Immediate{type = i32(typ), access = i32(symtype), symbol = i32(sym), bits = i64(x)}
     return true
 
-# what an instruction like i already in the table gives, or R after adding i when insert
-func gvndup(i: Instr, insert: bool) -> Ref:
-    n := u32(fn.gvntbl.len)
+# what an instruction like i already in the table gives, or EMPTY after adding i when insert
+func same_value(i: Instr, insert: bool) -> Ref:
+    n := u32(fn.values.len)
     h := u32(i.op) + 17 * u32(i.cls)
     h = h + 17 * ((i.arg[0] >> 29) + 17 * (i.arg[0] and 0x1fff_ffff))
     h = h + 17 * ((i.arg[1] >> 29) + 17 * (i.arg[1] and 0x1fff_ffff))
     idx := i64(h % n)
-    while fn.gvntbl[idx].op != Onone:
-        seen := fn.gvntbl[idx]
+    while fn.values[idx].op != Onone:
+        seen := fn.values[idx]
         if i.op == seen.op and i.cls == seen.cls and i.arg[0] == seen.arg[0] and i.arg[1] == seen.arg[1]:
             return seen.to
         idx = (idx + 1) % i64(n)
     if insert:
-        fn.gvntbl[idx] = i
+        fn.values[idx] = i
     return EMPTY
 
-func replaceuse(u: Usage, r1: Ref, r2: Ref):
+func replace_use(u: Usage, r1: Ref, r2: Ref):
     b := fn.order[u.block]
     switch u.type:
     case ByPhi:
@@ -1658,15 +1654,15 @@ func replaceuse(u: Usage, r1: Ref, r2: Ref):
     case:
         panic("unreachable")
 
-func replaceuses(r1: Ref, r2: Ref):
+func replace_uses(r1: Ref, r2: Ref):
     for k in 0..fn.temps[r1].used:
-        replaceuse(fn.temps[r1].uses[k], r1, r2)
+        replace_use(fn.temps[r1].uses[k], r1, r2)
     fn.temps[r1].used = 0
 
-func negcon(cls: i64, c: *Immediate) -> bool:
-    return not foldint(c, Osub, cls == Int64, Immediate{type = Numeric}, c.*)
+func negate_constant(cls: i64, c: *Immediate) -> bool:
+    return not fold_int(c, Osub, cls == Int64, Immediate{type = Numeric}, c.*)
 
-func cmpeqz(r: Ref, arg: *Ref, cls: *i64, eqval: *i64) -> bool:
+func compares_zero(r: Ref, arg: *Ref, cls: *i64, eqval: *i64) -> bool:
     if ref_kind(r) != RefTemp:
         return false
     d := fn.temps[r].def
@@ -1681,7 +1677,7 @@ func cmpeqz(r: Ref, arg: *Ref, cls: *i64, eqval: *i64) -> bool:
     return false
 
 # b is reached from bif only through bbr1
-func branchdom(bif: i64, bbr1: i64, bbr2: i64, b: i64) -> bool:
+func only_through(bif: i64, bbr1: i64, bbr2: i64, b: i64) -> bool:
     if b == bif or not dominates(bbr1, b):
         return false
     fn.blocks[bif].visit = 1
@@ -1690,36 +1686,36 @@ func branchdom(bif: i64, bbr1: i64, bbr2: i64, b: i64) -> bool:
     fn.blocks[bif].visit = 0
     return not reached
 
-func domzero(d: i64, b: i64, z: *i64) -> bool:
-    if branchdom(d, fn.blocks[d].yes, fn.blocks[d].no, b):
+func zero_from(d: i64, b: i64, z: *i64) -> bool:
+    if only_through(d, fn.blocks[d].yes, fn.blocks[d].no, b):
         z.* = 0
         return true
-    if branchdom(d, fn.blocks[d].no, fn.blocks[d].yes, b):
+    if only_through(d, fn.blocks[d].no, fn.blocks[d].yes, b):
         z.* = 1
         return true
     return false
 
-# infer 0/non-0 value from dominating jnz
-func zeroval(b: i64, r: Ref, cls: i64, z: *i64) -> bool:
-    # gvn keeps the first definition in rpo, a jnz before it cannot test r
+# whether a branch that dominates b decides if r is zero, which z says
+func known_zero(b: i64, r: Ref, cls: i64, z: *i64) -> bool:
+    # value numbering keeps the first definition in order, a branch before it cannot test r
     bid: u32 = 0
     if ref_kind(r) == RefTemp:
         bid = fn.temps[r].block
     d := fn.blocks[b].dominator
     while d != 0 and fn.blocks[d].id >= i64(bid):
         if fn.blocks[d].exit.type == Jbranch:
-            if r == fn.blocks[d].exit.arg and cls == Int32 and domzero(d, b, z):
+            if r == fn.blocks[d].exit.arg and cls == Int32 and zero_from(d, b, z):
                 return true
             arg: Ref = EMPTY
             cls1 := 0
             eqval := 0
-            if cmpeqz(fn.blocks[d].exit.arg, ptr(arg), ptr(cls1), ptr(eqval)) and r == arg and cls == cls1 and domzero(d, b, z):
+            if compares_zero(fn.blocks[d].exit.arg, ptr(arg), ptr(cls1), ptr(eqval)) and r == arg and cls == cls1 and zero_from(d, b, z):
                 z.* = z.* xor eqval
                 return true
         d = fn.blocks[d].dominator
     return false
 
-func propjnz0(bif: i64, s0: i64, snon0: i64, r: Ref, cls: i64):
+func zero_after_branch(bif: i64, s0: i64, snon0: i64, r: Ref, cls: i64):
     if fn.blocks[s0].preds.len != 1 or ref_kind(r) != RefTemp:
         return
     for n in 0..fn.temps[r].used:
@@ -1737,17 +1733,17 @@ func propjnz0(bif: i64, s0: i64, snon0: i64, r: Ref, cls: i64):
                 k = i64(fn.phis[u.at].cls)
         case ByExit:
             k = Int32
-        # an l temp can be compared as a w, the use must not read its high bits
-        if (k == Unknown or k == cls) and branchdom(bif, s0, snon0, fn.order[u.block]):
-            replaceuse(u, r, ZERO)
+        # an i64 temp can be compared as an i32, the use must not read its high bits
+        if (k == Unknown or k == cls) and only_through(bif, s0, snon0, fn.order[u.block]):
+            replace_use(u, r, ZERO)
 
-# global value numbering; gcm fixes the ssa it breaks
-func gvn():
-    fn.con01[0] = intern(0)
-    fn.con01[1] = intern(1)
-    unvisitphis() # copy elimination marks the phis it visits
+# move_code fixes the ssa it breaks
+func number_values():
+    fn.zero_one[0] = intern(0)
+    fn.zero_one[1] = intern(1)
+    unvisit_phis() # copy elimination marks the phis it visits
     fill_loops()
-    # in a function with loops, a parameter only read in its low bytes gets an extub or extuh at the start, which makes
+    # in a function with loops, a parameter only read in its low bytes gets an extu8 or extu16 at the start, which makes
     # further extensions redundant and keeps them out of the loops
     loop := false
     b := fn.start
@@ -1763,9 +1759,9 @@ func gvn():
         for k in 0..npar: # the uses still point at the old places
             e := Instr{op = Onop}
             i := ins[k]
-            if i.cls == Int32 and usewidthle(i.to, 16):
+            if i.cls == Int32 and uses_within(i.to, 16):
                 e.op = Oextu16
-                if usewidthle(i.to, 8):
+                if uses_within(i.to, 8):
                     e.op = Oextu8
                 r := new_temp(i64(i.cls))
                 e.cls = i.cls
@@ -1787,12 +1783,12 @@ func gvn():
         fn.blocks[b].visit = 0
         nins += fn.blocks[b].ins.len
         b = fn.blocks[b].next
-    fn.gvntbl.len = 0
+    fn.values.len = 0
     for k in 0..nins + nins / 2:
-        append(fn.gvntbl, Instr{})
+        append(fn.values, Instr{})
     for n in 0..fn.ordered:
         b = fn.order[n]
-        # a phi that is a copy: of its arguments when they are one, of a phi before it, or of the jnz that chooses it
+        # a phi that is a copy: of its arguments when they are one, of a phi before it, or of the branch that chooses it
         prev := 0
         p := fn.blocks[b].phi
         while p != 0:
@@ -1817,20 +1813,20 @@ func gvn():
                         r = fn.phis[p1].to
                     p1 = fn.phis[p1].next
                 d := fn.blocks[b].dominator
-                if r == EMPTY and ph.arg.len == 2 and fn.blocks[d].exit.type == Jbranch and isw1(fn.blocks[d].exit.arg):
+                if r == EMPTY and ph.arg.len == 2 and fn.blocks[d].exit.type == Jbranch and is_bit(fn.blocks[d].exit.arg):
                     s: array[i64, 2]
                     for j in 0..2:
                         for c in 0..2:
-                            if ph.arg[j] == fn.con01[c]:
+                            if ph.arg[j] == fn.zero_one[c]:
                                 s[c] = ph.blocks[j]
-                    # the jump type checks, the inference is wrong when s1 ends with a jnz on b or s2
+                    # the exit types check, the inference is wrong when s1 ends with a branch on b or s2
                     s1 := fn.blocks[d].yes
                     s2 := fn.blocks[d].no
                     if s1 == s[1] and s2 == s[0] and fn.blocks[s1].exit.type == Jjump and fn.blocks[s2].exit.type == Jjump:
                         r = fn.blocks[d].exit.arg
             next := ph.next
             if r != EMPTY:
-                replaceuses(ph.to, r)
+                replace_uses(ph.to, r)
                 fn.phis[p].to = EMPTY
                 if prev == 0:
                     fn.blocks[b].phi = next
@@ -1841,7 +1837,7 @@ func gvn():
             p = next
         for k in 0..fn.blocks[b].ins.len:
             x := at(b, k)
-            # the constants of s and w uses in 32 bits, and the arguments of a commutative op in order, a temp first
+            # the constants of f32 and i32 uses in 32 bits, and the arguments of a commutative op in order, a temp first
             for m in 0..2:
                 v := 0
                 a := fn.blocks[b].ins[k]
@@ -1866,9 +1862,9 @@ func gvn():
                 if op == (Oadd if i2.op == Osub else i64(i2.op)) and ref_kind(i2.arg[1]) == RefConstant:
                     c2 := fn.constants[ref_value(i2.arg[1])]
                     c: Immediate
-                    if not (i1.op == Osub and negcon(i1.cls, ptr(c1))) and not (i2.op == Osub and negcon(i2.cls, ptr(c2))) and foldint(ptr(c), op, i1.cls == Int64, c1, c2):
+                    if not (i1.op == Osub and negate_constant(i1.cls, ptr(c1))) and not (i2.op == Osub and negate_constant(i2.cls, ptr(c2))) and fold_int(ptr(c), op, i1.cls == Int64, c1, c2):
                         if op == Oadd and c.type == Numeric and (i1.cls == Int64 and c.bits < 0 or i1.cls == Int32 and i32(c.bits and 0xffff_ffff) < 0):
-                            _ = negcon(i1.cls, ptr(c))
+                            _ = negate_constant(i1.cls, ptr(c))
                             op = Osub
                         a := intern(c)
                         i = ptr(fn.blocks[b].ins[k])
@@ -1879,32 +1875,32 @@ func gvn():
             # what it computes: a copy of an argument, a constant, or the result of an instruction before it
             i1 = fn.blocks[b].ins[k]
             o := OPERATIONS[i1.op]
-            e := ext(i1)
+            e := extension(i1)
             r: Ref = EMPTY
             z := 0
             v := 0
             if i1.op == Ocopy:
                 r = i1.arg[0]
-            elif o.has_identity and bank(i1.cls) == 0 and i1.arg[1] == fn.con01[i64(o.identity)] and (not o.int_equality or isw1(i1.arg[0])): # not floats, NaN
+            elif o.has_identity and bank(i1.cls) == 0 and i1.arg[1] == fn.zero_one[i64(o.identity)] and (not o.int_equality or is_bit(i1.arg[0])): # not floats, NaN
                 r = i1.arg[0]
             elif o.idempotent and i1.arg[0] == i1.arg[1]:
                 r = i1.arg[0]
             elif (o.int_equality or o.int_order) and i1.arg[0] == i1.arg[1]:
-                r = fn.con01[i64(o.equal_result)]
-            elif o.int_equality and i1.arg[1] == ZERO and zeroval(b, i1.arg[0], arg_class(i1, 0), ptr(z)):
-                r = fn.con01[i64(o.equal_result) xor z xor 1]
-            elif i1.op == Oand and bits_of(i1.arg[1], ptr(v)) and v > 0 and ((v + 1) and v) == 0 and defwidthle(i1.arg[0], bitwidth(u64(v))):
+                r = fn.zero_one[i64(o.equal_result)]
+            elif o.int_equality and i1.arg[1] == ZERO and known_zero(b, i1.arg[0], arg_class(i1, 0), ptr(z)):
+                r = fn.zero_one[i64(o.equal_result) xor z xor 1]
+            elif i1.op == Oand and bits_of(i1.arg[1], ptr(v)) and v > 0 and ((v + 1) and v) == 0 and defined_within(i1.arg[0], bit_width(u64(v))):
                 r = i1.arg[0] # a redundant mask
             elif i1.cls == Int32 and (i1.op == Oexti32 or i1.op == Oextu32):
                 r = i1.arg[0]
-            elif e is Ext and ref_kind(i1.arg[0]) == RefTemp:
+            elif e is Extension and ref_kind(i1.arg[0]) == RefTemp:
                 t := fn.temps[i1.arg[0]]
                 if wide(i1.cls) <= wide(t.cls): # a narrower temp breaks typing
                     w := FromI8 + i64(i1.op) - Oexti8
                     # the extensions that are copies for each width of the argument
                     extcpy := [0, 1 << FromI8 or 1 << FromI16 or 1 << FromI32, 1 << FromU8 or 1 << FromU16 or 1 << FromU32, 1 << FromI16 or 1 << FromI32, 1 << FromU16 or 1 << FromU32, 1 << FromI32, 1 << FromU32]
                     # the extensions of parameters in the start block stay, they make the others redundant
-                    if (1 << w and extcpy[t.width]) != 0 or (t.def == 0 or not is_param(instr_at(t.def).op)) and usewidthle(i1.to, e.usew) or defwidthle(i1.arg[0], e.nopw):
+                    if (1 << w and extcpy[t.width]) != 0 or (t.def == 0 or not is_param(instr_at(t.def).op)) and uses_within(i1.to, e.use_width) or defined_within(i1.arg[0], e.noop_width):
                         r = i1.arg[0]
             if r == EMPTY and ref_kind(i1.to) == RefTemp and o.folds and ref_kind(i1.arg[0]) == RefConstant:
                 rr := i1.arg[1]
@@ -1916,7 +1912,7 @@ func gvn():
                     c: Immediate
                     folded := true
                     if i1.cls == Int32 or i1.cls == Int64:
-                        folded = foldint(ptr(c), i64(i1.op), i1.cls == Int64, cl, cr)
+                        folded = fold_int(ptr(c), i64(i1.op), i1.cls == Int64, cl, cr)
                     elif cl.type != Numeric or cr.type != Numeric:
                         panic("invalid address operand for '" + o.name + "'")
                     elif i1.cls == Float64:
@@ -1984,30 +1980,30 @@ func gvn():
                             c.bits = c.bits and 0xffff_ffff
                         r = intern(c)
             if r == EMPTY:
-                r = gvndup(i1, true)
+                r = same_value(i1, true)
             if r != EMPTY:
-                replaceuses(i1.to, r)
+                replace_uses(i1.to, r)
                 fn.blocks[b].ins[k] = Instr{op = Onop}
-        # a jnz gives its argument the value 0 on the way of 0, and becomes a jmp when the way is known
+        # a branch gives its argument the value 0 on the way of 0, and becomes a jump when the way is known
         if fn.blocks[b].exit.type == Jbranch:
-            propjnz0(b, fn.blocks[b].no, fn.blocks[b].yes, fn.blocks[b].exit.arg, Int32)
+            zero_after_branch(b, fn.blocks[b].no, fn.blocks[b].yes, fn.blocks[b].exit.arg, Int32)
             arg: Ref = EMPTY
             cls := 0
             eqval := 0
-            if cmpeqz(fn.blocks[b].exit.arg, ptr(arg), ptr(cls), ptr(eqval)): # what an eq or ne of 0 compares is 0 too
+            if compares_zero(fn.blocks[b].exit.arg, ptr(arg), ptr(cls), ptr(eqval)): # what an eq or ne of 0 compares is 0 too
                 ps := [fn.blocks[b].yes, fn.blocks[b].no]
-                propjnz0(b, ps[eqval xor 1], ps[eqval], arg, cls)
+                zero_after_branch(b, ps[eqval xor 1], ps[eqval], arg, cls)
             v := 1
             z := 0
             j := ptr(fn.blocks[b])
-            if j.yes == j.no or bits_of(j.exit.arg, ptr(v)) or zeroval(b, j.exit.arg, Int32, ptr(z)):
+            if j.yes == j.no or bits_of(j.exit.arg, ptr(v)) or known_zero(b, j.exit.arg, Int32, ptr(z)):
                 j = ptr(fn.blocks[b])
                 if v == 0 or z != 0:
                     j.yes = j.no
                 j.no = 0 # the live instructions of dead blocks go to the start block below
                 j.exit.type = Jjump
                 j.exit.arg = EMPTY
-        # a table at a known index becomes a jmp, past its end to its last entry as br_table does
+        # a table at a known index becomes a jump, past its end to its last entry as br_table does
         entry := 0
         if fn.blocks[b].exit.type == Jtable and bits_of(fn.blocks[b].exit.arg, ptr(entry)):
             j := ptr(fn.blocks[b])
@@ -2023,66 +2019,64 @@ func gvn():
         if fn.blocks[d].id == -1:
             for k in 0..fn.blocks[d].ins.len:
                 i := fn.blocks[d].ins[k]
-                if not OPERATIONS[i.op].pinned and gvndup(i, false) == i.to:
+                if not OPERATIONS[i.op].pinned and same_value(i, false) == i.to:
                     add_instr(ptr(fn.blocks[fn.start].ins), i)
     free(rpo)
 
-NOBID = 0xffff_ffff
+NO_BLOCK = 0xffff_ffff
 
-func isdivwl(i: Instr) -> bool:
+func is_int_division(i: Instr) -> bool:
     return (i.op == Odiv or i.op == Orem or i.op == Oudiv or i.op == Ourem) and bank(i.cls) == 0
 
 func pinned(i: Instr) -> bool:
-    return OPERATIONS[i.op].pinned or isdivwl(i)
+    return OPERATIONS[i.op].pinned or is_int_division(i)
 
-# pinned ins that can be eliminated if unused
-func canelim(i: Instr) -> bool:
-    return is_load(i.op) or is_alloc(i.op) or isdivwl(i)
+func removable(i: Instr) -> bool:
+    return is_load(i.op) or is_alloc(i.op) or is_int_division(i)
 
-func schedearly(r: Ref) -> u32:
+func schedule_early(r: Ref) -> u32:
     if ref_kind(r) != RefTemp:
         return 0
     t := ptr(fn.temps[r])
-    if t.gcmbid != NOBID:
-        return t.gcmbid
+    if t.scheduled != NO_BLOCK:
+        return t.scheduled
     if t.def == 0:
-        t.gcmbid = t.block # phis do not move
+        t.scheduled = t.block # phis do not move
         return t.block
-    t.gcmbid = 0 # visiting
+    t.scheduled = 0 # visiting
     i := instr_at(t.def).*
-    early := schedearly(i.arg[0])
-    b1 := schedearly(i.arg[1])
+    early := schedule_early(i.arg[0])
+    b1 := schedule_early(i.arg[1])
     if fn.blocks[fn.order[early]].depth < fn.blocks[fn.order[b1]].depth:
         early = b1
     if pinned(i):
         early = t.block
-    t.gcmbid = early
+    t.scheduled = early
     return early
 
-# least common ancestor in dom tree
-func lcabid(bid1: u32, bid2: u32) -> u32:
-    if bid1 == NOBID:
+func common_dominator(bid1: u32, bid2: u32) -> u32:
+    if bid1 == NO_BLOCK:
         return bid2
-    if bid2 == NOBID:
+    if bid2 == NO_BLOCK:
         return bid1
     b := fn.order[bid1]
     while not dominates(b, fn.order[bid2]):
         b = fn.blocks[b].dominator
     return u32(fn.blocks[b].id)
 
-# the lca bid of the uses of r
-func schedlate(r: Ref) -> u32:
+# the block of the uses of r that dominates them all
+func schedule_late(r: Ref) -> u32:
     if ref_kind(r) != RefTemp:
-        return NOBID
+        return NO_BLOCK
     t := ptr(fn.temps[r])
     if t.visit != 0:
-        return t.gcmbid
+        return t.scheduled
     t.visit = 1
-    early := t.gcmbid
-    if early == NOBID:
-        return NOBID # not used
-    t.gcmbid = t.block # now the late bid
-    late: u32 = NOBID
+    early := t.scheduled
+    if early == NO_BLOCK:
+        return NO_BLOCK # not used
+    t.scheduled = t.block # now the late block
+    late: u32 = NO_BLOCK
     for n in 0..t.used:
         u := t.uses[n]
         b := fn.order[u.block]
@@ -2090,33 +2084,33 @@ func schedlate(r: Ref) -> u32:
         case ByPhi:
             for a in 0..fn.phis[u.at].arg.len: # none when the phi is unused
                 if fn.phis[u.at].arg[a] == r:
-                    late = lcabid(late, u32(fn.blocks[fn.phis[u.at].blocks[a]].id))
+                    late = common_dominator(late, u32(fn.blocks[fn.phis[u.at].blocks[a]].id))
         case ByInstr:
-            use := schedlate(instr_at(u.at).to)
+            use := schedule_late(instr_at(u.at).to)
             i := instr_at(u.at).*
-            if pinned(i) and (use != NOBID or not canelim(i)):
+            if pinned(i) and (use != NO_BLOCK or not removable(i)):
                 use = u32(fn.blocks[b].id)
-            late = lcabid(late, use)
+            late = common_dominator(late, use)
         case ByExit:
             if fn.blocks[b].exit.arg != EMPTY:
-                late = lcabid(late, u32(fn.blocks[b].id))
-    # late is NOBID when every use is pinned and eliminable, the early bid stays for a pinned definition
+                late = common_dominator(late, u32(fn.blocks[b].id))
+    # late is NO_BLOCK when every use is pinned and removable, the early block stays for a pinned definition
     if t.def != 0 and not pinned(instr_at(t.def).*):
-        t.gcmbid = late
-        if late != NOBID:
+        t.scheduled = late
+        if late != NO_BLOCK:
             best := fn.order[late]
             assert dominates(fn.order[early], best), "gcm moves an instruction of " + fn.name + " above its arguments"
-            while fn.blocks[best].odom != 0 and dominates(fn.order[early], fn.blocks[best].odom):
-                best = fn.blocks[best].odom
-            t.gcmbid = u32(fn.blocks[best].id)
-    return t.gcmbid
+            while fn.blocks[best].outer_dominator != 0 and dominates(fn.order[early], fn.blocks[best].outer_dominator):
+                best = fn.blocks[best].outer_dominator
+            t.scheduled = u32(fn.blocks[best].id)
+    return t.scheduled
 
-func addgcmins(i: Instr):
-    b := fn.order[fn.temps[i.to].gcmbid]
+func add_scheduled(i: Instr):
+    b := fn.order[fn.temps[i.to].scheduled]
     add_instr(ptr(fn.blocks[b].ins), i)
 
 # the instructions that go with the one at k of b, after those that define their arguments; where the next ones start
-func schedins(b: i64, k: i64, out: *&list[Instr]) -> i64:
+func schedule_instr(b: i64, k: i64, out: *&list[Instr]) -> i64:
     ins := fn.blocks[b].ins
     op := ins[k].op
     i0 := k # the instructions that go together
@@ -2150,13 +2144,13 @@ func schedins(b: i64, k: i64, out: *&list[Instr]) -> i64:
             t := fn.temps[a]
             if i64(t.block) != fn.blocks[b].id or t.def == 0:
                 continue
-            _ = schedins(b, t.def and 0xffff_ffff, out)
+            _ = schedule_instr(b, t.def and 0xffff_ffff, out)
     for j in i0..i1:
         add_instr(out, ins[j])
         ins[j] = Instr{op = Onop}
     return i1
 
-func sinkref(b: i64, r: Ref) -> Ref:
+func sink(b: i64, r: Ref) -> Ref:
     if ref_kind(r) != RefTemp:
         return r
     t := fn.temps[r]
@@ -2172,14 +2166,14 @@ func sinkref(b: i64, r: Ref) -> Ref:
         return r
     r1 := new_temp(t.cls)
     i.to = r1
-    fn.temps[r1].gcmbid = u32(fn.blocks[b].id)
+    fn.temps[r1].scheduled = u32(fn.blocks[b].id)
     emit(i)
-    i.arg[0] = sinkref(b, i.arg[0])
-    i.arg[1] = sinkref(b, i.arg[1])
+    i.arg[0] = sink(b, i.arg[0])
+    i.arg[1] = sink(b, i.arg[1])
     return r1
 
-# global code motion: an instruction goes to the block that runs least among those it can be in
-func gcm():
+# an instruction goes to the block that runs least among those it can be in
+func move_code():
     b := fn.start
     while b != 0:
         fn.blocks[b].depth = -1
@@ -2206,32 +2200,32 @@ func gcm():
         b = fn.order[bid]
         d := fn.blocks[b].dominator
         while d != 0 and fn.blocks[d].loop >= fn.blocks[b].loop:
-            d = fn.blocks[d].odom
-        fn.blocks[b].odom = d
+            d = fn.blocks[d].outer_dominator
+        fn.blocks[b].outer_dominator = d
     for t in 0..fn.temp_count:
         fn.temps[t].visit = 0
-        fn.temps[t].gcmbid = NOBID
+        fn.temps[t].scheduled = NO_BLOCK
     for bid in 0..fn.ordered:
         b = fn.order[bid]
         p := fn.blocks[b].phi
         while p != 0:
             for n in 0..fn.phis[p].arg.len:
-                _ = schedearly(fn.phis[p].arg[n])
+                _ = schedule_early(fn.phis[p].arg[n])
             p = fn.phis[p].next
         for i in fn.blocks[b].ins:
             if pinned(i):
-                _ = schedearly(i.arg[0])
-                _ = schedearly(i.arg[1])
+                _ = schedule_early(i.arg[0])
+                _ = schedule_early(i.arg[1])
                 if i.op == Ocall and i.to != EMPTY and fn.temps[i.to].pad != EMPTY:
-                    _ = schedearly(fn.temps[i.to].pad)
-        _ = schedearly(fn.blocks[b].exit.arg)
+                    _ = schedule_early(fn.temps[i.to].pad)
+        _ = schedule_early(fn.blocks[b].exit.arg)
     for bid in 0..fn.ordered:
         b = fn.order[bid]
         prev := 0
         p := fn.blocks[b].phi
         while p != 0:
             next := fn.phis[p].next
-            if schedlate(fn.phis[p].to) == NOBID:
+            if schedule_late(fn.phis[p].to) == NO_BLOCK:
                 fn.phis[p].arg.len = 0 # unused
                 fn.phis[p].blocks.len = 0
                 if prev == 0:
@@ -2243,22 +2237,22 @@ func gcm():
             p = next
         for i in fn.blocks[b].ins:
             if pinned(i):
-                _ = schedlate(i.to)
+                _ = schedule_late(i.to)
     # the live instructions go to the end of their new block, the schedule below puts their arguments first
     ins: &list[Instr] = heap([])
     defer free(ins)
     for t in 0..fn.temp_count:
         tmp := ptr(fn.temps[t])
-        if tmp.def == 0 or tmp.block == tmp.gcmbid:
+        if tmp.def == 0 or tmp.block == tmp.scheduled:
             continue
         i := instr_at(tmp.def)
-        if pinned(i.*) and not canelim(i.*):
+        if pinned(i.*) and not removable(i.*):
             continue
-        if tmp.gcmbid != NOBID:
+        if tmp.scheduled != NO_BLOCK:
             add_instr(ins, i.*)
         i.* = Instr{op = Onop}
     for i in ins:
-        addgcmins(i)
+        add_scheduled(i)
     fill_uses()
     # trivial instructions go to their uses in other blocks to shorten the live ranges
     fn.out.len = 0
@@ -2267,16 +2261,16 @@ func gcm():
         for k in 0..fn.blocks[b].ins.len:
             i := fn.blocks[b].ins[k]
             if is_load(i.op):
-                r := sinkref(b, i.arg[0])
+                r := sink(b, i.arg[0])
                 fn.blocks[b].ins[k].arg[0] = r
             elif is_store(i.op):
-                r := sinkref(b, i.arg[1])
+                r := sink(b, i.arg[1])
                 fn.blocks[b].ins[k].arg[1] = r
         if fn.blocks[b].exit.type != Jtable: # the check of its bounds reads the index of a table too
-            fn.blocks[b].exit.arg = sinkref(b, fn.blocks[b].exit.arg)
+            fn.blocks[b].exit.arg = sink(b, fn.blocks[b].exit.arg)
         b = fn.blocks[b].next
     for k in reverse 0..fn.out.len:
-        addgcmins(fn.out[k])
+        add_scheduled(fn.out[k])
     fn.out.len = 0
     fill_uses()
     b = fn.start
@@ -2284,14 +2278,14 @@ func gcm():
         ins.len = 0
         k := 0
         while k < fn.blocks[b].ins.len:
-            k = schedins(b, k, ins)
+            k = schedule_instr(b, k, ins)
         fn.blocks[b].ins = ins[:]
         b = fn.blocks[b].next
 
-MaxIns = 2
-MaxPhis = 2
+IF_INSTRS = 2
+IF_PHIS = 2
 
-func okbranch(b: i64) -> bool:
+func selectable(b: i64) -> bool:
     n := 0
     for i in fn.blocks[b].ins:
         if i.op != Odebugline:
@@ -2299,10 +2293,10 @@ func okbranch(b: i64) -> bool:
                 return false
             if i.op != Onop:
                 n += 1
-    return n <= MaxIns
+    return n <= IF_INSTRS
 
-# an if-then[-else] that only computes values becomes sel instructions
-func ifconvert():
+# an if-then[-else] that only computes values becomes select instructions
+func convert_ifs():
     ins: &list[Instr] = heap([])
     defer free(ins)
     next := fn.start
@@ -2316,13 +2310,13 @@ func ifconvert():
         if fn.blocks[s1].id > fn.blocks[s2].id:
             s1 = fn.blocks[ifb].no
             s2 = fn.blocks[ifb].yes
-        if s1 == s2 or fn.blocks[s1].exit.type != Jjump or fn.blocks[s1].preds.len != 1 or not okbranch(s1):
+        if s1 == s2 or fn.blocks[s1].exit.type != Jjump or fn.blocks[s1].preds.len != 1 or not selectable(s1):
             continue
         thenb := s1
         elseb := ifb
         joinb := s2
         if fn.blocks[s1].yes != s2:
-            if fn.blocks[s2].exit.type != Jjump or fn.blocks[s2].preds.len != 1 or fn.blocks[s2].yes != fn.blocks[s1].yes or not okbranch(s2):
+            if fn.blocks[s2].exit.type != Jjump or fn.blocks[s2].preds.len != 1 or fn.blocks[s2].yes != fn.blocks[s1].yes or not selectable(s2):
                 continue
             elseb = s2
             joinb = fn.blocks[s1].yes
@@ -2333,7 +2327,7 @@ func ifconvert():
         while p != 0 and bank(fn.phis[p].cls) == 0:
             n += 1
             p = fn.phis[p].next
-        if p != 0 or n > MaxPhis:
+        if p != 0 or n > IF_PHIS:
             continue
         if s1 != fn.blocks[ifb].yes:
             thenb = elseb
@@ -2361,16 +2355,16 @@ func ifconvert():
         fn.blocks[joinb].preds[0] = ifb
         fn.blocks[joinb].phi = 0
 
-func ulog2(pow2: u64) -> i64:
+func log2(pow2: u64) -> i64:
     tab := [63, 0, 1, 41, 37, 2, 16, 42, 38, 29, 32, 3, 12, 17, 43, 55, 39, 35, 30, 53, 33, 21, 4, 23, 13, 9, 18, 6, 25, 44, 48, 56, 62, 40, 36, 15, 28, 31, 11, 54, 34, 52, 20, 22, 8, 5, 24, 47, 61, 14, 27, 10, 51, 19, 7, 46, 60, 26, 50, 45, 59, 49, 58, 57]
     return tab[(pow2 * 0x5b3_1ab9_2887_7a7e) >> 58]
 
-func ispow2(v: u64) -> bool:
+func is_power_of_2(v: u64) -> bool:
     return v != 0 and (v and v - 1) == 0
 
 # a division by a power of 2 becomes shifts; with flatten a blit becomes loads and stores, and a jump table loads the
 # address that its entry gives, which wasm leaves to memory.copy and br_table
-func simpl(flatten: bool):
+func simplify(flatten: bool):
     b := fn.start
     while b != 0:
         if flatten and fn.blocks[b].exit.type == Jtable: # the address of the table plus the distance from it that the entry at the index holds
@@ -2430,12 +2424,12 @@ func simpl(flatten: bool):
                 if bank(i.cls) == 0 and ref_kind(r) == RefConstant:
                     c := fn.constants[ref_value(r)]
                     v := c.bits if wide(i.cls) != 0 else c.bits << 32 >> 32
-                    if c.type == Numeric and v > 0 and ispow2(u64(v)):
+                    if c.type == Numeric and v > 0 and is_power_of_2(u64(v)):
                         if not renewed:
                             renew(b, k)
                             renewed = true
                         # x/2^n and x%2^n round toward zero: a negative x is moved up by 2^n-1 before the shift
-                        n := ulog2(u64(v))
+                        n := log2(u64(v))
                         cls := i64(i.cls)
                         if n == 0:
                             emit(Ocopy, cls, i.to, i.arg[0] if i.op == Odiv else ZERO, EMPTY)
@@ -2460,8 +2454,8 @@ func simpl(flatten: bool):
                 r := i.arg[1]
                 if bank(i.cls) == 0 and ref_kind(r) == RefConstant:
                     c := fn.constants[ref_value(r)]
-                    if c.type == Numeric and ispow2(u64(c.bits)):
-                        n := ulog2(u64(c.bits))
+                    if c.type == Numeric and is_power_of_2(u64(c.bits)):
+                        n := log2(u64(c.bits))
                         if i.op == Ourem:
                             i.op = Oand
                             i.arg[1] = intern(i64((u64(1) << n) - 1))
@@ -2481,7 +2475,7 @@ func renew(b: i64, k: i64):
     for j in reverse k + 1..ins.len:
         append(fn.out, ins[j])
 
-func thrbase(r: Ref, off: *Ref) -> Ref:
+func thread_base(r: Ref, off: *Ref) -> Ref:
     off.* = EMPTY
     if ref_kind(r) != RefConstant:
         return EMPTY
@@ -2489,42 +2483,42 @@ func thrbase(r: Ref, off: *Ref) -> Ref:
     if c.type != Addressed or c.access != ThreadData:
         return EMPTY
     n := 0
-    while n < fn.thrsym.len and fn.thrsym[n] != i64(c.symbol):
+    while n < fn.thread_symbols.len and fn.thread_symbols[n] != i64(c.symbol):
         n += 1
-    if n == fn.thrsym.len:
-        append(fn.thrsym, i64(c.symbol))
-        append(fn.thrtmp, new_temp(Int64))
+    if n == fn.thread_symbols.len:
+        append(fn.thread_symbols, i64(c.symbol))
+        append(fn.thread_temps, new_temp(Int64))
     if c.bits != 0:
         off.* = intern(c.bits)
-    return fn.thrtmp[n]
+    return fn.thread_temps[n]
 
-func thrstart(r: Ref) -> Ref:
+func thread_address(r: Ref) -> Ref:
     off: Ref = EMPTY
-    b := thrbase(r, ptr(off))
+    b := thread_base(r, ptr(off))
     if b == EMPTY or off == EMPTY:
         return b
     t := new_temp(Int64)
-    append(fn.thrins, Instr{op = Oadd, cls = Int64, to = t, arg = [b, off]})
+    append(fn.thread_instrs, Instr{op = Oadd, cls = Int64, to = t, arg = [b, off]})
     return t
 
 # where reading the address of thread data costs a call (apple) or a lookup in a table (windows), it is read once per
 # function, after the parameters, into a temp
-func thronce():
+func hoist_thread_data():
     if not asm.machine.apple and not asm.machine.windows:
         return
-    fn.thrsym.len = 0
-    fn.thrtmp.len = 0
-    fn.thrins.len = 0
+    fn.thread_symbols.len = 0
+    fn.thread_temps.len = 0
+    fn.thread_instrs.len = 0
     b := fn.start
     while b != 0:
         p := fn.blocks[b].phi
         while p != 0:
             for n in 0..fn.phis[p].arg.len:
-                r := thrstart(fn.phis[p].arg[n])
+                r := thread_address(fn.phis[p].arg[n])
                 if r != EMPTY:
                     fn.phis[p].arg[n] = r
             p = fn.phis[p].next
-        r := thrstart(fn.blocks[b].exit.arg)
+        r := thread_address(fn.blocks[b].exit.arg)
         if r != EMPTY:
             fn.blocks[b].exit.arg = r
         fn.out.len = 0
@@ -2534,12 +2528,12 @@ func thronce():
             off: array[Ref, 2]
             for x in 0..2:
                 if is_arg(i.op) or i.op == Oselect or i.op == Oatomiccompareswap:
-                    # the arguments of a call, the sels and an acas stay together
-                    r = thrstart(i.arg[x])
+                    # the arguments of a call, the selects and a compare_swap stay together
+                    r = thread_address(i.arg[x])
                     if r != EMPTY:
                         i.arg[x] = r
                     continue
-                r = thrbase(i.arg[x], ptr(off[x]))
+                r = thread_base(i.arg[x], ptr(off[x]))
                 if r == EMPTY:
                     continue
                 i.arg[x] = r
@@ -2552,7 +2546,7 @@ func thronce():
                     emit(Oadd, Int64, i.arg[x], t[x], off[x])
         take_emitted(b)
         b = fn.blocks[b].next
-    if fn.thrsym.len == 0:
+    if fn.thread_symbols.len == 0:
         return
     b = fn.start
     ins := fn.blocks[b].ins
@@ -2562,11 +2556,11 @@ func thronce():
     fn.out.len = 0
     for k in reverse first..ins.len:
         emit(ins[k])
-    for n in reverse 0..fn.thrins.len:
-        emit(fn.thrins[n])
-    for n in reverse 0..fn.thrsym.len:
-        c := intern(Immediate{type = Addressed, access = ThreadData, symbol = i32(fn.thrsym[n])})
-        emit(Ocopy, Int64, fn.thrtmp[n], c, EMPTY)
+    for n in reverse 0..fn.thread_instrs.len:
+        emit(fn.thread_instrs[n])
+    for n in reverse 0..fn.thread_symbols.len:
+        c := intern(Immediate{type = Addressed, access = ThreadData, symbol = i32(fn.thread_symbols[n])})
+        emit(Ocopy, Int64, fn.thread_temps[n], c, EMPTY)
     for k in reverse 0..first:
         emit(fn.blocks[b].ins[k])
     take_emitted(b)

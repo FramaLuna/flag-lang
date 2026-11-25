@@ -85,15 +85,15 @@ func filllive():
                 include_all(ptr(p.live_out), v)
             changed = changed or count(ptr(p.live_out)) != size
             nlv: array[i64, 2]
-            p.live_out.t[0] = p.live_out.t[0] or m.always_live
+            p.live_out.words[0] = p.live_out.words[0] or m.always_live
             copy_set(ptr(p.live_in), ptr(p.live_out))
             t := next_in(ptr(p.live_in), 0)
             while t >= 0:
                 nlv[bank(fn.temps[t].cls)] += 1
                 t = next_in(ptr(p.live_in), t + 1)
             if ref_kind(p.exit.arg) == RefCall:
-                assert count(ptr(p.live_in)) == popcount(m.always_live) and p.live_in.t[0] == m.always_live, "a temp of " + fn.name + " is alive after its return"
-                p.live_in.t[0] = p.live_in.t[0] or m.return_regs(p.exit.arg, ptr(nlv))
+                assert count(ptr(p.live_in)) == popcount(m.always_live) and p.live_in.words[0] == m.always_live, "a temp of " + fn.name + " is alive after its return"
+                p.live_in.words[0] = p.live_in.words[0] or m.return_regs(p.exit.arg, ptr(nlv))
             else:
                 bset(p.exit.arg, b, ptr(nlv))
             p.nlive = nlv
@@ -101,14 +101,14 @@ func filllive():
                 i := p.ins[k]
                 if i.op == Ocall and ref_kind(i.arg[1]) == RefCall:
                     c: array[i64, 2]
-                    p.live_in.t[0] = p.live_in.t[0] and not m.return_regs(i.arg[1], ptr(c))
+                    p.live_in.words[0] = p.live_in.words[0] and not m.return_regs(i.arg[1], ptr(c))
                     for j in 0..2:
                         nlv[j] -= c[j]
                         # the callee uses the caller-save registers, they are live in the middle of the call
                         nlv[j] += m.caller_saved_count[j]
                         if nlv[j] > p.nlive[j]:
                             p.nlive[j] = nlv[j]
-                    p.live_in.t[0] = p.live_in.t[0] or m.arg_regs(i.arg[1], ptr(c))
+                    p.live_in.words[0] = p.live_in.words[0] or m.arg_regs(i.arg[1], ptr(c))
                     for j in 0..2:
                         nlv[j] -= m.caller_saved_count[j]
                         nlv[j] += c[j]
@@ -354,7 +354,7 @@ func spill():
                 hd = s
         if hd != 0: # back-edge
             clear(v)
-            fn.blocks[hd].gen.t[0] = fn.blocks[hd].gen.t[0] or m.always_live # don't spill registers
+            fn.blocks[hd].gen.words[0] = fn.blocks[hd].gen.words[0] or m.always_live # don't spill registers
             for k in 0..2:
                 nr := m.ints if k == 0 else m.floats
                 copy_set(u, ptr(fn.blocks[b].live_out))
@@ -386,7 +386,7 @@ func spill():
             copy_set(v, ptr(fn.blocks[b].live_out))
             if ref_kind(fn.blocks[b].exit.arg) == RefCall:
                 c: array[i64, 2]
-                v.t[0] = v.t[0] or m.return_regs(fn.blocks[b].exit.arg, ptr(c))
+                v.words[0] = v.words[0] or m.return_regs(fn.blocks[b].exit.arg, ptr(c))
         if ref_kind(fn.blocks[b].exit.arg) == RefTemp:
             t := i64(fn.blocks[b].exit.arg)
             assert bank(fn.temps[t].cls) == 0, "a jump of " + fn.name + " reads a float"
@@ -424,7 +424,7 @@ func spill():
                 r: u64 = 0
                 if k != 0 and ins[k - 1].op == Ocall:
                     c: array[i64, 2]
-                    v.t[0] = v.t[0] and not m.return_regs(ins[k - 1].arg[1], ptr(c))
+                    v.words[0] = v.words[0] and not m.return_regs(ins[k - 1].arg[1], ptr(c))
                     if m.half_saved: # the callee keeps only half of a v register
                         t = next_in(v, FIRST_TEMP)
                         while t >= 0:
@@ -435,10 +435,10 @@ func spill():
                     for x in m.caller_saved:
                         if x >= 0:
                             r = r or u64(1) << x
-                    v.t[0] = v.t[0] or m.arg_regs(ins[k - 1].arg[1], ptr(c))
+                    v.words[0] = v.words[0] or m.arg_regs(ins[k - 1].arg[1], ptr(c))
                 else:
                     limit2(v, 0, 0, null)
-                    r = v.t[0]
+                    r = v.words[0]
                 for x in reverse k..last + 1:
                     untouch(x)
                 sethints(v, r)
@@ -495,10 +495,10 @@ func spill():
                 if t >= FIRST_TEMP: # in case i.to was a dead temporary
                     exclude(v, t)
             emit(i)
-            r := v.t[0] # Tmp0 is NBit
+            r := v.words[0] # Tmp0 is NBit
             if r != 0:
                 sethints(v, r)
-        assert v.t[0] == (m.always_live or fn.reg if b == fn.start else m.always_live), "a register of " + fn.name + " is read before it is set"
+        assert v.words[0] == (m.always_live or fn.reg if b == fn.start else m.always_live), "a register of " + fn.name + " is read before it is set"
         p := fn.blocks[b].phi
         while p != 0:
             t = i64(fn.phis[p].to)
@@ -547,7 +547,7 @@ func rref(m: *RMap, t: i64) -> Ref:
 func radd(m: *RMap, t: i64, r: i64):
     mc := ptr(asm.machine)
     assert (t >= FIRST_TEMP or t == r) and (r >= mc.first_int and r < mc.first_int + mc.ints or r >= mc.first_float and r < mc.first_float + mc.floats), "a temp of " + fn.name + " takes what is not its register"
-    assert (m.b.t[0] and u64(1) << r) == 0, "a register of " + fn.name + " takes two temps"
+    assert (m.b.words[0] and u64(1) << r) == 0, "a register of " + fn.name + " takes two temps"
     include(ptr(m.b), t)
     include(ptr(m.b), r)
     m.t[m.n] = i32(t)
@@ -557,7 +557,7 @@ func radd(m: *RMap, t: i64, r: i64):
 
 func ralloctry(m: *RMap, t: i64, trying: bool) -> Ref:
     if t < FIRST_TEMP:
-        assert (m.b.t[0] and u64(1) << t) != 0, "a register of " + fn.name + " is read before it is set"
+        assert (m.b.words[0] and u64(1) << t) != 0, "a register of " + fn.name + " is read before it is set"
         return u32(t)
     if has(ptr(m.b), t):
         return u32(rfind(m, t))
@@ -567,7 +567,7 @@ func ralloctry(m: *RMap, t: i64, trying: bool) -> Ref:
     if r == -1 or has(ptr(m.b), r):
         if trying:
             return EMPTY
-        avoid := fn.temps[phi_class(t)].avoid or m.b.t[0]
+        avoid := fn.temps[phi_class(t)].avoid or m.b.words[0]
         r0 := asm.machine.first_int
         r1 := r0 + asm.machine.ints
         if bank(fn.temps[t].cls) != 0:

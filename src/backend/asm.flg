@@ -1,8 +1,8 @@
-SecText = 0
-SecData = 1
-SecBss = 2
+InText = 0
+InData = 1
+InBss = 2
 
-# the assembly of the program, each proc through the passes of QBE on the machine of the target
+# the assembly of the program, each proc through the passes of the backend on the machine of the target
 func assembly() -> &str:
     asm.machine = AMD64_SYSV
     if comp.machine == "arm64":
@@ -124,7 +124,7 @@ func assembly() -> &str:
                     out(",1,0\n")
                 continue
             if zero != -1:
-                emitlnk(name, false, d.thread, d.align, sec, secf, SecData)
+                emit_symbol(name, false, d.thread, d.align, sec, secf, InData)
                 if zero > 0:
                     out("\t.fill ")
                     asm.text += zero
@@ -178,7 +178,7 @@ func assembly() -> &str:
             case:
                 pass
         if zero != -1:
-            emitlnk(name, false, d.thread, d.align, sec, secf, SecBss)
+            emit_symbol(name, false, d.thread, d.align, sec, secf, InBss)
             out("\t.fill ")
             asm.text += zero
             out(",1,0\n")
@@ -230,9 +230,9 @@ func prepare():
         if comp.types[t].kind == Untagged:
             ty.is_union = true
             for f in first..k:
-                parsefields(ptr(ty), comp.c_fields[f:f + 1])
+                add_fields(ptr(ty), comp.c_fields[f:f + 1])
         else:
-            parsefields(ptr(ty), comp.c_fields[first:k])
+            add_fields(ptr(ty), comp.c_fields[first:k])
         k += 1
         asm.c_layout_of[t] = asm.layouts.len
         append(asm.layouts, ty)
@@ -255,8 +255,8 @@ func prepare():
 func in_quotes(path: &strview) -> &strview:
     return "\"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\""
 
-# the fields of a type of C, or of one member of a union of C, as QBE lays them out
-func parsefields(ty: *Layout, fields: &listview[CField]):
+# the fields of a type of C, or of one member of a union of C, as C lays them out
+func add_fields(ty: *Layout, fields: &listview[CField]):
     n := 0
     sz := 0
     al := ty.align
@@ -314,17 +314,17 @@ func parsefields(ty: *Layout, fields: &listview[CField]):
     ty.align = al
     ty.members += 1
 
-# the passes of QBE on the function in fn, and its assembly
+# the passes on the function in fn, and its assembly
 func compile():
     m := ptr(asm.machine)
-    m.abi0()
+    m.lower_narrow()
     optimize(m.selects)
-    thronce()
-    m.abi1()
-    simpl(true)
+    hoist_thread_data()
+    m.lower_calls()
+    simplify(true)
     order_blocks()
     fill_uses()
-    m.isel()
+    m.select()
     order_blocks()
     filllive()
     fill_loops()
@@ -341,9 +341,9 @@ func compile():
     m.emit_function()
     out("/* end function " + fn.name + " */\n\n")
 
-# the passes of QBE that take the function in fn to SSA and optimize it, on every target; with sel, an if that only
-# chooses values becomes sel instructions
-func optimize(sel: bool):
+# the passes that take the function in fn to SSA and optimize it, on every target; with selects, an if that only
+# chooses values becomes select instructions
+func optimize(selects: bool):
     order_blocks()
     fill_uses()
     if not comp.debug: # with -debug every stack slot stays whole
@@ -354,33 +354,33 @@ func optimize(sel: bool):
     ssa()
     fill_uses()
     check_ssa()
-    fillalias()
-    loadopt()
+    fill_aliases()
+    forward_loads()
     fill_uses()
-    callpads()
+    pad_calls()
     fill_uses()
-    fillalias()
+    fill_aliases()
     coalesce()
     fill_uses()
     fill_dominators()
     check_ssa()
-    gvn()
+    number_values()
     order_blocks()
     simplify_flow()
     fill_uses()
     fill_dominators()
-    gcm()
+    move_code()
     fill_uses()
     check_ssa()
-    if sel:
-        ifconvert()
+    if selects:
+        convert_ifs()
         order_blocks()
         fill_uses()
         fill_dominators()
         check_ssa()
 
 # the instructions of b, lowered from its end
-func lowerblk(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
+func lower_block(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
     k := fn.blocks[b].ins.len
     while k > 0:
         k -= 1
@@ -419,7 +419,7 @@ type Class: # how a value passes to arm64 or risc-v
     off: array[i64, 4] # where each register goes in the aggregate
 
 # the first n registers of c come in new temps, given in tmp, which are stored to the aggregate at base
-func sttmps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
+func store_temps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
     for j in 0..n:
         t := new_temp(c.cls[j])
         r := new_temp(Int64)
@@ -428,19 +428,19 @@ func sttmps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
         append(tmp, t)
 
 # the registers of c are loaded from the aggregate at base
-func ldregs(c: *Class, base: Ref):
+func load_regs(c: *Class, base: Ref):
     for j in 0..c.nreg:
         r := new_temp(Int64)
         emit(Oload, c.cls[j], u32(c.reg[j]), r, EMPTY)
         emit(Oadd, Int64, r, base, intern(c.off[j]))
 
 # an alloc of sz bytes with the alignment of the type t, that the start block gets
-func stkblob(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
+func alloc_slot(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
     al := max(asm.layouts[t].align - 2, 0)
     append(ral, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
 
 # the allocs of the start block of a constant size become slots, the widest first, so each stays aligned
-func fastallocs():
+func slot_allocs():
     b := fn.start
     n := 16
     for al in reverse Oalloc4..=Oalloc16:
@@ -465,11 +465,11 @@ func fastallocs():
 func out(s: &strview):
     asm.text += s
 
-func regbit(r: i64) -> u64:
+func reg_bit(r: i64) -> u64:
     return u64(1) << r
 
-AnyInt = -1 # matches Kw and Kl
-AnyClass = -2 # matches all classes
+AnyInt = -1
+AnyClass = -2
 
 type Form: # how an emitter writes an instruction of a class
     op: i32
@@ -481,9 +481,9 @@ func format(table: &listview[Form], i: Instr) -> &strview:
     for f in table:
         if f.op == i.op and (f.cls == i.cls or f.cls == AnyInt and bank(i.cls) == 0 or f.cls == AnyClass):
             return f.fmt
-    panic("no match for " + OPERATIONS[i.op].name + "(" + "wlsdv"[i.cls:i.cls + 1] + ")")
+    panic("no form for " + OPERATIONS[i.op].name + " of class " + i.cls)
 
-func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
+func emit_symbol(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
     m := ptr(asm.machine)
     pfx := m.symbol_prefix
     if items(name)[0] == '"':
@@ -491,7 +491,7 @@ func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strvi
     sfx: &strview = ""
     if m.apple and thread:
         sec = "__DATA"
-        secf = "__thread_bss,thread_local_zerofill" if kind == SecBss else "__thread_data,thread_local_regular"
+        secf = "__thread_bss,thread_local_zerofill" if kind == InBss else "__thread_data,thread_local_regular"
         sfx = "$tlv$init"
         out(".section __DATA,__thread_vars,thread_local_variables\n" + pfx + name + ":\n\t.quad __tlv_bootstrap\n\t.quad 0\n\t.quad " + pfx + name + sfx + "\n\n")
     if m.windows and thread:
@@ -517,8 +517,8 @@ func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strvi
         out(".globl " + pfx + name + "\n")
     out(pfx + name + sfx + ":\n")
 
-func emitfnlnk(align: i64):
-    emitlnk(fn.name, fn.export, false, align, "", "", SecText)
+func emit_function_symbol(align: i64):
+    emit_symbol(fn.name, fn.export, false, align, "", "", InText)
     if not comp.debug:
         return
     out("\t.cfi_startproc\n")
@@ -529,7 +529,7 @@ func emitfnlnk(align: i64):
         for k in 0..fn.blocks[b].ins.len:
             i := fn.blocks[b].ins[k]
             if i.op == Odebugline:
-                emitdbgloc(ref_value(i.arg[0]), ref_value(i.arg[1]))
+                emit_line(ref_value(i.arg[0]), ref_value(i.arg[1]))
                 fn.blocks[b].ins[k].op = Onop
                 return
         b = fn.blocks[b].next
@@ -539,7 +539,7 @@ func jumptable(b: i64) -> &strview:
     return asm.machine.local_prefix + fn.name + ".jt" + b
 
 # the end of a function, past its blocks, with its jump tables; block is how the label of a block starts
-func emitfnend(block: &strview):
+func emit_function_end(block: &strview):
     b := fn.start
     while b != 0:
         if fn.blocks[b].exit.type == Jtable: # each entry is the distance from the table to its block, which needs no relocation
@@ -562,7 +562,7 @@ func emitfnend(block: &strview):
     if comp.system == "linux":
         out(".type " + fn.name + ", @function\n.size " + fn.name + ", .-" + fn.name + "\n")
 
-func emitdbgloc(line: i64, col: i64):
+func emit_line(line: i64, col: i64):
     out("\t.loc ")
     asm.text += asm.file
     out(" ")
@@ -572,13 +572,13 @@ func emitdbgloc(line: i64, col: i64):
         asm.text += col
     out("\n")
 
-func emitdbgmark(r: Ref):
+func emit_mark(r: Ref):
     out(asm.machine.local_prefix + "mark")
     asm.text += fn.marks[ref_value(r)]
     out(":\n")
     fn.marks[ref_value(r)] = -1
 
-func emitdbgslot(n: Ref, off: i64):
+func emit_slot(n: Ref, off: i64):
     out(".set " + asm.machine.local_prefix + "slot")
     asm.text += ref_value(n)
     out(", ")
@@ -601,7 +601,7 @@ func probing(frame: i64) -> bool:
     return frame + most + 16 > 4096
 
 # the place of bits of size bytes among the floats that the code reads from memory
-func stashbits(n: u64, size: i64) -> i64:
+func float_constant(n: u64, size: i64) -> i64:
     for k in 0..asm.float_bits.len:
         if size <= asm.float_sizes[k] and asm.float_bits[k] == n:
             return k
@@ -609,7 +609,7 @@ func stashbits(n: u64, size: i64) -> i64:
     append(asm.float_sizes, size)
     return asm.float_bits.len - 1
 
-func emitfin(sec: array[&strview, 3]):
+func emit_floats(sec: array[&strview, 3]):
     if asm.float_bits.len == 0:
         return
     out("/* floating point constants */\n")
@@ -642,17 +642,17 @@ func emitfin(sec: array[&strview, 3]):
     asm.float_bits.len = 0
     asm.float_sizes.len = 0
 
-func elf_emitfin():
-    emitfin([".rodata", ".rodata", ".rodata"])
+func elf_end():
+    emit_floats([".rodata", ".rodata", ".rodata"])
     out(".section .note.GNU-stack,\"\",@progbits\n")
 
-func macho_emitfin():
-    emitfin(["__TEXT,__literal4,4byte_literals", "__TEXT,__literal8,8byte_literals", "__TEXT,__literal16,16byte_literals"])
+func macho_end():
+    emit_floats(["__TEXT,__literal4,4byte_literals", "__TEXT,__literal8,8byte_literals", "__TEXT,__literal16,16byte_literals"])
 
-func pe_emitfin():
-    emitfin([".rodata", ".rodata", ".rodata"])
+func pe_end():
+    emit_floats([".rodata", ".rodata", ".rodata"])
 
-# snprintf of one float, as QBE prints it
+# one float as snprintf prints it
 func print_float(into: *&str, spec: cstr, f: f64):
     buf: array[u8, 400]
     n := snprintf(ptr(buf) as *u8, 400, spec, f)
