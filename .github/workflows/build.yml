@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -36,14 +40,13 @@ jobs:
         with:
           msystem: UCRT64
           path-type: inherit
+          cache: true
           install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gdb git diffutils gzip
       - if: runner.os == 'Windows'
         run: echo "CC=gcc" >> "$GITHUB_ENV"
       - if: runner.os == 'Linux'
-        run: command -v gdb && command -v clang || { sudo apt-get update -qq && sudo apt-get install -y -qq gdb clang > /dev/null; }
+        run: command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y -qq gdb > /dev/null; }
       - run: ./build.sh package
-      - if: runner.os != 'Windows'
-        run: ./build.sh cross
       - run: ./test.sh build/flagc 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
       - if: failure()
         run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log
@@ -52,17 +55,37 @@ jobs:
           name: flag-${{ runner.os }}-${{ runner.arch }}
           path: build/flag-*.tar.gz
 
+  # the x86_64 flagc and a cross gcc build each test for riscv64, and qemu runs only the test program
   riscv64:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: riscv64
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-riscv64-linux-gnu > /dev/null
+      - run: ./build.sh
+      - run: ./test.sh build/flagc linux-riscv64 2>&1 | tee build/test.log; exit ${PIPESTATUS[0]}
+        env:
+          CC: riscv64-linux-gnu-gcc
+          QEMU_LD_PREFIX: /usr/riscv64-linux-gnu
+      - if: failure()
+        run: awk '{gsub(/\033\[[0-9;]*m/, ""); gsub(/%/, "%25"); gsub(/\r/, "")} / passed, [0-9]+ failed$/{next} /^FAIL /{if (m) print m; m = "::error::" $0; n = 0; next} m && n < 12 {m = m "%0A" $0; n++} END {if (m) print m}' build/test.log
+
+  # flagc bootstraps from the riscv64 seed and builds itself, all under qemu
+  riscv64-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
         with:
           platforms: riscv64
-      # qemu-user keeps memory for every thread that ends, 136 MiB for 3000 threads of plain C, so thread_end_memory
-      # cannot pass under it
-      - run: docker run --rm --platform linux/riscv64 -v "$PWD:/flag" -w /flag ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y -qq gcc gzip diffutils > /dev/null && ./build.sh && { ./test.sh build/flagc > build/test.log 2>&1; cat build/test.log; ! grep "^FAIL" build/test.log | grep -v "^FAIL thread_end_memory:"; }'
+      - run: docker run --rm --platform linux/riscv64 -v "$PWD:/flag" -w /flag ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y -qq gcc gzip > /dev/null && ./build.sh'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

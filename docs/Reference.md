@@ -2152,7 +2152,7 @@ func main():
 Every backend is built into `flagc`: native backends live in `src/backend/` (see [The backend](#the-backend)), and `src/wasm.flg` emits WebAssembly modules directly. Every native target has a bootstrap seed in `boot/`, so `./build.sh` can bootstrap on any of them (see [Building the compiler](#building-the-compiler)).
 
 - **First-class targets** have release archives and CI building the compiler and running all tests natively.
-- **Second-class targets** have no release archive. CI builds the compiler for `linux-riscv64` and runs its tests under QEMU, and runs `wasm-wasm32` and `wasm-wasm64` tests under Node on every first-class system. `./test.sh` runs WebAssembly tests when it finds `node` (and for `wasm64`, a `node` with 64-bit memory; see [WebAssembly](#webassembly)). A target moves to first class when CI runs it natively and releases include its archive.
+- **Second-class targets** have no release archive. CI bootstraps the compiler on `linux-riscv64` under QEMU, and builds its tests with a cross `gcc` to run each test program under QEMU. It runs `wasm-wasm32` and `wasm-wasm64` tests under Node on every first-class system. `./test.sh` runs WebAssembly tests when it finds `node` (and for `wasm64`, a `node` with 64-bit memory; see [WebAssembly](#webassembly)). A target moves to first class when CI runs it natively and releases include its archive.
 
 By default, `flagc` targets the host platform. On `x86_64`, programs using `simd` require `x86-64-v2` (see [SIMD](#simd)). Use platform builtins (in `where` or ordinary expressions) and `where` blocks to specialize code per platform, as the standard library does.
 
@@ -2276,7 +2276,7 @@ error: unexpected end of line; expected ':'
 
 - `./build.sh seed`: regenerates the six seeds in `boot/`, one per native target, using `-target`. A seed is rewritten only when its assembly changes, since `gzip` on different systems may compress identical text to different bytes. Seeds are refreshed for a release or when a seed can no longer build `src`, because git stores compressed files whole and each refresh adds about 9 MB to history.
 - `./build.sh package`: creates `build/flag-<version>-<system>-<machine>.tar.gz`.
-- `./build.sh cross`: compiles `flagc`, all tests, and all examples for other targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it so every system's `where` blocks and `rv64`'s lane-by-lane SIMD path compile on every change.
+- `./build.sh cross`: compiles `flagc`, all tests, and all examples for other targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). It is a quick local check that every system's `where` blocks and `rv64`'s lane-by-lane SIMD path compile, without running them; CI runs the tests of every target instead.
 
 #### Running the test suite (`./test.sh build/flagc`)
 
@@ -2292,7 +2292,7 @@ error: unexpected end of line; expected ':'
 
 `./test.sh` also type-checks every file in `examples/`. It runs one test per core (`JOBS=1 ./test.sh build/flagc` runs one at a time), each in a `test.sh` of its own that writes what it found to `build/tests/name.report`, and prints those reports in order.
 
-`./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it (under WSL, starting each `.exe` via interop). It skips tests that invoke `flagc` itself, tests whose error repeats the command line, and `gdb` tests. From a WSL directory, a few tests cannot pass: `cmd.exe` refuses a UNC current directory, Unix tools like `printf` are absent, and stdout and stderr arrive over separate pipes out of order.
+`./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it (under WSL, starting each `.exe` via interop). It skips tests that invoke `flagc` itself, tests whose error repeats the command line, and `gdb` tests. From a WSL directory, a few tests cannot pass: `cmd.exe` refuses a UNC current directory, Unix tools like `printf` are absent, and stdout and stderr arrive over separate pipes out of order. Likewise, `CC=riscv64-linux-gnu-gcc QEMU_LD_PREFIX=/usr/riscv64-linux-gnu ./test.sh build/flagc linux-riscv64` builds each test for `riscv64` and runs it under QEMU, which `binfmt_misc` starts for each `riscv64` program, as CI does.
 
 #### The backend
 
