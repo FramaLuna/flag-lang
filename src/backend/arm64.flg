@@ -43,7 +43,7 @@ func all_floats(t: i64, cls: *i64) -> bool:
 func arm64_classify(c: *Passing, t: i64, gp: i64, fp: i64):
     ty := ptr(asm.layouts[t])
     if ty.align > 4:
-        panic("alignments larger than 16 are not supported")
+        panic("arm64 aggregate alignment exceeds 16 bytes in " + fn.name)
     sz := (ty.size + 7) and -8
     c.* = Passing{layout = t, size = sz, align = 16 if ty.align > 3 else 8}
     base := Unknown
@@ -1110,7 +1110,7 @@ func arm64_emit_function():
             if j != Jjump:
                 c := j - Jflag
                 if c < 0 or c > CONDITIONS:
-                    panic("unhandled jump " + j)
+                    panic("unhandled jump kind " + j + " in " + fn.name)
                 n := 1
                 if p.next == p.no:
                     s2 := p.yes

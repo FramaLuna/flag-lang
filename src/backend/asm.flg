@@ -393,7 +393,7 @@ func lower_block(b: i64, allocs: *&list[Instr], call: func(i64, i64, i64, *&list
             call(b, i0, k, allocs)
             k = i0
         case Ovastart, Ovaarg, Oarg, Oargaggregate:
-            panic("unreachable")
+            panic("unhandled instruction " + OPERATIONS[i.op].name + " while lowering calls in " + fn.name)
         case:
             emit(i)
     if b == fn.start: # the allocs in the order they were made
@@ -451,11 +451,11 @@ func slot_allocs():
                     break
                 sz := fn.constants[ref_value(i.arg[0])].bits
                 if sz < 0 or sz >= 2147483647 - 15:
-                    panic("invalid alloc size " + sz)
+                    panic("invalid stack allocation size " + sz + " in " + fn.name)
                 sz = (sz + n - 1) and -n
                 sz /= 4
                 if sz > 2147483647 - fn.slots:
-                    panic("alloc too large")
+                    panic("stack allocation overflows frame size in " + fn.name)
                 fn.temps[i.to].slot = i32(fn.slots)
                 fn.slots += sz
                 fn.blocks[b].ins[k] = Instr{op = Onop}
@@ -481,7 +481,7 @@ func format(table: &listview[Form], i: Instr) -> &strview:
     for f in table:
         if f.op == i.op and (f.cls == i.cls or f.cls == AnyInt and bank(i.cls) == 0 or f.cls == AnyClass):
             return f.fmt
-    panic("no form for " + OPERATIONS[i.op].name + " of class " + i.cls)
+    panic("no assembly form for " + OPERATIONS[i.op].name + " of class " + i.cls + " in " + fn.name)
 
 func emit_symbol(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
     m := ptr(asm.machine)

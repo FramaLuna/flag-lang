@@ -134,7 +134,7 @@ func sysv_classify_args(ins: &listview[Instr], ac: *&list[SysvClass], op: i64, a
         case Oargvariadic:
             varc = 1
         case:
-            panic("unreachable")
+            panic("unexpected argument or parameter " + OPERATIONS[i.op].name + " in " + fn.name)
         append(ac, a)
     return varc << 12 or (6 - nint) << 4 or (8 - nsse) << 8
 
@@ -196,7 +196,7 @@ func sysv_lower_call(b: i64, i0: i64, i1: i64, allocs: *&list[Instr]):
     for a in reverse ac:
         if a.in_memory != 0:
             if a.align > 4:
-                panic("sysv abi requires alignments of 16 or less")
+                panic("amd64 SysV argument alignment exceeds 16 bytes in " + fn.name)
             stk += a.size
             if a.align == 4:
                 stk += stk and 15
@@ -328,7 +328,7 @@ func sysv_calls():
         a := ac[k]
         if a.in_memory == 1:
             if a.align > 4:
-                panic("sysv abi requires alignments of 16 or less")
+                panic("amd64 SysV parameter alignment exceeds 16 bytes in " + fn.name)
             if a.align == 4:
                 s = (s + 3) and -4
             fn.temps[i.to].slot = i32(0 - s)
@@ -470,7 +470,7 @@ func win_classify_args(u: *RegisterUsage, ins: &listview[Instr], classes: *&list
             u.varargs = true
             arg.style = VarargsMark
         case:
-            panic("unreachable")
+            panic("unexpected argument or parameter " + OPERATIONS[i.op].name + " in " + fn.name)
         append(classes, arg)
     # a varargs call takes the floats in the integer registers too
     if u.varargs:
@@ -503,7 +503,7 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
     for arg in classes:
         if arg.style == InlineOnStack:
             if arg.align > 4:
-                panic("win abi cannot pass alignments > 16")
+                panic("amd64 Windows argument alignment exceeds 16 bytes in " + fn.name)
             stack += arg.size
         elif arg.style == PointerOnStack:
             stack += 8
@@ -836,7 +836,7 @@ func amd64_select_instr(i: Instr):
         else:
             r0 = i.arg[1]
         if fn.temps[r0].slot != -1:
-            panic("unlikely argument of " + OPERATIONS[i.op].name + " in " + fn.name)
+            panic("stack slot used as divisor of " + OPERATIONS[i.op].name + " in " + fn.name)
         if i.op == Odiv or i.op == Orem:
             emit(Oamd64idiv, k, EMPTY, r0, EMPTY)
             emit(Osign, k, RDX, RAX, EMPTY)
@@ -853,7 +853,7 @@ func amd64_select_instr(i: Instr):
             emit_fixed(i)
             return
         if fn.temps[r0].slot != -1:
-            panic("unlikely argument of " + OPERATIONS[i.op].name + " in " + fn.name)
+            panic("stack slot used as shift count of " + OPERATIONS[i.op].name + " in " + fn.name)
         i.arg[1] = RCX
         emit(Ocopy, Int32, EMPTY, RCX, EMPTY)
         emit(i)
@@ -1023,7 +1023,7 @@ func amd64_select_instr(i: Instr):
             emit(Oflageqi + x, k, i.to, EMPTY, EMPTY)
             select_compare(i.arg, kc, swap)
             return
-        panic("unknown instruction " + OPERATIONS[i.op].name)
+        panic("unhandled amd64 instruction " + OPERATIONS[i.op].name + " in " + fn.name)
 
 # the instruction, with its arguments as amd64 takes them
 func emit_fixed(i: Instr):
@@ -1712,7 +1712,7 @@ func emit_instr(i: Instr):
                 out("(%" + to + "), %" + to + "\n")
             return
         if m.windows and c.access != Direct:
-            panic("extern unsupported on amd64_win")
+            panic("extern GOT access is not supported on amd64 Windows in " + fn.name)
         switch c.access:
         case ThreadData:
             # derive the symbol address from the TCB address at offset 0 of %fs
@@ -1904,7 +1904,7 @@ func emit_blocks(keep: func(bool)):
             if j != Jjump:
                 c := j - Jflag
                 if c < 0 or c > CONDITIONS:
-                    panic("unhandled jump " + j)
+                    panic("unhandled jump kind " + j + " in " + fn.name)
                 n := 1
                 if p.next == p.no or asm.machine.windows and c >= INT_CONDITIONS:
                     s := p.yes

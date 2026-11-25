@@ -546,7 +546,7 @@ func reg_or_slot(m: *RegisterMap, t: i64) -> Ref:
 
 func take_reg(m: *RegisterMap, t: i64, r: i64):
     mc := ptr(asm.machine)
-    assert (t >= FIRST_TEMP or t == r) and (r >= mc.first_int and r < mc.first_int + mc.ints or r >= mc.first_float and r < mc.first_float + mc.floats), "a temp of " + fn.name + " takes what is not its register"
+    assert (t >= FIRST_TEMP or t == r) and (r >= mc.first_int and r < mc.first_int + mc.ints or r >= mc.first_float and r < mc.first_float + mc.floats), "a temp of " + fn.name + " takes an invalid register"
     assert (m.taken.words[0] and u64(1) << r) == 0, "a register of " + fn.name + " takes two temps"
     include(ptr(m.taken), t)
     include(ptr(m.taken), r)
@@ -581,7 +581,7 @@ func allocate(m: *RegisterMap, t: i64, trying: bool) -> Ref:
             while r < r1 and has(ptr(m.taken), r):
                 r += 1
             if r == r1:
-                panic("no more regs")
+                panic("ran out of free registers in " + fn.name)
     take_reg(m, t, r)
     set_hint(t, r)
     fn.temps[t].visit = i32(r)
@@ -987,7 +987,7 @@ func assign_registers():
             while p != 0:
                 ph := fn.phis[p]
                 dst := ph.to
-                assert ref_kind(dst) == RefTemp or ref_kind(dst) == RefSlot, "a phi of " + fn.name + " sets what is not a temp"
+                assert ref_kind(dst) == RefTemp or ref_kind(dst) == RefSlot, "a phi of " + fn.name + " writes neither a temp nor a slot"
                 if ref_kind(dst) == RefTemp:
                     r := reg_of(ptr(regs.at_start[fn.blocks[s].id]), i64(dst))
                     if r == -1:

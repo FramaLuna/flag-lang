@@ -143,8 +143,8 @@ func assemble() -> &str|Fail:
                 hosts: &list[u8] = heap(others[:])
                 defer free(hosts)
                 if signature(others, given) != signature(kinds, gives) or signature(hosts, hosted(inst, hosts, given)) != signature(host, takes):
-                    _ = fail(text(max(f, g)) + " is declared for the host with other types than before; a WebAssembly module imports one function of each name, so declare it with the same types", at_of(max(f, g)))
-                    note("declared before here", at_of(min(f, g)))
+                    _ = fail(text(max(f, g)) + " is declared with different types than before; a WebAssembly module can only import one host function per name, so declare it with the same types", at_of(max(f, g)))
+                    note("previous declaration is here", at_of(min(f, g)))
                     return Fail
         append(wasm.typed, signature(host, takes))
         leb(imports, u64(wasm.typed[-1]))
@@ -531,7 +531,7 @@ func uses(name: &strview, value: bool, externs: &map[&strview, i64]) -> Fail?:
     elif externs[name] is i64:
         append(wasm.imports, name)
     else:
-        eprint(comp.err, "cannot find function ", name[1:], " for wasm-", comp.machine, "; neither the program nor an extern block defines it")
+        eprint(comp.err, "cannot find function ", name[1:], " for wasm-", comp.machine, "; it is not defined by the program or declared in an 'extern' block")
         return Fail
     return null
 
@@ -927,7 +927,7 @@ func enclose(x: i64, count: i64):
                 push(chosen, Int32)
                 add_byte(out, 0x1b) # select
             case:
-                panic("wasm has no form for the instruction " + OPERATIONS[o].name)
+                panic("no WebAssembly form for instruction " + OPERATIONS[o].name + " in " + fn.name)
         finish(b, k, k, i.to, true)
     j := fn.blocks[b].exit
     end := fn.blocks[b].ins.len

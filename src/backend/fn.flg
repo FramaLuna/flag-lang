@@ -1028,7 +1028,7 @@ func stack_alloc(rt: Ref, rs: Ref):
     if ref_kind(rs) == RefConstant:
         sz := fn.constants[ref_value(rs)].bits
         if sz < 0 or sz >= 2147483647 - 15:
-            panic("invalid alloc size " + sz)
+            panic("invalid stack allocation size " + sz + " in " + fn.name)
         sz = (sz + 15) and -16
         emit(Ostackalloc, Int64, rt, intern(sz), EMPTY)
     else:
@@ -1038,7 +1038,7 @@ func stack_alloc(rt: Ref, rs: Ref):
         emit(Oand, Int64, r0, r1, intern(-16))
         emit(Oadd, Int64, r1, rs, intern(15))
         if fn.temps[rs].slot != -1:
-            panic("unlikely alloc argument in " + fn.name)
+            panic("stack slot used as size of stack allocation in " + fn.name)
 
 func clear(s: *Bitset):
     s.words.len = 0
@@ -1706,7 +1706,7 @@ func ssa():
                 include(ptr(u), fn.blocks[b].id)
                 append(stack, b)
             if merge_class(ptr(k), i64(i.cls)):
-                panic("invalid input")
+                panic("a temporary of " + fn.name + " is defined with conflicting types")
         copy_set(ptr(defs), ptr(u))
         while stack.len > 0:
             fn.temps[t].visit = i32(t)
@@ -1779,9 +1779,9 @@ func phi_misplaced(p: i64, b: i64, t: Ref) -> bool:
 func check_ssa():
     for t in FIRST_TEMP..fn.temp_count:
         if fn.temps[t].defs > 1:
-            panic("an ssa temporary of " + fn.name + " is defined more than once")
+            panic("an SSA temporary of " + fn.name + " is defined more than once")
         if fn.temps[t].used > 0 and fn.temps[t].defs == 0:
-            panic("an ssa temporary of " + fn.name + " is used undefined")
+            panic("an SSA temporary of " + fn.name + " is used without a definition")
     b := fn.start
     while b != 0:
         p := fn.blocks[b].phi
@@ -1790,7 +1790,7 @@ func check_ssa():
             for u in fn.temps[r].uses[:fn.temps[r].used]:
                 bu := fn.order[u.block]
                 if u.type == ByPhi and phi_misplaced(u.at, b, r) or u.type != ByPhi and bu != b and not strictly_dominates(b, bu):
-                    panic("a temporary of " + fn.name + " violates the ssa invariant")
+                    panic("a temporary of " + fn.name + " is used where its definition does not dominate")
             p = fn.phis[p].next
         for k in 0..fn.blocks[b].ins.len:
             r := fn.blocks[b].ins[k].to
@@ -1806,7 +1806,7 @@ func check_ssa():
                 else:
                     bad = not strictly_dominates(b, bu)
                 if bad:
-                    panic("a temporary of " + fn.name + " violates the ssa invariant")
+                    panic("a temporary of " + fn.name + " is used where its definition does not dominate")
         b = fn.blocks[b].next
 
 # a proc of comp lowered to the function in fn

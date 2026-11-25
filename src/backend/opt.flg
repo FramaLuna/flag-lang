@@ -872,7 +872,7 @@ func alias_of(a: *Region, r: Ref):
         a.offset = c.bits
         a.slot = 0
     case:
-        panic("getalias of a ref that is no temp nor constant")
+        panic("alias lookup on a ref that is neither a temp nor a constant in " + fn.name)
 
 func alias(p: Ref, op: i64, sp: i64, q: Ref, sq: i64, delta: *i64) -> i64:
     ap: Region
@@ -1068,7 +1068,7 @@ func clobbers(r: Ref, sl: Slice) -> bool:
         return u32(a.base) == r
     case Absolute, AtSymbol:
         return false
-    panic("unreachable")
+    panic("unexpected alias kind " + a.type + " in " + fn.name)
 
 func reload(sl: Slice, msk: u64, il: Site, oldl: i64, oldt: i64) -> Ref:
     fn.temp_count = oldt
@@ -1091,7 +1091,7 @@ func reload(sl: Slice, msk: u64, il: Site, oldl: i64, oldt: i64) -> Ref:
         case Absolute, AtSymbol:
             r = intern(Immediate{type = Addressed, access = a.access, symbol = a.symbol, bits = a.offset})
         case:
-            panic("unreachable")
+            panic("unexpected alias kind " + a.type + " in " + fn.name)
     r = insert_instr(cls, ld, r, EMPTY, il)
     if not all:
         r = mask(cls, r, msk, il)
@@ -1609,7 +1609,7 @@ func fold_int(res: *Immediate, op: i64, w: bool, cl: Immediate, cr: Immediate) -
             case:
                 x = u64(not (a < b or a >= b))
         else:
-            panic("unreachable")
+            panic("cannot fold integer operation " + OPERATIONS[op].name + " in " + fn.name)
     res.* = Immediate{type = i32(typ), access = i32(symtype), symbol = i32(sym), bits = i64(x)}
     return true
 
@@ -1652,7 +1652,7 @@ func replace_use(u: Usage, r1: Ref, r2: Ref):
         if ref_kind(r2) == RefTemp:
             add_use(i64(r2), ByExit, b, 0)
     case:
-        panic("unreachable")
+        panic("unexpected use kind " + u.type + " in " + fn.name)
 
 func replace_uses(r1: Ref, r2: Ref):
     for k in 0..fn.temps[r1].used:
@@ -1914,7 +1914,7 @@ func number_values():
                     if i1.cls == Int32 or i1.cls == Int64:
                         folded = fold_int(ptr(c), i64(i1.op), i1.cls == Int64, cl, cr)
                     elif cl.type != Numeric or cr.type != Numeric:
-                        panic("invalid address operand for '" + o.name + "'")
+                        panic("invalid address operand for '" + o.name + "' in " + fn.name)
                     elif i1.cls == Float64:
                         ld := cl.bits as f64
                         rd := cr.bits as f64
@@ -1943,7 +1943,7 @@ func number_values():
                         case Ocast:
                             xd = ld
                         case:
-                            panic("unreachable")
+                            panic("cannot fold f64 operation " + o.name + " in " + fn.name)
                         c = Immediate{type = Numeric, bits = xd as i64}
                     else:
                         ls := u32(cl.bits and 0xffff_ffff) as f32
@@ -1973,7 +1973,7 @@ func number_values():
                         case Ocast:
                             xs = ls
                         case:
-                            panic("unreachable")
+                            panic("cannot fold f32 operation " + o.name + " in " + fn.name)
                         c = Immediate{type = Numeric, bits = i64(xs as u32)}
                     if folded:
                         if wide(i1.cls) == 0:

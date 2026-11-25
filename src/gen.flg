@@ -63,8 +63,8 @@ func gen_program(check: bool, testing: bool) -> Fail?:
         f := comp.syms[found].node
         if comp.nodes[f].kind == Func and params(f) == 0 and comp.syms[found].module.len == 0 and not comp.shared and try holds_where(f):
             if s != 0:
-                failed := fail("main is declared twice for this target; make the 'where' conditions of the two exclusive", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
-                note("the other declaration of main is here", comp.tokens[comp.nodes[f].tok].at)
+                failed := fail("'main' is declared more than once for this target; make their 'where' conditions mutually exclusive", comp.tokens[comp.nodes[comp.syms[s].node].tok].at)
+                note("other declaration of 'main' is here", comp.tokens[comp.nodes[f].tok].at)
                 return failed
             s = found
         found = comp.syms[found].next
@@ -1251,7 +1251,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
             return constant(s, want, tok.at)
         if k == Var: # the address of a variable of C, from a slot of data that the loader fills, which a library takes too
             if comp.system == "wasm":
-                return fail("C variable " + tok.text + " cannot be reached from wasm-" + comp.machine + "; a WebAssembly module imports only functions", tok.at)
+                return fail("C variable " + tok.text + " cannot be accessed on wasm-" + comp.machine + "; WebAssembly modules can only import functions", tok.at)
             symbol := text(d)
             if kids(d) == 2:
                 symbol = text(kid(d, 1))[1:text(kid(d, 1)).len - 1]
