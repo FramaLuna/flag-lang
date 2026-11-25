@@ -42,7 +42,7 @@ func rv64_arg_regs(r: Ref, p: *array[i64, 2]) -> u64:
     return b
 
 # the classes of the fields of t from off, at most two and not of a union, or -1; how many are floats
-func fpstruct(t: i64, off: i64, c: *Class) -> i64:
+func fpstruct(t: i64, off: i64, c: *Passing) -> i64:
     ty := ptr(asm.layouts[t])
     if ty.is_union:
         return -1
@@ -55,51 +55,51 @@ func fpstruct(t: i64, off: i64, c: *Class) -> i64:
             if fpstruct(f.len, off, c) == -1:
                 return -1
         else:
-            n := c.nfp + c.ngp
+            n := c.float_count + c.int_count
             if n == 2:
                 return -1
             switch f.type:
             case FieldI64:
                 c.cls[n] = Int64
-                c.ngp += 1
+                c.int_count += 1
             case FieldF32:
                 c.cls[n] = Float32
-                c.nfp += 1
+                c.float_count += 1
             case FieldF64:
                 c.cls[n] = Float64
-                c.nfp += 1
+                c.float_count += 1
             case:
                 c.cls[n] = Int32
-                c.ngp += 1
-            c.off[n] = off
+                c.int_count += 1
+            c.offset[n] = off
             off += f.len
-    return c.nfp
+    return c.float_count
 
 # how an aggregate t passes from the registers gp and fp on: up to two fields, floats in float registers when fpabi,
 # up to 16 bytes in general purpose registers, or else a pointer to a copy
-func rv64_typclass(c: *Class, t: i64, fpabi: bool, gp: i64, fp: i64):
+func rv64_typclass(c: *Passing, t: i64, fpabi: bool, gp: i64, fp: i64):
     ty := ptr(asm.layouts[t])
     if ty.align > 4:
         panic("alignments larger than 16 are not supported")
-    c.t = t
-    c.class = 0
-    c.ngp = 0
-    c.nfp = 0
+    c.layout = t
+    c.how = 0
+    c.int_count = 0
+    c.float_count = 0
     if ty.opaque or ty.size > 16 or ty.size == 0:
-        c.class = Cptr
+        c.how = ByPointer
         c.cls[0] = Int64
-        c.off[0] = 0
-        c.ngp = 1
+        c.offset[0] = 0
+        c.int_count = 1
     elif not fpabi or fpstruct(t, 0, c) <= 0:
         n := 0
         while 8 * n < ty.size:
             c.cls[n] = Int64
-            c.off[n] = 8 * n
+            c.offset[n] = 8 * n
             n += 1
-        c.nfp = 0
-        c.ngp = n
-    c.nreg = c.nfp + c.ngp
-    for n in 0..c.nreg:
+        c.float_count = 0
+        c.int_count = n
+    c.reg_count = c.float_count + c.int_count
+    for n in 0..c.reg_count:
         if bank(c.cls[n]) == 0:
             c.reg[n] = gp
             gp += 1
@@ -108,7 +108,7 @@ func rv64_typclass(c: *Class, t: i64, fpabi: bool, gp: i64, fp: i64):
             fp += 1
 
 # the classes of the arguments or parameters ins, and the registers they take as the second argument of a call
-func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i64:
+func rv64_argsclass(ins: &listview[Instr], ca: *&list[Passing], retptr: bool) -> i64:
     gp := A0 # the next registers
     fp := FA0
     ngp := 8 # and how many are left
@@ -120,7 +120,7 @@ func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i
         ngp -= 1
     ca.len = 0
     for i in ins:
-        c: Class
+        c: Passing
         switch i.op:
         case Oparam, Oarg:
             c.cls[0] = i.cls
@@ -130,34 +130,34 @@ func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i
                 fp += 1
             elif ngp > 0:
                 if bank(i.cls) == 1:
-                    c.class = Cfpint
+                    c.how = FloatAsInt
                 ngp -= 1
                 c.reg[0] = gp
                 gp += 1
             else:
-                c.class = Cstk1
+                c.how = FirstOnStack
         case Oargvariadic:
             vararg = true
         case Oparamaggregate, Oargaggregate:
             t := ref_value(i.arg[0])
             rv64_typclass(ptr(c), t, true, gp, fp)
-            if c.nfp > 0 and (c.nfp >= nfp or c.ngp >= ngp):
+            if c.float_count > 0 and (c.float_count >= nfp or c.int_count >= ngp):
                 rv64_typclass(ptr(c), t, false, gp, fp)
-            if c.ngp <= ngp:
-                ngp -= c.ngp
-                nfp -= c.nfp
-                gp += c.ngp
-                fp += c.nfp
+            if c.int_count <= ngp:
+                ngp -= c.int_count
+                nfp -= c.float_count
+                gp += c.int_count
+                fp += c.float_count
             elif ngp > 0: # the first half in the last register, the second on the stack
-                c.class = c.class or Cstk2
-                c.nreg = 1
+                c.how = c.how or SecondOnStack
+                c.reg_count = 1
                 ngp -= 1
                 gp += 1
             else:
-                c.class = c.class or Cstk1
-                if c.nreg > 1:
-                    c.class = c.class or Cstk2
-                c.nreg = 0
+                c.how = c.how or FirstOnStack
+                if c.reg_count > 1:
+                    c.how = c.how or SecondOnStack
+                c.reg_count = 0
         case Oparamenv, Oargenv:
             c.reg[0] = T5
             c.cls[0] = Int64
@@ -169,43 +169,43 @@ func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i
 func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
     ins := fn.blocks[b].ins
     call := ins[i1]
-    cr: Class
+    cr: Passing
     if call.arg[1] != EMPTY:
         rv64_typclass(ptr(cr), ref_value(call.arg[1]), true, A0, FA0)
-    ca: &list[Class] = heap([])
+    ca: &list[Passing] = heap([])
     defer free(ca)
-    cty := rv64_argsclass(ins[i0:i1], ca, (cr.class and Cptr) != 0)
+    cty := rv64_argsclass(ins[i0:i1], ca, (cr.how and ByPointer) != 0)
     stk := 0
     for k in 0..ca.len:
         c := ca[k]
         if ins[i0 + k].op == Oargvariadic:
             continue
-        if (c.class and Cptr) != 0:
+        if (c.how and ByPointer) != 0:
             r := new_temp(Int64)
             ins[i0 + k].arg[0] = r
             ins[i0 + k].op = Oarg
-            alloc_slot(r, c.t, (asm.layouts[c.t].size + 7) and -8, ral)
-        if (c.class and Cstk1) != 0:
+            alloc_slot(r, c.layout, (asm.layouts[c.layout].size + 7) and -8, ral)
+        if (c.how and FirstOnStack) != 0:
             stk += 8
-        if (c.class and Cstk2) != 0:
+        if (c.how and SecondOnStack) != 0:
             stk += 8
     stk += stk and 15
     if stk != 0:
         emit(Ostackalloc, Int64, EMPTY, intern(0 - stk), EMPTY)
     if call.arg[1] != EMPTY:
         if fn.temps[call.to].pad == EMPTY:
-            alloc_slot(call.to, cr.t, (asm.layouts[cr.t].size + 7) and -8, ral)
+            alloc_slot(call.to, cr.layout, (asm.layouts[cr.layout].size + 7) and -8, ral)
         else:
             call.to = fn.temps[call.to].pad
-        cty = cty or cr.nfp << 2 or cr.ngp
-        if (cr.class and Cptr) != 0:
+        cty = cty or cr.float_count << 2 or cr.int_count
+        if (cr.how and ByPointer) != 0:
             # spill and rega expect calls to be followed by copies from regs, so we emit a dummy
             emit(Ocopy, Int32, EMPTY, A0, EMPTY)
         else:
             tmp: &list[Ref] = heap([])
             defer free(tmp)
-            store_temps(tmp, cr.nreg, ptr(cr), call.to)
-            for n in 0..cr.nreg:
+            store_temps(tmp, cr.reg_count, ptr(cr), call.to)
+            for n in 0..cr.reg_count:
                 emit(Ocopy, cr.cls[n], tmp[n], u32(cr.reg[n]), EMPTY)
     elif bank(call.cls) == 0:
         emit(Ocopy, call.cls, call.to, A0, EMPTY)
@@ -214,16 +214,16 @@ func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
         emit(Ocopy, call.cls, call.to, FA0, EMPTY)
         cty = cty or 1 << 2
     emit(Ocall, 0, EMPTY, call.arg[0], ref(RefCall, cty))
-    if (cr.class and Cptr) != 0: # where the aggregate returned goes
+    if (cr.how and ByPointer) != 0: # where the aggregate returned goes
         emit(Ocopy, Int64, A0, call.to, EMPTY)
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ptr(ca[k])
-        if i.op == Oargvariadic or (c.class and Cstk1) != 0:
+        if i.op == Oargvariadic or (c.how and FirstOnStack) != 0:
             continue
         if i.op == Oargaggregate:
             load_regs(c, i.arg[1])
-        elif (c.class and Cfpint) != 0:
+        elif (c.how and FloatAsInt) != 0:
             kc := Int64 if wide(c.cls[0]) != 0 else Int32
             r := new_temp(kc)
             emit(Ocopy, kc, u32(c.reg[0]), r, EMPTY)
@@ -233,10 +233,10 @@ func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ca[k]
-        if (c.class and Cfpint) != 0:
+        if (c.how and FloatAsInt) != 0:
             emit(Ocast, Int64 if wide(c.cls[0]) != 0 else Int32, u32(c.reg[0]), i.arg[0], EMPTY)
-        if (c.class and Cptr) != 0:
-            emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[c.t].size), EMPTY)
+        if (c.how and ByPointer) != 0:
+            emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[c.layout].size), EMPTY)
             emit(Oblit, 0, EMPTY, i.arg[1], i.arg[0])
     if stk == 0:
         return
@@ -245,7 +245,7 @@ func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ca[k]
-        if i.op == Oargvariadic or (c.class and Cstk) == 0:
+        if i.op == Oargvariadic or (c.how and OnStack) == 0:
             continue
         if i.op == Oarg:
             r1 := new_temp(Int64)
@@ -259,14 +259,14 @@ func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
             emit(Oadd, Int64, r1, r, intern(off))
             off += 8
         if i.op == Oargaggregate:
-            if (c.class and Cstk1) != 0:
+            if (c.how and FirstOnStack) != 0:
                 r1 := new_temp(Int64)
                 r2 := new_temp(Int64)
                 emit(Ostorei64, 0, EMPTY, r2, r1)
                 emit(Oadd, Int64, r1, r, intern(off))
                 emit(Oload, Int64, r2, i.arg[1], EMPTY)
                 off += 8
-            if (c.class and Cstk2) != 0:
+            if (c.how and SecondOnStack) != 0:
                 r1 := new_temp(Int64)
                 r2 := new_temp(Int64)
                 emit(Ostorei64, 0, EMPTY, r2, r1)
@@ -286,15 +286,15 @@ func rv64_calls():
     fn.out.len = 0
     for k in reverse npar..ins.len:
         emit(ins[k])
-    cr: Class # of the aggregate returned
+    cr: Passing # of the aggregate returned
     if fn.ret_layout >= 0:
         rv64_typclass(ptr(cr), fn.ret_layout, true, A0, FA0)
-        if (cr.class and Cptr) != 0:
+        if (cr.how and ByPointer) != 0:
             fn.ret_address = new_temp(Int64)
             emit(Ocopy, Int64, fn.ret_address, A0, EMPTY)
-    ca: &list[Class] = heap([])
+    ca: &list[Passing] = heap([])
     defer free(ca)
-    cty := rv64_argsclass(ins[:npar], ca, (cr.class and Cptr) != 0)
+    cty := rv64_argsclass(ins[:npar], ca, (cr.how and ByPointer) != 0)
     none: array[i64, 2]
     fn.used_regs = rv64_arg_regs(ref(RefCall, cty), ptr(none))
     ral: &list[Instr] = heap([]) # the allocs the start block gets
@@ -303,20 +303,20 @@ func rv64_calls():
     defer free(tmp)
     for k in 0..npar:
         c := ptr(ca[k])
-        if (c.class and Cfpint) != 0: # a float that came in an integer register
+        if (c.how and FloatAsInt) != 0: # a float that came in an integer register
             r := ins[k].to
             kc := c.cls[0]
             c.cls[0] = Int64 if wide(kc) != 0 else Int32
             ins[k].to = new_temp(kc)
             emit(Ocast, kc, r, ins[k].to, EMPTY)
-        if ins[k].op == Oparamaggregate and (c.class and Cptr) == 0 and c.nreg != 0:
-            n := c.nreg
-            if (c.class and Cstk2) != 0:
+        if ins[k].op == Oparamaggregate and (c.how and ByPointer) == 0 and c.reg_count != 0:
+            n := c.reg_count
+            if (c.how and SecondOnStack) != 0:
                 c.cls[1] = Int64
-                c.off[1] = 8
+                c.offset[1] = 8
                 n = 2
             store_temps(tmp, n, c, ins[k].to)
-            alloc_slot(ins[k].to, c.t, (asm.layouts[c.t].size + 7) and -8, ral)
+            alloc_slot(ins[k].to, c.layout, (asm.layouts[c.layout].size + 7) and -8, ral)
     for k in reverse 0..ral.len:
         emit(ral[k])
     ral.len = 0
@@ -325,19 +325,19 @@ func rv64_calls():
     for k in 0..npar:
         i := ins[k]
         c := ca[k]
-        if i.op == Oparamaggregate and (c.class and Cptr) == 0:
-            if c.nreg == 0:
+        if i.op == Oparamaggregate and (c.how and ByPointer) == 0:
+            if c.reg_count == 0:
                 fn.temps[i.to].slot = i32(0 - s)
-                s += 2 if (c.class and Cstk2) != 0 else 1
+                s += 2 if (c.how and SecondOnStack) != 0 else 1
                 continue
-            for n in 0..c.nreg:
+            for n in 0..c.reg_count:
                 emit(Ocopy, c.cls[n], tmp[t], u32(c.reg[n]), EMPTY)
                 t += 1
-            if (c.class and Cstk2) != 0:
+            if (c.how and SecondOnStack) != 0:
                 emit(Oload, Int64, tmp[t], ref(RefSlot, 0 - s), EMPTY)
                 t += 1
                 s += 1
-        elif (c.class and Cstk1) != 0:
+        elif (c.how and FirstOnStack) != 0:
             emit(Oload, c.cls[0], i.to, ref(RefSlot, 0 - s), EMPTY)
             s += 1
         else:
@@ -355,12 +355,12 @@ func rv64_calls():
             fn.blocks[b].exit.type = Jreturn
             cty = 0
             if j == Jreturnaggregate:
-                if (cr.class and Cptr) != 0:
+                if (cr.how and ByPointer) != 0:
                     emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
                     emit(Oblit, 0, EMPTY, r, fn.ret_address)
                 else:
                     load_regs(ptr(cr), r)
-                    cty = cr.nfp << 2 or cr.ngp
+                    cty = cr.float_count << 2 or cr.int_count
             elif bank(j - Jreturni32) == 0:
                 emit(Ocopy, j - Jreturni32, A0, r, EMPTY)
                 cty = 1

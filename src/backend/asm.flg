@@ -400,41 +400,41 @@ func lower_block(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[In
         for j in reverse 0..ral.len:
             emit(ral[j])
 
-Cptr = 1 # replaced by a pointer
-Cstk1 = 2 # on the stack, the first half of a pair of registers or all
-Cstk2 = 4 # on the stack, the second half
-Cstk = 6
-Cfpint = 8 # a float passed as an integer
+ByPointer = 1
+FirstOnStack = 2 # the first half of a pair of registers, or all
+SecondOnStack = 4
+OnStack = 6
+FloatAsInt = 8
 
-type Class: # how a value passes to arm64 or risc-v
-    class: i64
-    t: i64 # the type of an aggregate, in asm.typ
+type Passing: # how a value passes to arm64 or risc-v
+    how: i64
+    layout: i64 # of an aggregate
     size: i64
     align: i64
-    nreg: i64
-    ngp: i64
-    nfp: i64
+    reg_count: i64
+    int_count: i64
+    float_count: i64
     reg: array[i64, 4]
     cls: array[i64, 4]
-    off: array[i64, 4] # where each register goes in the aggregate
+    offset: array[i64, 4] # where each register goes in the aggregate
 
 # the first n registers of c come in new temps, given in tmp, which are stored to the aggregate at base
-func store_temps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
+func store_temps(tmp: *&list[Ref], n: i64, c: *Passing, base: Ref):
     for j in 0..n:
         t := new_temp(c.cls[j])
         r := new_temp(Int64)
         emit(Ostorei32 + c.cls[j], 0, EMPTY, t, r)
-        emit(Oadd, Int64, r, base, intern(c.off[j]))
+        emit(Oadd, Int64, r, base, intern(c.offset[j]))
         append(tmp, t)
 
 # the registers of c are loaded from the aggregate at base
-func load_regs(c: *Class, base: Ref):
-    for j in 0..c.nreg:
+func load_regs(c: *Passing, base: Ref):
+    for j in 0..c.reg_count:
         r := new_temp(Int64)
         emit(Oload, c.cls[j], u32(c.reg[j]), r, EMPTY)
-        emit(Oadd, Int64, r, base, intern(c.off[j]))
+        emit(Oadd, Int64, r, base, intern(c.offset[j]))
 
-# an alloc of sz bytes with the alignment of the type t, that the start block gets
+# an alloc of sz bytes with the alignment of the layout t, that the start block gets
 func alloc_slot(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
     al := max(asm.layouts[t].align - 2, 0)
     append(ral, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
