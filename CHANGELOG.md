@@ -2,7 +2,7 @@
 
 ## 0.7.0
 
-A minor release that adds WebAssembly targets and moves the backend into Flag. `flagc -target wasm-wasm32` and `-target wasm-wasm64` emit WebAssembly modules directly with no C compiler, and the native backend is now QBE ported to Flag with no C sources left in the compiler. Existing programs keep compiling.
+A major release that adds WebAssembly targets and moves the backend into Flag. `flagc -target wasm-wasm32` and `-target wasm-wasm64` emit WebAssembly modules directly with no C compiler, and the native backend is now QBE ported to Flag with no C sources left in the compiler. Existing programs keep compiling.
 
 ### New Features
 

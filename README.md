@@ -87,17 +87,17 @@ Download the archive for your platform from [releases](https://github.com/FramaL
 
 | Platform | Archive |
 | --- | --- |
-| Linux (`x86_64`) | `flag-0.6.3-linux-x86_64.tar.gz` |
-| Linux (`arm64`) | `flag-0.6.3-linux-arm64.tar.gz` |
-| macOS (`arm64`) | `flag-0.6.3-macos-arm64.tar.gz` |
-| macOS (`x86_64`) | `flag-0.6.3-macos-x86_64.tar.gz` |
-| Windows (`x86_64`) | `flag-0.6.3-windows-x86_64.tar.gz` |
+| Linux (`x86_64`) | `flag-0.7.0-linux-x86_64.tar.gz` |
+| Linux (`arm64`) | `flag-0.7.0-linux-arm64.tar.gz` |
+| macOS (`arm64`) | `flag-0.7.0-macos-arm64.tar.gz` |
+| macOS (`x86_64`) | `flag-0.7.0-macos-x86_64.tar.gz` |
+| Windows (`x86_64`) | `flag-0.7.0-windows-x86_64.tar.gz` |
 
 Unpack the archive and add its `bin` folder to your `PATH`:
 
 ```sh
-tar -xzf flag-0.6.3-linux-x86_64.tar.gz
-export PATH="$PWD/flag-0.6.3-linux-x86_64/bin:$PATH"
+tar -xzf flag-0.7.0-linux-x86_64.tar.gz
+export PATH="$PWD/flag-0.7.0-linux-x86_64/bin:$PATH"
 flagc -version
 ```
 
@@ -105,7 +105,7 @@ flagc -version
 
 - **macOS:** if macOS reports that it cannot verify the developer, clear the quarantine attribute (use `x86_64` on Intel Macs):
   ```sh
-  xattr -d com.apple.quarantine flag-0.6.3-macos-arm64/bin/flagc
+  xattr -d com.apple.quarantine flag-0.7.0-macos-arm64/bin/flagc
   ```
 - **Windows:** unpack the archive the same way from the MSYS2 shell, or with `tar -xzf` in PowerShell.
 
