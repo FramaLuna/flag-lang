@@ -302,13 +302,13 @@ func sysv_calls():
     ns := 0
     aret: AClass
     fa := 0
-    if fn.retty >= 0:
-        typclass(ptr(aret), fn.retty)
+    if fn.ret_layout >= 0:
+        typclass(ptr(aret), fn.ret_layout)
         fa = argsclass(ins[:npar], ac, Oparam, ptr(aret))
     else:
         fa = argsclass(ins[:npar], ac, Oparam, null)
     none: array[i64, 2]
-    fn.reg = sysv_arg_regs(ref(RefCall, fa), ptr(none))
+    fn.used_regs = sysv_arg_regs(ref(RefCall, fa), ptr(none))
     for k in 0..npar:
         i := ins[k]
         a := ptr(ac[k])
@@ -323,10 +323,10 @@ func sysv_calls():
         emit(Ostorei64, 0, EMPTY, a.ref[0], i.to)
         al := a.align - 2 if a.align >= 2 else 0
         emit(Oalloc4 + al, Int64, i.to, intern(a.size), EMPTY)
-    if fn.retty >= 0 and aret.inmem != 0:
+    if fn.ret_layout >= 0 and aret.inmem != 0:
         r := new_temp(Int64)
         emit(Ocopy, Int64, r, rarg(Int64, ptr(ni), ptr(ns)), EMPTY)
-        fn.retr = r
+        fn.ret_address = r
     s := 4
     for k in 0..npar:
         i := ins[k]
@@ -366,9 +366,9 @@ func sysv_calls():
             fn.blocks[b].exit.type = Jreturn
             ca := 0
             if j == Jreturnaggregate and aret.inmem != 0:
-                emit(Ocopy, Int64, RAX, fn.retr, EMPTY)
+                emit(Ocopy, Int64, RAX, fn.ret_address, EMPTY)
                 emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[aret.type].size), EMPTY)
-                emit(Oblit, 0, EMPTY, r0, fn.retr)
+                emit(Oblit, 0, EMPTY, r0, fn.ret_address)
                 ca = 1
             elif j == Jreturnaggregate:
                 reg: array[Ref, 2]
@@ -608,16 +608,16 @@ func win_calls():
     defer free(classes)
     counter := 0
     u: RegisterUsage
-    if fn.retty >= 0 and type_is_by_copy(fn.retty):
+    if fn.ret_layout >= 0 and type_is_by_copy(fn.ret_layout):
         ret: ArgClass
         assign_register_or_stack(ptr(u), ptr(ret), false, true)
         r := new_temp(Int64)
         emit(Ocopy, Int64, r, RCX, EMPTY)
-        fn.retr = r
+        fn.ret_address = r
         counter += 1
     classify_arguments(ptr(u), ins[:npar], classes)
     none: array[i64, 2]
-    fn.reg = win_arg_regs(ref(RefCall, usage_value(u)), ptr(none))
+    fn.used_regs = win_arg_regs(ref(RefCall, usage_value(u)), ptr(none))
     offset := SHADOW_SPACE_SIZE / 4 + 4
     for k in 0..npar:
         i := ins[k]
@@ -662,10 +662,10 @@ func win_calls():
             r := fn.blocks[b].exit.arg
             fn.blocks[b].exit.type = Jreturn
             ca := 1 # rax returned
-            if j == Jreturnaggregate and type_is_by_copy(fn.retty):
-                emit(Ocopy, Int64, RAX, fn.retr, EMPTY)
-                emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.retty].size), EMPTY)
-                emit(Oblit, 0, EMPTY, r, fn.retr)
+            if j == Jreturnaggregate and type_is_by_copy(fn.ret_layout):
+                emit(Ocopy, Int64, RAX, fn.ret_address, EMPTY)
+                emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
+                emit(Oblit, 0, EMPTY, r, fn.ret_address)
             elif j == Jreturnaggregate:
                 emit(Oload, Int64, RAX, r, EMPTY)
             elif bank(j - Jreturni32) == 0:
@@ -1286,7 +1286,7 @@ func amd64_select():
             last := k
             while k > 0 and fn.blocks[b].ins[k].op != Ocondition:
                 k -= 1
-            assert fn.blocks[b].ins[k].op == Ocondition, "a sel1 of " + fn.name + " has no sel0"
+            assert fn.blocks[b].ins[k].op == Ocondition, "a select of " + fn.name + " has no condition"
             r := fn.blocks[b].ins[k].arg[0]
             nuse := fn.temps[r].used
             fi := flagi(b, k)
@@ -1447,10 +1447,10 @@ func regtoa(reg: i64, sz: i64) -> &strview:
 
 func slotoff(r: Ref) -> i64:
     s := ref_signed(r)
-    assert s <= fn.slot, "a slot of " + fn.name + " lies past its frame"
+    assert s <= fn.slots, "a slot of " + fn.name + " lies past its frame"
     if s < 0:
         return 4 * (0 - s)
-    return -4 * (fn.slot - s) - amd64.save
+    return -4 * (fn.slots - s) - amd64.save
 
 func emitcon(c: Immediate):
     if c.type == Addressed:
@@ -1949,7 +1949,7 @@ func sysv_keep(restore: bool):
         asm.text += amd64.fsz + amd64.nclob * 8
         out(", %rsp\n")
     for r in reverse SYSV_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             out("\tpopq %" + regtoa(r, SLong) + "\n")
 
 func sysv_emit_function():
@@ -1959,14 +1959,14 @@ func sysv_emit_function():
     o: u64 = 0
     if not fn.leaf:
         for r in SYSV_RCLOB:
-            o = o xor fn.reg >> r
+            o = o xor fn.used_regs >> r
         o = o and 1
     amd64.save = 0
     amd64.nclob = 0
-    amd64.fsz = 4 * ((fn.slot + 3) and -4) + 8 * i64(o)
+    amd64.fsz = 4 * ((fn.slots + 3) and -4) + 8 * i64(o)
     lower_frame()
     for r in SYSV_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             out("\tpushq %" + regtoa(r, SLong) + "\n")
             amd64.nclob += 1
             if comp.debug:
@@ -1980,7 +1980,7 @@ func sysv_emit_function():
 func win_keep(restore: bool):
     o := 0
     for r in WIN_RCLOB:
-        if (fn.reg and reg_bit(r)) == 0:
+        if (fn.used_regs and reg_bit(r)) == 0:
             continue
         n := regtoa(r, SLong)
         mov: &strview = "movaps" if r >= XMM0 else "movq"
@@ -2009,14 +2009,14 @@ func win_emit_function():
     while b != 0:
         for i in fn.blocks[b].ins:
             if i.op == Odiv and i.to == i.arg[1] or i.op == Oswap and bank(i.cls) != 0 or is_vector(i.op) or i.cls == Vector or i.op == Ocopy and ref_kind(i.to) == RefSlot and (ref_kind(i.arg[0]) == RefSlot or ref_kind(i.arg[0]) == RefAddress):
-                fn.reg = fn.reg or reg_bit(XMM15)
+                fn.used_regs = fn.used_regs or reg_bit(XMM15)
         b = fn.blocks[b].next
     amd64.save = 0
     for r in WIN_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             amd64.save += 16 if r >= XMM0 else 8
     amd64.save = (amd64.save + 15) and -16
-    amd64.fsz = 4 * ((fn.slot + 3) and -4)
+    amd64.fsz = 4 * ((fn.slots + 3) and -4)
     if amd64.save != 0:
         out("\tsubq $")
         asm.text += amd64.save

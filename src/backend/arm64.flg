@@ -253,7 +253,7 @@ func arm64_calls():
     defer free(ca)
     cty := arm64_argsclass(ins[:npar], ca)
     none: array[i64, 2]
-    fn.reg = arm64_arg_regs(ref(RefCall, cty), ptr(none))
+    fn.used_regs = arm64_arg_regs(ref(RefCall, cty), ptr(none))
     ral: &list[Instr] = heap([]) # the allocs the start block gets
     defer free(ral)
     tmp: &list[Ref] = heap([])
@@ -267,12 +267,12 @@ func arm64_calls():
         emit(ral[k])
     ral.len = 0
     cr: Class # of the aggregate returned
-    if fn.retty >= 0:
-        arm64_typclass(ptr(cr), fn.retty, X0, V0)
+    if fn.ret_layout >= 0:
+        arm64_typclass(ptr(cr), fn.ret_layout, X0, V0)
         if (cr.class and Cptr) != 0:
-            fn.retr = new_temp(Int64)
-            emit(Ocopy, Int64, fn.retr, X8, EMPTY)
-            fn.reg = fn.reg or reg_bit(X8)
+            fn.ret_address = new_temp(Int64)
+            emit(Ocopy, Int64, fn.ret_address, X8, EMPTY)
+            fn.used_regs = fn.used_regs or reg_bit(X8)
     t := 0
     off := 0
     for k in 0..npar:
@@ -310,8 +310,8 @@ func arm64_calls():
             cty = 0
             if j == Jreturnaggregate:
                 if (cr.class and Cptr) != 0:
-                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.retty].size), EMPTY)
-                    emit(Oblit, 0, EMPTY, r, fn.retr)
+                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
+                    emit(Oblit, 0, EMPTY, r, fn.ret_address)
                 else:
                     load_regs(ptr(cr), r)
                     cty = cr.nfp << 2 or cr.ngp
@@ -985,9 +985,9 @@ func arm64_emit_function():
     out("\thint\t#34\n")
     o := 0
     for r in ARM64_RCLOB:
-        o += i64(fn.reg >> r and 1)
-    f := (fn.slot + 3) and -4
-    arm64.padding = 4 * (f - fn.slot)
+        o += i64(fn.used_regs >> r and 1)
+    f := (fn.slots + 3) and -4
+    arm64.padding = 4 * (f - fn.slots)
     arm64.frame = 4 * f + 8 * (o + (o and 1))
     frame := arm64.frame
     if frame + 16 <= 512:
@@ -1025,7 +1025,7 @@ func arm64_emit_function():
         out("\n")
     s := (frame - arm64.padding) / 4
     for r in ARM64_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             s -= 2
             arm64_emitins(Instr{op = Ostoref64 if r >= V0 else Ostorei64, arg = [u32(r), ref(RefSlot, s)]})
             if comp.debug:
@@ -1058,7 +1058,7 @@ func arm64_emit_function():
         elif j == Jreturn:
             s = (frame - arm64.padding) / 4
             for r in ARM64_RCLOB:
-                if (fn.reg and reg_bit(r)) != 0:
+                if (fn.used_regs and reg_bit(r)) != 0:
                     s -= 2
                     arm64_emitins(Instr{op = Oload, cls = Float64 if r >= V0 else Int64, to = u32(r), arg = [ref(RefSlot, s), EMPTY]})
             if fn.dynamic_alloc:

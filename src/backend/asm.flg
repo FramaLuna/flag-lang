@@ -326,11 +326,11 @@ func compile():
     fill_uses()
     m.select()
     order_blocks()
-    filllive()
+    fill_live()
     fill_loops()
-    fillcost()
+    fill_costs()
     spill()
-    rega()
+    assign_registers()
     order_blocks()
     skip_jumps()
     order_blocks()
@@ -454,13 +454,13 @@ func slot_allocs():
                     panic("invalid alloc size " + sz)
                 sz = (sz + n - 1) and -n
                 sz /= 4
-                if sz > 2147483647 - fn.slot:
+                if sz > 2147483647 - fn.slots:
                     panic("alloc too large")
-                fn.temps[i.to].slot = i32(fn.slot)
-                fn.slot += sz
+                fn.temps[i.to].slot = i32(fn.slots)
+                fn.slots += sz
                 fn.blocks[b].ins[k] = Instr{op = Onop}
         n /= 2
-    fn.slot = (fn.slot + 3) and -4
+    fn.slots = (fn.slots + 3) and -4
 
 func out(s: &strview):
     asm.text += s

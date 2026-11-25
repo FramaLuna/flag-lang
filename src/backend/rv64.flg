@@ -287,16 +287,16 @@ func rv64_calls():
     for k in reverse npar..ins.len:
         emit(ins[k])
     cr: Class # of the aggregate returned
-    if fn.retty >= 0:
-        rv64_typclass(ptr(cr), fn.retty, true, A0, FA0)
+    if fn.ret_layout >= 0:
+        rv64_typclass(ptr(cr), fn.ret_layout, true, A0, FA0)
         if (cr.class and Cptr) != 0:
-            fn.retr = new_temp(Int64)
-            emit(Ocopy, Int64, fn.retr, A0, EMPTY)
+            fn.ret_address = new_temp(Int64)
+            emit(Ocopy, Int64, fn.ret_address, A0, EMPTY)
     ca: &list[Class] = heap([])
     defer free(ca)
     cty := rv64_argsclass(ins[:npar], ca, (cr.class and Cptr) != 0)
     none: array[i64, 2]
-    fn.reg = rv64_arg_regs(ref(RefCall, cty), ptr(none))
+    fn.used_regs = rv64_arg_regs(ref(RefCall, cty), ptr(none))
     ral: &list[Instr] = heap([]) # the allocs the start block gets
     defer free(ral)
     tmp: &list[Ref] = heap([])
@@ -356,8 +356,8 @@ func rv64_calls():
             cty = 0
             if j == Jreturnaggregate:
                 if (cr.class and Cptr) != 0:
-                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.retty].size), EMPTY)
-                    emit(Oblit, 0, EMPTY, r, fn.retr)
+                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
+                    emit(Oblit, 0, EMPTY, r, fn.ret_address)
                 else:
                     load_regs(ptr(cr), r)
                     cty = cr.nfp << 2 or cr.ngp
@@ -667,10 +667,10 @@ RV64_OMAP: array[Form, 90] = [
 # the offset of a slot from fp: the parameters on the stack are above it
 func rv64_slot(r: Ref) -> i64:
     s := ref_signed(r)
-    assert s <= fn.slot, "a slot of " + fn.name + " lies past its frame"
+    assert s <= fn.slots, "a slot of " + fn.name + " lies past its frame"
     if s < 0:
         return 8 * (0 - s)
-    return -4 * (fn.slot - s)
+    return -4 * (fn.slots - s)
 
 func emitaddr(c: Immediate):
     assert (c.access and ThreadData) == 0, "thread data of " + fn.name + " is read as a plain symbol"
@@ -871,9 +871,9 @@ func rv64_emit_function():
     out("\tsd fp, -16(sp)\n\tsd ra, -8(sp)\n\tadd fp, sp, -16\n")
     if comp.debug:
         out("\t.cfi_def_cfa fp, 16\n\t.cfi_offset ra, -8\n\t.cfi_offset fp, -16\n")
-    frame := (16 + 4 * fn.slot + 15) and -16
+    frame := (16 + 4 * fn.slots + 15) and -16
     for r in RV64_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             frame += 8
     frame = (frame + 15) and -16
     if not probing(frame):
@@ -888,7 +888,7 @@ func rv64_emit_function():
             out("\tsd zero, 0(sp)\n")
     off := 0
     for r in RV64_RCLOB:
-        if (fn.reg and reg_bit(r)) != 0:
+        if (fn.used_regs and reg_bit(r)) != 0:
             out("\t" + ("sd " if r < FT0 else "fsd ") + RV64_NAMES[r] + ", ")
             asm.text += off
             out("(sp)\n")
@@ -929,7 +929,7 @@ func rv64_emit_function():
                 out("\n")
             off = 0
             for r in RV64_RCLOB:
-                if (fn.reg and reg_bit(r)) != 0:
+                if (fn.used_regs and reg_bit(r)) != 0:
                     out("\t" + ("ld " if r < FT0 else "fld ") + RV64_NAMES[r] + ", ")
                     asm.text += off
                     out("(sp)\n")

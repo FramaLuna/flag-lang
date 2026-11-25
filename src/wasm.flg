@@ -234,7 +234,7 @@ func assemble() -> &str|Fail:
             added: &list[Instr] = heap([]) # what goes after the parameters
             defer free(added)
             back: Ref = EMPTY
-            if fn.retty >= 0:
+            if fn.ret_layout >= 0:
                 back = new_temp(Int64)
                 append(added, Instr{op = Oparam, cls = Int64, to = back})
             for k in 0..pars:
@@ -253,7 +253,7 @@ func assemble() -> &str|Fail:
             b := fn.start
             while b != 0:
                 if fn.blocks[b].exit.type == Jreturnaggregate:
-                    append(fn.blocks[b].ins, ptr([Instr{op = Oblit, arg = [fn.blocks[b].exit.arg, back]}, Instr{op = Oblitsize, arg = [ref(RefInt, asm.layouts[fn.retty].size), EMPTY]}]))
+                    append(fn.blocks[b].ins, ptr([Instr{op = Oblit, arg = [fn.blocks[b].exit.arg, back]}, Instr{op = Oblitsize, arg = [ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY]}]))
                     fn.blocks[b].exit = Exit{Jreturn, EMPTY}
                 b = fn.blocks[b].next
             optimize(true)

@@ -618,7 +618,7 @@ func chop():
         if fn.blocks[b].exit.type == Jreturnaggregate and k >= 0:
             c := ptr(chopping.chops[k])
             c.returned = true
-            c.bad = c.bad or asm.layouts[fn.retty].size != c.size
+            c.bad = c.bad or asm.layouts[fn.ret_layout].size != c.size
             c.cut[0] = c.cut[0] or 1
             c.cut[c.size] = c.cut[c.size] or 1
         for j in 0..fn.blocks[b].ins.len:
@@ -2099,7 +2099,7 @@ func schedule_late(r: Ref) -> u32:
         t.scheduled = late
         if late != NO_BLOCK:
             best := fn.order[late]
-            assert dominates(fn.order[early], best), "gcm moves an instruction of " + fn.name + " above its arguments"
+            assert dominates(fn.order[early], best), "move_code moves an instruction of " + fn.name + " above its arguments"
             while fn.blocks[best].outer_dominator != 0 and dominates(fn.order[early], fn.blocks[best].outer_dominator):
                 best = fn.blocks[best].outer_dominator
             t.scheduled = u32(fn.blocks[best].id)

@@ -758,10 +758,10 @@ context fn:
     start: i64
     order: &list[i64] = heap([])
     ordered: i64
-    retty: i64 # the aggregate it returns, -1 for none
-    retr: Ref
-    reg: u64
-    slot: i64
+    ret_layout: i64 # the aggregate it returns, -1 for none
+    ret_address: Ref
+    used_regs: u64
+    slots: i64
     dynamic_alloc: bool
     leaf: bool
     name: &strview = ""
@@ -1647,7 +1647,7 @@ func ssa():
                 append(fn.blocks[a].frontier, s)
                 a = fn.blocks[a].dominator
         b = fn.blocks[b].next
-    filllive()
+    fill_live()
     u: Bitset
     defs: Bitset
     clear(ptr(u))
@@ -1828,10 +1828,10 @@ func start_function(name: &strview, export: bool):
     fn.start = 0
     fn.order.len = 0
     fn.ordered = 0
-    fn.retty = -1
-    fn.retr = EMPTY
-    fn.reg = 0
-    fn.slot = 0
+    fn.ret_layout = -1
+    fn.ret_address = EMPTY
+    fn.used_regs = 0
+    fn.slots = 0
     fn.dynamic_alloc = false
     fn.leaf = true
     fn.name = name
@@ -1903,7 +1903,7 @@ func lower(p: Proc):
     fn.first_label = i64(p.labels)
     fn.block_of.len = 0
     rcls, retty := class_of(p.cls)
-    fn.retty = retty
+    fn.ret_layout = retty
     pars: &list[Instr] = heap([])
     defer free(pars)
     for given in comp.passes[p.params:p.params + p.count]:
