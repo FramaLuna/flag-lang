@@ -800,6 +800,12 @@ func arm64_emit_instr(i: Instr):
                     else:
                         form = "\tmrs\tR, tpidr_el0\n\tadd\tR, R, #:tprel_hi12:SO, lsl #12\n\tadd\tR, R, #:tprel_lo12_nc:SO\n"
                 sym := asm.symbols[c.symbol] # R in form is the register, S the symbol and O its offset
+                offset := c.bits
+                below := 0 # the linker of Apple takes no negative offset on a page, so it is subtracted after
+                if m.apple and offset < 0:
+                    below = -offset
+                    offset = 0
+                assert below < 1 << 24, "an address " + below + " bytes below a symbol does not fit two subtractions in " + fn.name
                 for b in items(form):
                     switch b:
                     case 'R':
@@ -809,11 +815,23 @@ func arm64_emit_instr(i: Instr):
                             out(m.symbol_prefix)
                         out(sym)
                     case 'O':
-                        if c.bits != 0:
+                        if offset != 0:
                             out("+")
-                            asm.text += c.bits
+                            asm.text += offset
                     case:
                         add_byte(asm.text, b)
+                for shift in [12, 0]:
+                    part := (below >> shift) and 4095
+                    if part != 0:
+                        out("\tsub\t")
+                        arm64_emit_reg(i64(i.to), Int64)
+                        out(", ")
+                        arm64_emit_reg(i64(i.to), Int64)
+                        out(", #")
+                        asm.text += part
+                        if shift != 0:
+                            out(", lsl #12")
+                        out("\n")
                 return
             n := c.bits
             if wide(i.cls) == 0:

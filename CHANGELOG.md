@@ -30,6 +30,7 @@ A minor release that adds WebAssembly as a target and brings the backend into Fl
 - **Comparisons in a library on `x86_64`:** reading a `context` field between a comparison and the `if` that tests it no longer makes the `if` take the wrong branch in a `-shared` library.
 - **`x86_64` flags after unsigned float conversions:** an `if` right after converting between a float and a `u64` no longer takes the wrong branch.
 - **Unused struct results:** calling a function that returns a large struct without reading the result no longer makes it write through an uninitialized register.
+- **Constant arrays indexed from a number other than 0 on macOS `arm64`:** reading `codes[n - 10]` from a constant array of bytes no longer makes the linker stop with `relocation ... is not supported`.
 - **`riscv64` crash in the backend:** a conditional inside another one that chooses between `1` and `0`, like `x if all else 1 if n > 4 else 0`, no longer stops the compiler with an assertion.
 - **Debug information of the last function:** `-debug` left the last function of the program out of the DWARF, like an `export func` that `main` never calls, so a debugger did not know its parameters and could not call it, and `flagc -shared -debug` crashed on a library without exports.
 - **Programs of 16 files or more:** `flagc` no longer hangs while it loads the 16th file of a program.
