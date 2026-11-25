@@ -41,6 +41,7 @@ A minor release that adds WebAssembly targets and moves the backend into Flag. `
 - **Atomic results:** A function declared `-> atomic[T]` now reports an error at the declaration even when no `return` reaches it, and function types that take or return an atomic by value are rejected too.
 - **`-overlay` in folders:** New `.flg` files that exist only in the `-overlay`, not saved yet, inside a folder given on the command line are now included in the program at any depth, matching the behavior in a quoted `use` folder.
 - **Stepping in a debugger:** `next` no longer skips the target line of a jump when values move along the edge (such as the line after a `switch`), and no longer stops twice on the first line of a loop. Stopping on a `switch` with a non-literal case now shows the `switch` line rather than that case's line.
+- **Crash reports with threads:** when one thread crashes while another is writing a line, the report waits a moment for that line instead of letting it land in the middle of the report.
 - **Function values in `-memory`:** Calling a function value whose type matches the program's first function no longer reports a false memory leak in contexts.
 - **`-memory` and `simd` lanes:** A load or store of a whole `simd` now counts its 16 bytes, so a data race between it and a write to one of its lanes in another thread is reported.
 - **Growing elements through a runtime index:** Calling `append(groups[i % 2], x)` in a loop no longer triggers a false `use after free:` warning in `-memory`.
