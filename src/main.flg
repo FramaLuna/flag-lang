@@ -698,7 +698,7 @@ func main() -> i32:
     source := view(asm_file)
     object: &str = heap(output)
     object += ".o"
-    apart := comp.debug and comp.system == "macos" # dsymutil reads the DWARF from the object, so it outlives the link
+    apart := comp.debug and comp.system == "macos" and comp.procs.len > 0 # dsymutil reads the DWARF from the object, so it outlives the link
     if apart:
         assembling: &list[&strview] = heap([])
         append(assembling, cc)
@@ -719,7 +719,7 @@ func main() -> i32:
             append(folders, rest[k + 1])
     append(folders, comp.library)
     for f in comp.files:
-        if not f.library:
+        if not f.library and is_dir(dir_of(view(f.path))): # a file of the overlay may sit in a folder not made yet
             append(folders, dir_of(view(f.path)))
     for f in folders:
         append(link, "-L" + f)
