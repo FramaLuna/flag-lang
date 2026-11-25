@@ -4,23 +4,11 @@ target=${2:+-target $2}
 case ${2:-} in windows-*) exe=.exe ;; *) exe= ;; esac
 out=build/tests
 [ -n "$target" ] && out=$PWD/$out # zig cc -shared fails on a relative -o
-mkdir -p "$out/bin"
 [ -f "$compiler.exe" ] && compiler=$compiler.exe
-cp "$compiler" "$out/bin/"
 pass=0
 fail=0
 skipped=0
 limit=120
-# what runs a WebAssembly module: node for wasm32, and for wasm64 a node with 64-bit memory, which before Node 24 takes a
-# flag, or none
-wasm32=none
-command -v node > /dev/null && wasm32="node tests/wasm.js"
-wasm64=none
-for node in "node" "node --experimental-wasm-memory64"; do
-    if [ "$wasm64" = none ] && $node -e 'process.exit(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1])) ? 0 : 1)' > /dev/null 2>&1; then
-        wasm64="$node tests/wasm.js"
-    fi
-done
 line='
 '
 words=$IFS # how the shell splits words, which a line of name.args changes for a moment
@@ -38,8 +26,10 @@ within() {
     ) > /dev/null 2>&1 &
     wait $job 2> /dev/null # on Windows a crash ends with its exception code, and the shell would say it was a signal
 }
-for expected in tests/*.out tests/*.err tests/*.warn; do
-    name=$(basename "${expected%.*}")
+# with a test named, runs only it, and writes what it prints to name.report and how it went to name.counts
+if [ -n "${3:-}" ]; then
+    name=$3
+    exec > "$out/$name.report" 2>&1 3>&1
     files=
     cc=
     [ -f "tests/$name.flg" ] && files=tests/$name.flg
@@ -47,7 +37,6 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
         files=$(ls -d "tests/$name/"* | grep -v '\.c$')
         ls "tests/$name/"*.c > /dev/null 2>&1 && cc="-cc $(ls "tests/$name/"*.c)"
     fi
-    [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc|: flagc ' $files "tests/$name.err" < /dev/null && continue # it starts this compiler, or its error repeats the command line
     flagc=$compiler
     vars=
     if [ -f "tests/$name.env" ]; then
@@ -56,6 +45,7 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
     fi
     builds=" " # each line of name.args builds the test once more, with what it says
     [ -f "tests/$name.args" ] && builds=$(cat "tests/$name.args")
+    [ -n "$target" ] && grep -qsE 'FLAGC|bin/flagc|: flagc ' $files "tests/$name.err" < /dev/null && builds= # it starts this compiler, or its error repeats the command line
     IFS=$line
     for build in $builds; do
         IFS=$words
@@ -140,7 +130,30 @@ for expected in tests/*.out tests/*.err tests/*.warn; do
             fail=$((fail + 1))
         fi
     done
-    IFS=$words
+    echo "$pass $fail $skipped" > "$out/$name.counts"
+    exit
+fi
+mkdir -p "$out/bin"
+cp "$compiler" "$out/bin/"
+# what runs a WebAssembly module: node for wasm32, and for wasm64 a node with 64-bit memory, which before Node 24 takes a
+# flag, or none
+wasm32=none
+command -v node > /dev/null && wasm32="node tests/wasm.js"
+wasm64=none
+for node in "node" "node --experimental-wasm-memory64"; do
+    if [ "$wasm64" = none ] && $node -e 'process.exit(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1])) ? 0 : 1)' > /dev/null 2>&1; then
+        wasm64="$node tests/wasm.js"
+    fi
+done
+export wasm32 wasm64
+tests=$(for expected in tests/*.out tests/*.err tests/*.warn; do name=${expected#tests/}; echo "${name%.*}"; done)
+echo "$tests" | xargs -n 1 -P "${JOBS:-$(nproc 2> /dev/null || sysctl -n hw.ncpu)}" sh "$0" "$compiler" "${2:-}"
+for name in $tests; do
+    [ -s "$out/$name.report" ] && cat "$out/$name.report"
+    read passes fails skips < "$out/$name.counts"
+    pass=$((pass + passes))
+    fail=$((fail + fails))
+    skipped=$((skipped + skips))
 done
 for src in examples/*.flg; do
     name=$src

@@ -19,6 +19,7 @@ A minor release that adds WebAssembly targets and moves the backend into Flag. `
 - **`-memory` follows bigger functions:** The memory checker now tracks up to 1024 memory blocks per function, and numeric fields no longer consume a block, so larger functions stay checked. `flagc`'s WebAssembly writer passes `-memory` with no `@trust`, and the backend passes it with no file-level `@trust` (only a single `@trust` line).
 - **More platforms in the releases:** Linux `arm64` and macOS `x86_64` are now first-class targets, built and tested natively in CI with release archives included. CI also builds the compiler and runs the tests on `riscv64` under qemu.
 - **WebAssembly tests on both widths:** Each line of a test's `.args` file runs a separate build, so WebAssembly tests build for both `wasm32` and `wasm64`. `./test.sh` runs them under `node` through `tests/wasm.js` (a small WASI host) and reports how many were skipped when no compatible `node` is available.
+- **Tests in parallel:** `./test.sh` runs one test per core and prints the same report as before, in the same order; `JOBS=1` runs them one at a time.
 
 ### Performance
 

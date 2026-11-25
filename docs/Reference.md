@@ -2290,7 +2290,7 @@ error: unexpected end of line; expected ':'
 | `name.env` | Environment `NAME=value` pairs; runs an isolated copy of `flagc` in `build/tests/bin` that unpacks its embedded library (tests missing `cc` and cache failures). |
 | `name.*` auxiliary / folder / no-file | Auxiliary files (like `name.overlay`) sit beside the test; folders test multi-file programs; tests with no `.flg` or folder test CLI usage errors. |
 
-`./test.sh` also type-checks every file in `examples/`.
+`./test.sh` also type-checks every file in `examples/`. It runs one test per core (`JOBS=1 ./test.sh build/flagc` runs one at a time), each in a `test.sh` of its own that writes what it found to `build/tests/name.report`, and prints those reports in order.
 
 `./test.sh build/flagc windows-x86_64`, with `CC` set to a cross compiler such as `zig cc -target x86_64-windows-gnu`, builds each test for that target and runs it (under WSL, starting each `.exe` via interop). It skips tests that invoke `flagc` itself, tests whose error repeats the command line, and `gdb` tests. From a WSL directory, a few tests cannot pass: `cmd.exe` refuses a UNC current directory, Unix tools like `printf` are absent, and stdout and stderr arrive over separate pipes out of order.
 
