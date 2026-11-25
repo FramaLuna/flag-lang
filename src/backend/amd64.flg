@@ -394,7 +394,6 @@ SHADOW_SPACE_SIZE = 32 # stack bytes reserved for the callee
 
 type WinArg:
     style: i64
-    align: i64
     size: i64
     cls: i64
 
@@ -455,7 +454,6 @@ func win_classify_args(u: *RegisterUsage, ins: &listview[Instr], classes: *&list
         case Oarg, Oparam:
             win_assign(u, ptr(arg), bank(i.cls) != 0, false)
             arg.cls = i64(i.cls)
-            arg.align = 3
             arg.size = 8
         case Oargaggregate, Oparamaggregate:
             t := ref_value(i.arg[0])
@@ -464,7 +462,6 @@ func win_classify_args(u: *RegisterUsage, ins: &listview[Instr], classes: *&list
             arg.cls = Int64
             if not by_copy and asm.layouts[t].size <= 4:
                 arg.cls = Int32
-            arg.align = 3
             arg.size = asm.layouts[t].size
         case Oargvariadic:
             u.varargs = true
@@ -499,13 +496,9 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
             win_assign(ptr(u), ptr(ret), false, true)
         ret.size = asm.layouts[t].size
     win_classify_args(ptr(u), ins[first:at], classes)
-    stack := 0
+    stack := 0 # each argument on the stack takes 8 bytes, a struct of 1, 2 or 4 too
     for arg in classes:
-        if arg.style == InlineOnStack:
-            if arg.align > 4:
-                panic("amd64 Windows argument alignment exceeds 16 bytes in " + fn.name)
-            stack += arg.size
-        elif arg.style == PointerOnStack:
+        if arg.style == InlineOnStack or arg.style == PointerOnStack:
             stack += 8
     stack = (stack + 15) and -16
     # after the call, as the instructions come in reverse
@@ -569,7 +562,7 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
             else:
                 emit(Ostorei64, 0, EMPTY, i.arg[0], slot)
             emit(Oadd, Int64, slot, slots, intern(offset))
-            offset += arg.size
+            offset += 8
         case PointerInRegister, PointerOnStack:
             copy := new_temp(Int64)
             append(extra, Instr{op = Oalloc8, cls = Int64, to = copy, arg = [intern(arg.size), EMPTY]})
