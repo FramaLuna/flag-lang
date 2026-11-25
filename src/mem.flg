@@ -213,7 +213,7 @@ type Fn:
     shown: &strview = ""
     params: &list[u32] = heap([])
     copies: &list[bool] = heap([])
-    values: &list[i64] = heap([]) # what each parameter takes by value, also a big struct that QBE gets by its address
+    values: &list[i64] = heap([]) # what each parameter takes by value, also a big struct that the backend gets by its address
     spans: &list[Span] = heap([])
     names: &list[&strview] = heap([])
     variables: &list[bool] = heap([]) # a temp that is a variable keeps its name, a slot of temporaries takes the name of what it holds
@@ -553,7 +553,7 @@ func check_memory():
                     o.code = Reused
                 case Opart:
                     o.code = Part
-                case Oatomicload, Oatomicadd, Oatomicswap, Oatomicexpected: # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
+                case Oatomicload, Oatomicadd, Oatomicswap, Oatomicexpected: # each reads the word at a, then the others write it, swap with b and compare_swap with c, as if it always did
                     o.code = Word
                     o.atomic = true
                     o.size = 4 << u32(i.cls == Int64)

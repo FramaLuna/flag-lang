@@ -1,6 +1,6 @@
 @trust
-# comp.code holds the instructions of QBE, with blit0 and acas0 taking the three arguments of their pair, and these: a
-# label starts a block, the five after it end one, and the marks after those only -memory reads
+# comp.code holds the instructions of the backend, with blit and atomicexpected taking the three arguments of their
+# pair, and these: a label starts a block, the five after it end one, and the marks after those only -memory reads
 Olabel = OPS
 Ojump = OPS + 1
 Obranch = OPS + 2
@@ -16,7 +16,7 @@ Ocounted = OPS + 11
 Oreused = OPS + 12
 Opart = OPS + 13
 
-AGG = 16 # the classes past those of QBE name a type: an aggregate of the program from AGG, and one of C from CAGG
+AGG = 16 # the classes past those of the backend name a type: an aggregate of the program from AGG, and one of C from CAGG
 CAGG = 1 << 30
 SMALL = 35
 CUT = 48 # bytes of a slot that chop cuts into registers
@@ -65,7 +65,7 @@ func op(cls: i64, o: i64, a: Arg, b: Arg) -> Arg:
 func op1(cls: i64, o: i64, a: Arg) -> Arg:
     return op(cls, o, a, Arg{})
 
-# the number that QBE would compute for an instruction on numbers the compiler knows, as it folds one, or nothing for one it leaves to the program
+# the number that the backend would compute for an instruction on numbers the compiler knows, as it folds one, or nothing for one it leaves to the program
 func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
     float := left.kind != Const
     f := left.n as f64
@@ -345,7 +345,7 @@ func shrink():
             p.last = comp.temps
             comp.procs[f] = p
         put(ids, p.name, f)
-        cut: &list[bool] = heap([]) # the temps that hold the address of a slot QBE cuts into registers: what goes through them doesn't stay
+        cut: &list[bool] = heap([]) # the temps that hold the address of a slot chop cuts into registers: what goes through them doesn't stay
         for t in p.temps..=p.last:
             append(cut, false)
         for k in p.params..p.params + p.count:
@@ -451,7 +451,7 @@ func callee(i: Ins, ids: &map[&strview, i64]) -> i64:
         return comp.procs.len
     return ids[comp.globals[i.a.n]] ifnull comp.procs.len
 
-# the inlined bodies of one function share their slots: those of another may give their address to a call, and QBE would keep the shared slot whole
+# the inlined bodies of one function share their slots: those of another may give their address to a call, and the backend would keep the shared slot whole
 func pooled(slot: Ins, callee: i64, pool: *&list[Ins], taken: *&list[i64]) -> Arg:
     k := 0
     while k < pool.len and (pool[k].a.n != slot.a.n or pool[k].op != slot.op or pool[k].first != u32(callee) or contains(taken.*, k)):

@@ -10,7 +10,7 @@ type Read: # a temp that an instruction reads: its code goes in a hole, once all
     at: i64 # where the hole is in the code of the instruction
 
 context wasm:
-    wide: bool # wasm64, whose memory instructions take an address as the i64 the code keeps it in; wasm32 takes its low word
+    wide: bool # wasm64, whose memory instructions take an address as the i64 the code keeps it in; wasm32 takes its low half
     types: &list[&strview] = heap([]) # each type of function as the module writes it
     type_ids: &map[&strview, i64] = heap({})
     ids: &map[&strview, i64] = heap({}) # the place of each proc, by its name
@@ -50,7 +50,7 @@ context wasm:
     nest: &list[i64] = heap([]) # what encloses the code, the innermost last: the block a wasm block ends before or a loop starts at, -1 for what no jump leaves
 
 # the WebAssembly module of the program, with bulk memory, simd and the conversions that saturate: wasm64 with Memory64,
-# or wasm32, whose memory instructions take the low word of an address, and where a host gives and gets a pointer as an i32
+# or wasm32, whose memory instructions take the low half of an address, and where a host gives and gets a pointer as an i32
 func assemble() -> &str|Fail:
     wasm.wide = comp.machine == "wasm64"
     shrink()
@@ -325,15 +325,15 @@ func assemble() -> &str|Fail:
             if wasm.frame > 0: # a frame that would pass the end of the shadow stack gives the stack back to flag_overflow, or traps in a library
                 append(wasm.locals, 0x7e)
                 wasm.out += "\x23\x00" # global.get of the shadow stack
-                long(wasm.stack + wasm.frame)
+                i64_const(wasm.stack + wasm.frame)
                 wasm.out += "\x54\x04\x40" # i64.lt_u, if
                 overflow := wasm.functions["$flag_overflow"]
                 if overflow is i64:
-                    long(wasm.heap_base)
+                    i64_const(wasm.heap_base)
                     wasm.out += "\x24\x00\x10" # global.set, call
                     leb(wasm.out, u64(overflow))
                 wasm.out += "\x00\x0b\x23\x00" # unreachable, end, global.get
-                long(wasm.frame)
+                i64_const(wasm.frame)
                 add_byte(wasm.out, 0x7d) # i64.sub
                 local_op(0x22, wasm.fp) # local.tee
                 wasm.out += "\x24\x00" # global.set
@@ -564,7 +564,7 @@ func builtin(name: &strview, code: *&str) -> i64:
         return signature([], 0x7e)
     case "$flag_memory_grow": # by pages, it gives the pages it had or -1
         code.* += "\x20\x00"
-        if not wasm.wide: # past the 65536 pages of wasm32 it fails, also for a count whose low word is small
+        if not wasm.wide: # past the 65536 pages of wasm32 it fails, also for a count whose low half is small
             code.* += "\x42"
             sleb(code, PAGE + 1)
             code.* += "\x20\x00\x42"
@@ -617,7 +617,7 @@ func signature(params: &listview[u8], result: u8) -> i64:
     append(wasm.gives, result)
     return wasm.types.len - 1
 
-# the value type of a class of fn, where an aggregate goes by its address and a byte or a half as a word
+# the value type of a class of fn, where an aggregate goes by its address and an i8 or an i16 as an i32
 func valtype(k: i64) -> u8:
     switch k:
     case Int64, Aggregate:
@@ -673,7 +673,7 @@ func thunk(target: i64, kinds: &listview[u8], gives: u8, wants: &listview[u8], b
     retype(code, back, gives)
     return code
 
-# a value of the type from as the type to: the low word of an i64, or an i32 extended with zeros
+# a value of the type from as the type to: the low half of an i64, or an i32 extended with zeros
 func retype(code: *&str, from: u8, to: u8):
     if from == 0x7e and to == 0x7f:
         add_byte(code, 0xa7) # i32.wrap_i64
@@ -713,9 +713,9 @@ func enclose(x: i64, count: i64):
         return
     b := fn.order[x]
     out := ptr(wasm.out)
-    chosen: Ref = EMPTY # what the sels after a sel0 choose by
-    expected: Ref = EMPTY # what the acas1 after an acas0 compares with
-    copied: array[Ref, 2] # the source and the destination of the blit1 after a blit0
+    chosen: Ref = EMPTY # what the selects after a condition choose by
+    expected: Ref = EMPTY # what the compare_swap after its expected value compares with
+    copied: array[Ref, 2] # the source and the destination of the blitsize after a blit
     lane := 0 # of the vset after a vlane
     for k, i in fn.blocks[b].ins:
         o := i64(i.op)
@@ -839,10 +839,10 @@ func enclose(x: i64, count: i64):
             known := bits_of(i.arg[1], ptr(n))
             push(a, Vector)
             if o >= Ovsari16 and known: # the sign fills the lane, as a shift by bits - 1
-                word(min(n, bits - 1))
+                i32_const(min(n, bits - 1))
             elif o >= Ovsari16:
                 push(i.arg[1], Int32)
-                word(bits - 1)
+                i32_const(bits - 1)
                 below(i.arg[1], bits)
                 add_byte(out, 0x1b) # select
             else:
@@ -880,12 +880,12 @@ func enclose(x: i64, count: i64):
                 push(a, c)
             case Oneg:
                 if c == Int32:
-                    word(0)
+                    i32_const(0)
                 elif c == Int64:
-                    long(0)
+                    i64_const(0)
                 push(a, c)
                 add_byte(out, ARITHMETIC[4 * (Osub - Oadd) + c] if c <= Int64 else ARITHMETIC[4 * (Oneg - Oadd) + c])
-            case Oadd, Osub, Odiv, Orem, Oudiv, Ourem, Omul, Oand, Oor, Oxor, Osar, Oshr, Oshl: # a count of a shift is a word, which wasm takes in the class of the shift
+            case Oadd, Osub, Odiv, Orem, Oudiv, Ourem, Omul, Oand, Oor, Oxor, Osar, Oshr, Oshl: # a count of a shift is an i32, which wasm takes in the class of the shift
                 push(a, c)
                 push(i.arg[1], c)
                 add_byte(out, ARITHMETIC[4 * (o - Oadd) + c])
@@ -896,7 +896,7 @@ func enclose(x: i64, count: i64):
                     add_byte(out, 0xac)
             case Oextu8, Oextu16:
                 push(a, Int32)
-                word(0xff if o == Oextu8 else 0xffff)
+                i32_const(0xff if o == Oextu8 else 0xffff)
                 add_byte(out, 0x71) # i32.and
                 if c == Int64:
                     add_byte(out, 0xad)
@@ -910,7 +910,7 @@ func enclose(x: i64, count: i64):
             case Otruncf64:
                 push(a, Float64)
                 add_byte(out, 0xb6) # f32.demote_f64
-            case Of32toi, Of32tou, Of64toi, Of64tou: # saturating, where QBE leaves what each processor gives
+            case Of32toi, Of32tou, Of64toi, Of64tou: # saturating, where the native targets leave what each processor gives
                 push(a, arg_class(i, 0))
                 add_byte(out, 0xfc)
                 add_byte(out, u8(2 * i64(o >= Of64toi) + i64(o == Of32tou or o == Of64tou) + 4 * c))
@@ -964,7 +964,7 @@ func enclose(x: i64, count: i64):
     elif is_return(i64(j.type)):
         if wasm.frame > 0:
             local_op(0x20, wasm.fp)
-            long(wasm.frame)
+            i64_const(wasm.frame)
             add_byte(out, 0x7c) # i64.add
             out.* += "\x24\x00" # global.set of the shadow stack
         add_byte(out, 0x0f) # return
@@ -1138,14 +1138,14 @@ func store(o: i64, offset: i64):
         add_byte(wasm.out, u8([0x3a, 0x3b, 0x36, 0x37, 0x38, 0x39][o - Ostorei8]))
         aligned([1, 2, 4, 8, 4, 8][o - Ostorei8], offset)
 
-# a ref as a value of the class k: a word from a long is its low half, as QBE reads it, and a long from a word, which
-# gvn takes from a comparison for a long that is 1 or 0, has its high half 0
+# a ref as a value of the class k: an i32 from an i64 is its low half, as the backend reads it, and an i64 from an i32,
+# which value numbering takes from a comparison for an i64 that is 1 or 0, has its high half 0
 func push(r: Ref, k: i64):
     out := ptr(wasm.out)
     if ref_kind(r) == RefTemp and wasm.offsets[r] >= 0: # a slot is where the frame pointer points plus its place
         local_op(0x20, wasm.fp)
         if wasm.offsets[r] != 0:
-            long(wasm.offsets[r])
+            i64_const(wasm.offsets[r])
             add_byte(out, 0x7c) # i64.add
         if k == Int32:
             add_byte(out, 0xa7) # i32.wrap_i64
@@ -1161,9 +1161,9 @@ func push(r: Ref, k: i64):
             n += wasm.located[c.symbol]
         switch k:
         case Int32:
-            word(n)
+            i32_const(n)
         case Int64:
-            long(n)
+            i64_const(n)
         case Float32:
             add_byte(out, 0x43)
             little(out, n, 4)
@@ -1192,14 +1192,14 @@ func address(r: Ref) -> i64:
 # a count of bytes, as memory.copy takes it
 func length(n: i64):
     if wasm.wide:
-        long(n)
+        i64_const(n)
     else:
-        word(n)
+        i32_const(n)
 
 # whether a count of a shift is less than bits
 func below(count: Ref, bits: i64):
     push(count, Int32)
-    word(bits)
+    i32_const(bits)
     add_byte(wasm.out, 0x49) # i32.lt_u
 
 # the value on the stack goes to the local of t, or away when nothing reads it
@@ -1221,13 +1221,12 @@ func simd(code: i64):
     add_byte(wasm.out, 0xfd)
     leb(wasm.out, u64(code))
 
-# i32.const n, of its low word
-func word(n: i64):
+# of the low half of n
+func i32_const(n: i64):
     add_byte(wasm.out, 0x41)
     sleb(wasm.out, n << 32 >> 32)
 
-# i64.const n
-func long(n: i64):
+func i64_const(n: i64):
     add_byte(wasm.out, 0x42)
     sleb(wasm.out, n)
 
