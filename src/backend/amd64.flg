@@ -48,17 +48,17 @@ func sysv_classify_fields(a: *SysvClass, t: i64, s: i64):
             cls := ptr(a.cls[s / 8])
             switch f.type:
             case FieldPad:
-                s += f.len
+                s += f.size
             case FieldF32, FieldF64:
                 if cls.* == Unknown:
                     cls.* = Float64
-                s += f.len
+                s += f.size
             case FieldI8, FieldI16, FieldI32, FieldI64:
                 cls.* = Int64
-                s += f.len
+                s += f.size
             case FieldType:
-                sysv_classify_fields(a, f.len, s)
-                s += asm.layouts[f.len].size
+                sysv_classify_fields(a, f.size, s)
+                s += asm.layouts[f.size].size
             k += 1
         k += 1
 
@@ -179,10 +179,10 @@ func sysv_next_reg(ty: i64, ni: *i64, ns: *i64) -> Ref:
     return u32(XMM0 + ns.* - 1)
 
 # lowers the call at i1 of b, with its arguments from i0
-func sysv_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
+func sysv_lower_call(b: i64, i0: i64, i1: i64, allocs: *&list[Instr]):
     ins := fn.blocks[b].ins
     call := ins[i1]
-    pad := fn.temps[call.to].pad
+    pad := fn.temps[call.to].result_slot
     ac: &list[SysvClass] = heap([])
     defer free(ac)
     aret: SysvClass
@@ -205,7 +205,7 @@ func sysv_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
         r := intern(0 - stk)
         emit(Ostackalloc, Int64, EMPTY, r, EMPTY)
     reg: array[Ref, 2]
-    hidden: Ref = EMPTY # the alloc of the return pad that the call gets
+    hidden: Ref = EMPTY # the alloc of the result slot that the call gets
     if call.arg[1] != EMPTY:
         r1: Ref = EMPTY
         if aret.in_memory != 0:
@@ -227,12 +227,12 @@ func sysv_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
             if aret.size > 8:
                 emit(Ocopy, aret.cls[1], aret.refs[1], reg[1], EMPTY)
             emit(Ocopy, aret.cls[0], aret.refs[0], reg[0], EMPTY)
-        # allocate return pad
+        # the result slot
         al := aret.align - 2 if aret.align >= 2 else 0
         made := Instr{op = i32(Oalloc4 + al), cls = Int64, to = r1, arg = [intern(aret.size), EMPTY]}
         hidden = r1
         if pad == EMPTY:
-            append(ral, made)
+            append(allocs, made)
     elif bank(call.cls) == 0:
         emit(Ocopy, call.cls, call.to, RAX, EMPTY)
         ca += 1
@@ -347,8 +347,8 @@ func sysv_calls():
         else:
             emit(Ocopy, i.cls, i.to, r, EMPTY)
     take_emitted(fn.start)
-    ral: &list[Instr] = heap([])
-    defer free(ral)
+    allocs: &list[Instr] = heap([])
+    defer free(allocs)
     b := fn.start
     while true:
         b = fn.blocks[b].next
@@ -380,30 +380,30 @@ func sysv_calls():
                 emit(Ocopy, j - Jreturni32, XMM0, r0, EMPTY)
                 ca = 1 << 2
             fn.blocks[b].exit.arg = ref(RefCall, ca)
-        lower_block(b, ral, sysv_lower_call)
+        lower_block(b, allocs, sysv_lower_call)
         take_emitted(b)
         if b == fn.start:
             break
 
-APS_Register = 1
-APS_InlineOnStack = 2
-APS_CopyAndPointerInRegister = 3
-APS_CopyAndPointerOnStack = 4
-APS_VarargsTag = 5
+InRegister = 1
+InlineOnStack = 2
+PointerInRegister = 3 # to a copy
+PointerOnStack = 4 # to a copy
+VarargsMark = 5
 SHADOW_SPACE_SIZE = 32 # stack bytes reserved for the callee
 
-type ArgClass:
+type WinArg:
     style: i64
     align: i64
     size: i64
     cls: i64
 
 type RegisterUsage:
-    num_regs_passed: i64 # int and float counted together
-    regs_passed: array[bool, 8] # 0 to 3 rcx, rdx, r8, r9, then 4 to 7 xmm0 to xmm3
+    passed_count: i64 # int and float counted together
+    passed: array[bool, 8] # 0 to 3 rcx, rdx, r8, r9, then 4 to 7 xmm0 to xmm3
     rax_returned: bool
     xmm0_returned: bool
-    is_varargs_call: bool
+    varargs: bool
 
 func win_return_regs(r: Ref, p: *array[i64, 2]) -> u64:
     ints := ref_value(r) and 1
@@ -428,57 +428,57 @@ func win_arg_regs(r: Ref, p: *array[i64, 2]) -> u64:
     p[1] = popcount(u64(floats))
     return b
 
-func usage_value(u: RegisterUsage) -> i64:
+func call_bits(u: RegisterUsage) -> i64:
     v := i64(u.rax_returned) or i64(u.xmm0_returned) << 1
     for k in 0..8:
-        v = v or i64(u.regs_passed[k]) << (4 + k)
+        v = v or i64(u.passed[k]) << (4 + k)
     return v
 
-func assign_register_or_stack(u: *RegisterUsage, arg: *ArgClass, is_float: bool, by_copy: bool):
-    if u.num_regs_passed == 4:
-        arg.style = APS_CopyAndPointerOnStack if by_copy else APS_InlineOnStack
+func win_assign(u: *RegisterUsage, arg: *WinArg, is_float: bool, by_copy: bool):
+    if u.passed_count == 4:
+        arg.style = PointerOnStack if by_copy else InlineOnStack
     else:
-        u.regs_passed[4 * i64(is_float) + u.num_regs_passed] = true
-        u.num_regs_passed += 1
-        arg.style = APS_CopyAndPointerInRegister if by_copy else APS_Register
+        u.passed[4 * i64(is_float) + u.passed_count] = true
+        u.passed_count += 1
+        arg.style = PointerInRegister if by_copy else InRegister
 
 # only these sizes are passed by register, a struct of 5 bytes is passed by copy and pointer
-func type_is_by_copy(t: i64) -> bool:
+func win_by_copy(t: i64) -> bool:
     ty := asm.layouts[t]
     return ty.opaque or ty.size != 1 and ty.size != 2 and ty.size != 4 and ty.size != 8
 
-func classify_arguments(u: *RegisterUsage, ins: &listview[Instr], classes: *&list[ArgClass]):
+func win_classify_args(u: *RegisterUsage, ins: &listview[Instr], classes: *&list[WinArg]):
     classes.len = 0
     for i in ins:
-        arg: ArgClass
+        arg: WinArg
         switch i.op:
         case Oarg, Oparam:
-            assign_register_or_stack(u, ptr(arg), bank(i.cls) != 0, false)
+            win_assign(u, ptr(arg), bank(i.cls) != 0, false)
             arg.cls = i64(i.cls)
             arg.align = 3
             arg.size = 8
         case Oargaggregate, Oparamaggregate:
             t := ref_value(i.arg[0])
-            by_copy := type_is_by_copy(t)
-            assign_register_or_stack(u, ptr(arg), false, by_copy)
+            by_copy := win_by_copy(t)
+            win_assign(u, ptr(arg), false, by_copy)
             arg.cls = Int64
             if not by_copy and asm.layouts[t].size <= 4:
                 arg.cls = Int32
             arg.align = 3
             arg.size = asm.layouts[t].size
         case Oargvariadic:
-            u.is_varargs_call = true
-            arg.style = APS_VarargsTag
+            u.varargs = true
+            arg.style = VarargsMark
         case:
             panic("unreachable")
         append(classes, arg)
     # a varargs call takes the floats in the integer registers too
-    if u.is_varargs_call:
+    if u.varargs:
         for k in 0..4:
-            if u.regs_passed[4 + k]:
-                u.regs_passed[k] = true
+            if u.passed[4 + k]:
+                u.passed[k] = true
 
-func register_for_arg(cls: i64, counter: i64) -> Ref:
+func win_arg_reg(cls: i64, counter: i64) -> Ref:
     if bank(cls) == 0:
         return u32(AMD64_WIN.caller_saved[counter])
     return u32(XMM0 + counter)
@@ -486,26 +486,26 @@ func register_for_arg(cls: i64, counter: i64) -> Ref:
 func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
     ins := fn.blocks[b].ins
     call := ins[at]
-    classes: &list[ArgClass] = heap([])
+    classes: &list[WinArg] = heap([])
     defer free(classes)
     u: RegisterUsage
-    ret: ArgClass
+    ret: WinArg
     struct_return := call.arg[1] != EMPTY
     by_copy := false
     if struct_return:
         t := ref_value(call.arg[1])
-        by_copy = type_is_by_copy(t)
+        by_copy = win_by_copy(t)
         if by_copy:
-            assign_register_or_stack(ptr(u), ptr(ret), false, true)
+            win_assign(ptr(u), ptr(ret), false, true)
         ret.size = asm.layouts[t].size
-    classify_arguments(ptr(u), ins[first:at], classes)
+    win_classify_args(ptr(u), ins[first:at], classes)
     stack := 0
     for arg in classes:
-        if arg.style == APS_InlineOnStack:
+        if arg.style == InlineOnStack:
             if arg.align > 4:
                 panic("win abi cannot pass alignments > 16")
             stack += arg.size
-        elif arg.style == APS_CopyAndPointerOnStack:
+        elif arg.style == PointerOnStack:
             stack += 8
     stack = (stack + 15) and -16
     # after the call, as the instructions come in reverse
@@ -513,7 +513,7 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
     emit(Ostackalloc, Int64, EMPTY, r, EMPTY)
     pad: Ref = EMPTY
     if by_copy:
-        pad = fn.temps[call.to].pad
+        pad = fn.temps[call.to].result_slot
         made := pad == EMPTY
         if made:
             pad = new_temp(Int64)
@@ -524,7 +524,7 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
         emit(Ocopy, call.cls, call.to, RAX, EMPTY)
     elif struct_return:
         # a struct the calling convention returns in rax, which the code still reads through a pointer
-        p := fn.temps[call.to].pad
+        p := fn.temps[call.to].result_slot
         if p == EMPTY:
             append(extra, Instr{op = Oalloc8, cls = Int64, to = call.to, arg = [intern(8), EMPTY]})
             p = call.to
@@ -538,14 +538,14 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
     else:
         emit(Ocopy, call.cls, call.to, XMM0, EMPTY)
         u.xmm0_returned = true
-    emit(Ocall, call.cls, EMPTY, call.arg[0], ref(RefCall, usage_value(u)))
-    if u.is_varargs_call: # floats go in the integer registers too
+    emit(Ocall, call.cls, EMPTY, call.arg[0], ref(RefCall, call_bits(u)))
+    if u.varargs: # floats go in the integer registers too
         for k in 0..4:
-            if u.regs_passed[4 + k]:
+            if u.passed[4 + k]:
                 emit(Ocast, Int64, u32([RCX, RDX, R8, R9][k]), u32(XMM0 + k), EMPTY)
     counter := 0
     if by_copy:
-        emit(Ocopy, Int64, register_for_arg(Int64, counter), pad, EMPTY)
+        emit(Ocopy, Int64, win_arg_reg(Int64, counter), pad, EMPTY)
         counter += 1
     slots := new_temp(Int64)
     offset := SHADOW_SPACE_SIZE
@@ -553,14 +553,14 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
         i := ins[first + k]
         arg := classes[k]
         switch arg.style:
-        case APS_Register:
-            into := register_for_arg(arg.cls, counter)
+        case InRegister:
+            into := win_arg_reg(arg.cls, counter)
             counter += 1
             if i.op == Oargaggregate: # a small struct, its value goes in the register
                 emit(Oload, arg.cls, into, i.arg[1], EMPTY)
             else:
                 emit(Ocopy, i.cls, into, i.arg[0], EMPTY)
-        case APS_InlineOnStack:
+        case InlineOnStack:
             slot := new_temp(Int64)
             if i.op == Oargaggregate:
                 small := new_temp(arg.cls)
@@ -570,13 +570,13 @@ func win_lower_call(b: i64, first: i64, at: i64, extra: *&list[Instr]):
                 emit(Ostorei64, 0, EMPTY, i.arg[0], slot)
             emit(Oadd, Int64, slot, slots, intern(offset))
             offset += arg.size
-        case APS_CopyAndPointerInRegister, APS_CopyAndPointerOnStack:
+        case PointerInRegister, PointerOnStack:
             copy := new_temp(Int64)
             append(extra, Instr{op = Oalloc8, cls = Int64, to = copy, arg = [intern(arg.size), EMPTY]})
             emit(Oblitsize, 0, EMPTY, ref(RefInt, arg.size), EMPTY)
             emit(Oblit, 0, EMPTY, i.arg[1], copy)
-            if arg.style == APS_CopyAndPointerInRegister:
-                emit(Ocopy, Int64, register_for_arg(arg.cls, counter), copy, EMPTY)
+            if arg.style == PointerInRegister:
+                emit(Ocopy, Int64, win_arg_reg(arg.cls, counter), copy, EMPTY)
                 counter += 1
             else:
                 slot := new_temp(Int64)
@@ -599,27 +599,27 @@ func win_calls():
     fn.out.len = 0
     for k in reverse npar..ins.len:
         emit(ins[k])
-    classes: &list[ArgClass] = heap([])
+    classes: &list[WinArg] = heap([])
     defer free(classes)
     counter := 0
     u: RegisterUsage
-    if fn.ret_layout >= 0 and type_is_by_copy(fn.ret_layout):
-        ret: ArgClass
-        assign_register_or_stack(ptr(u), ptr(ret), false, true)
+    if fn.ret_layout >= 0 and win_by_copy(fn.ret_layout):
+        ret: WinArg
+        win_assign(ptr(u), ptr(ret), false, true)
         r := new_temp(Int64)
         emit(Ocopy, Int64, r, RCX, EMPTY)
         fn.ret_address = r
         counter += 1
-    classify_arguments(ptr(u), ins[:npar], classes)
+    win_classify_args(ptr(u), ins[:npar], classes)
     none: array[i64, 2]
-    fn.used_regs = win_arg_regs(ref(RefCall, usage_value(u)), ptr(none))
+    fn.used_regs = win_arg_regs(ref(RefCall, call_bits(u)), ptr(none))
     offset := SHADOW_SPACE_SIZE / 4 + 4
     for k in 0..npar:
         i := ins[k]
         arg := classes[k]
         switch arg.style:
-        case APS_Register:
-            from := register_for_arg(arg.cls, counter)
+        case InRegister:
+            from := win_arg_reg(arg.cls, counter)
             counter += 1
             # a struct is copied from the register to a slot, to have something to point at
             if i.op == Oparamaggregate:
@@ -629,7 +629,7 @@ func win_calls():
                 emit(Oalloc8, Int64, i.to, intern(arg.size), EMPTY)
             else:
                 emit(Ocopy, i.cls, i.to, from, EMPTY)
-        case APS_InlineOnStack:
+        case InlineOnStack:
             if i.op == Oparamaggregate:
                 r := new_temp(Int64)
                 emit(Ostorei64, 0, EMPTY, r, i.to)
@@ -638,11 +638,11 @@ func win_calls():
             else:
                 emit(Oload, i.cls, i.to, ref(RefSlot, 0 - offset), EMPTY)
             offset += 2
-        case APS_CopyAndPointerOnStack:
+        case PointerOnStack:
             emit(Oload, Int64, i.to, ref(RefSlot, 0 - offset), EMPTY)
             offset += 2
-        case APS_CopyAndPointerInRegister: # a copy that we own, it is enough to take the register
-            emit(Ocopy, Int64, i.to, register_for_arg(Int64, counter), EMPTY)
+        case PointerInRegister: # a copy that we own, it is enough to take the register
+            emit(Ocopy, Int64, i.to, win_arg_reg(Int64, counter), EMPTY)
             counter += 1
     take_emitted(fn.start)
     extra: &list[Instr] = heap([]) # the allocs the start block gets
@@ -657,7 +657,7 @@ func win_calls():
             r := fn.blocks[b].exit.arg
             fn.blocks[b].exit.type = Jreturn
             ca := 1 # rax returned
-            if j == Jreturnaggregate and type_is_by_copy(fn.ret_layout):
+            if j == Jreturnaggregate and win_by_copy(fn.ret_layout):
                 emit(Ocopy, Int64, RAX, fn.ret_address, EMPTY)
                 emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.ret_layout].size), EMPTY)
                 emit(Oblit, 0, EMPTY, r, fn.ret_address)
@@ -1067,7 +1067,7 @@ OffsetBaseIndex = 5
 ADD_STATES: array[u8, 91] = [2, 2, 2, 4, 4, 5, 6, 6, 8, 8, 4, 4, 9, 10, 9, 7, 7, 5, 8, 9, 5, 4, 4, 12, 10, 12, 12, 12, 4, 4, 9, 10, 9, 9, 12, 9, 11, 11, 5, 8, 9, 5, 12, 9, 5, 7, 7, 5, 8, 9, 5, 12, 9, 5, 5, 11, 11, 5, 8, 9, 5, 12, 9, 5, 5, 5, 4, 4, 9, 10, 9, 9, 12, 9, 9, 9, 9, 9, 7, 7, 5, 8, 9, 5, 12, 9, 5, 5, 5, 9, 5]
 MATCHES: array[u8, 13] = [0, 0, 0, 0, 1, 16, 5, 33, 18, 48, 58, 41, 56]
 MATCHER_CODE: array[u8, 165] = [1, 3, 0, 3, 1, 0, 5, 1, 8, 5, 27, 1, 5, 1, 2, 5, 13, 3, 1, 1, 3, 3, 3, 2, 0, 1, 3, 3, 3, 2, 3, 1, 0, 1, 29, 1, 3, 0, 1, 3, 3, 3, 2, 0, 5, 2, 10, 7, 11, 19, 49, 1, 1, 3, 3, 3, 2, 1, 3, 0, 3, 1, 0, 1, 3, 0, 5, 1, 8, 5, 25, 1, 5, 1, 2, 5, 13, 3, 1, 1, 3, 3, 3, 2, 0, 1, 3, 3, 3, 2, 26, 1, 51, 1, 5, 1, 6, 5, 9, 1, 3, 0, 51, 3, 1, 1, 3, 0, 45, 1, 3, 1, 3, 2, 0, 5, 3, 9, 9, 10, 33, 12, 35, 45, 1, 5, 3, 11, 9, 7, 9, 4, 9, 17, 1, 3, 0, 3, 1, 3, 2, 0, 3, 1, 1, 3, 0, 34, 1, 37, 1, 5, 2, 5, 7, 2, 7, 8, 37, 29, 1, 3, 0, 1, 32]
-MATCHER_AT: array[i64, 6] = [0, 6, 35, 44, 109, 115] # of each pattern in MATCHERS
+MATCHER_AT: array[i64, 6] = [0, 6, 35, 44, 109, 115] # of each pattern in MATCHER_CODE
 
 func state_of(r: Ref) -> i64:
     switch ref_kind(r):

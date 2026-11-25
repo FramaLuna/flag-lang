@@ -51,13 +51,13 @@ func live_on(v: *Bitset, b: i64, s: i64):
         for a in 0..ph.arg.len:
             if ph.blocks[a] == b and ref_kind(ph.arg[a]) == RefTemp:
                 include(v, i64(ph.arg[a]))
-                include(ptr(fn.blocks[b].gen), i64(ph.arg[a]))
+                include(ptr(fn.blocks[b].touched), i64(ph.arg[a]))
         p = ph.next
 
 func mark_used(r: Ref, b: i64, nlv: *array[i64, 2]):
     if ref_kind(r) != RefTemp:
         return
-    include(ptr(fn.blocks[b].gen), i64(r))
+    include(ptr(fn.blocks[b].touched), i64(r))
     if not has(ptr(fn.blocks[b].live_in), i64(r)):
         nlv[bank(fn.temps[r].cls)] += 1
         include(ptr(fn.blocks[b].live_in), i64(r))
@@ -70,7 +70,7 @@ func fill_live():
     while b != 0:
         clear(ptr(fn.blocks[b].live_in))
         clear(ptr(fn.blocks[b].live_out))
-        clear(ptr(fn.blocks[b].gen))
+        clear(ptr(fn.blocks[b].touched))
         b = fn.blocks[b].next
     changed := true
     while changed:
@@ -96,7 +96,7 @@ func fill_live():
                 p.live_in.words[0] = p.live_in.words[0] or m.return_regs(p.exit.arg, ptr(nlv))
             else:
                 mark_used(p.exit.arg, b, ptr(nlv))
-            p.nlive = nlv
+            p.most_live = nlv
             for k in reverse 0..p.ins.len:
                 i := p.ins[k]
                 if i.op == Ocall and ref_kind(i.arg[1]) == RefCall:
@@ -106,8 +106,8 @@ func fill_live():
                         nlv[j] -= c[j]
                         # the callee uses the caller-save registers, they are live in the middle of the call
                         nlv[j] += m.caller_saved_count[j]
-                        if nlv[j] > p.nlive[j]:
-                            p.nlive[j] = nlv[j]
+                        if nlv[j] > p.most_live[j]:
+                            p.most_live[j] = nlv[j]
                     p.live_in.words[0] = p.live_in.words[0] or m.arg_regs(i.arg[1], ptr(c))
                     for j in 0..2:
                         nlv[j] -= m.caller_saved_count[j]
@@ -116,7 +116,7 @@ func fill_live():
                     t = i64(i.to)
                     if has(ptr(p.live_in), t):
                         nlv[bank(fn.temps[t].cls)] -= 1
-                    include(ptr(p.gen), t)
+                    include(ptr(p.touched), t)
                     exclude(ptr(p.live_in), t)
                 for j in 0..2:
                     if ref_kind(i.arg[j]) == RefAddress:
@@ -126,15 +126,15 @@ func fill_live():
                     else:
                         mark_used(i.arg[j], b, ptr(nlv))
                 for j in 0..2:
-                    if nlv[j] > p.nlive[j]:
-                        p.nlive[j] = nlv[j]
+                    if nlv[j] > p.most_live[j]:
+                        p.most_live[j] = nlv[j]
 
 # a loop header gathers what its loop uses and the most it keeps live
 func gather_loop(hd: i64, b: i64):
-    include_all(ptr(fn.blocks[hd].gen), ptr(fn.blocks[b].gen)) @trust
+    include_all(ptr(fn.blocks[hd].touched), ptr(fn.blocks[b].touched)) @trust
     for k in 0..2:
-        if fn.blocks[b].nlive[k] > fn.blocks[hd].nlive[k]:
-            fn.blocks[hd].nlive[k] = fn.blocks[b].nlive[k]
+        if fn.blocks[b].most_live[k] > fn.blocks[hd].most_live[k]:
+            fn.blocks[hd].most_live[k] = fn.blocks[b].most_live[k]
 
 func count_use(r: Ref, use: bool, loop: i32):
     if ref_kind(r) == RefAddress:
@@ -354,20 +354,20 @@ func spill():
                 hd = s
         if hd != 0: # back-edge
             clear(v)
-            fn.blocks[hd].gen.words[0] = fn.blocks[hd].gen.words[0] or m.always_live # don't spill registers
+            fn.blocks[hd].touched.words[0] = fn.blocks[hd].touched.words[0] or m.always_live # don't spill registers
             for k in 0..2:
                 nr := m.ints if k == 0 else m.floats
                 copy_set(u, ptr(fn.blocks[b].live_out))
                 intersect(u, ptr(regs.of_bank[k]))
                 copy_set(w, u)
-                intersect(u, ptr(fn.blocks[hd].gen))
+                intersect(u, ptr(fn.blocks[hd].touched))
                 t := next_in(u, 0) # w keeps what u does not
                 while t >= 0:
                     exclude(w, t)
                     t = next_in(u, t + 1)
                 if count(u) < nr:
                     j := count(w) # live through
-                    l := fn.blocks[hd].nlive[k]
+                    l := fn.blocks[hd].most_live[k]
                     limit(w, nr - (l - j), null)
                     include_all(u, w)
                 else:
@@ -717,7 +717,7 @@ func set_ref(x: i64, r: Ref):
     else:
         fn.addresses[(x - 2) / 2].index = r
 
-func insert(x: i64, ra: *array[i64, 4], p: i64):
+func insert_hinted(x: i64, ra: *array[i64, 4], p: i64):
     ra[p] = x
     i := p
     # the hinted ones first
@@ -875,13 +875,13 @@ func assign_registers():
                 case RefAddress:
                     a := fn.addresses[ref_value(i.arg[x])]
                     if ref_kind(a.base) == RefTemp:
-                        insert(2 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
+                        insert_hinted(2 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
                         nr += 1
                     if ref_kind(a.index) == RefTemp:
-                        insert(3 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
+                        insert_hinted(3 + 2 * ref_value(i.arg[x]), ptr(ra), nr)
                         nr += 1
                 case RefTemp:
-                    insert(x, ptr(ra), nr)
+                    insert_hinted(x, ptr(ra), nr)
                     nr += 1
             for x in 0..nr:
                 set_ref(ra[x], allocate(cur, i64(ref_at(ra[x])), false))

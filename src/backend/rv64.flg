@@ -50,9 +50,9 @@ func rv64_float_fields(t: i64, off: i64, c: *Passing) -> i64:
         if f.type == FieldEnd:
             break
         if f.type == FieldPad:
-            off += f.len
+            off += f.size
         elif f.type == FieldType:
-            if rv64_float_fields(f.len, off, c) == -1:
+            if rv64_float_fields(f.size, off, c) == -1:
                 return -1
         else:
             n := c.float_count + c.int_count
@@ -72,7 +72,7 @@ func rv64_float_fields(t: i64, off: i64, c: *Passing) -> i64:
                 c.cls[n] = Int32
                 c.int_count += 1
             c.offset[n] = off
-            off += f.len
+            off += f.size
     return c.float_count
 
 # how an aggregate t passes from the registers gp and fp on: up to two fields, floats in float registers when fpabi,
@@ -166,7 +166,7 @@ func rv64_classify_args(ins: &listview[Instr], ca: *&list[Passing], retptr: bool
     return env << 12 or (gp - A0) << 4 or (fp - FA0) << 8
 
 # lowers the call at i1 of b, with its arguments from i0
-func rv64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
+func rv64_lower_call(b: i64, i0: i64, i1: i64, allocs: *&list[Instr]):
     ins := fn.blocks[b].ins
     call := ins[i1]
     cr: Passing
@@ -184,7 +184,7 @@ func rv64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
             r := new_temp(Int64)
             ins[i0 + k].arg[0] = r
             ins[i0 + k].op = Oarg
-            alloc_slot(r, c.layout, (asm.layouts[c.layout].size + 7) and -8, ral)
+            alloc_slot(r, c.layout, (asm.layouts[c.layout].size + 7) and -8, allocs)
         if (c.how and FirstOnStack) != 0:
             stk += 8
         if (c.how and SecondOnStack) != 0:
@@ -193,10 +193,10 @@ func rv64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
     if stk != 0:
         emit(Ostackalloc, Int64, EMPTY, intern(0 - stk), EMPTY)
     if call.arg[1] != EMPTY:
-        if fn.temps[call.to].pad == EMPTY:
-            alloc_slot(call.to, cr.layout, (asm.layouts[cr.layout].size + 7) and -8, ral)
+        if fn.temps[call.to].result_slot == EMPTY:
+            alloc_slot(call.to, cr.layout, (asm.layouts[cr.layout].size + 7) and -8, allocs)
         else:
-            call.to = fn.temps[call.to].pad
+            call.to = fn.temps[call.to].result_slot
         cty = cty or cr.float_count << 2 or cr.int_count
         if (cr.how and ByPointer) != 0:
             # spill and assign_registers expect a call followed by copies from registers, so a dummy one goes after it
@@ -297,8 +297,8 @@ func rv64_calls():
     cty := rv64_classify_args(ins[:npar], ca, (cr.how and ByPointer) != 0)
     none: array[i64, 2]
     fn.used_regs = rv64_arg_regs(ref(RefCall, cty), ptr(none))
-    ral: &list[Instr] = heap([]) # the allocs the start block gets
-    defer free(ral)
+    allocs: &list[Instr] = heap([]) # the allocs the start block gets
+    defer free(allocs)
     tmp: &list[Ref] = heap([])
     defer free(tmp)
     for k in 0..npar:
@@ -316,10 +316,10 @@ func rv64_calls():
                 c.offset[1] = 8
                 n = 2
             store_temps(tmp, n, c, ins[k].to)
-            alloc_slot(ins[k].to, c.layout, (asm.layouts[c.layout].size + 7) and -8, ral)
-    for k in reverse 0..ral.len:
-        emit(ral[k])
-    ral.len = 0
+            alloc_slot(ins[k].to, c.layout, (asm.layouts[c.layout].size + 7) and -8, allocs)
+    for k in reverse 0..allocs.len:
+        emit(allocs[k])
+    allocs.len = 0
     t := 0
     s := 2
     for k in 0..npar:
@@ -368,7 +368,7 @@ func rv64_calls():
                 emit(Ocopy, j - Jreturni32, FA0, r, EMPTY)
                 cty = 1 << 2
             fn.blocks[b].exit.arg = ref(RefCall, cty)
-        lower_block(b, ral, rv64_lower_call)
+        lower_block(b, allocs, rv64_lower_call)
         take_emitted(b)
         if b == fn.start:
             break

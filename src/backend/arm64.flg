@@ -32,7 +32,7 @@ func all_floats(t: i64, cls: *i64) -> bool:
                 cls.* = Float32
             elif f.type == FieldF64 and cls.* != Float32:
                 cls.* = Float64
-            elif f.type != FieldType or not all_floats(f.len, cls):
+            elif f.type != FieldType or not all_floats(f.size, cls):
                 return false
             k += 1
         k += 1
@@ -156,7 +156,7 @@ func arm64_arg_regs(r: Ref, p: *array[i64, 2]) -> u64:
     return b
 
 # lowers the call at i1 of b, with its arguments from i0
-func arm64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
+func arm64_lower_call(b: i64, i0: i64, i1: i64, allocs: *&list[Instr]):
     ins := fn.blocks[b].ins
     ca: &list[Passing] = heap([])
     defer free(ca)
@@ -168,7 +168,7 @@ func arm64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
             r := new_temp(Int64)
             ins[i0 + k].arg[0] = r
             ins[i0 + k].op = Oarg
-            alloc_slot(r, c.layout, asm.layouts[c.layout].size, ral)
+            alloc_slot(r, c.layout, asm.layouts[c.layout].size, allocs)
         if (c.how and OnStack) != 0:
             stk = ((stk + c.align - 1) and -c.align) + c.size
     stk = (stk + 15) and -16
@@ -179,10 +179,10 @@ func arm64_lower_call(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
     if call.arg[1] != EMPTY:
         cr: Passing
         arm64_classify(ptr(cr), ref_value(call.arg[1]), X0, V0)
-        if fn.temps[call.to].pad == EMPTY:
-            alloc_slot(call.to, cr.layout, asm.layouts[cr.layout].size if (cr.how and ByPointer) != 0 else cr.size, ral)
+        if fn.temps[call.to].result_slot == EMPTY:
+            alloc_slot(call.to, cr.layout, asm.layouts[cr.layout].size if (cr.how and ByPointer) != 0 else cr.size, allocs)
         else:
-            call.to = fn.temps[call.to].pad
+            call.to = fn.temps[call.to].result_slot
         cty = cty or cr.float_count << 2 or cr.int_count
         if (cr.how and ByPointer) != 0:
             # spill and assign_registers expect a call followed by copies from registers, so a dummy one goes after it
@@ -255,18 +255,18 @@ func arm64_calls():
     cty := arm64_classify_args(ins[:npar], ca)
     none: array[i64, 2]
     fn.used_regs = arm64_arg_regs(ref(RefCall, cty), ptr(none))
-    ral: &list[Instr] = heap([]) # the allocs the start block gets
-    defer free(ral)
+    allocs: &list[Instr] = heap([]) # the allocs the start block gets
+    defer free(allocs)
     tmp: &list[Ref] = heap([])
     defer free(tmp)
     for k in 0..npar:
         c := ptr(ca[k])
         if ins[k].op == Oparamaggregate and (c.how and (ByPointer or OnStack)) == 0:
             store_temps(tmp, c.reg_count, c, ins[k].to)
-            alloc_slot(ins[k].to, c.layout, c.size, ral)
-    for k in reverse 0..ral.len:
-        emit(ral[k])
-    ral.len = 0
+            alloc_slot(ins[k].to, c.layout, c.size, allocs)
+    for k in reverse 0..allocs.len:
+        emit(allocs[k])
+    allocs.len = 0
     cr: Passing # of the aggregate returned
     if fn.ret_layout >= 0:
         arm64_classify(ptr(cr), fn.ret_layout, X0, V0)
@@ -323,7 +323,7 @@ func arm64_calls():
                 emit(Ocopy, j - Jreturni32, V0, r, EMPTY)
                 cty = 1 << 2
             fn.blocks[b].exit.arg = ref(RefCall, cty)
-        lower_block(b, ral, arm64_lower_call)
+        lower_block(b, allocs, arm64_lower_call)
         take_emitted(b)
         if b == fn.start:
             break

@@ -329,7 +329,6 @@ FromU16 = 4
 FromI32 = 5
 FromU32 = 6
 
-UXXX = 0
 ByPhi = 1
 ByInstr = 2
 ByExit = 3
@@ -652,8 +651,8 @@ type BasicBlock:
     preds: &list[i64] = heap([])
     live_in: Bitset
     live_out: Bitset
-    gen: Bitset
-    nlive: array[i64, 2]
+    touched: Bitset
+    most_live: array[i64, 2]
     loop: i32
 
 type Usage:
@@ -680,7 +679,7 @@ type Temporary:
     block: u32 # its block, 0xffff_ffff for none
     cost: u32
     slot: i32
-    pad: Ref # the slot that a call that returns an aggregate writes
+    result_slot: Ref # the slot that a call that returns an aggregate writes
     cls: i32
     hint: i32 # the register it would like, -1 for none
     hint_depth: i32 # the loop depth of the hint
@@ -705,7 +704,7 @@ type Addressing: # of amd64
 
 type Member:
     type: i32
-    len: i64 # or, of a FieldType, its layout
+    size: i64 # or, of a FieldType, its layout
 
 type Layout:
     opaque: bool
@@ -775,7 +774,7 @@ context fn:
     last: i64 # the block it defined last
     zero_one: array[Ref, 2] # the constants 0 and 1
     values: &list[Instr] = heap([]) # the instructions value numbering met, by a hash of them
-    inserts: &list[Insert] = heap([]) # what loadopt inserts
+    inserts: &list[Insert] = heap([]) # what forward_loads inserts
     insert_count: i64
     thread_symbols: &list[i64] = heap([]) # the thread data each function reads, and the temps that hold their addresses
     thread_temps: &list[Ref] = heap([])
@@ -1172,7 +1171,7 @@ func new_block() -> i64:
     b.preds.len = 0
     b.targets.len = 0
     b.table.len = 0
-    b.* = BasicBlock{ins = b.ins, frontier = b.frontier, preds = b.preds, targets = b.targets, table = b.table, live_in = b.live_in, live_out = b.live_out, gen = b.gen}
+    b.* = BasicBlock{ins = b.ins, frontier = b.frontier, preds = b.preds, targets = b.targets, table = b.table, live_in = b.live_in, live_out = b.live_out, touched = b.touched}
     return fn.block_count
 
 # the blocks b jumps to: the targets of its jump table, or yes and no once, which pair holds for the view

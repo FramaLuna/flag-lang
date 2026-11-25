@@ -357,7 +357,7 @@ func optimize(selects: bool):
     fill_aliases()
     forward_loads()
     fill_uses()
-    pad_calls()
+    result_slots()
     fill_uses()
     fill_aliases()
     coalesce()
@@ -380,7 +380,7 @@ func optimize(selects: bool):
         check_ssa()
 
 # the instructions of b, lowered from its end
-func lower_block(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
+func lower_block(b: i64, allocs: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
     k := fn.blocks[b].ins.len
     while k > 0:
         k -= 1
@@ -390,15 +390,15 @@ func lower_block(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[In
             i0 := k
             while i0 > 0 and is_arg(fn.blocks[b].ins[i0 - 1].op):
                 i0 -= 1
-            call(b, i0, k, ral)
+            call(b, i0, k, allocs)
             k = i0
         case Ovastart, Ovaarg, Oarg, Oargaggregate:
             panic("unreachable")
         case:
             emit(i)
     if b == fn.start: # the allocs in the order they were made
-        for j in reverse 0..ral.len:
-            emit(ral[j])
+        for j in reverse 0..allocs.len:
+            emit(allocs[j])
 
 ByPointer = 1
 FirstOnStack = 2 # the first half of a pair of registers, or all
@@ -435,9 +435,9 @@ func load_regs(c: *Passing, base: Ref):
         emit(Oadd, Int64, r, base, intern(c.offset[j]))
 
 # an alloc of sz bytes with the alignment of the layout t, that the start block gets
-func alloc_slot(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
+func alloc_slot(r: Ref, t: i64, sz: i64, allocs: *&list[Instr]):
     al := max(asm.layouts[t].align - 2, 0)
-    append(ral, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
+    append(allocs, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
 
 # the allocs of the start block of a constant size become slots, the widest first, so each stays aligned
 func slot_allocs():

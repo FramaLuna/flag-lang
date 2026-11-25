@@ -44,7 +44,7 @@ context wasm:
     deferred: &list[Ref] = heap([]) # the values computed and left on the stack for the instruction that reads them, the last on top
     marks: &list[i64] = heap([]) # where the code of each one starts in stacked, and where the last one ends
     stacked: &str = heap("")
-    header: &list[bool] = heap([]) # of each block by its place in fn.rpo: a jump back lands there, so a loop starts there
+    header: &list[bool] = heap([]) # of each block by its place in fn.order: a jump back lands there, so a loop starts there
     merge: &list[bool] = heap([]) # two forward jumps or more land there, so a block ends before it
     merges: &list[&list[i64]] = heap([]) # of each block, the merges it dominates in reverse postorder
     nest: &list[i64] = heap([]) # what encloses the code, the innermost last: the block a wasm block ends before or a loop starts at, -1 for what no jump leaves
@@ -310,7 +310,7 @@ func assemble() -> &str|Fail:
                     if is_alloc(i.op):
                         size = fn.constants[ref_value(i.arg[0])].bits
                         align = 4 << (i.op - Oalloc4)
-                    elif i.op == Ocall and i.arg[1] != EMPTY and (fn.temps[i.to].pad == EMPTY or wasm.offsets[fn.temps[i.to].pad] < 0): # what it gives back that nothing reads
+                    elif i.op == Ocall and i.arg[1] != EMPTY and (fn.temps[i.to].result_slot == EMPTY or wasm.offsets[fn.temps[i.to].result_slot] < 0): # what it gives back that nothing reads
                         size = asm.layouts[ref_value(i.arg[1])].size
                         align = 1 << asm.layouts[ref_value(i.arg[1])].align
                     elif i.op == Oadd and ref_kind(i.arg[0]) == RefTemp and wasm.offsets[i.arg[0]] >= 0 and bits_of(i.arg[1], ptr(c)) and c >= 0:
@@ -690,7 +690,7 @@ func stripped(name: &strview) -> &strview:
 func located(name: &strview) -> i64:
     return wasm.places[name] ifnull trust wasm.elements[name]
 
-# the code of the block x, by its place in fn.rpo, and of the blocks it dominates, in a loop when a jump back lands on x
+# the code of the block x, by its place in fn.order, and of the blocks it dominates, in a loop when a jump back lands on x
 func tree(x: i64):
     if wasm.header[x]:
         wasm.out += "\x03\x40" # loop
@@ -788,8 +788,8 @@ func enclose(x: i64, count: i64):
                 else:
                     push(given.arg[0], i64(given.cls))
                     append(kinds, valtype(i64(given.cls)))
-            if i.arg[1] != EMPTY: # where the aggregate it gives back goes: its pad, or a place of its own
-                pad := fn.temps[i.to].pad
+            if i.arg[1] != EMPTY: # where the aggregate it gives back goes: its result slot, or a place of its own
+                pad := fn.temps[i.to].result_slot
                 push(i.to if pad == EMPTY or wasm.offsets[pad] < 0 else pad, Int64)
                 append(kinds, 0x7e)
             gives: u8 = 0
@@ -1054,7 +1054,7 @@ func here(reads: &listview[Read], r: i64, b: i64, first: i64, j: i64) -> bool:
         return u.type == ByExit
     return u.type == ByInstr and u.at >= at(b, first) and u.at <= at(b, j)
 
-# a jump from x to y, by their places in fn.rpo: the phis of y take their values, and it goes back to a loop, past the
+# a jump from x to y, by their places in fn.order: the phis of y take their values, and it goes back to a loop, past the
 # block a merge follows, or into y when only x jumps there
 func follow(x: i64, y: i64):
     moves(fn.blocks[fn.order[y]].phi, fn.order[x])

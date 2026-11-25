@@ -161,7 +161,7 @@ func mark_loop_end(hd: i64, b: i64):
         fn.blocks[hd].loop = i32(fn.blocks[b].id)
 
 # the slot of each call that returns an aggregate, made before coalesce so that calls can share them
-func pad_calls():
+func result_slots():
     pads: &list[Instr] = heap([])
     defer free(pads)
     b := fn.start
@@ -174,7 +174,7 @@ func pad_calls():
             ty := asm.layouts[ref_value(i.arg[1])]
             pad := new_temp(Int64)
             append(pads, Instr{op = i32(Oalloc4 + (2 if ty.align > 3 else 1)), cls = Int64, to = pad, arg = [intern((ty.size + 7) and -8), EMPTY]})
-            fn.temps[to].pad = pad
+            fn.temps[to].result_slot = pad
             uses := fn.temps[to].uses
             for u in uses[:fn.temps[to].used]:
                 switch u.type:
@@ -249,7 +249,7 @@ func coalesce():
         for k in reverse 0..fn.blocks[b].ins.len:
             i := fn.blocks[b].ins[k]
             if i.op == Ocall:
-                pad = fn.temps[i.to].pad
+                pad = fn.temps[i.to].result_slot
             if i.op == Oargaggregate:
                 ip -= 1
                 spot_load(i.arg[1], 0xffff_ffff_ffff_ffff, ip, sl)
@@ -266,7 +266,7 @@ func coalesce():
                 ip -= 1
                 spot_load(i.arg[0], x, ip, sl)
                 append(bl, at(b, k))
-            # a call writes all of its pad, below the arguments it must not share it with
+            # a call writes all of its result slot, below the arguments it must not share it with
             if pad != EMPTY and (k == 0 or not is_arg(fn.blocks[b].ins[k - 1].op)):
                 ip -= 1
                 s, _ := spot(pad, sl)
@@ -366,13 +366,13 @@ func coalesce():
                 if i.arg[n] == u32(sl[s].temp):
                     i.arg[n] = u32(leader)
     for t in FIRST_TEMP..fn.temp_count:
-        pad := fn.temps[t].pad
+        pad := fn.temps[t].result_slot
         if pad != EMPTY:
             m := fn.temps[pad].visit
             if m == -2:
-                fn.temps[t].pad = EMPTY
+                fn.temps[t].result_slot = EMPTY
             elif m >= 0:
-                fn.temps[t].pad = u32(sl[sl[m].into].temp)
+                fn.temps[t].result_slot = u32(sl[sl[m].into].temp)
     # fix newly overlapping blits
     for x in bl:
         i := instr_at(x)
@@ -984,8 +984,8 @@ func fill_aliases():
             i = fn.blocks[b].ins[k]
             if is_store(i.op):
                 mark_stored(i.arg[1], store_size(i))
-            if i.op == Ocall and fn.temps[i.to].pad != EMPTY:
-                mark_stored(fn.temps[i.to].pad, BITS)
+            if i.op == Ocall and fn.temps[i.to].result_slot != EMPTY:
+                mark_stored(fn.temps[i.to].result_slot, BITS)
             k += 1
         if fn.blocks[b].exit.type != Jreturnaggregate:
             mark_escaped(fn.blocks[b].exit.arg)
@@ -2216,8 +2216,8 @@ func move_code():
             if pinned(i):
                 _ = schedule_early(i.arg[0])
                 _ = schedule_early(i.arg[1])
-                if i.op == Ocall and i.to != EMPTY and fn.temps[i.to].pad != EMPTY:
-                    _ = schedule_early(fn.temps[i.to].pad)
+                if i.op == Ocall and i.to != EMPTY and fn.temps[i.to].result_slot != EMPTY:
+                    _ = schedule_early(fn.temps[i.to].result_slot)
         _ = schedule_early(fn.blocks[b].exit.arg)
     for bid in 0..fn.ordered:
         b = fn.order[bid]
@@ -2385,7 +2385,7 @@ func simplify(flatten: bool):
             case Oblitsize:
                 if flatten:
                     if not renewed:
-                        renew(b, k)
+                        emit_after(b, k)
                         renewed = true
                     sd := fn.blocks[b].ins[k - 1].arg
                     sz := ref_signed(i.arg[0])
@@ -2426,7 +2426,7 @@ func simplify(flatten: bool):
                     v := c.bits if wide(i.cls) != 0 else c.bits << 32 >> 32
                     if c.type == Numeric and v > 0 and is_power_of_2(u64(v)):
                         if not renewed:
-                            renew(b, k)
+                            emit_after(b, k)
                             renewed = true
                         # x/2^n and x%2^n round toward zero: a negative x is moved up by 2^n-1 before the shift
                         n := log2(u64(v))
@@ -2469,7 +2469,7 @@ func simplify(flatten: bool):
             take_emitted(b)
         b = fn.blocks[b].next
 
-func renew(b: i64, k: i64):
+func emit_after(b: i64, k: i64):
     fn.out.len = 0
     ins := fn.blocks[b].ins
     for j in reverse k + 1..ins.len:
