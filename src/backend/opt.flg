@@ -1404,6 +1404,7 @@ func defined_within_walk(r: Ref, w: i64) -> bool:
         ph := ptr(fn.phis[p])
         if ph.visit != 0 and ph.visit <= w:
             return true
+        append(fn.bounded, ptr([p, i64(ph.visit)]))
         ph.visit = i32(w)
         for n in 0..fn.phis[p].arg.len:
             if not defined_within_walk(fn.phis[p].arg[n], w):
@@ -1422,8 +1423,12 @@ func defined_within_walk(r: Ref, w: i64) -> bool:
     x := 0
     if is_compare(i.op, ptr(x), ptr(x)):
         return w >= 1
-    if i.op == Oand:
-        return defined_within_walk(i.arg[0], w) or defined_within_walk(i.arg[1], w)
+    if i.op == Oand: # the phis that the side that fails assumed within w are not
+        assumed := fn.bounded.len
+        if defined_within_walk(i.arg[0], w):
+            return true
+        unbound_phis(assumed)
+        return defined_within_walk(i.arg[1], w)
     if i.op == Oor or i.op == Oxor:
         return defined_within_walk(i.arg[0], w) and defined_within_walk(i.arg[1], w)
     e := extension(i)
@@ -1435,8 +1440,15 @@ func defined_within_walk(r: Ref, w: i64) -> bool:
 
 func defined_within(r: Ref, w: i64) -> bool:
     ok := defined_within_walk(r, w)
-    unvisit_phis()
+    unbound_phis(0)
     return ok
+
+# the phis assumed within a width after the first n go back to their visit before
+func unbound_phis(n: i64):
+    bounded := ptr(fn.bounded)
+    while bounded.len > n:
+        fn.phis[bounded[-2]].visit = i32(bounded[-1])
+        bounded.len -= 2
 
 func is_bit(r: Ref) -> bool:
     return defined_within(r, 1)
