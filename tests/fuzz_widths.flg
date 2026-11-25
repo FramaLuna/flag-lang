@@ -1,0 +1,345 @@
+# Functions with more variables than registers, of all eight integer widths, that trade them in loops across widths,
+# shift, divide, choose and pass a dozen at once: each prints what the compiler made of it, and this program what it
+# interprets.
+use fs
+use math
+use os
+
+Functions = 160
+Wides = 3
+Firsts = Wides + 1
+Names = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]
+
+Perm = 0
+Mix = 1
+Add = 2
+Shift = 3
+Divide = 4
+Pick = 5
+Call = 6
+Wide = 7
+Loop = 8
+
+type Step:
+    kind: i64
+    x: i64 # the variable it writes, or the first of its moves, of its arguments or of its steps
+    y: i64 # the variable it reads, or the end of its moves, its arguments or its steps
+    z: i64 # for Pick, the variable it takes when a is not below b; for Wide, which wide function
+    a: i64
+    b: i64
+    left: bool # for Shift, <<, and for Divide, /
+
+context fuzz:
+    code: &str = heap("")
+    steps: &list[Step] = heap([])
+    writes: &list[i64] = heap([]) # of the moves of each Perm, the variable it writes
+    reads: &list[i64] = heap([]) # and the one it reads
+    passed: &list[i64] = heap([]) # of each Wide, the variable of each argument
+    types: &list[i64] = heap([]) # of each variable, an index of Names
+    values: &list[i64] = heap([]) # of each variable, as its type holds it in an i64: sign-extended when signed
+    olds: &list[i64] = heap([])
+    params: &list[i64] = heap([]) # of the wide functions, the type of each parameter
+    firsts: array[i64, Firsts] # of each wide function, its first parameter, then the end of the last
+    count: i64 # of variables
+
+func fit(v: i64, t: i64) -> i64:
+    shift := 64 - (8 << (t and 3))
+    if t < 4:
+        return v << shift >> shift
+    return i64(u64(v) << shift >> shift)
+
+func name(v: i64):
+    fuzz.code += "v"
+    fuzz.code += v
+
+func pick() -> i64:
+    return random(0, fuzz.count - 1)
+
+func of(t: i64) -> i64: # a variable of type t, or -1
+    first := random(0, fuzz.count - 1)
+    for k in 0..fuzz.count:
+        v := (first + k) % fuzz.count
+        if fuzz.types[v] == t:
+            return v
+    return -1
+
+func converted(v: i64, t: i64):
+    if fuzz.types[v] == t:
+        name(v)
+    else:
+        fuzz.code += Names[t] + "("
+        name(v)
+        fuzz.code += ")"
+
+func block(indent: &strview):
+    made := 0
+    count := random(1, 7)
+    while made < count:
+        kind := random(-2, Loop if indent.len == 8 else Wide) # below Perm is Perm too, three times as likely
+        at := fuzz.steps.len
+        step := Step{max(kind, Perm), pick(), pick(), pick(), pick(), pick(), random(0, 1) == 0}
+        x := step.x
+        t := fuzz.types[x]
+        fuzz.code += indent
+        switch step.kind:
+        case Perm:
+            step.x = fuzz.writes.len
+            for u in 0..8:
+                chosen: &list[i64] = heap([])
+                for v in 0..fuzz.count:
+                    if fuzz.types[v] == u:
+                        append(chosen, v)
+                if chosen.len >= 2 and random(0, 2) > 0:
+                    for k in reverse 1..chosen.len:
+                        swap(chosen, k, random(0, k))
+                    size := random(2, chosen.len)
+                    append(fuzz.writes, chosen[:size])
+                    for k in reverse 1..size:
+                        swap(chosen, k, random(0, k))
+                    append(fuzz.reads, chosen[:size])
+                free(chosen)
+            step.y = fuzz.writes.len
+            if step.x == step.y:
+                fuzz.code.len -= indent.len
+                continue
+            for k in step.x..step.y:
+                if k > step.x:
+                    fuzz.code += ", "
+                name(fuzz.writes[k])
+            fuzz.code += " = "
+            for k in step.x..step.y:
+                if k > step.x:
+                    fuzz.code += ", "
+                name(fuzz.reads[k])
+        case Mix:
+            name(x)
+            fuzz.code += " = "
+            name(x)
+            fuzz.code += " xor "
+            converted(step.y, t)
+            fuzz.code += " xor " + Names[t] + "(i)"
+        case Add:
+            name(x)
+            fuzz.code += " = "
+            name(x)
+            fuzz.code += " + "
+            converted(step.y, t)
+        case Shift:
+            name(x)
+            fuzz.code += " = "
+            name(x)
+            fuzz.code += " << (" if step.left else " >> ("
+            name(step.y)
+            fuzz.code += " and 7)"
+        case Divide:
+            name(x)
+            fuzz.code += " = "
+            name(x)
+            fuzz.code += " / (" if step.left else " % ("
+            converted(step.y, t)
+            fuzz.code += " or 1)"
+        case Pick:
+            step.y = of(t)
+            step.z = of(t)
+            step.b = of(fuzz.types[step.a])
+            name(x)
+            fuzz.code += " = "
+            name(step.y)
+            fuzz.code += " if "
+            name(step.a)
+            fuzz.code += " < "
+            name(step.b)
+            fuzz.code += " else "
+            name(step.z)
+        case Call:
+            name(x)
+            fuzz.code += " = touch_" + Names[t] + "("
+            name(x)
+            fuzz.code += ", i)"
+        case Wide:
+            step.z = random(0, Wides - 1)
+            name(x)
+            fuzz.code += " = "
+            name(x)
+            fuzz.code += " xor " + Names[t] + "(wide"
+            fuzz.code += step.z
+            fuzz.code += "("
+            step.x = fuzz.passed.len
+            for p in fuzz.firsts[step.z]..fuzz.firsts[step.z + 1]:
+                if p > fuzz.firsts[step.z]:
+                    fuzz.code += ", "
+                v := pick()
+                append(fuzz.passed, v)
+                converted(v, fuzz.params[p])
+            step.y = fuzz.passed.len
+            step.a = x
+            fuzz.code += "))"
+        case Loop:
+            fuzz.code += "for j in 0..m:\n"
+            append(fuzz.steps, step)
+            step.x = fuzz.steps.len
+            block(indent + "    ")
+            step.y = fuzz.steps.len
+            fuzz.steps[at] = step
+            made += 1
+            continue
+        fuzz.code += "\n"
+        append(fuzz.steps, step)
+        made += 1
+
+func play(from: i64, to: i64, i: i64, m: i64):
+    v := fuzz.values
+    s := from
+    while s < to:
+        p := fuzz.steps[s]
+        s += 1
+        t := fuzz.types[p.x] if p.kind >= Mix and p.kind <= Call else 0
+        switch p.kind:
+        case Perm:
+            fuzz.olds.len = 0
+            for k in p.x..p.y:
+                append(fuzz.olds, v[fuzz.reads[k]])
+            for k in p.x..p.y:
+                v[fuzz.writes[k]] = fuzz.olds[k - p.x]
+        case Mix:
+            v[p.x] = fit(v[p.x] xor v[p.y] xor i, t)
+        case Add:
+            v[p.x] = fit(v[p.x] + v[p.y], t)
+        case Shift:
+            c := v[p.y] and 7
+            if p.left:
+                v[p.x] = fit(v[p.x] << c, t)
+            elif t < 4:
+                v[p.x] = v[p.x] >> c
+            else:
+                v[p.x] = i64(u64(v[p.x]) >> c)
+        case Divide:
+            d := fit(v[p.y], t) or 1
+            if t < 4:
+                v[p.x] = fit(v[p.x] / d if p.left else v[p.x] % d, t)
+            else:
+                v[p.x] = i64(u64(v[p.x]) / u64(d) if p.left else u64(v[p.x]) % u64(d))
+        case Pick:
+            a := v[p.a]
+            b := v[p.b]
+            v[p.x] = v[p.y] if (a < b if fuzz.types[p.a] < 4 else u64(a) < u64(b)) else v[p.z]
+        case Call:
+            v[p.x] = fit(v[p.x] xor i, t)
+        case Wide:
+            h: i64 = 0
+            for a in fuzz.firsts[p.z]..fuzz.firsts[p.z + 1]:
+                h = h << 5 xor h >> 59 xor fit(v[fuzz.passed[p.x + a - fuzz.firsts[p.z]]], fuzz.params[a])
+            v[p.a] = fit(v[p.a] xor h, fuzz.types[p.a])
+        case Loop:
+            for j in 0..m:
+                play(p.x, p.y, i, m)
+            s = p.y
+
+func main():
+    seed(13)
+    expected: &str = heap("")
+    defer free(expected)
+    calls: &str = heap("")
+    defer free(calls)
+    for t in 0..8:
+        fuzz.code += "noinline func touch_" + Names[t] + "(x: " + Names[t] + ", k: i64) -> " + Names[t] + ":\n"
+        fuzz.code += "    return x xor " + Names[t] + "(k)\n\n"
+    for w in 0..Wides:
+        fuzz.code += "noinline func wide"
+        fuzz.code += w
+        fuzz.code += "("
+        count := random(8, 14)
+        for p in 0..count:
+            t := random(0, 7)
+            append(fuzz.params, t)
+            if p > 0:
+                fuzz.code += ", "
+            fuzz.code += "a"
+            fuzz.code += p
+            fuzz.code += ": " + Names[t]
+        fuzz.firsts[w + 1] = fuzz.params.len
+        fuzz.code += ") -> i64:\n    s: i64 = 0\n"
+        for p in 0..count:
+            fuzz.code += "    s = s << 5 xor s >> 59 xor i64(a"
+            fuzz.code += p
+            fuzz.code += ")\n"
+        fuzz.code += "    return s\n\n"
+    for f in 0..Functions:
+        fuzz.steps.len = 0
+        fuzz.writes.len = 0
+        fuzz.reads.len = 0
+        fuzz.passed.len = 0
+        fuzz.types.len = 0
+        fuzz.values.len = 0
+        fuzz.code += "noinline func run"
+        fuzz.code += f
+        fuzz.code += "(n: i64, m: i64) -> i64:\n"
+        for t in 0..8:
+            for k in 0..random(0, 7):
+                append(fuzz.types, t)
+        fuzz.count = fuzz.types.len
+        if fuzz.count == 0:
+            append(fuzz.types, 3)
+            fuzz.count = 1
+        for v in 0..fuzz.count:
+            t := fuzz.types[v]
+            value := fit(random(-9223372036854775808, 9223372036854775807) if random(0, 1) == 0 else random(-300, 300), t)
+            append(fuzz.values, value)
+            fuzz.code += "    "
+            name(v)
+            fuzz.code += ": " + Names[t] + " = "
+            if t >= 4:
+                fuzz.code += u64(value)
+            elif value < 0:
+                fuzz.code += "("
+                fuzz.code += value
+                fuzz.code += ")"
+            else:
+                fuzz.code += value
+            fuzz.code += "\n"
+        fuzz.code += "    for i in 0..n:\n"
+        block("        ")
+        n := random(1, 6)
+        m := random(1, 3)
+        for i in 0..n:
+            play(0, fuzz.steps.len, i, m)
+        fuzz.code += "    s: i64 = 0\n"
+        s: i64 = 0
+        for v in 0..fuzz.count:
+            fuzz.code += "    s = s << 5 xor s >> 59 xor i64("
+            name(v)
+            fuzz.code += ")\n"
+            s = s << 5 xor s >> 59 xor fuzz.values[v]
+        fuzz.code += "    return s\n\n"
+        calls += "    print(run"
+        calls += f
+        calls += "("
+        calls += n
+        calls += ", "
+        calls += m
+        calls += "))\n"
+        expected += s
+        expected += "\n"
+    fuzz.code += "func main():\n" + calls
+    path := dir_of(args()[0]) + "fuzz_widths_case.flg"
+    if write_file(path, fuzz.code) is FsError:
+        panic("cannot write " + path)
+    said: &str = heap("")
+    defer free(said)
+    command: &list[&strview] = heap([])
+    defer free(command)
+    append(command, env("FLAGC") ifnull "build/flagc")
+    append(command, "run")
+    append(command, path)
+    for debug in [false, true]:
+        if debug:
+            append(command, "-debug")
+        said.len = 0
+        status := output(command, said)
+        if status is FsError or status != 0 or said != expected:
+            print(path, " printed with ", command[3:], ":")
+            print(said)
+            print("instead of:")
+            print(expected)
+            return
+    print(Functions, " functions agree")
