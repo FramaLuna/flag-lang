@@ -2177,7 +2177,7 @@ error: unexpected end of line; expected ':'
 
 #### Build targets
 
-- `./build.sh seed`: regenerates the six seeds in `boot/`, one per native target, using `-target`. A seed is rewritten only when its assembly changes, since `gzip` on another system may compress the same text to other bytes. The seeds are refreshed for a release or when one can no longer build `src`, since git cannot store a compressed seed as a difference and each refresh adds about 8 MB to the history.
+- `./build.sh seed`: regenerates the six seeds in `boot/`, one per native target, using `-target`. A seed is rewritten only when its assembly changes, since `gzip` on another system may compress the same text to other bytes. The seeds are refreshed for a release or when one can no longer build `src`, since git cannot store a compressed seed as a difference and each refresh adds about 9 MB to the history.
 - `./build.sh package`: creates `build/flag-<version>-<system>-<machine>.tar.gz`.
 - `./build.sh cross`: compiles `flagc`, all tests, and all examples for second-class targets with `-target` and assembles them with `clang` (`linux-arm64` and `linux-riscv64` on Linux; `macos-x86_64` on macOS). CI runs it, so every system's `where` blocks and `rv64`'s lane-by-lane path compile on every change.
 
