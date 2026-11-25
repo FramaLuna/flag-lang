@@ -74,7 +74,7 @@ func assembly() -> &str:
     append(functions, Piece{kind = Number, size = 8, n = comp.procs.len})
     append(functions, Piece{kind = Number, size = 8}) # where the code of the last function ends
     if comp.procs.len > 0:
-        functions[1] = Piece{kind = Address, text = "$\"" + asm.machine.asloc + comp.procs[-1].name[1:] + ".end\""}
+        functions[1] = Piece{kind = Address, text = "$\"" + asm.machine.local_prefix + comp.procs[-1].name[1:] + ".end\""}
     place := 16 + 16 * comp.procs.len
     for f in comp.procs:
         hidden := f.node == 0 or comp.insts[f.inst].library
@@ -150,7 +150,7 @@ func assembly() -> &str:
                 target := piece.text[1:]
                 out("\t.quad ")
                 if items(target)[0] != '"':
-                    out(asm.machine.assym)
+                    out(asm.machine.symbol_prefix)
                 out(target)
                 if piece.n >= 0:
                     out("+")
@@ -189,18 +189,18 @@ func assembly() -> &str:
     compile()
     for f in comp.procs:
         path := in_quotes(view(comp.files[f.file].path))
-        asm.curfile = 1 # gas numbers the files from 1
-        while asm.curfile <= asm.files.len and asm.files[asm.curfile - 1] != path:
-            asm.curfile += 1
-        if asm.curfile > asm.files.len:
+        asm.file = 1 # gas numbers the files from 1
+        while asm.file <= asm.files.len and asm.files[asm.file - 1] != path:
+            asm.file += 1
+        if asm.file > asm.files.len:
             append(asm.files, heap(path))
             out(".file ")
-            asm.text += asm.curfile
+            asm.text += asm.file
             out(" " + path + "\n")
         with scratch():
             lower(f)
             compile()
-    asm.machine.emitfin()
+    asm.machine.emit_end()
     if comp.debug:
         info := dwarf()
         defer free(info)
@@ -210,8 +210,8 @@ func assembly() -> &str:
 # the types of the aggregates and the globals of comp as the backend reads them
 func prepare():
     for t in 0..comp.types.len:
-        append(asm.typs, -1)
-        append(asm.ctyps, -1)
+        append(asm.layout_of, -1)
+        append(asm.c_layout_of, -1)
     for t in 0..comp.reached:
         if aggregate(t):
             al := 0
@@ -219,36 +219,36 @@ func prepare():
             while n / 2 != 0:
                 n /= 2
                 al += 1
-            asm.typs[t] = asm.typ.len
-            append(asm.typ, Typ{isdark = true, align = al, size = comp.types[t].size})
+            asm.layout_of[t] = asm.layouts.len
+            append(asm.layouts, Layout{opaque = true, align = al, size = comp.types[t].size})
     k := 0
     for t in comp.c_types:
-        ty := Typ{align = -1}
+        ty := Layout{align = -1}
         first := k
         while comp.c_fields[k].count != 0:
             k += 1
         if comp.types[t].kind == Untagged:
-            ty.isunion = true
+            ty.is_union = true
             for f in first..k:
                 parsefields(ptr(ty), comp.c_fields[f:f + 1])
         else:
             parsefields(ptr(ty), comp.c_fields[first:k])
         k += 1
-        asm.ctyps[t] = asm.typ.len
-        append(asm.typ, ty)
+        asm.c_layout_of[t] = asm.layouts.len
+        append(asm.layouts, ty)
     for name in comp.globals:
-        c := Con{type = CAddr}
+        c := Immediate{type = Addressed}
         if comp.shared and comp.system == "linux" and starts_with(name, "thread "):
-            c.symtype = SExt # initial-exec, the place of thread data comes from the GOT
+            c.access = ThroughGot # initial-exec, the place of thread data comes from the GOT
         while true:
             if starts_with(name, "extern "):
-                c.symtype = c.symtype or SExt
+                c.access = c.access or ThroughGot
             elif starts_with(name, "thread "):
-                c.symtype = c.symtype or SThr
+                c.access = c.access or ThreadData
             else:
                 break
             name = name[7:]
-        c.sym = i32(intern(name[1:]))
+        c.symbol = i32(intern(name[1:]))
         append(asm.globals, c)
 
 # a path as the assembler reads it, in quotes
@@ -256,149 +256,149 @@ func in_quotes(path: &strview) -> &strview:
     return "\"" + replace(replace(path, "\\", "\\\\"), "\"", "\\\"") + "\""
 
 # the fields of a type of C, or of one member of a union of C, as QBE lays them out
-func parsefields(ty: *Typ, fields: &listview[CField]):
+func parsefields(ty: *Layout, fields: &listview[CField]):
     n := 0
     sz := 0
     al := ty.align
     for f in fields:
-        type := FTyp
+        type := FieldType
         s := 0
         a := 0
         switch f.kind:
         case 'd':
-            type = Fd
+            type = FieldF64
             s = 8
             a = 3
         case 'l':
-            type = Fl
+            type = FieldI64
             s = 8
             a = 3
         case 's':
-            type = Fs
+            type = FieldF32
             s = 4
             a = 2
         case 'w':
-            type = Fw
+            type = FieldI32
             s = 4
             a = 2
         case 'h':
-            type = Fh
+            type = FieldI16
             s = 2
             a = 1
         case 'b':
-            type = Fb
+            type = FieldI8
             s = 1
         case:
-            s = asm.typ[asm.ctyps[f.type]].size
-            a = asm.typ[asm.ctyps[f.type]].align
+            s = asm.layouts[asm.c_layout_of[f.type]].size
+            a = asm.layouts[asm.c_layout_of[f.type]].align
         if a > al:
             al = a
         a = (1 << a) - 1
         a = ((sz + a) and not a) - sz
-        if a != 0 and n < NField: # padding
-            append(ty.fields, Member{FPad, a})
+        if a != 0 and n < MAX_FIELDS: # padding
+            append(ty.fields, Member{FieldPad, a})
             n += 1
         c := f.count
         sz += a + c * s
-        if type == FTyp:
-            s = asm.ctyps[f.type]
-        while c > 0 and n < NField:
+        if type == FieldType:
+            s = asm.c_layout_of[f.type]
+        while c > 0 and n < MAX_FIELDS:
             append(ty.fields, Member{i32(type), s})
             c -= 1
             n += 1
-    append(ty.fields, Member{FEnd, 0})
+    append(ty.fields, Member{FieldEnd, 0})
     a := i64(1) << al
     if sz < ty.size:
         sz = ty.size
     ty.size = (sz + a - 1) and -a
     ty.align = al
-    ty.nunion += 1
+    ty.members += 1
 
 # the passes of QBE on the function in fn, and its assembly
 func compile():
     m := ptr(asm.machine)
     m.abi0()
-    optimize(m.cansel)
+    optimize(m.selects)
     thronce()
     m.abi1()
     simpl(true)
-    fillcfg()
-    filluse()
+    order_blocks()
+    fill_uses()
     m.isel()
-    fillcfg()
+    order_blocks()
     filllive()
-    fillloop()
+    fill_loops()
     fillcost()
     spill()
     rega()
-    fillcfg()
-    simpljmp()
-    fillcfg()
+    order_blocks()
+    skip_jumps()
+    order_blocks()
     # with -debug the blocks keep the order of the input, so a scope is one range of code
     if not comp.debug:
-        for n in 0..fn.nblk:
-            fn.blks[fn.rpo[n]].link = fn.rpo[n + 1] if n + 1 < fn.nblk else 0
-    m.emitfn()
+        for n in 0..fn.ordered:
+            fn.blocks[fn.order[n]].next = fn.order[n + 1] if n + 1 < fn.ordered else 0
+    m.emit_function()
     out("/* end function " + fn.name + " */\n\n")
 
 # the passes of QBE that take the function in fn to SSA and optimize it, on every target; with sel, an if that only
 # chooses values becomes sel instructions
 func optimize(sel: bool):
-    fillcfg()
-    filluse()
+    order_blocks()
+    fill_uses()
     if not comp.debug: # with -debug every stack slot stays whole
         chop()
-        filluse()
+        fill_uses()
     promote()
-    filluse()
+    fill_uses()
     ssa()
-    filluse()
-    ssacheck()
+    fill_uses()
+    check_ssa()
     fillalias()
     loadopt()
-    filluse()
+    fill_uses()
     callpads()
-    filluse()
+    fill_uses()
     fillalias()
     coalesce()
-    filluse()
-    filldom()
-    ssacheck()
+    fill_uses()
+    fill_dominators()
+    check_ssa()
     gvn()
-    fillcfg()
-    simplcfg()
-    filluse()
-    filldom()
+    order_blocks()
+    simplify_flow()
+    fill_uses()
+    fill_dominators()
     gcm()
-    filluse()
-    ssacheck()
+    fill_uses()
+    check_ssa()
     if sel:
         ifconvert()
-        fillcfg()
-        filluse()
-        filldom()
-        ssacheck()
+        order_blocks()
+        fill_uses()
+        fill_dominators()
+        check_ssa()
 
 # the instructions of b, lowered from its end
 func lowerblk(b: i64, ral: *&list[Instr], call: func(i64, i64, i64, *&list[Instr])):
-    k := fn.blks[b].ins.len
+    k := fn.blocks[b].ins.len
     while k > 0:
         k -= 1
-        i := fn.blks[b].ins[k]
+        i := fn.blocks[b].ins[k]
         switch i.op:
         case Ocall:
             i0 := k
-            while i0 > 0 and isarg(fn.blks[b].ins[i0 - 1].op):
+            while i0 > 0 and is_arg(fn.blocks[b].ins[i0 - 1].op):
                 i0 -= 1
             call(b, i0, k, ral)
             k = i0
-        case Ovastart, Ovaarg, Oarg, Oargc:
+        case Ovastart, Ovaarg, Oarg, Oargaggregate:
             panic("unreachable")
         case:
-            emiti(i)
+            emit(i)
     if b == fn.start: # the allocs in the order they were made
         for j in reverse 0..ral.len:
-            emiti(ral[j])
+            emit(ral[j])
 
 Cptr = 1 # replaced by a pointer
 Cstk1 = 2 # on the stack, the first half of a pair of registers or all
@@ -421,44 +421,44 @@ type Class: # how a value passes to arm64 or risc-v
 # the first n registers of c come in new temps, given in tmp, which are stored to the aggregate at base
 func sttmps(tmp: *&list[Ref], n: i64, c: *Class, base: Ref):
     for j in 0..n:
-        t := newtmp(c.cls[j])
-        r := newtmp(Kl)
-        emit(Ostorew + c.cls[j], 0, R, t, r)
-        emit(Oadd, Kl, r, base, getcon(c.off[j]))
+        t := new_temp(c.cls[j])
+        r := new_temp(Int64)
+        emit(Ostorei32 + c.cls[j], 0, EMPTY, t, r)
+        emit(Oadd, Int64, r, base, intern(c.off[j]))
         append(tmp, t)
 
 # the registers of c are loaded from the aggregate at base
 func ldregs(c: *Class, base: Ref):
     for j in 0..c.nreg:
-        r := newtmp(Kl)
-        emit(Oload, c.cls[j], u32(c.reg[j]), r, R)
-        emit(Oadd, Kl, r, base, getcon(c.off[j]))
+        r := new_temp(Int64)
+        emit(Oload, c.cls[j], u32(c.reg[j]), r, EMPTY)
+        emit(Oadd, Int64, r, base, intern(c.off[j]))
 
 # an alloc of sz bytes with the alignment of the type t, that the start block gets
 func stkblob(r: Ref, t: i64, sz: i64, ral: *&list[Instr]):
-    al := max(asm.typ[t].align - 2, 0)
-    append(ral, Instr{op = i32(Oalloc + al), cls = Kl, to = r, arg = [getcon(sz), R]})
+    al := max(asm.layouts[t].align - 2, 0)
+    append(ral, Instr{op = i32(Oalloc4 + al), cls = Int64, to = r, arg = [intern(sz), EMPTY]})
 
 # the allocs of the start block of a constant size become slots, the widest first, so each stays aligned
 func fastallocs():
     b := fn.start
     n := 16
-    for al in reverse Oalloc..=Oalloc1:
-        for k in 0..fn.blks[b].ins.len:
-            i := fn.blks[b].ins[k]
+    for al in reverse Oalloc4..=Oalloc16:
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
             if i.op == al:
-                if rtype(i.arg[0]) != RCon:
+                if ref_kind(i.arg[0]) != RefConstant:
                     break
-                sz := fn.con[rval(i.arg[0])].bits
+                sz := fn.constants[ref_value(i.arg[0])].bits
                 if sz < 0 or sz >= 2147483647 - 15:
                     panic("invalid alloc size " + sz)
                 sz = (sz + n - 1) and -n
                 sz /= 4
                 if sz > 2147483647 - fn.slot:
                     panic("alloc too large")
-                fn.tmp[i.to].slot = i32(fn.slot)
+                fn.temps[i.to].slot = i32(fn.slot)
                 fn.slot += sz
-                fn.blks[b].ins[k] = Instr{op = Onop}
+                fn.blocks[b].ins[k] = Instr{op = Onop}
         n /= 2
     fn.slot = (fn.slot + 3) and -4
 
@@ -468,8 +468,8 @@ func out(s: &strview):
 func regbit(r: i64) -> u64:
     return u64(1) << r
 
-Ki = -1 # matches Kw and Kl
-Ka = -2 # matches all classes
+AnyInt = -1 # matches Kw and Kl
+AnyClass = -2 # matches all classes
 
 type Form: # how an emitter writes an instruction of a class
     op: i32
@@ -479,13 +479,13 @@ type Form: # how an emitter writes an instruction of a class
 # the format of i in the table of an emitter
 func format(table: &listview[Form], i: Instr) -> &strview:
     for f in table:
-        if f.op == i.op and (f.cls == i.cls or f.cls == Ki and kbase(i.cls) == 0 or f.cls == Ka):
+        if f.op == i.op and (f.cls == i.cls or f.cls == AnyInt and bank(i.cls) == 0 or f.cls == AnyClass):
             return f.fmt
-    panic("no match for " + optab[i.op].name + "(" + "wlsdv"[i.cls:i.cls + 1] + ")")
+    panic("no match for " + OPERATIONS[i.op].name + "(" + "wlsdv"[i.cls:i.cls + 1] + ")")
 
 func emitlnk(name: &strview, export: bool, thread: bool, align: i64, sec: &strview, secf: &strview, kind: i64):
     m := ptr(asm.machine)
-    pfx := m.assym
+    pfx := m.symbol_prefix
     if items(name)[0] == '"':
         pfx = ""
     sfx: &strview = ""
@@ -526,37 +526,37 @@ func emitfnlnk(align: i64):
     # the next line
     b := fn.start
     while b != 0:
-        for k in 0..fn.blks[b].ins.len:
-            i := fn.blks[b].ins[k]
-            if i.op == Odbgloc:
-                emitdbgloc(rval(i.arg[0]), rval(i.arg[1]))
-                fn.blks[b].ins[k].op = Onop
+        for k in 0..fn.blocks[b].ins.len:
+            i := fn.blocks[b].ins[k]
+            if i.op == Odebugline:
+                emitdbgloc(ref_value(i.arg[0]), ref_value(i.arg[1]))
+                fn.blocks[b].ins[k].op = Onop
                 return
-        b = fn.blks[b].link
+        b = fn.blocks[b].next
 
 # the label of the jump table of block b, which goes after the code of its function
 func jumptable(b: i64) -> &strview:
-    return asm.machine.asloc + fn.name + ".jt" + b
+    return asm.machine.local_prefix + fn.name + ".jt" + b
 
 # the end of a function, past its blocks, with its jump tables; block is how the label of a block starts
 func emitfnend(block: &strview):
     b := fn.start
     while b != 0:
-        if fn.blks[b].jmp.type == Jjt: # each entry is the distance from the table to its block, which needs no relocation
+        if fn.blocks[b].exit.type == Jtable: # each entry is the distance from the table to its block, which needs no relocation
             table := jumptable(b)
             out(".p2align 2\n" + table + ":\n")
-            for k in fn.blks[b].table:
+            for k in fn.blocks[b].table:
                 out("\t.long " + block)
-                asm.text += asm.blocks + fn.blks[fn.blks[b].targets[k]].id
+                asm.text += asm.blocks + fn.blocks[fn.blocks[b].targets[k]].id
                 out(" - " + table + "\n")
-        b = fn.blks[b].link
-    asm.blocks += fn.nblk
-    for mark in fn.dbgmark: # the marks of a last block that died
+        b = fn.blocks[b].next
+    asm.blocks += fn.ordered
+    for mark in fn.marks: # the marks of a last block that died
         if mark != -1:
-            out(asm.machine.asloc + "mark")
+            out(asm.machine.local_prefix + "mark")
             asm.text += mark
             out(":\n")
-    out(asm.machine.asloc + fn.name + ".end:\n")
+    out(asm.machine.local_prefix + fn.name + ".end:\n")
     if comp.debug:
         out("\t.cfi_endproc\n")
     if comp.system == "linux":
@@ -564,7 +564,7 @@ func emitfnend(block: &strview):
 
 func emitdbgloc(line: i64, col: i64):
     out("\t.loc ")
-    asm.text += asm.curfile
+    asm.text += asm.file
     out(" ")
     asm.text += line
     if col != 0:
@@ -573,14 +573,14 @@ func emitdbgloc(line: i64, col: i64):
     out("\n")
 
 func emitdbgmark(r: Ref):
-    out(asm.machine.asloc + "mark")
-    asm.text += fn.dbgmark[rval(r)]
+    out(asm.machine.local_prefix + "mark")
+    asm.text += fn.marks[ref_value(r)]
     out(":\n")
-    fn.dbgmark[rval(r)] = -1
+    fn.marks[ref_value(r)] = -1
 
 func emitdbgslot(n: Ref, off: i64):
-    out(".set " + asm.machine.asloc + "slot")
-    asm.text += rval(n)
+    out(".set " + asm.machine.local_prefix + "slot")
+    asm.text += ref_value(n)
     out(", ")
     asm.text += off
     out("\n")
@@ -593,36 +593,36 @@ func probing(frame: i64) -> bool:
     b := fn.start
     while b != 0:
         area := 0
-        for i in fn.blks[b].ins:
-            if i.op == Osalloc and rtype(i.arg[0]) == RCon:
-                area += fn.con[rval(i.arg[0])].bits
+        for i in fn.blocks[b].ins:
+            if i.op == Ostackalloc and ref_kind(i.arg[0]) == RefConstant:
+                area += fn.constants[ref_value(i.arg[0])].bits
                 most = max(most, area)
-        b = fn.blks[b].link
+        b = fn.blocks[b].next
     return frame + most + 16 > 4096
 
 # the place of bits of size bytes among the floats that the code reads from memory
 func stashbits(n: u64, size: i64) -> i64:
-    for k in 0..asm.stash.len:
-        if size <= asm.stash_size[k] and asm.stash[k] == n:
+    for k in 0..asm.float_bits.len:
+        if size <= asm.float_sizes[k] and asm.float_bits[k] == n:
             return k
-    append(asm.stash, n)
-    append(asm.stash_size, size)
-    return asm.stash.len - 1
+    append(asm.float_bits, n)
+    append(asm.float_sizes, size)
+    return asm.float_bits.len - 1
 
 func emitfin(sec: array[&strview, 3]):
-    if asm.stash.len == 0:
+    if asm.float_bits.len == 0:
         return
     out("/* floating point constants */\n")
     for lg in reverse 2..=4:
-        for k in 0..asm.stash.len:
-            if asm.stash_size[k] != 1 << lg:
+        for k in 0..asm.float_bits.len:
+            if asm.float_sizes[k] != 1 << lg:
                 continue
             out(".section " + sec[lg - 2] + "\n.p2align ")
             asm.text += lg
-            out("\n" + asm.machine.asloc + "fp")
+            out("\n" + asm.machine.local_prefix + "fp")
             asm.text += k
             out(":")
-            n := asm.stash[k]
+            n := asm.float_bits[k]
             if lg == 4:
                 out("\n\t.quad ")
                 asm.text += i64(n)
@@ -639,8 +639,8 @@ func emitfin(sec: array[&strview, 3]):
                 out(" /* ")
                 print_float(asm.text, "%f", f64(u32(n and 0xffff_ffff) as f32))
                 out(" */\n\n")
-    asm.stash.len = 0
-    asm.stash_size.len = 0
+    asm.float_bits.len = 0
+    asm.float_sizes.len = 0
 
 func elf_emitfin():
     emitfin([".rodata", ".rodata", ".rodata"])

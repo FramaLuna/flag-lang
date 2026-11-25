@@ -169,7 +169,7 @@ func assemble() -> &str|Fail:
         gives: u8 = 0
         if p.cls >= AGG:
             append(kinds, 0x7e) # where the aggregate it gives back goes
-        elif p.cls != K0:
+        elif p.cls != Nothing:
             gives = passed(p.cls)
         append(wasm.typed, signature(kinds, gives))
         if not exported(p):
@@ -204,7 +204,7 @@ func assemble() -> &str|Fail:
     append(wasm.bodies, stubbed[:])
     clear(stubbed)
     for k, name in comp.globals:
-        s := i64(asm.globals[k].sym)
+        s := i64(asm.globals[k].symbol)
         while wasm.located.len <= s:
             append(wasm.located, 0)
             append(wasm.called, -1)
@@ -227,24 +227,24 @@ func assemble() -> &str|Fail:
             elimsb()
             # an aggregate passes by its address: the callee copies one it takes to a slot of its own, and gives one
             # back to the place the caller adds as its last parameter
-            start := ptr(fn.blks[fn.start].ins)
+            start := ptr(fn.blocks[fn.start].ins)
             pars := 0
-            while pars < start.len and ispar(start[pars].op):
+            while pars < start.len and is_param(start[pars].op):
                 pars += 1
             added: &list[Instr] = heap([]) # what goes after the parameters
             defer free(added)
-            back: Ref = R
+            back: Ref = EMPTY
             if fn.retty >= 0:
-                back = newtmp(Kl)
-                append(added, Instr{op = Opar, cls = Kl, to = back})
+                back = new_temp(Int64)
+                append(added, Instr{op = Oparam, cls = Int64, to = back})
             for k in 0..pars:
                 i := start[k]
-                if i.op == Oparc:
-                    t := rval(i.arg[0])
-                    given := newtmp(Kl)
-                    start[k] = Instr{op = Opar, cls = Kl, to = given}
-                    stkblob(i.to, t, asm.typ[t].size, added)
-                    append(added, ptr([Instr{op = Oblit0, arg = [given, i.to]}, Instr{op = Oblit1, arg = [ref(RInt, asm.typ[t].size), R]}]))
+                if i.op == Oparamaggregate:
+                    t := ref_value(i.arg[0])
+                    given := new_temp(Int64)
+                    start[k] = Instr{op = Oparam, cls = Int64, to = given}
+                    stkblob(i.to, t, asm.layouts[t].size, added)
+                    append(added, ptr([Instr{op = Oblit, arg = [given, i.to]}, Instr{op = Oblitsize, arg = [ref(RefInt, asm.layouts[t].size), EMPTY]}]))
             rest: &list[Instr] = heap(start[pars:])
             defer free(rest)
             start.len = pars
@@ -252,39 +252,39 @@ func assemble() -> &str|Fail:
             append(start, rest[:])
             b := fn.start
             while b != 0:
-                if fn.blks[b].jmp.type == Jretc:
-                    append(fn.blks[b].ins, ptr([Instr{op = Oblit0, arg = [fn.blks[b].jmp.arg, back]}, Instr{op = Oblit1, arg = [ref(RInt, asm.typ[fn.retty].size), R]}]))
-                    fn.blks[b].jmp = Jmp{Jret0, R}
-                b = fn.blks[b].link
+                if fn.blocks[b].exit.type == Jreturnaggregate:
+                    append(fn.blocks[b].ins, ptr([Instr{op = Oblit, arg = [fn.blocks[b].exit.arg, back]}, Instr{op = Oblitsize, arg = [ref(RefInt, asm.layouts[fn.retty].size), EMPTY]}]))
+                    fn.blocks[b].exit = Exit{Jreturn, EMPTY}
+                b = fn.blocks[b].next
             optimize(true)
             simpl(false)
-            filluse()
+            fill_uses()
             dead := true # what nothing reads goes, unless it does more than give a value
             while dead:
                 dead = false
-                for n in reverse 0..fn.nblk:
-                    for k in reverse 0..fn.blks[fn.rpo[n]].ins.len:
-                        i := ptr(fn.blks[fn.rpo[n]].ins[k])
-                        if rtype(i.to) == RTmp and fn.tmp[i.to].nuse == 0 and not (i.op == Ocall or i.op == Opar or isalloc(i.op) or isatomic(i.op)):
-                            chuse(i.arg[0], -1)
-                            chuse(i.arg[1], -1)
+                for n in reverse 0..fn.ordered:
+                    for k in reverse 0..fn.blocks[fn.order[n]].ins.len:
+                        i := ptr(fn.blocks[fn.order[n]].ins[k])
+                        if ref_kind(i.to) == RefTemp and fn.temps[i.to].used == 0 and not (i.op == Ocall or i.op == Oparam or is_alloc(i.op) or is_atomic(i.op)):
+                            add_uses(i.arg[0], -1)
+                            add_uses(i.arg[1], -1)
                             i.* = Instr{op = Onop}
                             dead = true
-            filluse()
+            fill_uses()
             wasm.folded.len = 0
-            for t in 0..fn.ntmp:
+            for t in 0..fn.temp_count:
                 append(wasm.folded, false)
-            for n in 0..fn.nblk:
-                for i in fn.blks[fn.rpo[n]].ins:
+            for n in 0..fn.ordered:
+                for i in fn.blocks[fn.order[n]].ins:
                     r := i.arg[0]
-                    if isstore(i.op) or i.op == Oastorew or i.op == Oastorel:
+                    if is_store(i.op) or i.op == Oatomicstorei32 or i.op == Oatomicstorei64:
                         r = i.arg[1]
-                    elif not isload(i.op) and i.op != Oaload:
+                    elif not is_load(i.op) and i.op != Oatomicload:
                         continue
-                    if rtype(r) == RTmp and fn.tmp[r].nuse == 1 and fn.tmp[r].def != 0:
-                        d := instr(fn.tmp[r].def).*
+                    if ref_kind(r) == RefTemp and fn.temps[r].used == 1 and fn.temps[r].def != 0:
+                        d := instr_at(fn.temps[r].def).*
                         c := 0
-                        wasm.folded[r] = d.op == Oadd and isconbits(d.arg[1], ptr(c)) and c >= 0 and c < 1 << 31
+                        wasm.folded[r] = d.op == Oadd and bits_of(d.arg[1], ptr(c)) and c >= 0 and c < 1 << 31
             wasm.reading = -1
             wasm.deferred.len = 0
             wasm.marks.len = 0
@@ -293,27 +293,27 @@ func assemble() -> &str|Fail:
             wasm.locals.len = 0
             wasm.temps.len = 0
             wasm.offsets.len = 0
-            for t in 0..fn.ntmp:
+            for t in 0..fn.temp_count:
                 append(wasm.temps, -1)
                 append(wasm.offsets, -1)
-            for i in fn.blks[fn.start].ins:
-                if i.op == Opar:
+            for i in fn.blocks[fn.start].ins:
+                if i.op == Oparam:
                     wasm.temps[i.to] = wasm.locals.len
                     append(wasm.locals, valtype(i64(i.cls)))
             params := wasm.locals.len
             wasm.frame = 0
-            for n in 0..fn.nblk: # the slots go in the frame, and an add of a constant to one points into it too
-                for i in fn.blks[fn.rpo[n]].ins:
+            for n in 0..fn.ordered: # the slots go in the frame, and an add of a constant to one points into it too
+                for i in fn.blocks[fn.order[n]].ins:
                     size := -1
                     align := 8
                     c := 0
-                    if isalloc(i.op):
-                        size = fn.con[rval(i.arg[0])].bits
+                    if is_alloc(i.op):
+                        size = fn.constants[ref_value(i.arg[0])].bits
                         align = 4 << (i.op - Oalloc4)
-                    elif i.op == Ocall and i.arg[1] != R and (fn.tmp[i.to].pad == R or wasm.offsets[fn.tmp[i.to].pad] < 0): # what it gives back that nothing reads
-                        size = asm.typ[rval(i.arg[1])].size
-                        align = 1 << asm.typ[rval(i.arg[1])].align
-                    elif i.op == Oadd and rtype(i.arg[0]) == RTmp and wasm.offsets[i.arg[0]] >= 0 and isconbits(i.arg[1], ptr(c)) and c >= 0:
+                    elif i.op == Ocall and i.arg[1] != EMPTY and (fn.temps[i.to].pad == EMPTY or wasm.offsets[fn.temps[i.to].pad] < 0): # what it gives back that nothing reads
+                        size = asm.layouts[ref_value(i.arg[1])].size
+                        align = 1 << asm.layouts[ref_value(i.arg[1])].align
+                    elif i.op == Oadd and ref_kind(i.arg[0]) == RefTemp and wasm.offsets[i.arg[0]] >= 0 and bits_of(i.arg[1], ptr(c)) and c >= 0:
                         wasm.offsets[i.to] = wasm.offsets[i.arg[0]] + c
                     if size >= 0:
                         wasm.frame = align_up(wasm.frame, align)
@@ -344,7 +344,7 @@ func assemble() -> &str|Fail:
                 local_op(0x20, wasm.fp)
                 add_byte(wasm.out, 0xa7) # i32.wrap_i64
                 local_op(0x21, wasm.base)
-            n := fn.nblk
+            n := fn.ordered
             ahead: &list[i64] = heap([]) # how many forward jumps land on each block
             defer free(ahead)
             wasm.header.len = 0
@@ -358,8 +358,8 @@ func assemble() -> &str|Fail:
                 wasm.merges[x].len = 0
             for x in 0..n: # Flag has no goto, and the passes keep each jump back landing on a block that dominates where it jumps from
                 pair: array[i64, 2]
-                for s in succs(fn.rpo[x], ptr(pair)):
-                    y := fn.blks[s].id
+                for s in successors(fn.order[x], ptr(pair)):
+                    y := fn.blocks[s].id
                     if y <= x:
                         wasm.header[y] = true
                     else:
@@ -367,7 +367,7 @@ func assemble() -> &str|Fail:
                         wasm.merge[y] = ahead[y] > 1
             for y in 1..n:
                 if wasm.merge[y]:
-                    append(wasm.merges[fn.blks[fn.blks[fn.rpo[y]].idom].id], y)
+                    append(wasm.merges[fn.blocks[fn.blocks[fn.order[y]].dominator].id], y)
             wasm.nest.len = 0
             tree(0)
             add_byte(wasm.out, 0x00) # unreachable, so the end needs no value
@@ -620,19 +620,19 @@ func signature(params: &listview[u8], result: u8) -> i64:
 # the value type of a class of fn, where an aggregate goes by its address and a byte or a half as a word
 func valtype(k: i64) -> u8:
     switch k:
-    case Kl, Kc:
+    case Int64, Aggregate:
         return 0x7e
-    case Ks:
+    case Float32:
         return 0x7d
-    case Kd:
+    case Float64:
         return 0x7c
-    case Kv:
+    case Vector:
         return 0x7b
     return 0x7f
 
 # the value type that a value of the class c of comp passes as
 func passed(c: i64) -> u8:
-    k, _ := parsecls(c)
+    k, _ := class_of(c)
     return valtype(k)
 
 # the types of the function of an extern block that inst is, as the code calls it: what it takes into kinds, and what
@@ -711,90 +711,90 @@ func enclose(x: i64, count: i64):
         add_byte(wasm.out, 0x0b)
         tree(y)
         return
-    b := fn.rpo[x]
+    b := fn.order[x]
     out := ptr(wasm.out)
-    chosen: Ref = R # what the sels after a sel0 choose by
-    expected: Ref = R # what the acas1 after an acas0 compares with
+    chosen: Ref = EMPTY # what the sels after a sel0 choose by
+    expected: Ref = EMPTY # what the acas1 after an acas0 compares with
     copied: array[Ref, 2] # the source and the destination of the blit1 after a blit0
     lane := 0 # of the vset after a vlane
-    for k, i in fn.blks[b].ins:
+    for k, i in fn.blocks[b].ins:
         o := i64(i.op)
         c := i64(i.cls)
         a := i.arg[0]
         switch o:
-        case Onop, Odbgloc, Odbgslot, Odbgmark, Opar, Oalloc4, Oalloc8, Oalloc16, Oarg, Oargc: # a call pushes its arguments
+        case Onop, Odebugline, Odebugslot, Odebugmark, Oparam, Oalloc4, Oalloc8, Oalloc16, Oarg, Oargaggregate: # a call pushes its arguments
             continue
-        case Osel0:
+        case Ocondition:
             chosen = a
             continue
-        case Oacas0:
+        case Oatomicexpected:
             expected = a
             continue
-        case Oblit0:
+        case Oblit:
             copied = i.arg
             continue
         case Ovlane:
-            lane = rsval(a)
+            lane = ref_signed(a)
             continue
         case Oadd:
             if wasm.folded[i.to] or wasm.offsets[i.to] >= 0:
                 continue
         begin()
         switch o:
-        case Oblit1: # memory.copy takes the destination first, and copies right where the two overlap
-            push(copied[1], Kl if wasm.wide else Kw)
-            push(copied[0], Kl if wasm.wide else Kw)
-            length(abs(rsval(a)))
+        case Oblitsize: # memory.copy takes the destination first, and copies right where the two overlap
+            push(copied[1], Int64 if wasm.wide else Int32)
+            push(copied[0], Int64 if wasm.wide else Int32)
+            length(abs(ref_signed(a)))
             out.* += "\xfc\x0a\x00\x00"
-            finish(b, k - 1, k, R, true)
+            finish(b, k - 1, k, EMPTY, true)
             continue
-        case Ostoreb, Ostoreh, Ostorew, Ostorel, Ostores, Ostored, Ostorev, Oastorew, Oastorel:
+        case Ostorei8, Ostorei16, Ostorei32, Ostorei64, Ostoref32, Ostoref64, Ostorevector, Oatomicstorei32, Oatomicstorei64:
             off := address(i.arg[1])
-            push(a, argcls(i, 0))
-            store(Ostorew if o == Oastorew else Ostorel if o == Oastorel else o, off)
-            finish(b, k, k, R, true)
+            push(a, arg_class(i, 0))
+            store(Ostorei32 if o == Oatomicstorei32 else Ostorei64 if o == Oatomicstorei64 else o, off)
+            finish(b, k, k, EMPTY, true)
             continue
-        case Oaadd, Oaswap, Oacas1: # one thread, so a load and a store
+        case Oatomicadd, Oatomicswap, Oatomiccompareswap: # one thread, so a load and a store
             old := local_of(i.to)
             off := address(a)
             load(Oload, c, off)
             local_op(0x21, old)
-            if o == Oacas1:
+            if o == Oatomiccompareswap:
                 local_op(0x20, old)
                 push(expected, c)
-                add_byte(out, 0x46 if c == Kw else 0x51) # eq
+                add_byte(out, 0x46 if c == Int32 else 0x51) # eq
                 out.* += "\x04\x40" # if
             _ = address(a)
-            if o == Oaadd:
+            if o == Oatomicadd:
                 local_op(0x20, old)
                 push(i.arg[1], c)
                 add_byte(out, ARITHMETIC[c])
             else:
                 push(i.arg[1], c)
-            store(Ostorew + c, off)
-            if o == Oacas1:
+            store(Ostorei32 + c, off)
+            if o == Oatomiccompareswap:
                 add_byte(out, 0x0b)
-            finish(b, k, k, R, false)
+            finish(b, k, k, EMPTY, false)
             continue
         case Ocall:
             first := k # its arguments go on the stack in order
-            while first > 0 and isarg(fn.blks[b].ins[first - 1].op):
+            while first > 0 and is_arg(fn.blocks[b].ins[first - 1].op):
                 first -= 1
             kinds: &list[u8] = heap([])
-            for given in fn.blks[b].ins[first:k]:
-                if given.op == Oargc:
-                    push(given.arg[1], Kl)
+            for given in fn.blocks[b].ins[first:k]:
+                if given.op == Oargaggregate:
+                    push(given.arg[1], Int64)
                     append(kinds, 0x7e)
                 else:
                     push(given.arg[0], i64(given.cls))
                     append(kinds, valtype(i64(given.cls)))
-            if i.arg[1] != R: # where the aggregate it gives back goes: its pad, or a place of its own
-                pad := fn.tmp[i.to].pad
-                push(i.to if pad == R or wasm.offsets[pad] < 0 else pad, Kl)
+            if i.arg[1] != EMPTY: # where the aggregate it gives back goes: its pad, or a place of its own
+                pad := fn.temps[i.to].pad
+                push(i.to if pad == EMPTY or wasm.offsets[pad] < 0 else pad, Int64)
                 append(kinds, 0x7e)
             gives: u8 = 0
-            if rtype(a) == RCon and fn.con[rval(a)].type == CAddr:
-                f := wasm.called[fn.con[rval(a)].sym]
+            if ref_kind(a) == RefConstant and fn.constants[ref_value(a)].type == Addressed:
+                f := wasm.called[fn.constants[ref_value(a)].symbol]
                 g := f - wasm.imports.len - comp.procs.len
                 if g >= 0 and g < wasm.builtins.len and rounding(wasm.builtins[g]) != 0: # its instruction, in place of the call
                     add_byte(out, rounding(wasm.builtins[g]))
@@ -803,165 +803,165 @@ func enclose(x: i64, count: i64):
                     leb(out, u64(f))
                 gives = wasm.gives[wasm.typed[f]]
             else:
-                if i.arg[1] == R and i.to != R:
+                if i.arg[1] == EMPTY and i.to != EMPTY:
                     gives = valtype(c)
-                push(a, Kw)
+                push(a, Int32)
                 add_byte(out, 0x11) # call_indirect
                 leb(out, u64(signature(kinds, gives)))
                 add_byte(out, 0)
                 wasm.indirect = true
             free(kinds)
-            finish(b, first, k, i.to if gives != 0 else R, true)
+            finish(b, first, k, i.to if gives != 0 else EMPTY, true)
             continue
         kc := 0
         cmp := 0
-        if isload(o) or o == Oaload:
+        if is_load(o) or o == Oatomicload:
             load(o, c, address(a))
-        elif iscmp(o, ptr(kc), ptr(cmp)):
-            if cmp >= NCmpI + Cfo: # ordered when each one equals itself
+        elif is_compare(o, ptr(kc), ptr(cmp)):
+            if cmp >= INT_CONDITIONS + Orderedf: # ordered when each one equals itself
                 for r in i.arg:
                     push(r, kc)
                     push(r, kc)
-                    add_byte(out, FLOAT_COMPARES[Cfeq if cmp == NCmpI + Cfo else Cfne] + u8(6 * i64(kc == Kd)))
-                add_byte(out, 0x71 if cmp == NCmpI + Cfo else 0x72) # and, or
+                    add_byte(out, FLOAT_COMPARES[Eqf if cmp == INT_CONDITIONS + Orderedf else Nef] + u8(6 * i64(kc == Float64)))
+                add_byte(out, 0x71 if cmp == INT_CONDITIONS + Orderedf else 0x72) # and, or
             else:
                 push(a, kc)
                 push(i.arg[1], kc)
-                if cmp < NCmpI:
-                    add_byte(out, INTEGER_COMPARES[cmp] + u8(11 * i64(kc == Kl)))
+                if cmp < INT_CONDITIONS:
+                    add_byte(out, INTEGER_COMPARES[cmp] + u8(11 * i64(kc == Int64)))
                 else:
-                    add_byte(out, FLOAT_COMPARES[cmp - NCmpI] + u8(6 * i64(kc == Kd)))
-            if c == Kl:
+                    add_byte(out, FLOAT_COMPARES[cmp - INT_CONDITIONS] + u8(6 * i64(kc == Float64)))
+            if c == Int64:
                 add_byte(out, 0xad) # i64.extend_i32_u
-        elif o >= Ovshlh and o <= Ovsarw: # wasm counts a shift modulo the bits of a lane, where Flag shifts them all out
-            bits := 16 << ((o - Ovshlh) % 3)
+        elif o >= Ovshli16 and o <= Ovsari32: # wasm counts a shift modulo the bits of a lane, where Flag shifts them all out
+            bits := 16 << ((o - Ovshli16) % 3)
             n := 0
-            known := isconbits(i.arg[1], ptr(n))
-            push(a, Kv)
-            if o >= Ovsarh and known: # the sign fills the lane, as a shift by bits - 1
+            known := bits_of(i.arg[1], ptr(n))
+            push(a, Vector)
+            if o >= Ovsari16 and known: # the sign fills the lane, as a shift by bits - 1
                 word(min(n, bits - 1))
-            elif o >= Ovsarh:
-                push(i.arg[1], Kw)
+            elif o >= Ovsari16:
+                push(i.arg[1], Int32)
                 word(bits - 1)
                 below(i.arg[1], bits)
                 add_byte(out, 0x1b) # select
             else:
-                push(i.arg[1], Kw)
-            simd(VECTOR[o - Ovaddb])
-            if o < Ovsarh and not (known and n < bits):
+                push(i.arg[1], Int32)
+            simd(VECTOR[o - Ovaddi8])
+            if o < Ovsari16 and not (known and n < bits):
                 out.* += "\xfd\x0c\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0" # v128.const 0
                 below(i.arg[1], bits)
                 add_byte(out, 0x1b)
-        elif isvec(o):
-            if o >= Ovsplatb and o <= Ovsplatd:
-                push(a, argcls(i, 0))
+        elif is_vector(o):
+            if o >= Ovsplati8 and o <= Ovsplatf64:
+                push(a, arg_class(i, 0))
             else:
-                push(a, Kv)
-                if o < Ovsqrts:
-                    push(i.arg[1], Kv)
-            simd(VECTOR[o - Ovaddb])
-        elif o >= Ovgetsb and o <= Ovget:
-            push(a, Kv)
+                push(a, Vector)
+                if o < Ovsqrtf32:
+                    push(i.arg[1], Vector)
+            simd(VECTOR[o - Ovaddi8])
+        elif o >= Ovgeti8 and o <= Ovget:
+            push(a, Vector)
             if o == Ovget:
                 simd([0x1b, 0x1d, 0x1f, 0x21][c])
             else:
-                simd([0x15, 0x16, 0x18, 0x19, 0x1b, 0x1b][o - Ovgetsb])
-            add_byte(out, u8(rsval(i.arg[1])))
-            if c == Kl and o != Ovget:
-                add_byte(out, 0xac if (o - Ovgetsb) % 2 == 0 else 0xad) # i64.extend_i32_s or _u
-        elif o >= Ovsetb and o <= Ovsetd:
-            push(a, Kv)
-            push(i.arg[1], argcls(i, 1))
-            simd([0x17, 0x1a, 0x1c, 0x1e, 0x20, 0x22][o - Ovsetb])
+                simd([0x15, 0x16, 0x18, 0x19, 0x1b, 0x1b][o - Ovgeti8])
+            add_byte(out, u8(ref_signed(i.arg[1])))
+            if c == Int64 and o != Ovget:
+                add_byte(out, 0xac if (o - Ovgeti8) % 2 == 0 else 0xad) # i64.extend_i32_s or _u
+        elif o >= Ovseti8 and o <= Ovsetf64:
+            push(a, Vector)
+            push(i.arg[1], arg_class(i, 1))
+            simd([0x17, 0x1a, 0x1c, 0x1e, 0x20, 0x22][o - Ovseti8])
             add_byte(out, u8(lane))
         else:
             switch o:
             case Ocopy:
                 push(a, c)
             case Oneg:
-                if c == Kw:
+                if c == Int32:
                     word(0)
-                elif c == Kl:
+                elif c == Int64:
                     long(0)
                 push(a, c)
-                add_byte(out, ARITHMETIC[4 * (Osub - Oadd) + c] if c <= Kl else ARITHMETIC[4 * (Oneg - Oadd) + c])
+                add_byte(out, ARITHMETIC[4 * (Osub - Oadd) + c] if c <= Int64 else ARITHMETIC[4 * (Oneg - Oadd) + c])
             case Oadd, Osub, Odiv, Orem, Oudiv, Ourem, Omul, Oand, Oor, Oxor, Osar, Oshr, Oshl: # a count of a shift is a word, which wasm takes in the class of the shift
                 push(a, c)
                 push(i.arg[1], c)
                 add_byte(out, ARITHMETIC[4 * (o - Oadd) + c])
-            case Oextsb, Oextsh:
-                push(a, Kw)
-                add_byte(out, 0xc0 if o == Oextsb else 0xc1) # i32.extend8_s or extend16_s
-                if c == Kl:
+            case Oexti8, Oexti16:
+                push(a, Int32)
+                add_byte(out, 0xc0 if o == Oexti8 else 0xc1) # i32.extend8_s or extend16_s
+                if c == Int64:
                     add_byte(out, 0xac)
-            case Oextub, Oextuh:
-                push(a, Kw)
-                word(0xff if o == Oextub else 0xffff)
+            case Oextu8, Oextu16:
+                push(a, Int32)
+                word(0xff if o == Oextu8 else 0xffff)
                 add_byte(out, 0x71) # i32.and
-                if c == Kl:
+                if c == Int64:
                     add_byte(out, 0xad)
-            case Oextsw, Oextuw:
-                push(a, Kw)
-                if c == Kl:
-                    add_byte(out, 0xac if o == Oextsw else 0xad)
-            case Oexts:
-                push(a, Ks)
+            case Oexti32, Oextu32:
+                push(a, Int32)
+                if c == Int64:
+                    add_byte(out, 0xac if o == Oexti32 else 0xad)
+            case Oextf32:
+                push(a, Float32)
                 add_byte(out, 0xbb) # f64.promote_f32
-            case Otruncd:
-                push(a, Kd)
+            case Otruncf64:
+                push(a, Float64)
                 add_byte(out, 0xb6) # f32.demote_f64
-            case Ostosi, Ostoui, Odtosi, Odtoui: # saturating, where QBE leaves what each processor gives
-                push(a, argcls(i, 0))
+            case Of32toi, Of32tou, Of64toi, Of64tou: # saturating, where QBE leaves what each processor gives
+                push(a, arg_class(i, 0))
                 add_byte(out, 0xfc)
-                add_byte(out, u8(2 * i64(o >= Odtosi) + i64(o == Ostoui or o == Odtoui) + 4 * c))
-            case Oswtof, Ouwtof, Osltof, Oultof:
-                push(a, argcls(i, 0))
-                add_byte(out, u8(0xb2 + i64(o == Ouwtof or o == Oultof) + 2 * i64(o >= Osltof) + 5 * i64(c == Kd)))
+                add_byte(out, u8(2 * i64(o >= Of64toi) + i64(o == Of32tou or o == Of64tou) + 4 * c))
+            case Oi32tof, Ou32tof, Oi64tof, Ou64tof:
+                push(a, arg_class(i, 0))
+                add_byte(out, u8(0xb2 + i64(o == Ou32tof or o == Ou64tof) + 2 * i64(o >= Oi64tof) + 5 * i64(c == Float64)))
             case Ocast: # the bits, as the other kind
-                push(a, argcls(i, 0))
+                push(a, arg_class(i, 0))
                 add_byte(out, u8([0xbc, 0xbd, 0xbe, 0xbf][c]))
-            case Osel1:
+            case Oselect:
                 push(a, c)
                 push(i.arg[1], c)
-                push(chosen, Kw)
+                push(chosen, Int32)
                 add_byte(out, 0x1b) # select
             case:
-                panic("wasm has no form for the instruction " + optab[o].name)
+                panic("wasm has no form for the instruction " + OPERATIONS[o].name)
         finish(b, k, k, i.to, true)
-    j := fn.blks[b].jmp
-    end := fn.blks[b].ins.len
-    s1 := fn.blks[fn.blks[b].s1].id
-    forks := j.type == Jjnz and fn.blks[b].s1 != fn.blks[b].s2
-    if j.type == Jjt: # a block for each target, the first one innermost, which br_table leaves by its place in targets
-        for t in fn.blks[b].targets:
+    j := fn.blocks[b].exit
+    end := fn.blocks[b].ins.len
+    s1 := fn.blocks[fn.blocks[b].yes].id
+    forks := j.type == Jbranch and fn.blocks[b].yes != fn.blocks[b].no
+    if j.type == Jtable: # a block for each target, the first one innermost, which br_table leaves by its place in targets
+        for t in fn.blocks[b].targets:
             out.* += "\x02\x40"
             append(wasm.nest, -1)
     begin()
-    if forks or j.type == Jjt:
-        push(j.arg, Kw)
-    elif isret(i64(j.type)) and j.type != Jret0:
-        push(j.arg, i64(j.type) - Jretw)
-    finish(b, end, end, R, true)
+    if forks or j.type == Jtable:
+        push(j.arg, Int32)
+    elif is_return(i64(j.type)) and j.type != Jreturn:
+        push(j.arg, i64(j.type) - Jreturni32)
+    finish(b, end, end, EMPTY, true)
     if forks:
         out.* += "\x04\x40" # if
         append(wasm.nest, -1)
         follow(x, s1)
         add_byte(out, 0x05) # else
-        follow(x, fn.blks[fn.blks[b].s2].id)
+        follow(x, fn.blocks[fn.blocks[b].no].id)
         wasm.nest.len -= 1
         add_byte(out, 0x0b)
-    elif j.type == Jjmp or j.type == Jjnz:
+    elif j.type == Jjump or j.type == Jbranch:
         follow(x, s1)
-    elif j.type == Jjt:
+    elif j.type == Jtable:
         add_byte(out, 0x0e) # br_table, whose last entry is where it goes past the others
-        leb(out, u64(fn.blks[b].table.len - 1))
-        for t in fn.blks[b].table:
+        leb(out, u64(fn.blocks[b].table.len - 1))
+        for t in fn.blocks[b].table:
             leb(out, u64(t))
-        for t in fn.blks[b].targets:
+        for t in fn.blocks[b].targets:
             add_byte(out, 0x0b)
             wasm.nest.len -= 1
-            follow(x, fn.blks[t].id)
-    elif isret(i64(j.type)):
+            follow(x, fn.blocks[t].id)
+    elif is_return(i64(j.type)):
         if wasm.frame > 0:
             local_op(0x20, wasm.fp)
             long(wasm.frame)
@@ -999,9 +999,9 @@ func finish(b: i64, first: i64, j: i64, t: Ref, regular: bool):
         elif contains(wasm.deferred[:d], reads[r].t):
             break
     left := false
-    if regular and t != R and fn.tmp[t].nuse == 1:
-        u := fn.tmp[t].uses[0]
-        left = u.type == UIns and u.at >> 32 == b or u.type == UJmp and i64(u.bid) == fn.blks[b].id
+    if regular and t != EMPTY and fn.temps[t].used == 1:
+        u := fn.temps[t].uses[0]
+        left = u.type == ByInstr and u.at >> 32 == b or u.type == ByExit and i64(u.block) == fn.blocks[b].id
     flushed := 0 if left else d # those under a value it reads from its local go to their locals too
     for k, read in reads:
         for e in 0..d:
@@ -1019,7 +1019,7 @@ func finish(b: i64, first: i64, j: i64, t: Ref, regular: bool):
             wasm.out += wasm.stacked[wasm.marks[taken[k]]:wasm.marks[taken[k] + 1]]
         else:
             local_op(0x20, local_of(read.t))
-        retype(wasm.out, valtype(i64(fn.tmp[read.t].cls)), valtype(read.k))
+        retype(wasm.out, valtype(i64(fn.temps[read.t].cls)), valtype(read.k))
     wasm.out += held[at:]
     base := wasm.marks[flushed]
     rest: &str = heap(wasm.stacked[base:wasm.marks[d]])
@@ -1036,7 +1036,7 @@ func finish(b: i64, first: i64, j: i64, t: Ref, regular: bool):
         wasm.stacked += wasm.out[start:]
         append(wasm.marks, wasm.stacked.len)
         wasm.out.len = start
-    elif t != R:
+    elif t != EMPTY:
         set(t)
 
 # whether the read r of reads can take the value left on the stack: the one use of its temp is the instruction from first
@@ -1047,17 +1047,17 @@ func here(reads: &listview[Read], r: i64, b: i64, first: i64, j: i64) -> bool:
     for k, read in reads:
         if k != r and read.t == t:
             return false
-    u := fn.tmp[t].uses[0]
-    while u.type == UIns and wasm.folded[instr(u.at).to]:
-        u = fn.tmp[instr(u.at).to].uses[0]
-    if j == fn.blks[b].ins.len:
-        return u.type == UJmp
-    return u.type == UIns and u.at >= at(b, first) and u.at <= at(b, j)
+    u := fn.temps[t].uses[0]
+    while u.type == ByInstr and wasm.folded[instr_at(u.at).to]:
+        u = fn.temps[instr_at(u.at).to].uses[0]
+    if j == fn.blocks[b].ins.len:
+        return u.type == ByExit
+    return u.type == ByInstr and u.at >= at(b, first) and u.at <= at(b, j)
 
 # a jump from x to y, by their places in fn.rpo: the phis of y take their values, and it goes back to a loop, past the
 # block a merge follows, or into y when only x jumps there
 func follow(x: i64, y: i64):
-    moves(fn.blks[fn.rpo[y]].phi, fn.rpo[x])
+    moves(fn.blocks[fn.order[y]].phi, fn.order[x])
     if y <= x or wasm.merge[y]:
         br(y)
     else:
@@ -1067,8 +1067,8 @@ func follow(x: i64, y: i64):
 func moves(p: i64, b: i64):
     if p == 0:
         return
-    push(phiarg(p, b), i64(fn.phis[p].cls))
-    moves(fn.phis[p].link, b)
+    push(phi_arg(p, b), i64(fn.phis[p].cls))
+    moves(fn.phis[p].next, b)
     local_op(0x21, local_of(fn.phis[p].to))
 
 # a br to the construct that encloses the code as what
@@ -1119,55 +1119,55 @@ VECTOR: array[u8, 56] = [
 
 # a load of the instruction o, of the class c, from the address on the stack plus offset
 func load(o: i64, c: i64, offset: i64):
-    if c == Kv:
+    if c == Vector:
         simd(0x00)
         aligned(16, offset)
-    elif o == Oload or o == Oaload:
+    elif o == Oload or o == Oatomicload:
         add_byte(wasm.out, u8([0x28, 0x29, 0x2a, 0x2b][c]))
-        aligned(4 << kwide(c), offset)
+        aligned(4 << wide(c), offset)
     else:
-        add_byte(wasm.out, u8([0x2c, 0x30, 0x2d, 0x31, 0x2e, 0x32, 0x2f, 0x33, 0x28, 0x34, 0x28, 0x35][2 * (o - Oloadsb) + c]))
-        aligned(1 << ((o - Oloadsb) / 2), offset)
+        add_byte(wasm.out, u8([0x2c, 0x30, 0x2d, 0x31, 0x2e, 0x32, 0x2f, 0x33, 0x28, 0x34, 0x28, 0x35][2 * (o - Oloadi8) + c]))
+        aligned(1 << ((o - Oloadi8) / 2), offset)
 
 # a store of the instruction o, of the value on the stack to the address under it plus offset
 func store(o: i64, offset: i64):
-    if o == Ostorev:
+    if o == Ostorevector:
         simd(0x0b)
         aligned(16, offset)
     else:
-        add_byte(wasm.out, u8([0x3a, 0x3b, 0x36, 0x37, 0x38, 0x39][o - Ostoreb]))
-        aligned([1, 2, 4, 8, 4, 8][o - Ostoreb], offset)
+        add_byte(wasm.out, u8([0x3a, 0x3b, 0x36, 0x37, 0x38, 0x39][o - Ostorei8]))
+        aligned([1, 2, 4, 8, 4, 8][o - Ostorei8], offset)
 
 # a ref as a value of the class k: a word from a long is its low half, as QBE reads it, and a long from a word, which
 # gvn takes from a comparison for a long that is 1 or 0, has its high half 0
 func push(r: Ref, k: i64):
     out := ptr(wasm.out)
-    if rtype(r) == RTmp and wasm.offsets[r] >= 0: # a slot is where the frame pointer points plus its place
+    if ref_kind(r) == RefTemp and wasm.offsets[r] >= 0: # a slot is where the frame pointer points plus its place
         local_op(0x20, wasm.fp)
         if wasm.offsets[r] != 0:
             long(wasm.offsets[r])
             add_byte(out, 0x7c) # i64.add
-        if k == Kw:
+        if k == Int32:
             add_byte(out, 0xa7) # i32.wrap_i64
-    elif rtype(r) == RTmp and wasm.reading >= 0:
+    elif ref_kind(r) == RefTemp and wasm.reading >= 0:
         append(wasm.reads, Read{r, k, wasm.out.len - wasm.reading})
-    elif rtype(r) == RTmp:
+    elif ref_kind(r) == RefTemp:
         local_op(0x20, local_of(r))
-        retype(out, valtype(i64(fn.tmp[r].cls)), valtype(k))
+        retype(out, valtype(i64(fn.temps[r].cls)), valtype(k))
     else:
-        c := fn.con[rval(r)]
+        c := fn.constants[ref_value(r)]
         n := c.bits
-        if c.type == CAddr:
-            n += wasm.located[c.sym]
+        if c.type == Addressed:
+            n += wasm.located[c.symbol]
         switch k:
-        case Kw:
+        case Int32:
             word(n)
-        case Kl:
+        case Int64:
             long(n)
-        case Ks:
+        case Float32:
             add_byte(out, 0x43)
             little(out, n, 4)
-        case Kd:
+        case Float64:
             add_byte(out, 0x44)
             little(out, n, 8)
         case:
@@ -1179,14 +1179,14 @@ func push(r: Ref, k: i64):
 # plus its place, and an add of a constant that only this address reads is its other argument plus the constant
 func address(r: Ref) -> i64:
     offset := 0
-    while rtype(r) == RTmp and wasm.folded[r]:
-        i := instr(fn.tmp[r].def)
-        offset += fn.con[rval(i.arg[1])].bits
+    while ref_kind(r) == RefTemp and wasm.folded[r]:
+        i := instr_at(fn.temps[r].def)
+        offset += fn.constants[ref_value(i.arg[1])].bits
         r = i.arg[0]
-    if rtype(r) == RTmp and wasm.offsets[r] >= 0:
+    if ref_kind(r) == RefTemp and wasm.offsets[r] >= 0:
         local_op(0x20, wasm.base)
         return offset + wasm.offsets[r]
-    push(r, Kl if wasm.wide else Kw)
+    push(r, Int64 if wasm.wide else Int32)
     return offset
 
 # a count of bytes, as memory.copy takes it
@@ -1198,13 +1198,13 @@ func length(n: i64):
 
 # whether a count of a shift is less than bits
 func below(count: Ref, bits: i64):
-    push(count, Kw)
+    push(count, Int32)
     word(bits)
     add_byte(wasm.out, 0x49) # i32.lt_u
 
 # the value on the stack goes to the local of t, or away when nothing reads it
 func set(t: Ref):
-    if t == R or fn.tmp[t].nuse == 0:
+    if t == EMPTY or fn.temps[t].used == 0:
         add_byte(wasm.out, 0x1a) # drop
     else:
         local_op(0x21, local_of(t))
@@ -1213,7 +1213,7 @@ func set(t: Ref):
 func local_of(t: Ref) -> i64:
     if wasm.temps[t] < 0:
         wasm.temps[t] = wasm.locals.len
-        append(wasm.locals, valtype(i64(fn.tmp[t].cls)))
+        append(wasm.locals, valtype(i64(fn.temps[t].cls)))
     return wasm.temps[t]
 
 # an instruction of simd

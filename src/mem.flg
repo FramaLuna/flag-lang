@@ -377,7 +377,7 @@ func check_memory():
         for k in func.params..func.params + func.count:
             p := comp.passes[k]
             t := u32(p.arg.n) + 1 - func.temps
-            if p.cls != Kl and p.cls < AGG or p.number:
+            if p.cls != Int64 and p.cls < AGG or p.number:
                 t = 0
             append(f.params, t)
             append(f.copies, p.cls >= AGG)
@@ -421,7 +421,7 @@ func check_memory():
                 o.code = Call
                 o.first = u32(mem.args.len)
                 for j in i.first..i.first + i.count:
-                    if comp.passes[j].cls != K0:
+                    if comp.passes[j].cls != Nothing:
                         append(mem.args, operand(func.temps, comp.passes[j].arg))
                 o.count = u32(mem.args.len) - o.first
                 if o.blob:
@@ -439,16 +439,16 @@ func check_memory():
                             append(aims, p.name)
                     variable := 0 # a local that only ever holds named functions calls one of those
                     for c in comp.code[func.code:func.end]:
-                        if c.to == i.a.n and c.op == Oload and c.cls == Kl and c.a.kind == Temp:
+                        if c.to == i.a.n and c.op == Oload and c.cls == Int64 and c.a.kind == Temp:
                             variable = c.a.n
                     held.len = 0
                     for c in comp.code[func.code:func.end]:
-                        if variable != 0 and c.op == Ostorel and c.b.kind == Temp and c.b.n == variable:
+                        if variable != 0 and c.op == Ostorei64 and c.b.kind == Temp and c.b.n == variable:
                             if c.a.kind == Global and contains(aims, comp.globals[c.a.n]):
                                 append(held, comp.globals[c.a.n])
                             elif c.a.kind != Const or c.a.n != 0:
                                 variable = 0
-                        elif variable != 0 and not (c.op == Oload and c.cls == Kl) and (c.a.kind == Temp and c.a.n == variable or c.b.kind == Temp and c.b.n == variable or c.c.kind == Temp and c.c.n == variable):
+                        elif variable != 0 and not (c.op == Oload and c.cls == Int64) and (c.a.kind == Temp and c.a.n == variable or c.b.kind == Temp and c.b.n == variable or c.c.kind == Temp and c.c.n == variable):
                             variable = 0
                         elif variable != 0 and c.op == Ocall:
                             for j in c.first..c.first + c.count:
@@ -481,23 +481,23 @@ func check_memory():
                 continue
             o.a = operand(func.temps, i.a)
             o.b = operand(func.temps, i.b)
-            if isalloc(i.op):
+            if is_alloc(i.op):
                 o.code = Alloc
                 o.slot = u32(f.slots.len)
                 append(f.slots, o.to)
-            elif isload(i.op) or isstore(i.op):
+            elif is_load(i.op) or is_store(i.op):
                 o.code = Clear
-                if i.op == Oload and i.cls == Kl and not i.number:
+                if i.op == Oload and i.cls == Int64 and not i.number:
                     o.code = Load
-                elif isload(i.op):
+                elif is_load(i.op):
                     o.code = Word
-                elif i.op == Ostorel and not i.number:
+                elif i.op == Ostorei64 and not i.number:
                     o.code = Store
                 access := Instr{op = i32(i.op), cls = i32(i.cls)}
-                o.size = u32(loadsz(access) if isload(i.op) else storesz(access))
+                o.size = u32(loadsz(access) if is_load(i.op) else storesz(access))
             else:
                 switch i.op:
-                case Oblit0:
+                case Oblit:
                     o.code = Blit
                     o.size = u32(i.c.n)
                 case Oabsent:
@@ -511,7 +511,7 @@ func check_memory():
                         o.code = Count
                 case Omul:
                     o.code = Scale
-                case Osub, Oand, Oor, Oxor, Oshl, Oshr, Osar, Oudiv, Odiv, Orem, Ourem, Oneg, Oextsw, Oextuw, Oextsb, Oextub, Oextsh, Oextuh:
+                case Osub, Oand, Oor, Oxor, Oshl, Oshr, Osar, Oudiv, Odiv, Orem, Ourem, Oneg, Oexti32, Oextu32, Oexti8, Oextu8, Oexti16, Oextu16:
                     o.code = Mix
                     o.size = u32(i.op == Osub)
                     if i.number:
@@ -524,9 +524,9 @@ func check_memory():
                     o.a.n = i64(block_of(labels, blocks, u32(i.b.n)))
                     o.b.n = i64(block_of(labels, blocks, u32(i.c.n)))
                     test := comp.code[k - 1]
-                    if test.to == i.a.n and (test.op == Oceql or test.op == Ocnel) and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
+                    if test.to == i.a.n and (test.op == Oeqi64 or test.op == Onei64) and test.a.kind == Temp and test.b.kind == Const and test.b.n == 0: # a pointer against null, whose side size - 1 is null
                         o.from = u32(test.a.n) + 1 - func.temps
-                        o.size = 1 if test.op == Oceql else 2
+                        o.size = 1 if test.op == Oeqi64 else 2
                 case Oreturn:
                     o.code = Leave
                     if f.blob: # the value goes back like a blit into the caller's place
@@ -553,25 +553,25 @@ func check_memory():
                     o.code = Reused
                 case Opart:
                     o.code = Part
-                case Oaload, Oaadd, Oaswap, Oacas0: # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
+                case Oatomicload, Oatomicadd, Oatomicswap, Oatomicexpected: # each reads the word at a, then the others write it, swap with b and acas with c, as if it always did
                     o.code = Word
                     o.atomic = true
-                    o.size = 4 << u32(i.cls == Kl)
-                    if i.cls == Kl and not i.number:
+                    o.size = 4 << u32(i.cls == Int64)
+                    if i.cls == Int64 and not i.number:
                         o.code = Load
-                    if i.op != Oaload:
+                    if i.op != Oatomicload:
                         append(mem.ops, o)
                         o.to = 0
                         o.b = o.a
                         o.code = Clear
                         if not i.number:
                             o.code = Store
-                            o.a = operand(func.temps, i.c if i.op == Oacas0 else i.b)
-                case Oastorel, Oastorew:
+                            o.a = operand(func.temps, i.c if i.op == Oatomicexpected else i.b)
+                case Oatomicstorei64, Oatomicstorei32:
                     o.code = Clear
                     o.atomic = true
-                    o.size = 4 << u32(i.op == Oastorel)
-                    if i.op == Oastorel and not i.number:
+                    o.size = 4 << u32(i.op == Oatomicstorei64)
+                    if i.op == Oatomicstorei64 and not i.number:
                         o.code = Store
                 case:
                     o.code = Plain

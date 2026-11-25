@@ -1,20 +1,20 @@
 @trust
 # comp.code holds the instructions of QBE, with blit0 and acas0 taking the three arguments of their pair, and these: a
 # label starts a block, the five after it end one, and the marks after those only -memory reads
-Olabel = NOp
-Ojump = NOp + 1
-Obranch = NOp + 2
-Otable = NOp + 3
-Oreturn = NOp + 4
-Ohalt = NOp + 5
-Oabsent = NOp + 6
-Oended = NOp + 7
-Oround = NOp + 8
-Owalked = NOp + 9
-Onarrowed = NOp + 10
-Ocounted = NOp + 11
-Oreused = NOp + 12
-Opart = NOp + 13
+Olabel = OPS
+Ojump = OPS + 1
+Obranch = OPS + 2
+Otable = OPS + 3
+Oreturn = OPS + 4
+Ohalt = OPS + 5
+Oabsent = OPS + 6
+Oended = OPS + 7
+Oround = OPS + 8
+Owalked = OPS + 9
+Onarrowed = OPS + 10
+Ocounted = OPS + 11
+Oreused = OPS + 12
+Opart = OPS + 13
 
 AGG = 16 # the classes past those of QBE name a type: an aggregate of the program from AGG, and one of C from CAGG
 CAGG = 1 << 30
@@ -72,9 +72,9 @@ func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
     g := right.n as f64
     a := left.n
     b := right.n
-    if cls == Ks or cls == Kd:
-        word := cls == Ks
-        if float == (o >= Oswtof and o <= Ocast): # only those take an integer
+    if cls == Float32 or cls == Float64:
+        word := cls == Float32
+        if float == (o >= Oi32tof and o <= Ocast): # only those take an integer
             return Arg{}
         r := 0.0
         switch o:
@@ -88,14 +88,14 @@ func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
             r = f64(f32(f) / f32(g)) if word else f / g
         case Oneg:
             r = -f
-        case Oexts, Otruncd:
+        case Oextf32, Otruncf64:
             r = f64(f32(f)) if word else f
-        case Oswtof, Osltof:
-            if o == Oswtof:
+        case Oi32tof, Oi64tof:
+            if o == Oi32tof:
                 a = a << 32 >> 32
             r = f64(f32(a)) if word else f64(a)
-        case Ouwtof, Oultof:
-            if o == Ouwtof:
+        case Ou32tof, Ou64tof:
+            if o == Ou32tof:
                 a = a and 0xffff_ffff
             r = f64(f32(u64(a))) if word else f64(u64(a))
         case Ocast:
@@ -105,32 +105,32 @@ func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
         case:
             return Arg{}
         return Arg{Single if word else Double, r as i64}
-    if cls != Kw and cls != Kl:
+    if cls != Int32 and cls != Int64:
         return Arg{}
     k := cls
     c := 0
-    _ = iscmp(o, ptr(k), ptr(c)) # a comparison works on the class it names
-    word := k == Kw
+    _ = is_compare(o, ptr(k), ptr(c)) # a comparison works on the class it names
+    word := k == Int32
     r := 0
     if float:
         switch o:
-        case Oceqs, Oceqd:
+        case Oeqf32, Oeqf64:
             r = i64(f == g)
-        case Ocnes, Ocned:
+        case Onef32, Onef64:
             r = i64(f != g)
-        case Oclts, Ocltd:
+        case Oltf32, Oltf64:
             r = i64(f < g)
-        case Ocles, Ocled:
+        case Olef32, Olef64:
             r = i64(f <= g)
-        case Ocgts, Ocgtd:
+        case Ogtf32, Ogtf64:
             r = i64(f > g)
-        case Ocges, Ocged:
+        case Ogef32, Ogef64:
             r = i64(f >= g)
-        case Odtosi, Ostosi:
+        case Of64toi, Of32toi:
             if not (f > (-2147483649.0 if word else -9223372036854777856.0) and f < (2147483648.0 if word else 9223372036854775808.0)): # out of its range each processor gives its own
                 return Arg{}
             r = i64(f)
-        case Odtoui, Ostoui:
+        case Of64tou, Of32tou:
             if not (f > -1.0 and f < (4294967296.0 if word else 18446744073709551616.0)):
                 return Arg{}
             r = u64(f) as i64
@@ -181,41 +181,41 @@ func computed(cls: i64, o: i64, left: Arg, right: Arg) -> Arg:
             r = i64(x / y)
         case:
             r = i64(x % y)
-    case Oceqw, Oceql:
+    case Oeqi32, Oeqi64:
         r = i64(a == b)
-    case Ocnew, Ocnel:
+    case Onei32, Onei64:
         r = i64(a != b)
-    case Ocsltw, Ocsltl:
+    case Olti32, Olti64:
         r = i64(a < b)
-    case Ocslew, Ocslel:
+    case Olei32, Olei64:
         r = i64(a <= b)
-    case Ocsgtw, Ocsgtl:
+    case Ogti32, Ogti64:
         r = i64(a > b)
-    case Ocsgew, Ocsgel:
+    case Ogei32, Ogei64:
         r = i64(a >= b)
-    case Ocultw, Ocultl:
+    case Oltu32, Oltu64:
         r = i64(x < y)
-    case Oculew, Oculel:
+    case Oleu32, Oleu64:
         r = i64(x <= y)
-    case Ocugtw, Ocugtl:
+    case Ogtu32, Ogtu64:
         r = i64(x > y)
-    case Ocugew, Ocugel:
+    case Ogeu32, Ogeu64:
         r = i64(x >= y)
-    case Oextsb:
+    case Oexti8:
         r = a << 56 >> 56
-    case Oextub:
+    case Oextu8:
         r = a and 0xff
-    case Oextsh:
+    case Oexti16:
         r = a << 48 >> 48
-    case Oextuh:
+    case Oextu16:
         r = a and 0xffff
-    case Oextsw:
+    case Oexti32:
         r = a << 32 >> 32
-    case Oextuw:
+    case Oextu32:
         r = a and 0xffff_ffff
     case:
         return Arg{}
-    return int_arg(r << 32 >> 32 if cls == Kw else r)
+    return int_arg(r << 32 >> 32 if cls == Int32 else r)
 
 func terminate(o: i64, a: Arg):
     add(Ins{op = o, a = a})
@@ -243,7 +243,7 @@ func mention(name: &strview, a: Arg, type: i64, tok: i64):
         own = own or s.to == u32(a.n)
     if comp.debug and not own:
         pointer = alloc(U64) # a debugger reads the variable through it
-        add(Ins{op = Ostorel, a = a, b = pointer})
+        add(Ins{op = Ostorei64, a = a, b = pointer})
     append(comp.mentions, Mention{u32(a.n), name, type, tok, comp.scope, u32(pointer.n)})
     for k in reverse 0..comp.held.len:
         if comp.slots[comp.held[k]].to == u32(a.n):
@@ -299,15 +299,15 @@ func shrink():
                         if want.cls >= AGG:
                             t := want.cls - AGG
                             inner[at] = pooled(Ins{op = alloc_op(t), a = int_arg(i64(room(t)))}, g, pool, taken)
-                            append(body, Ins{op = Oblit0, a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
+                            append(body, Ins{op = Oblit, a = given.arg, b = inner[at], c = int_arg(i64(comp.types[t].size)), pos = i.pos})
                     if i.cls >= AGG:
-                        append(slots, Ins{op = alloc_op(i.cls - AGG), cls = Kl, to = i.to, a = int_arg(room(i.cls - AGG))})
+                        append(slots, Ins{op = alloc_op(i.cls - AGG), cls = Int64, to = i.to, a = int_arg(room(i.cls - AGG))})
                     comp.labels += 1
                     after := comp.labels
                     jumped := false
                     for j in q.code..q.end:
                         c := comp.code[j]
-                        if isalloc(c.op):
+                        if is_alloc(c.op):
                             inner[c.to - q.temps] = pooled(c, g, pool, taken)
                             continue
                         c = renamed(c, inner, q.temps, i64(after) - i64(q.labels))
@@ -319,7 +319,7 @@ func shrink():
                             append(body, c)
                             continue
                         if i.cls >= AGG:
-                            append(body, Ins{op = Oblit0, a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(comp.types[i.cls - AGG].size), pos = c.pos})
+                            append(body, Ins{op = Oblit, a = c.a, b = Arg{Temp, i64(i.to)}, c = int_arg(comp.types[i.cls - AGG].size), pos = c.pos})
                         elif i.to != 0:
                             append(body, Ins{op = Ocopy, cls = i.cls, to = i.to, a = c.a, pos = c.pos})
                         if j + 1 < q.end:
@@ -329,7 +329,7 @@ func shrink():
                         append(body, Ins{op = Olabel, a = int_arg(i64(after))})
                     free(inner)
                     free(taken)
-                elif isalloc(i.op):
+                elif is_alloc(i.op):
                     append(slots, i)
                 else:
                     append(body, i)
@@ -356,12 +356,12 @@ func shrink():
         room := 0
         frame := declared(p.node) == "noinline"
         for i in comp.code[p.code:p.end]:
-            if isalloc(i.op):
+            if is_alloc(i.op):
                 room += i.a.n
                 cut[i.to - p.temps] = i.a.n <= CUT
             elif i.op == Oadd and cut_at(cut, i.a, p.temps) and i.b.kind == Const:
                 cut[i.to - p.temps] = true
-            elif not (i.ghost or isload(i.op) and cut_at(cut, i.a, p.temps) or isstore(i.op) and cut_at(cut, i.b, p.temps) or i.op == Oblit0 and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
+            elif not (i.ghost or is_load(i.op) and cut_at(cut, i.a, p.temps) or is_store(i.op) and cut_at(cut, i.b, p.temps) or i.op == Oblit and cut_at(cut, i.a, p.temps) and cut_at(cut, i.b, p.temps)):
                 stays += 1
             frame = frame or i.op == Ocall and i.a.kind == Global and comp.globals[i.a.n] == "$flag_frame" # it reads the frame of its caller, panic for the chain
         free(cut)
@@ -458,7 +458,7 @@ func pooled(slot: Ins, callee: i64, pool: *&list[Ins], taken: *&list[i64]) -> Ar
         k += 1
     if k == pool.len:
         comp.temps += 1
-        append(pool, Ins{op = slot.op, cls = Kl, to = comp.temps, a = slot.a, first = u32(callee)})
+        append(pool, Ins{op = slot.op, cls = Int64, to = comp.temps, a = slot.a, first = u32(callee)})
     append(taken, k)
     return Arg{Temp, i64(pool[k].to)}
 

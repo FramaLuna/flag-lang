@@ -14,13 +14,13 @@ RV64_RSAVE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 42, 43, 44, 45, 46,
 # s1 to s11, fs0 to fs11
 RV64_RCLOB = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
 
-RV64: Machine = Machine{gpr0 = T0, ngpr = 30, fpr0 = FT0, nfpr = 31, rglob = 0x1f << FP, rsave = RV64_RSAVE, nrsave = [14, 19], retregs = rv64_retregs, argregs = rv64_argregs, abi0 = elimsb, abi1 = rv64_abi, isel = rv64_isel, emitfn = rv64_emitfn, emitfin = elf_emitfin, asloc = ".L", assym = ""}
+RV64: Machine = Machine{first_int = T0, ints = 30, first_float = FT0, floats = 31, always_live = 0x1f << FP, caller_saved = RV64_RSAVE, caller_saved_count = [14, 19], return_regs = rv64_retregs, arg_regs = rv64_argregs, abi0 = elimsb, abi1 = rv64_abi, isel = rv64_isel, emit_function = rv64_emitfn, emit_end = elf_emitfin, local_prefix = ".L", symbol_prefix = ""}
 
 # layout of the second argument of a call (RCall): 0..1 gp regs returned, 2..3 fp regs returned, 4..7 gp regs passed,
 # 8..11 fp regs passed, 12 t5 passes an environment
 func rv64_retregs(r: Ref, p: *array[i64, 2]) -> u64:
-    p[0] = rval(r) and 3
-    p[1] = rval(r) >> 2 and 3
+    p[0] = ref_value(r) and 3
+    p[1] = ref_value(r) >> 2 and 3
     b: u64 = 0
     for n in 0..p[0]:
         b = b or regbit(A0 + n)
@@ -29,9 +29,9 @@ func rv64_retregs(r: Ref, p: *array[i64, 2]) -> u64:
     return b
 
 func rv64_argregs(r: Ref, p: *array[i64, 2]) -> u64:
-    ngp := rval(r) >> 4 and 15
-    nfp := rval(r) >> 8 and 15
-    t5 := rval(r) >> 12 and 1
+    ngp := ref_value(r) >> 4 and 15
+    nfp := ref_value(r) >> 8 and 15
+    t5 := ref_value(r) >> 12 and 1
     p[0] = ngp + t5
     p[1] = nfp
     b := u64(t5) << T5
@@ -43,15 +43,15 @@ func rv64_argregs(r: Ref, p: *array[i64, 2]) -> u64:
 
 # the classes of the fields of t from off, at most two and not of a union, or -1; how many are floats
 func fpstruct(t: i64, off: i64, c: *Class) -> i64:
-    ty := ptr(asm.typ[t])
-    if ty.isunion:
+    ty := ptr(asm.layouts[t])
+    if ty.is_union:
         return -1
     for f in ty.fields:
-        if f.type == FEnd:
+        if f.type == FieldEnd:
             break
-        if f.type == FPad:
+        if f.type == FieldPad:
             off += f.len
-        elif f.type == FTyp:
+        elif f.type == FieldType:
             if fpstruct(f.len, off, c) == -1:
                 return -1
         else:
@@ -59,17 +59,17 @@ func fpstruct(t: i64, off: i64, c: *Class) -> i64:
             if n == 2:
                 return -1
             switch f.type:
-            case Fl:
-                c.cls[n] = Kl
+            case FieldI64:
+                c.cls[n] = Int64
                 c.ngp += 1
-            case Fs:
-                c.cls[n] = Ks
+            case FieldF32:
+                c.cls[n] = Float32
                 c.nfp += 1
-            case Fd:
-                c.cls[n] = Kd
+            case FieldF64:
+                c.cls[n] = Float64
                 c.nfp += 1
             case:
-                c.cls[n] = Kw
+                c.cls[n] = Int32
                 c.ngp += 1
             c.off[n] = off
             off += f.len
@@ -78,29 +78,29 @@ func fpstruct(t: i64, off: i64, c: *Class) -> i64:
 # how an aggregate t passes from the registers gp and fp on: up to two fields, floats in float registers when fpabi,
 # up to 16 bytes in general purpose registers, or else a pointer to a copy
 func rv64_typclass(c: *Class, t: i64, fpabi: bool, gp: i64, fp: i64):
-    ty := ptr(asm.typ[t])
+    ty := ptr(asm.layouts[t])
     if ty.align > 4:
         panic("alignments larger than 16 are not supported")
     c.t = t
     c.class = 0
     c.ngp = 0
     c.nfp = 0
-    if ty.isdark or ty.size > 16 or ty.size == 0:
+    if ty.opaque or ty.size > 16 or ty.size == 0:
         c.class = Cptr
-        c.cls[0] = Kl
+        c.cls[0] = Int64
         c.off[0] = 0
         c.ngp = 1
     elif not fpabi or fpstruct(t, 0, c) <= 0:
         n := 0
         while 8 * n < ty.size:
-            c.cls[n] = Kl
+            c.cls[n] = Int64
             c.off[n] = 8 * n
             n += 1
         c.nfp = 0
         c.ngp = n
     c.nreg = c.nfp + c.ngp
     for n in 0..c.nreg:
-        if kbase(c.cls[n]) == 0:
+        if bank(c.cls[n]) == 0:
             c.reg[n] = gp
             gp += 1
         else:
@@ -122,24 +122,24 @@ func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i
     for i in ins:
         c: Class
         switch i.op:
-        case Opar, Oarg:
+        case Oparam, Oarg:
             c.cls[0] = i.cls
-            if not vararg and kbase(i.cls) == 1 and nfp > 0:
+            if not vararg and bank(i.cls) == 1 and nfp > 0:
                 nfp -= 1
                 c.reg[0] = fp
                 fp += 1
             elif ngp > 0:
-                if kbase(i.cls) == 1:
+                if bank(i.cls) == 1:
                     c.class = Cfpint
                 ngp -= 1
                 c.reg[0] = gp
                 gp += 1
             else:
                 c.class = Cstk1
-        case Oargv:
+        case Oargvariadic:
             vararg = true
-        case Oparc, Oargc:
-            t := rval(i.arg[0])
+        case Oparamaggregate, Oargaggregate:
+            t := ref_value(i.arg[0])
             rv64_typclass(ptr(c), t, true, gp, fp)
             if c.nfp > 0 and (c.nfp >= nfp or c.ngp >= ngp):
                 rv64_typclass(ptr(c), t, false, gp, fp)
@@ -158,145 +158,145 @@ func rv64_argsclass(ins: &listview[Instr], ca: *&list[Class], retptr: bool) -> i
                 if c.nreg > 1:
                     c.class = c.class or Cstk2
                 c.nreg = 0
-        case Opare, Oarge:
+        case Oparamenv, Oargenv:
             c.reg[0] = T5
-            c.cls[0] = Kl
+            c.cls[0] = Int64
             env = 1
         append(ca, c)
     return env << 12 or (gp - A0) << 4 or (fp - FA0) << 8
 
 # lowers the call at i1 of b, with its arguments from i0
 func rv64_selcall(b: i64, i0: i64, i1: i64, ral: *&list[Instr]):
-    ins := fn.blks[b].ins
+    ins := fn.blocks[b].ins
     call := ins[i1]
     cr: Class
-    if call.arg[1] != R:
-        rv64_typclass(ptr(cr), rval(call.arg[1]), true, A0, FA0)
+    if call.arg[1] != EMPTY:
+        rv64_typclass(ptr(cr), ref_value(call.arg[1]), true, A0, FA0)
     ca: &list[Class] = heap([])
     defer free(ca)
     cty := rv64_argsclass(ins[i0:i1], ca, (cr.class and Cptr) != 0)
     stk := 0
     for k in 0..ca.len:
         c := ca[k]
-        if ins[i0 + k].op == Oargv:
+        if ins[i0 + k].op == Oargvariadic:
             continue
         if (c.class and Cptr) != 0:
-            r := newtmp(Kl)
+            r := new_temp(Int64)
             ins[i0 + k].arg[0] = r
             ins[i0 + k].op = Oarg
-            stkblob(r, c.t, (asm.typ[c.t].size + 7) and -8, ral)
+            stkblob(r, c.t, (asm.layouts[c.t].size + 7) and -8, ral)
         if (c.class and Cstk1) != 0:
             stk += 8
         if (c.class and Cstk2) != 0:
             stk += 8
     stk += stk and 15
     if stk != 0:
-        emit(Osalloc, Kl, R, getcon(0 - stk), R)
-    if call.arg[1] != R:
-        if fn.tmp[call.to].pad == R:
-            stkblob(call.to, cr.t, (asm.typ[cr.t].size + 7) and -8, ral)
+        emit(Ostackalloc, Int64, EMPTY, intern(0 - stk), EMPTY)
+    if call.arg[1] != EMPTY:
+        if fn.temps[call.to].pad == EMPTY:
+            stkblob(call.to, cr.t, (asm.layouts[cr.t].size + 7) and -8, ral)
         else:
-            call.to = fn.tmp[call.to].pad
+            call.to = fn.temps[call.to].pad
         cty = cty or cr.nfp << 2 or cr.ngp
         if (cr.class and Cptr) != 0:
             # spill and rega expect calls to be followed by copies from regs, so we emit a dummy
-            emit(Ocopy, Kw, R, A0, R)
+            emit(Ocopy, Int32, EMPTY, A0, EMPTY)
         else:
             tmp: &list[Ref] = heap([])
             defer free(tmp)
             sttmps(tmp, cr.nreg, ptr(cr), call.to)
             for n in 0..cr.nreg:
-                emit(Ocopy, cr.cls[n], tmp[n], u32(cr.reg[n]), R)
-    elif kbase(call.cls) == 0:
-        emit(Ocopy, call.cls, call.to, A0, R)
+                emit(Ocopy, cr.cls[n], tmp[n], u32(cr.reg[n]), EMPTY)
+    elif bank(call.cls) == 0:
+        emit(Ocopy, call.cls, call.to, A0, EMPTY)
         cty = cty or 1
     else:
-        emit(Ocopy, call.cls, call.to, FA0, R)
+        emit(Ocopy, call.cls, call.to, FA0, EMPTY)
         cty = cty or 1 << 2
-    emit(Ocall, 0, R, call.arg[0], ref(RCall, cty))
+    emit(Ocall, 0, EMPTY, call.arg[0], ref(RefCall, cty))
     if (cr.class and Cptr) != 0: # where the aggregate returned goes
-        emit(Ocopy, Kl, A0, call.to, R)
+        emit(Ocopy, Int64, A0, call.to, EMPTY)
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ptr(ca[k])
-        if i.op == Oargv or (c.class and Cstk1) != 0:
+        if i.op == Oargvariadic or (c.class and Cstk1) != 0:
             continue
-        if i.op == Oargc:
+        if i.op == Oargaggregate:
             ldregs(c, i.arg[1])
         elif (c.class and Cfpint) != 0:
-            kc := Kl if kwide(c.cls[0]) != 0 else Kw
-            r := newtmp(kc)
-            emit(Ocopy, kc, u32(c.reg[0]), r, R)
+            kc := Int64 if wide(c.cls[0]) != 0 else Int32
+            r := new_temp(kc)
+            emit(Ocopy, kc, u32(c.reg[0]), r, EMPTY)
             c.reg[0] = i64(r)
         else:
-            emit(Ocopy, c.cls[0], u32(c.reg[0]), i.arg[0], R)
+            emit(Ocopy, c.cls[0], u32(c.reg[0]), i.arg[0], EMPTY)
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ca[k]
         if (c.class and Cfpint) != 0:
-            emit(Ocast, Kl if kwide(c.cls[0]) != 0 else Kw, u32(c.reg[0]), i.arg[0], R)
+            emit(Ocast, Int64 if wide(c.cls[0]) != 0 else Int32, u32(c.reg[0]), i.arg[0], EMPTY)
         if (c.class and Cptr) != 0:
-            emit(Oblit1, 0, R, ref(RInt, asm.typ[c.t].size), R)
-            emit(Oblit0, 0, R, i.arg[1], i.arg[0])
+            emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[c.t].size), EMPTY)
+            emit(Oblit, 0, EMPTY, i.arg[1], i.arg[0])
     if stk == 0:
         return
     off := 0
-    r := newtmp(Kl)
+    r := new_temp(Int64)
     for k in 0..ca.len:
         i := ins[i0 + k]
         c := ca[k]
-        if i.op == Oargv or (c.class and Cstk) == 0:
+        if i.op == Oargvariadic or (c.class and Cstk) == 0:
             continue
         if i.op == Oarg:
-            r1 := newtmp(Kl)
-            emit(Ostorew + i.cls, Kw, R, i.arg[0], r1)
-            if i.cls == Kw: # the w of an l temp has arbitrary high bits, see rv64_fixarg
+            r1 := new_temp(Int64)
+            emit(Ostorei32 + i.cls, Int32, EMPTY, i.arg[0], r1)
+            if i.cls == Int32: # the w of an l temp has arbitrary high bits, see rv64_fixarg
                 x := fn.out.len - 1
-                w := newtmp(Kl)
-                fn.out[x].op = Ostorel
+                w := new_temp(Int64)
+                fn.out[x].op = Ostorei64
                 fn.out[x].arg[0] = w
-                emit(Oextsw, Kl, w, i.arg[0], R)
-            emit(Oadd, Kl, r1, r, getcon(off))
+                emit(Oexti32, Int64, w, i.arg[0], EMPTY)
+            emit(Oadd, Int64, r1, r, intern(off))
             off += 8
-        if i.op == Oargc:
+        if i.op == Oargaggregate:
             if (c.class and Cstk1) != 0:
-                r1 := newtmp(Kl)
-                r2 := newtmp(Kl)
-                emit(Ostorel, 0, R, r2, r1)
-                emit(Oadd, Kl, r1, r, getcon(off))
-                emit(Oload, Kl, r2, i.arg[1], R)
+                r1 := new_temp(Int64)
+                r2 := new_temp(Int64)
+                emit(Ostorei64, 0, EMPTY, r2, r1)
+                emit(Oadd, Int64, r1, r, intern(off))
+                emit(Oload, Int64, r2, i.arg[1], EMPTY)
                 off += 8
             if (c.class and Cstk2) != 0:
-                r1 := newtmp(Kl)
-                r2 := newtmp(Kl)
-                emit(Ostorel, 0, R, r2, r1)
-                emit(Oadd, Kl, r1, r, getcon(off))
-                r1 = newtmp(Kl)
-                emit(Oload, Kl, r2, r1, R)
-                emit(Oadd, Kl, r1, i.arg[1], getcon(8))
+                r1 := new_temp(Int64)
+                r2 := new_temp(Int64)
+                emit(Ostorei64, 0, EMPTY, r2, r1)
+                emit(Oadd, Int64, r1, r, intern(off))
+                r1 = new_temp(Int64)
+                emit(Oload, Int64, r2, r1, EMPTY)
+                emit(Oadd, Int64, r1, i.arg[1], intern(8))
                 off += 8
-    emit(Osalloc, Kl, r, getcon(stk), R)
+    emit(Ostackalloc, Int64, r, intern(stk), EMPTY)
 
 # lowers parameters, calls and returns as the lp64d convention of risc-v takes them
 func rv64_abi():
-    ins := fn.blks[fn.start].ins
+    ins := fn.blocks[fn.start].ins
     npar := 0
-    while npar < ins.len and ispar(ins[npar].op):
+    while npar < ins.len and is_param(ins[npar].op):
         npar += 1
     fn.out.len = 0
     for k in reverse npar..ins.len:
-        emiti(ins[k])
+        emit(ins[k])
     cr: Class # of the aggregate returned
     if fn.retty >= 0:
         rv64_typclass(ptr(cr), fn.retty, true, A0, FA0)
         if (cr.class and Cptr) != 0:
-            fn.retr = newtmp(Kl)
-            emit(Ocopy, Kl, fn.retr, A0, R)
+            fn.retr = new_temp(Int64)
+            emit(Ocopy, Int64, fn.retr, A0, EMPTY)
     ca: &list[Class] = heap([])
     defer free(ca)
     cty := rv64_argsclass(ins[:npar], ca, (cr.class and Cptr) != 0)
     none: array[i64, 2]
-    fn.reg = rv64_argregs(ref(RCall, cty), ptr(none))
+    fn.reg = rv64_argregs(ref(RefCall, cty), ptr(none))
     ral: &list[Instr] = heap([]) # the allocs the start block gets
     defer free(ral)
     tmp: &list[Ref] = heap([])
@@ -306,129 +306,129 @@ func rv64_abi():
         if (c.class and Cfpint) != 0: # a float that came in an integer register
             r := ins[k].to
             kc := c.cls[0]
-            c.cls[0] = Kl if kwide(kc) != 0 else Kw
-            ins[k].to = newtmp(kc)
-            emit(Ocast, kc, r, ins[k].to, R)
-        if ins[k].op == Oparc and (c.class and Cptr) == 0 and c.nreg != 0:
+            c.cls[0] = Int64 if wide(kc) != 0 else Int32
+            ins[k].to = new_temp(kc)
+            emit(Ocast, kc, r, ins[k].to, EMPTY)
+        if ins[k].op == Oparamaggregate and (c.class and Cptr) == 0 and c.nreg != 0:
             n := c.nreg
             if (c.class and Cstk2) != 0:
-                c.cls[1] = Kl
+                c.cls[1] = Int64
                 c.off[1] = 8
                 n = 2
             sttmps(tmp, n, c, ins[k].to)
-            stkblob(ins[k].to, c.t, (asm.typ[c.t].size + 7) and -8, ral)
+            stkblob(ins[k].to, c.t, (asm.layouts[c.t].size + 7) and -8, ral)
     for k in reverse 0..ral.len:
-        emiti(ral[k])
+        emit(ral[k])
     ral.len = 0
     t := 0
     s := 2
     for k in 0..npar:
         i := ins[k]
         c := ca[k]
-        if i.op == Oparc and (c.class and Cptr) == 0:
+        if i.op == Oparamaggregate and (c.class and Cptr) == 0:
             if c.nreg == 0:
-                fn.tmp[i.to].slot = i32(0 - s)
+                fn.temps[i.to].slot = i32(0 - s)
                 s += 2 if (c.class and Cstk2) != 0 else 1
                 continue
             for n in 0..c.nreg:
-                emit(Ocopy, c.cls[n], tmp[t], u32(c.reg[n]), R)
+                emit(Ocopy, c.cls[n], tmp[t], u32(c.reg[n]), EMPTY)
                 t += 1
             if (c.class and Cstk2) != 0:
-                emit(Oload, Kl, tmp[t], ref(RSlot, 0 - s), R)
+                emit(Oload, Int64, tmp[t], ref(RefSlot, 0 - s), EMPTY)
                 t += 1
                 s += 1
         elif (c.class and Cstk1) != 0:
-            emit(Oload, c.cls[0], i.to, ref(RSlot, 0 - s), R)
+            emit(Oload, c.cls[0], i.to, ref(RefSlot, 0 - s), EMPTY)
             s += 1
         else:
-            emit(Ocopy, c.cls[0], i.to, u32(c.reg[0]), R)
-    idup(fn.start)
+            emit(Ocopy, c.cls[0], i.to, u32(c.reg[0]), EMPTY)
+    take_emitted(fn.start)
     b := fn.start
     while true:
-        b = fn.blks[b].link
+        b = fn.blocks[b].next
         if b == 0:
             b = fn.start # do it last
         fn.out.len = 0
-        j := i64(fn.blks[b].jmp.type)
-        if isret(j) and j != Jret0:
-            r := fn.blks[b].jmp.arg
-            fn.blks[b].jmp.type = Jret0
+        j := i64(fn.blocks[b].exit.type)
+        if is_return(j) and j != Jreturn:
+            r := fn.blocks[b].exit.arg
+            fn.blocks[b].exit.type = Jreturn
             cty = 0
-            if j == Jretc:
+            if j == Jreturnaggregate:
                 if (cr.class and Cptr) != 0:
-                    emit(Oblit1, 0, R, ref(RInt, asm.typ[fn.retty].size), R)
-                    emit(Oblit0, 0, R, r, fn.retr)
+                    emit(Oblitsize, 0, EMPTY, ref(RefInt, asm.layouts[fn.retty].size), EMPTY)
+                    emit(Oblit, 0, EMPTY, r, fn.retr)
                 else:
                     ldregs(ptr(cr), r)
                     cty = cr.nfp << 2 or cr.ngp
-            elif kbase(j - Jretw) == 0:
-                emit(Ocopy, j - Jretw, A0, r, R)
+            elif bank(j - Jreturni32) == 0:
+                emit(Ocopy, j - Jreturni32, A0, r, EMPTY)
                 cty = 1
             else:
-                emit(Ocopy, j - Jretw, FA0, r, R)
+                emit(Ocopy, j - Jreturni32, FA0, r, EMPTY)
                 cty = 1 << 2
-            fn.blks[b].jmp.arg = ref(RCall, cty)
+            fn.blocks[b].exit.arg = ref(RefCall, cty)
         lowerblk(b, ral, rv64_selcall)
-        idup(b)
+        take_emitted(b)
         if b == fn.start:
             break
 
 # whether argument n of op is an address it reads or writes
 func memarg(n: i64, op: i64) -> bool:
-    if isload(op) or op == Ocall:
+    if is_load(op) or op == Ocall:
         return n == 0
-    return isstore(op) and n == 1
+    return is_store(op) and n == 1
 
 # r, argument n of an instruction op (or of a phi or a jump, n < 0), made what risc-v takes as of class k; what it needs
 # goes before
 func rv64_fixarg(r: Ref, k: i64, op: i64, n: i64) -> Ref:
-    switch rtype(r):
-    case RCon:
-        c := fn.con[rval(r)]
-        if c.type == CAddr and (c.symtype and SExt) != 0:
+    switch ref_kind(r):
+    case RefConstant:
+        c := fn.constants[ref_value(r)]
+        if c.type == Addressed and (c.access and ThroughGot) != 0:
             # the address comes from the GOT, and the offset is added to it
-            r1 := newtmp(Kl)
+            r1 := new_temp(Int64)
             r0 := r1
             if c.bits != 0:
-                r0 = newtmp(Kl)
-                emit(Oadd, Kl, r1, r0, getcon(c.bits))
-                rv64_fixout(fn.out.len - 1, 1, Kl)
+                r0 = new_temp(Int64)
+                emit(Oadd, Int64, r1, r0, intern(c.bits))
+                rv64_fixout(fn.out.len - 1, 1, Int64)
             c.bits = 0
-            emit(Ocopy, Kl, r0, newcon(c), R)
+            emit(Ocopy, Int64, r0, intern(c), EMPTY)
             return r1
-        if c.type == CAddr and memarg(n, op):
+        if c.type == Addressed and memarg(n, op):
             return r
         # add, and, or, xor, the shifts and the comparisons take an immediate of 12 bits
-        imm := op == Oadd or op >= Oand and op <= Oshl or op == Ocsltw or op == Ocultw or op == Ocsltl or op == Ocultl
-        if kbase(k) == 0 and c.type == CBits and imm and n == 1 and -2048 <= c.bits and c.bits < 2048:
+        imm := op == Oadd or op >= Oand and op <= Oshl or op == Olti32 or op == Oltu32 or op == Olti64 or op == Oltu64
+        if bank(k) == 0 and c.type == Numeric and imm and n == 1 and -2048 <= c.bits and c.bits < 2048:
             return r
-        r1 := newtmp(k)
-        if kbase(k) == 1:
+        r1 := new_temp(k)
+        if bank(k) == 1:
             # a float constant is read from memory
-            at := stashbits(u64(c.bits), 8 if kwide(k) != 0 else 4)
-            emit(Oload, k, r1, newcon(Con{type = CAddr, sym = i32(intern("\"" + asm.machine.asloc + "fp" + at + "\""))}), R)
+            at := stashbits(u64(c.bits), 8 if wide(k) != 0 else 4)
+            emit(Oload, k, r1, intern(Immediate{type = Addressed, symbol = i32(intern("\"" + asm.machine.local_prefix + "fp" + at + "\""))}), EMPTY)
         else:
-            emit(Ocopy, k, r1, r, R)
+            emit(Ocopy, k, r1, r, EMPTY)
         return r1
-    case RTmp:
-        if isreg(r):
+    case RefTemp:
+        if is_register(r):
             return r
-        s := i64(fn.tmp[r].slot)
+        s := i64(fn.temps[r].slot)
         if s != -1: # an aggregate passed on the stack, or a fast local, in place when it can
             if memarg(n, op):
-                return ref(RSlot, s)
-            r1 := newtmp(k)
-            emit(Oaddr, k, r1, ref(RSlot, s), R)
+                return ref(RefSlot, s)
+            r1 := new_temp(k)
+            emit(Oaddr, k, r1, ref(RefSlot, s), EMPTY)
             return r1
-        if k == Kw and fn.tmp[r].cls == Kl:
-            r1 := newtmp(k)
-            emit(Oextsw, Kl, r1, r, R)
+        if k == Int32 and fn.temps[r].cls == Int64:
+            r1 := new_temp(k)
+            emit(Oexti32, Int64, r1, r, EMPTY)
             return r1
-        if k == Kl and fn.tmp[r].cls == Kw:
+        if k == Int64 and fn.temps[r].cls == Int32:
             # a word read as a long has its high bits zero, as on amd64 and arm64: gvn gives a phi of 0 and 1 the word
             # its jnz reads
-            r1 := newtmp(Kl)
-            emit(Oextuw, Kl, r1, r, R)
+            r1 := new_temp(Int64)
+            emit(Oextu32, Int64, r1, r, EMPTY)
             return r1
     return r
 
@@ -439,58 +439,58 @@ func rv64_fixout(x: i64, n: i64, k: i64):
 
 # to becomes the negation of a new temp, which it returns
 func negate(to: Ref) -> Ref:
-    r := newtmp(Kw)
-    emit(Oxor, Kw, to, r, getcon(1))
+    r := new_temp(Int32)
+    emit(Oxor, Int32, to, r, intern(1))
     return r
 
 func rv64_sel(i: Instr):
-    if isalloc(i.op):
+    if is_alloc(i.op):
         x := fn.out.len
-        salloc(i.to, i.arg[0])
-        rv64_fixout(x, 0, Kl)
+        stack_alloc(i.to, i.arg[0])
+        rv64_fixout(x, 0, Int64)
         return
     k := 0
     op := 0
-    if iscmp(i.op, ptr(k), ptr(op)):
+    if is_compare(i.op, ptr(k), ptr(op)):
         # a comparison is a slt or sltu, or a seqz or snez of a xor, or one of the floats, and a xor with 1 negates it
         sign := false
         swap := false
         neg := false
         switch op:
-        case Cieq, Cine:
-            r := newtmp(k)
-            emit(Oreqz if op == Cieq else Ornez, i.cls, i.to, r, R)
+        case Eqi, Nei:
+            r := new_temp(k)
+            emit(Orv64seqz if op == Eqi else Orv64snez, i.cls, i.to, r, EMPTY)
             emit(Oxor, k, r, i.arg[0], i.arg[1])
             x := fn.out.len - 1
             rv64_fixout(x, 0, k)
             rv64_fixout(x, 1, k)
             return
-        case Cisge:
+        case Gei:
             sign = true
             neg = true
-        case Cisgt:
+        case Gti:
             sign = true
             swap = true
-        case Cisle:
+        case Lei:
             sign = true
             swap = true
             neg = true
-        case Cislt:
+        case Lti:
             sign = true
-        case Ciuge:
+        case Geu:
             neg = true
-        case Ciugt:
+        case Gtu:
             swap = true
-        case Ciule:
+        case Leu:
             swap = true
             neg = true
-        case NCmpI + Cfo, NCmpI + Cfuo:
-            if op == NCmpI + Cfuo:
+        case INT_CONDITIONS + Orderedf, INT_CONDITIONS + Unorderedf:
+            if op == INT_CONDITIONS + Unorderedf:
                 i.to = negate(i.to)
-            r0 := newtmp(i.cls)
-            r1 := newtmp(i.cls)
+            r0 := new_temp(i.cls)
+            r1 := new_temp(i.cls)
             emit(Oand, i.cls, i.to, r0, r1)
-            eq := Oceqd if kwide(k) != 0 else Oceqs
+            eq := Oeqf64 if wide(k) != 0 else Oeqf32
             emit(eq, i.cls, r0, i.arg[0], i.arg[0])
             x := fn.out.len - 1
             rv64_fixout(x, 0, k)
@@ -500,18 +500,18 @@ func rv64_sel(i: Instr):
             rv64_fixout(x, 0, k)
             rv64_fixout(x, 1, k)
             return
-        case NCmpI + Cfne:
+        case INT_CONDITIONS + Nef:
             neg = true
-            i.op = Oceqd if kwide(k) != 0 else Oceqs
-        if op < NCmpI:
-            i.op = Ocsltl if sign else Ocultl
+            i.op = Oeqf64 if wide(k) != 0 else Oeqf32
+        if op < INT_CONDITIONS:
+            i.op = Olti64 if sign else Oltu64
         if swap:
             r := i.arg[0]
             i.arg[0] = i.arg[1]
             i.arg[1] = r
         if neg:
             i.to = negate(i.to)
-        emiti(i)
+        emit(i)
         x := fn.out.len - 1
         rv64_fixout(x, 0, k)
         rv64_fixout(x, 1, k)
@@ -520,31 +520,31 @@ func rv64_sel(i: Instr):
     switch i.op:
     case Onop:
         pass
-    case Oacas0:
+    case Oatomicexpected:
         # a0 holds the value given and then the one memory had, and the copy after the atomic keeps a0 out of other
         # hands
-        emit(Ocopy, k, A0, i.arg[0], R)
+        emit(Ocopy, k, A0, i.arg[0], EMPTY)
         rv64_fixout(fn.out.len - 1, 0, k)
-    case Oaadd, Oaswap, Oacas1:
-        to: Ref = R
-        if i.to != R and fn.tmp[i.to].nuse != 0:
+    case Oatomicadd, Oatomicswap, Oatomiccompareswap:
+        to: Ref = EMPTY
+        if i.to != EMPTY and fn.temps[i.to].used != 0:
             to = i.to
-        emit(Ocopy, k, to, A0, R)
-        emit(i.op, k, R, i.arg[0], i.arg[1] if i.op == Oacas1 else R)
+        emit(Ocopy, k, to, A0, EMPTY)
+        emit(i.op, k, EMPTY, i.arg[0], i.arg[1] if i.op == Oatomiccompareswap else EMPTY)
         x := fn.out.len - 1
-        if i.op != Oacas1:
-            emit(Ocopy, k, A0, i.arg[1], R)
+        if i.op != Oatomiccompareswap:
+            emit(Ocopy, k, A0, i.arg[1], EMPTY)
             rv64_fixout(fn.out.len - 1, 0, k)
-        rv64_fixout(x, 0, Kl)
+        rv64_fixout(x, 0, Int64)
         rv64_fixout(x, 1, k)
-    case Odbgslot:
-        i.arg[0] = ref(RSlot, i64(fn.tmp[i.arg[0]].slot))
-        emiti(i)
+    case Odebugslot:
+        i.arg[0] = ref(RefSlot, i64(fn.temps[i.arg[0]].slot))
+        emit(i)
     case:
-        emiti(i)
+        emit(i)
         x := fn.out.len - 1
-        rv64_fixout(x, 0, argcls(i, 0))
-        rv64_fixout(x, 1, argcls(i, 1))
+        rv64_fixout(x, 0, arg_class(i, 0))
+        rv64_fixout(x, 1, arg_class(i, 1))
 
 # constants only where allowed, words sign-extended where a long reads them and the reverse, and fast locals: the
 # constant allocs of the first block
@@ -554,127 +554,127 @@ func rv64_isel():
     while b != 0:
         fn.out.len = 0
         pair: array[i64, 2]
-        for s in succs(b, ptr(pair)):
-            p := fn.blks[s].phi
+        for s in successors(b, ptr(pair)):
+            p := fn.blocks[s].phi
             while p != 0:
-                a := phiargn(p, b)
+                a := phi_arg_index(p, b)
                 r := rv64_fixarg(fn.phis[p].arg[a], i64(fn.phis[p].cls), Ocopy, -1)
                 fn.phis[p].arg[a] = r
-                p = fn.phis[p].link
-        if fn.blks[b].jmp.type == Jjnz:
-            r := rv64_fixarg(fn.blks[b].jmp.arg, Kw, Ocopy, -1)
-            fn.blks[b].jmp.arg = r
-        for k in reverse 0..fn.blks[b].ins.len:
-            rv64_sel(fn.blks[b].ins[k])
-        idup(b)
-        b = fn.blks[b].link
+                p = fn.phis[p].next
+        if fn.blocks[b].exit.type == Jbranch:
+            r := rv64_fixarg(fn.blocks[b].exit.arg, Int32, Ocopy, -1)
+            fn.blocks[b].exit.arg = r
+        for k in reverse 0..fn.blocks[b].ins.len:
+            rv64_sel(fn.blocks[b].ins[k])
+        take_emitted(b)
+        b = fn.blocks[b].next
 
 RV64_OMAP: array[Form, 90] = [
-    Form{Oadd, Ki, "add%k %=, %0, %1"},
-    Form{Oadd, Ka, "fadd.%k %=, %0, %1"},
-    Form{Osub, Ki, "sub%k %=, %0, %1"},
-    Form{Osub, Ka, "fsub.%k %=, %0, %1"},
-    Form{Oneg, Ki, "neg%k %=, %0"},
-    Form{Oneg, Ka, "fneg.%k %=, %0"},
-    Form{Odiv, Ki, "div%k %=, %0, %1"},
-    Form{Odiv, Ka, "fdiv.%k %=, %0, %1"},
-    Form{Orem, Ki, "rem%k %=, %0, %1"},
-    Form{Orem, Kl, "rem %=, %0, %1"},
-    Form{Oudiv, Ki, "divu%k %=, %0, %1"},
-    Form{Ourem, Ki, "remu%k %=, %0, %1"},
-    Form{Omul, Ki, "mul%k %=, %0, %1"},
-    Form{Omul, Ka, "fmul.%k %=, %0, %1"},
-    Form{Oand, Ki, "and %=, %0, %1"},
-    Form{Oor, Ki, "or %=, %0, %1"},
-    Form{Oxor, Ki, "xor %=, %0, %1"},
-    Form{Osar, Ki, "sra%k %=, %0, %1"},
-    Form{Oshr, Ki, "srl%k %=, %0, %1"},
-    Form{Oshl, Ki, "sll%k %=, %0, %1"},
-    Form{Ocsltl, Ki, "slt %=, %0, %1"},
-    Form{Ocultl, Ki, "sltu %=, %0, %1"},
-    Form{Oceqs, Ki, "feq.s %=, %0, %1"},
-    Form{Ocges, Ki, "fge.s %=, %0, %1"},
-    Form{Ocgts, Ki, "fgt.s %=, %0, %1"},
-    Form{Ocles, Ki, "fle.s %=, %0, %1"},
-    Form{Oclts, Ki, "flt.s %=, %0, %1"},
-    Form{Oceqd, Ki, "feq.d %=, %0, %1"},
-    Form{Ocged, Ki, "fge.d %=, %0, %1"},
-    Form{Ocgtd, Ki, "fgt.d %=, %0, %1"},
-    Form{Ocled, Ki, "fle.d %=, %0, %1"},
-    Form{Ocltd, Ki, "flt.d %=, %0, %1"},
-    Form{Ostoreb, Kw, "sb %0, %M1"},
-    Form{Ostoreh, Kw, "sh %0, %M1"},
-    Form{Ostorew, Kw, "sw %0, %M1"},
-    Form{Ostorel, Ki, "sd %0, %M1"},
-    Form{Ostores, Kw, "fsw %0, %M1"},
-    Form{Ostored, Kw, "fsd %0, %M1"},
-    Form{Oloadsb, Ki, "lb %=, %M0"},
-    Form{Oloadub, Ki, "lbu %=, %M0"},
-    Form{Oloadsh, Ki, "lh %=, %M0"},
-    Form{Oloaduh, Ki, "lhu %=, %M0"},
-    Form{Oloadsw, Ki, "lw %=, %M0"},
-    Form{Oloaduw, Kw, "lw %=, %M0"}, # risc-v keeps the words sign-extended in the registers
-    Form{Oloaduw, Kl, "lwu %=, %M0"},
-    Form{Oload, Kw, "lw %=, %M0"},
-    Form{Oload, Kl, "ld %=, %M0"},
-    Form{Oload, Ks, "flw %=, %M0"},
-    Form{Oload, Kd, "fld %=, %M0"},
-    Form{Oextsb, Ki, "sext.b %=, %0"},
-    Form{Oextub, Ki, "zext.b %=, %0"},
-    Form{Oextsh, Ki, "sext.h %=, %0"},
-    Form{Oextuh, Ki, "zext.h %=, %0"},
-    Form{Oextsw, Kl, "sext.w %=, %0"},
-    Form{Oextuw, Kl, "zext.w %=, %0"},
-    Form{Otruncd, Ks, "fcvt.s.d %=, %0"},
-    Form{Oexts, Kd, "fcvt.d.s %=, %0"},
-    Form{Ostosi, Kw, "fcvt.w.s %=, %0, rtz"},
-    Form{Ostosi, Kl, "fcvt.l.s %=, %0, rtz"},
-    Form{Ostoui, Kw, "fcvt.wu.s %=, %0, rtz"},
-    Form{Ostoui, Kl, "fcvt.lu.s %=, %0, rtz"},
-    Form{Odtosi, Kw, "fcvt.w.d %=, %0, rtz"},
-    Form{Odtosi, Kl, "fcvt.l.d %=, %0, rtz"},
-    Form{Odtoui, Kw, "fcvt.wu.d %=, %0, rtz"},
-    Form{Odtoui, Kl, "fcvt.lu.d %=, %0, rtz"},
-    Form{Oswtof, Ka, "fcvt.%k.w %=, %0"},
-    Form{Ouwtof, Ka, "fcvt.%k.wu %=, %0"},
-    Form{Osltof, Ka, "fcvt.%k.l %=, %0"},
-    Form{Oultof, Ka, "fcvt.%k.lu %=, %0"},
-    Form{Ocast, Kw, "fmv.x.w %=, %0"},
-    Form{Ocast, Kl, "fmv.x.d %=, %0"},
-    Form{Ocast, Ks, "fmv.w.x %=, %0"},
-    Form{Ocast, Kd, "fmv.d.x %=, %0"},
-    Form{Ocopy, Ki, "mv %=, %0"},
-    Form{Ocopy, Ka, "fmv.%k %=, %0"},
-    Form{Oswap, Ki, "mv %?, %0\n\tmv %0, %1\n\tmv %1, %?"},
-    Form{Oswap, Ka, "fmv.%k %?, %0\n\tfmv.%k %0, %1\n\tfmv.%k %1, %?"},
-    Form{Oreqz, Ki, "seqz %=, %0"},
-    Form{Ornez, Ki, "snez %=, %0"},
-    Form{Ocall, Kw, "jalr %0"},
-    Form{Oaload, Kw, "fence rw,rw\n\tlw %=, %M0\n\tfence r,rw"},
-    Form{Oaload, Kl, "fence rw,rw\n\tld %=, %M0\n\tfence r,rw"},
-    Form{Oastorew, Kw, "fence rw,w\n\tsw %0, %M1"},
-    Form{Oastorel, Kw, "fence rw,w\n\tsd %0, %M1"},
+    Form{Oadd, AnyInt, "add%k %=, %0, %1"},
+    Form{Oadd, AnyClass, "fadd.%k %=, %0, %1"},
+    Form{Osub, AnyInt, "sub%k %=, %0, %1"},
+    Form{Osub, AnyClass, "fsub.%k %=, %0, %1"},
+    Form{Oneg, AnyInt, "neg%k %=, %0"},
+    Form{Oneg, AnyClass, "fneg.%k %=, %0"},
+    Form{Odiv, AnyInt, "div%k %=, %0, %1"},
+    Form{Odiv, AnyClass, "fdiv.%k %=, %0, %1"},
+    Form{Orem, AnyInt, "rem%k %=, %0, %1"},
+    Form{Orem, Int64, "rem %=, %0, %1"},
+    Form{Oudiv, AnyInt, "divu%k %=, %0, %1"},
+    Form{Ourem, AnyInt, "remu%k %=, %0, %1"},
+    Form{Omul, AnyInt, "mul%k %=, %0, %1"},
+    Form{Omul, AnyClass, "fmul.%k %=, %0, %1"},
+    Form{Oand, AnyInt, "and %=, %0, %1"},
+    Form{Oor, AnyInt, "or %=, %0, %1"},
+    Form{Oxor, AnyInt, "xor %=, %0, %1"},
+    Form{Osar, AnyInt, "sra%k %=, %0, %1"},
+    Form{Oshr, AnyInt, "srl%k %=, %0, %1"},
+    Form{Oshl, AnyInt, "sll%k %=, %0, %1"},
+    Form{Olti64, AnyInt, "slt %=, %0, %1"},
+    Form{Oltu64, AnyInt, "sltu %=, %0, %1"},
+    Form{Oeqf32, AnyInt, "feq.s %=, %0, %1"},
+    Form{Ogef32, AnyInt, "fge.s %=, %0, %1"},
+    Form{Ogtf32, AnyInt, "fgt.s %=, %0, %1"},
+    Form{Olef32, AnyInt, "fle.s %=, %0, %1"},
+    Form{Oltf32, AnyInt, "flt.s %=, %0, %1"},
+    Form{Oeqf64, AnyInt, "feq.d %=, %0, %1"},
+    Form{Ogef64, AnyInt, "fge.d %=, %0, %1"},
+    Form{Ogtf64, AnyInt, "fgt.d %=, %0, %1"},
+    Form{Olef64, AnyInt, "fle.d %=, %0, %1"},
+    Form{Oltf64, AnyInt, "flt.d %=, %0, %1"},
+    Form{Ostorei8, Int32, "sb %0, %M1"},
+    Form{Ostorei16, Int32, "sh %0, %M1"},
+    Form{Ostorei32, Int32, "sw %0, %M1"},
+    Form{Ostorei64, AnyInt, "sd %0, %M1"},
+    Form{Ostoref32, Int32, "fsw %0, %M1"},
+    Form{Ostoref64, Int32, "fsd %0, %M1"},
+    Form{Oloadi8, AnyInt, "lb %=, %M0"},
+    Form{Oloadu8, AnyInt, "lbu %=, %M0"},
+    Form{Oloadi16, AnyInt, "lh %=, %M0"},
+    Form{Oloadu16, AnyInt, "lhu %=, %M0"},
+    Form{Oloadi32, AnyInt, "lw %=, %M0"},
+    Form{Oloadu32, Int32, "lw %=, %M0"}, # risc-v keeps the words sign-extended in the registers
+    Form{Oloadu32, Int64, "lwu %=, %M0"},
+    Form{Oload, Int32, "lw %=, %M0"},
+    Form{Oload, Int64, "ld %=, %M0"},
+    Form{Oload, Float32, "flw %=, %M0"},
+    Form{Oload, Float64, "fld %=, %M0"},
+    Form{Oexti8, AnyInt, "sext.b %=, %0"},
+    Form{Oextu8, AnyInt, "zext.b %=, %0"},
+    Form{Oexti16, AnyInt, "sext.h %=, %0"},
+    Form{Oextu16, AnyInt, "zext.h %=, %0"},
+    Form{Oexti32, Int64, "sext.w %=, %0"},
+    Form{Oextu32, Int64, "zext.w %=, %0"},
+    Form{Otruncf64, Float32, "fcvt.s.d %=, %0"},
+    Form{Oextf32, Float64, "fcvt.d.s %=, %0"},
+    Form{Of32toi, Int32, "fcvt.w.s %=, %0, rtz"},
+    Form{Of32toi, Int64, "fcvt.l.s %=, %0, rtz"},
+    Form{Of32tou, Int32, "fcvt.wu.s %=, %0, rtz"},
+    Form{Of32tou, Int64, "fcvt.lu.s %=, %0, rtz"},
+    Form{Of64toi, Int32, "fcvt.w.d %=, %0, rtz"},
+    Form{Of64toi, Int64, "fcvt.l.d %=, %0, rtz"},
+    Form{Of64tou, Int32, "fcvt.wu.d %=, %0, rtz"},
+    Form{Of64tou, Int64, "fcvt.lu.d %=, %0, rtz"},
+    Form{Oi32tof, AnyClass, "fcvt.%k.w %=, %0"},
+    Form{Ou32tof, AnyClass, "fcvt.%k.wu %=, %0"},
+    Form{Oi64tof, AnyClass, "fcvt.%k.l %=, %0"},
+    Form{Ou64tof, AnyClass, "fcvt.%k.lu %=, %0"},
+    Form{Ocast, Int32, "fmv.x.w %=, %0"},
+    Form{Ocast, Int64, "fmv.x.d %=, %0"},
+    Form{Ocast, Float32, "fmv.w.x %=, %0"},
+    Form{Ocast, Float64, "fmv.d.x %=, %0"},
+    Form{Ocopy, AnyInt, "mv %=, %0"},
+    Form{Ocopy, AnyClass, "fmv.%k %=, %0"},
+    Form{Oswap, AnyInt, "mv %?, %0\n\tmv %0, %1\n\tmv %1, %?"},
+    Form{Oswap, AnyClass, "fmv.%k %?, %0\n\tfmv.%k %0, %1\n\tfmv.%k %1, %?"},
+    Form{Orv64seqz, AnyInt, "seqz %=, %0"},
+    Form{Orv64snez, AnyInt, "snez %=, %0"},
+    Form{Ocall, Int32, "jalr %0"},
+    Form{Oatomicload, Int32, "fence rw,rw\n\tlw %=, %M0\n\tfence r,rw"},
+    Form{Oatomicload, Int64, "fence rw,rw\n\tld %=, %M0\n\tfence r,rw"},
+    Form{Oatomicstorei32, Int32, "fence rw,w\n\tsw %0, %M1"},
+    Form{Oatomicstorei64, Int32, "fence rw,w\n\tsd %0, %M1"},
     # a0 holds the value given and then the one memory had, t6 what memory has
-    Form{Oaadd, Kw, "amoadd.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
-    Form{Oaadd, Kl, "amoadd.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
-    Form{Oaswap, Kw, "amoswap.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
-    Form{Oaswap, Kl, "amoswap.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicadd, Int32, "amoadd.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicadd, Int64, "amoadd.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicswap, Int32, "amoswap.w.aqrl t6, %=, (%0)\n\tmv %=, t6"},
+    Form{Oatomicswap, Int64, "amoswap.d.aqrl t6, %=, (%0)\n\tmv %=, t6"},
     # lr.w extends the sign, so the value it compares with does too
-    Form{Oacas1, Kw, "sext.w %=, %=\n1:\n\tlr.w.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.w.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"},
-    Form{Oacas1, Kl, "1:\n\tlr.d.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.d.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"}
+    Form{Oatomiccompareswap, Int32, "sext.w %=, %=\n1:\n\tlr.w.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.w.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"},
+    Form{Oatomiccompareswap, Int64, "1:\n\tlr.d.aqrl t6, (%0)\n\tbne t6, %=, 2f\n\tsc.d.rl t6, %1, (%0)\n\tbnez t6, 1b\n\tmv t6, %=\n2:\n\tmv %=, t6"}
 ]
 
 # the offset of a slot from fp: the parameters on the stack are above it
 func rv64_slot(r: Ref) -> i64:
-    s := rsval(r)
+    s := ref_signed(r)
     assert s <= fn.slot, "a slot of " + fn.name + " lies past its frame"
     if s < 0:
         return 8 * (0 - s)
     return -4 * (fn.slot - s)
 
-func emitaddr(c: Con):
-    assert (c.symtype and SThr) == 0, "thread data of " + fn.name + " is read as a plain symbol"
-    out(asm.syms[c.sym])
+func emitaddr(c: Immediate):
+    assert (c.access and ThreadData) == 0, "thread data of " + fn.name + " is read as a plain symbol"
+    out(asm.symbols[c.symbol])
     if c.bits != 0:
         out("+")
         asm.text += c.bits
@@ -695,65 +695,65 @@ func rv64_emitf(fmt: &strview, i: *Instr):
         x += 1
         switch c:
         case '?':
-            out("t6" if kbase(i.cls) == 0 else "ft11")
+            out("t6" if bank(i.cls) == 0 else "ft11")
         case 'k':
-            if i.cls != Kl:
+            if i.cls != Int64:
                 add_byte(asm.text, "wlsd"[i.cls])
         case 'M':
             r := i.arg[s[x] - '0']
             x += 1
-            switch rtype(r):
-            case RTmp:
+            switch ref_kind(r):
+            case RefTemp:
                 out("0(" + RV64_NAMES[r] + ")")
-            case RCon:
-                emitaddr(fn.con[rval(r)])
+            case RefConstant:
+                emitaddr(fn.constants[ref_value(r)])
                 # a store, or a load of a float, takes a register for the address
-                if isstore(i.op) or isload(i.op) and kbase(i.cls) == 1:
+                if is_store(i.op) or is_load(i.op) and bank(i.cls) == 1:
                     out(", t6")
-            case RSlot:
+            case RefSlot:
                 asm.text += rv64_slot(r)
                 out("(fp)")
         case:
             r := i.to if c == '=' else i.arg[c - '0']
-            if rtype(r) == RCon:
-                asm.text += fn.con[rval(r)].bits
+            if ref_kind(r) == RefConstant:
+                asm.text += fn.constants[ref_value(r)].bits
             else:
                 out(RV64_NAMES[r])
     out("\n")
 
-func loadcon(c: Con, r: i64, k: i64):
+func loadcon(c: Immediate, r: i64, k: i64):
     rn := RV64_NAMES[r]
-    if c.type == CBits:
+    if c.type == Numeric:
         out("\tli " + rn + ", ")
-        asm.text += c.bits if kwide(k) != 0 else c.bits << 32 >> 32
+        asm.text += c.bits if wide(k) != 0 else c.bits << 32 >> 32
         out("\n")
         return
     off: &strview = ""
     if c.bits != 0:
         off = "+" + c.bits
-    sym := asm.syms[c.sym]
-    switch c.symtype:
-    case SGlo:
+    sym := asm.symbols[c.symbol]
+    switch c.access:
+    case Direct:
         out("\tlla " + rn + ", ")
         emitaddr(c)
         out("\n")
-    case SExt: # lga spelled out, clang 14 lacks it
+    case ThroughGot: # lga spelled out, clang 14 lacks it
         out("1:\n\tauipc " + rn + ", %got_pcrel_hi(")
         emitaddr(c)
         out(")\n\tld " + rn + ", %pcrel_lo(1b)(" + rn + ")\n")
-    case SThr:
+    case ThreadData:
         out("\tlui " + rn + ", %tprel_hi(" + sym + ")" + off + "\n")
         out("\tadd " + rn + ", " + rn + ", tp, %tprel_add(" + sym + ")" + off + "\n")
         out("\taddi " + rn + ", " + rn + ", %tprel_lo(" + sym + ")" + off + "\n")
-    case SExtThr: # initial-exec: the offset from tp is in the GOT
+    case ThreadThroughGot: # initial-exec: the offset from tp is in the GOT
         out("\tla.tls.ie " + rn + ", " + sym + "\n\tadd " + rn + ", " + rn + ", tp\n")
 
 # a symbol that is not plain, or a slot past the reach of an offset of 12 bits, goes in t6 for an access to memory
 func fixmem(r: Ref) -> Ref:
-    if rtype(r) == RCon and fn.con[rval(r)].type == CAddr and fn.con[rval(r)].symtype != SGlo:
-        loadcon(fn.con[rval(r)], T6, Kl)
+    if ref_kind(r) == RefConstant and fn.constants[ref_value(r)].type == Addressed and fn.constants[ref_value(r)].access != Direct:
+        loadcon(fn.constants[ref_value(r)], T6, Int64)
         return T6
-    if rtype(r) == RSlot:
+    if ref_kind(r) == RefSlot:
         s := rv64_slot(r)
         if s < -2048 or s > 2047:
             out("\tli t6, ")
@@ -768,34 +768,34 @@ func rv64_emitins(i: Instr):
         return
     case Osar, Oshr, Oshl:
         # an immediate count takes 5 bits for w and 6 for l, as the hardware takes the count in a register
-        if rtype(i.arg[1]) == RCon:
-            i.arg[1] = getcon(fn.con[rval(i.arg[1])].bits and (31 if i.cls == Kw else 63))
+        if ref_kind(i.arg[1]) == RefConstant:
+            i.arg[1] = intern(fn.constants[ref_value(i.arg[1])].bits and (31 if i.cls == Int32 else 63))
     case Ocopy:
         if i.to == i.arg[0]:
             return
-        if rtype(i.to) == RSlot:
-            switch rtype(i.arg[0]):
-            case RCon: # through ft11, t6 may hold an address
-                loadcon(fn.con[rval(i.arg[0])], T6, i64(i.cls))
-                out("\tfmv." + ("d" if kwide(i.cls) != 0 else "w") + ".x ft11, t6\n")
+        if ref_kind(i.to) == RefSlot:
+            switch ref_kind(i.arg[0]):
+            case RefConstant: # through ft11, t6 may hold an address
+                loadcon(fn.constants[ref_value(i.arg[0])], T6, i64(i.cls))
+                out("\tfmv." + ("d" if wide(i.cls) != 0 else "w") + ".x ft11, t6\n")
                 i.arg[0] = FT11
-                i.op = Ostored if kwide(i.cls) != 0 else Ostores
-            case RSlot:
-                rv64_emitins(Instr{op = Oload, cls = Kd if kwide(i.cls) != 0 else Ks, to = FT11, arg = [i.arg[0], R]})
+                i.op = Ostoref64 if wide(i.cls) != 0 else Ostoref32
+            case RefSlot:
+                rv64_emitins(Instr{op = Oload, cls = Float64 if wide(i.cls) != 0 else Float32, to = FT11, arg = [i.arg[0], EMPTY]})
                 i.arg[0] = FT11
-                i.op = Ostored if kwide(i.cls) != 0 else Ostores
+                i.op = Ostoref64 if wide(i.cls) != 0 else Ostoref32
             case:
-                i.op = i32(Ostorew + i64(i.cls))
+                i.op = i32(Ostorei32 + i64(i.cls))
             i.arg[1] = fixmem(i.to)
-            i.to = R
-            i.cls = Kw # the class of a store, its width is in the op
-        elif rtype(i.arg[0]) == RCon:
-            loadcon(fn.con[rval(i.arg[0])], i64(i.to), i64(i.cls))
+            i.to = EMPTY
+            i.cls = Int32 # the class of a store, its width is in the op
+        elif ref_kind(i.arg[0]) == RefConstant:
+            loadcon(fn.constants[ref_value(i.arg[0])], i64(i.to), i64(i.cls))
             return
-        elif rtype(i.arg[0]) == RSlot:
+        elif ref_kind(i.arg[0]) == RefSlot:
             i.op = Oload
             i.arg[0] = fixmem(i.arg[0])
-    case Oaadd, Oaswap, Oacas1:
+    case Oatomicadd, Oatomicswap, Oatomiccompareswap:
         i.to = A0
     case Oaddr:
         rn := RV64_NAMES[i.to]
@@ -810,30 +810,30 @@ func rv64_emitins(i: Instr):
         out("\n")
         return
     case Ocall:
-        if rtype(i.arg[0]) == RCon:
-            out("\tcall " + asm.syms[fn.con[rval(i.arg[0])].sym] + "\n")
+        if ref_kind(i.arg[0]) == RefConstant:
+            out("\tcall " + asm.symbols[fn.constants[ref_value(i.arg[0])].symbol] + "\n")
             return
-    case Osalloc:
+    case Ostackalloc:
         rv64_emitf("sub sp, sp, %0", ptr(i))
-        if i.to != R:
+        if i.to != EMPTY:
             rv64_emitf("mv %=, sp", ptr(i))
         return
-    case Odbgloc:
-        emitdbgloc(rval(i.arg[0]), rval(i.arg[1]))
+    case Odebugline:
+        emitdbgloc(ref_value(i.arg[0]), ref_value(i.arg[1]))
         return
-    case Odbgslot:
+    case Odebugslot:
         emitdbgslot(i.arg[1], rv64_slot(i.arg[0]))
         return
-    case Odbgmark:
+    case Odebugmark:
         emitdbgmark(i.arg[0])
         return
     case Oframe:
         rv64_emitf("mv %=, fp", ptr(i))
         return
     case:
-        if isload(i.op):
+        if is_load(i.op):
             i.arg[0] = fixmem(i.arg[0])
-        elif isstore(i.op):
+        elif is_store(i.op):
             i.arg[1] = fixmem(i.arg[1])
     rv64_emitf(format(RV64_OMAP[:], i), ptr(i))
 
@@ -900,25 +900,25 @@ func rv64_emitfn():
     lbl := false
     b := fn.start
     while b != 0:
-        if lbl or fn.blks[b].pred.len > 1:
+        if lbl or fn.blocks[b].preds.len > 1:
             out(".L")
-            asm.text += asm.blocks + fn.blks[b].id
+            asm.text += asm.blocks + fn.blocks[b].id
             out(":\n")
-        for i in fn.blks[b].ins:
+        for i in fn.blocks[b].ins:
             rv64_emitins(i)
-        p := ptr(fn.blks[b])
+        p := ptr(fn.blocks[b])
         lbl = true
-        j := i64(p.jmp.type)
-        if j == Jhlt:
+        j := i64(p.exit.type)
+        if j == Jhalt:
             out("\tunimp\n")
-        elif j == Jjt:
-            if rtype(p.jmp.arg) == RSlot:
-                slot := Instr{arg = [fixmem(p.jmp.arg), R]}
+        elif j == Jtable:
+            if ref_kind(p.exit.arg) == RefSlot:
+                slot := Instr{arg = [fixmem(p.exit.arg), EMPTY]}
                 rv64_emitf("ld t6, %M0", ptr(slot))
-                p.jmp.arg = T6
-            out("\tjr " + RV64_NAMES[p.jmp.arg] + "\n")
-        elif j == Jret0:
-            if fn.dynalloc:
+                p.exit.arg = T6
+            out("\tjr " + RV64_NAMES[p.exit.arg] + "\n")
+        elif j == Jreturn:
+            if fn.dynamic_alloc:
                 if frame - 16 <= 2048:
                     out("\tadd sp, fp, -")
                     asm.text += frame - 16
@@ -943,25 +943,25 @@ func rv64_emitfn():
             if comp.debug:
                 out("\t.cfi_restore_state\n")
         else:
-            if j == Jjnz:
+            if j == Jbranch:
                 neg := false
-                if p.link == p.s2:
-                    s := p.s1
-                    p.s1 = p.s2
-                    p.s2 = s
+                if p.next == p.no:
+                    s := p.yes
+                    p.yes = p.no
+                    p.no = s
                     neg = true
-                if rtype(p.jmp.arg) == RSlot:
-                    cond := Instr{arg = [fixmem(p.jmp.arg), R]}
+                if ref_kind(p.exit.arg) == RefSlot:
+                    cond := Instr{arg = [fixmem(p.exit.arg), EMPTY]}
                     rv64_emitf("lw t6, %M0", ptr(cond))
-                    p.jmp.arg = T6
-                out("\tb" + ("ne" if neg else "eq") + "z " + RV64_NAMES[p.jmp.arg] + ", .L")
-                asm.text += asm.blocks + fn.blks[p.s2].id
+                    p.exit.arg = T6
+                out("\tb" + ("ne" if neg else "eq") + "z " + RV64_NAMES[p.exit.arg] + ", .L")
+                asm.text += asm.blocks + fn.blocks[p.no].id
                 out("\n")
-            if p.s1 != p.link:
+            if p.yes != p.next:
                 out("\tj .L")
-                asm.text += asm.blocks + fn.blks[p.s1].id
+                asm.text += asm.blocks + fn.blocks[p.yes].id
                 out("\n")
             else:
                 lbl = false
-        b = p.link
+        b = p.next
     emitfnend(".L")

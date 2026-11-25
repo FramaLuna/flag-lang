@@ -29,7 +29,7 @@ LEAF = 32 # added to the code of a kind with children, it is the same kind witho
 # DWARF 4 for the procs, at the end of the assembly: the assembler resolves the offsets of the slots and the marks
 func dwarf() -> &str:
     out: &str = heap("")
-    local := asm.machine.asloc
+    local := asm.machine.local_prefix
     out += section("debug_abbrev") + local + "debug_abbrev:\n"
     abbreviation(out, ptr([UNIT_DIE, 0x11, 1, 0x25, 0x08, 0x13, 0x05, 0x03, 0x08, 0x1b, 0x08, 0x10, 0x17, 0, 0])) # compile unit: producer, language, name, comp_dir, stmt_list
     abbreviation(out, ptr([FUNCTION_DIE, 0x2e, 1, 0x03, 0x08, 0x3a, 0x0f, 0x3b, 0x0f, 0x49, 0x10, 0x11, 0x01, 0x12, 0x06, 0x40, 0x18, 0x36, 0x0b, 0, 0])) # subprogram: name, decl_file, decl_line, type, low_pc, high_pc, frame_base, calling_convention
@@ -238,7 +238,7 @@ func dwarf() -> &str:
                 uleb(out, GLOBAL_DIE)
                 asciz(out, comp.types[t].name)
                 out += reference(local + "type" + t)
-                symbol := asm.machine.assym + "ctx." + comp.types[t].name
+                symbol := asm.machine.symbol_prefix + "ctx." + comp.types[t].name
                 if declared(comp.types[t].decl) == "shared":
                     out += "\t.byte 9\n\t.byte 0x03\n\t.quad " + symbol + "\n" # DW_OP_addr
                 elif comp.system == "linux" and comp.machine != "x86_64":
@@ -250,7 +250,7 @@ func dwarf() -> &str:
         for f in comp.procs:
             if f.file == file:
                 inst := comp.insts[f.inst]
-                start := asm.machine.assym + f.name[1:]
+                start := asm.machine.symbol_prefix + f.name[1:]
                 leaf := LEAF * i64(f.mentioned == f.mentions)
                 if inst.ret == VOID:
                     uleb(out, PROCEDURE_DIE + leaf)
@@ -286,7 +286,7 @@ func dwarf() -> &str:
 
 # the variables of a scope, and its inner scopes as blocks: a scope that opens the body of the function is the function itself
 func scope_dies(out: *&str, f: Proc, scope: i64, used: &list[bool], file: i64):
-    local := asm.machine.asloc
+    local := asm.machine.local_prefix
     for k in f.mentions..f.mentioned:
         m := comp.mentions[k]
         if m.scope == scope:
@@ -352,7 +352,7 @@ func section(name: &strview) -> &str:
 func section_offset(label: &strview, section: &strview) -> &str:
     out: &str = heap("")
     if comp.system == "macos":
-        out += "\t.long " + label + "-" + asm.machine.asloc + section + "\n"
+        out += "\t.long " + label + "-" + asm.machine.local_prefix + section + "\n"
     elif comp.system == "windows":
         out += "\t.secrel32 " + label + "\n"
     else:
