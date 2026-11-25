@@ -14,7 +14,7 @@ A minor release that adds WebAssembly as a target and brings the backend into Fl
 
 ### Changed
 
-- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and read the functions from memory, with no text IR in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets. The backend checks its own invariants, as QBE's asserts did, and stops with the rule that broke instead of writing wrong code.
+- **The backend is written in Flag:** the passes of QBE (SSA, the optimizations, the calling conventions, instruction selection, register allocation, and the assembly) are ported to Flag for `x86_64`, `arm64` and `riscv64`, and the frontend writes their instructions directly, with no text IR and nothing translated in between. They were checked to write the same assembly as QBE, byte for byte, for the compiler, the tests and the examples on the six native targets. The backend checks its own invariants, as QBE's asserts did, and stops with the rule that broke instead of writing wrong code.
 - **QBE's C sources are gone:** `vendor/qbe` left the repository. The seeds in `boot/` are the assembly of `flagc` for each of the six native targets, compressed with `gzip` (8.4 MB, where the three `.ssa` seeds of 0.6.3 took 18.5 MB), so every native host bootstraps from its own seed and `build.sh` needs `gzip`. `./build.sh sanitize`, which checked the C code of QBE, is gone with it.
 - **`-memory` follows bigger functions:** up to 1024 blocks of memory in a function, and fields that hold numbers no longer count, so big functions stay checked. The backend and the WebAssembly writer of `flagc` pass it with no `@trust`.
 - **WebAssembly tests on both widths:** each line of a test's `.args` builds it once more, and the WebAssembly tests build for `wasm32` and `wasm64`. `./test.sh` runs them through `tests/wasm.js`, a small WASI host, under `node`, and says how many it skipped when no `node` can run them.
@@ -39,6 +39,7 @@ A minor release that adds WebAssembly as a target and brings the backend into Fl
 - **`-overlay` in folders:** a new `.flg` file that is not saved yet, inside a folder given on the command line, is part of the program at any depth, as in the folder of a quoted `use`.
 - **Stepping in a debugger:** `next` no longer skips the line a jump lands on when values move on the way there, like the line after a `switch`, and no longer stops twice on the first line of a loop. Stopping on a `switch` with a case that is not a literal shows the line of the `switch`, not that case's.
 - **Function values in `-memory`:** calling a function value whose type matches the program's first function no longer reports a false leak in contexts.
+- **`-memory` and `simd` lanes:** a load or store of a whole `simd` counts its 16 bytes, so a data race between it and a write to one of its lanes in another thread is reported.
 - **Growing elements through a runtime index:** `append(groups[i % 2], x)` in a loop no longer makes `-memory` warn use after free.
 
 ## 0.6.3
