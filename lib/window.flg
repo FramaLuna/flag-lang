@@ -127,7 +127,10 @@ where @linux():
         utf8: Atom
         targets: Atom
         incoming: Atom
+        incr: Atom
         owned: &str = heap("")
+        piece: i64 # the most bytes one request to the server carries
+        sending: &list[Transfer] = heap([])
         width: i32
         height: i32
         scale: f64 = 1.0
@@ -140,10 +143,17 @@ where @linux():
         display: *Display
         window: x11.Window
 
+    # a window that takes owned in pieces, each one after it deletes the last
+    priv type Transfer:
+        requestor: x11.Window
+        property: Atom
+        given: i64
+
     priv extern "c":
         func setlocale(category: i32, locale: cstr) -> cstr
 
     func open(title: &strview, width: i32, height: i32) -> Window|WindowError:
+        _ = XInitThreads() # a program of Flag may call Xlib from many threads
         _ = setlocale(0, "") # LC_CTYPE, so the input method gives text in UTF-8
         _ = XSetLocaleModifiers("")
         display := XOpenDisplay(0 as cstr)
@@ -151,7 +161,7 @@ where @linux():
             return WindowError{"cannot open window; no X server at DISPLAY"}
         screen := XDefaultScreen(display)
         given: XSetWindowAttributes
-        given.event_mask = KeyPressMask or KeyReleaseMask or ButtonPressMask or ButtonReleaseMask or PointerMotionMask or StructureNotifyMask or FocusChangeMask
+        given.event_mask = KeyPressMask or KeyReleaseMask or ButtonPressMask or ButtonReleaseMask or PointerMotionMask or StructureNotifyMask or FocusChangeMask or PropertyChangeMask
         given.background_pixel = XBlackPixel(display, screen)
         handle := XCreateWindow(display, XRootWindow(display, screen), 0, 0, u32(width), u32(height), 0, CopyFromParent, InputOutput, 0 as *Visual, CWEventMask or CWBackPixel, ptr(given))
         s := heap(State{display = display, handle = handle, width = width, height = height})
@@ -161,6 +171,8 @@ where @linux():
         s.utf8 = XInternAtom(display, "UTF8_STRING", False)
         s.targets = XInternAtom(display, "TARGETS", False)
         s.incoming = XInternAtom(display, "FLAG_CLIPBOARD", False)
+        s.incr = XInternAtom(display, "INCR", False)
+        s.piece = XMaxRequestSize(display) * 4 - 1024
         _ = XkbSetDetectableAutoRepeat(display, True, 0 as *i32) # a held key sends presses only, not a release before each
         s.im = XOpenIM(display, 0 as XrmDatabase, 0 as cstr, 0 as cstr)
         if s.im as u64 != 0:
@@ -191,6 +203,7 @@ where @linux():
         _ = XDestroyWindow(s.display, s.handle)
         _ = XCloseDisplay(s.display)
         free(s.owned)
+        free(s.sending)
         free(s.events)
         free(s)
 
@@ -260,6 +273,11 @@ where @linux():
                 if r.target == s.targets:
                     offered: array[Atom, 2] = [s.targets, s.utf8]
                     _ = XChangeProperty(s.display, r.requestor, r.property, XA_ATOM, 32, PropModeReplace, ptr(offered[0]) as *u8, 2)
+                elif r.target == s.utf8 and s.owned.len > s.piece: # in pieces, each one after the requestor deletes the last
+                    total := s.owned.len
+                    _ = XSelectInput(s.display, r.requestor, PropertyChangeMask)
+                    _ = XChangeProperty(s.display, r.requestor, r.property, s.incr, 32, PropModeReplace, ptr(total) as *u8, 1)
+                    append(s.sending, Transfer{r.requestor, r.property, 0})
                 elif r.target == s.utf8 and s.owned.len > 0:
                     _ = XChangeProperty(s.display, r.requestor, r.property, s.utf8, 8, PropModeReplace, ptr(s.owned.*) as *u8, i32(s.owned.len))
                 else:
@@ -268,6 +286,19 @@ where @linux():
                 _ = XSendEvent(s.display, r.requestor, False, 0, ptr(sent))
             case SelectionClear:
                 s.owned.len = 0
+                s.sending.len = 0
+            case PropertyNotify:
+                p := XPropertyEvent(e)
+                for k, sent in s.sending:
+                    if p.window == sent.requestor and p.atom == sent.property and p.state == PropertyDelete:
+                        part := min(s.piece, s.owned.len - sent.given)
+                        _ = XChangeProperty(s.display, sent.requestor, sent.property, s.utf8, 8, PropModeReplace, (ptr(s.owned.*) as *bytes + sent.given) as *u8, i32(part))
+                        sent.given += part
+                        if part == 0: # the empty piece says it is all there
+                            _ = XSelectInput(s.display, sent.requestor, NoEventMask)
+                            s.sending[k] = s.sending[-1]
+                            s.sending.len -= 1
+                        break
 
     priv func button_of(button: u32) -> Button:
         if button == 1:
@@ -378,25 +409,43 @@ where @linux():
             return text
         _ = XConvertSelection(s.display, s.clipboard, s.utf8, s.incoming, s.handle, CurrentTime)
         e: XEvent
-        for tries in 0..200: # the owner answers in a second, or not at all
-            if XCheckTypedWindowEvent(s.display, s.handle, SelectionNotify, ptr(e)) != 0:
-                if XSelectionEvent(e).property == None:
-                    return text
-                kind: Atom
-                format: i32
-                count: u64
-                after: u64
-                data := 0 as *u8
-                if XGetWindowProperty(s.display, s.handle, s.incoming, 0, 0x7fff_ffff, True, AnyPropertyType, ptr(kind), ptr(format), ptr(count), ptr(after), ptr(data)) == Success and data as u64 != 0:
-                    text += view(data as cstr) # Xlib ends the bytes with a 0
-                    _ = XFree(data as *bytes)
-                return text
-            sleep(0.005)
+        if not arrived(s, SelectionNotify, ptr(e)) or XSelectionEvent(e).property == None:
+            return text
+        kind, count := received(s, ptr(text))
+        if kind == s.incr: # the owner sends it in pieces, each one after we delete the last
+            done := false
+            while not done and arrived(s, PropertyNotify, ptr(e)):
+                if XPropertyEvent(e).atom == s.incoming and XPropertyEvent(e).state == PropertyNewValue:
+                    kind, count = received(s, ptr(text))
+                    done = kind != 0 and count == 0 # the empty piece ends it; the notice of the INCR finds no property
         return text
+
+    # waits a second at most for an event of this kind on the window
+    priv func arrived(s: *State, kind: i32, e: *XEvent) -> bool:
+        for tries in 0..200:
+            if XCheckTypedWindowEvent(s.display, s.handle, kind, e) != 0:
+                return true
+            sleep(0.005)
+        return false
+
+    # adds the incoming property to text and deletes it, which asks the owner for the next piece
+    priv func received(s: *State, text: *&str) -> (Atom, u64):
+        kind: Atom
+        format: i32
+        count: u64
+        after: u64
+        data := 0 as *u8
+        if XGetWindowProperty(s.display, s.handle, s.incoming, 0, 0x7fff_ffff, True, AnyPropertyType, ptr(kind), ptr(format), ptr(count), ptr(after), ptr(data)) != Success or data as u64 == 0:
+            return 0, 0
+        if kind != s.incr:
+            text.* += view(data as cstr) # Xlib ends the bytes with a 0
+        _ = XFree(data as *bytes)
+        return kind, count
 
     func set_clipboard(w: Window, text: &strview):
         s := w.state
         s.owned = text
+        s.sending.len = 0 # pieces of the text before are no use
         _ = XSetSelectionOwner(s.display, s.clipboard, s.handle, CurrentTime)
         _ = XFlush(s.display)
 
@@ -644,14 +693,17 @@ where @macos():
         height: i32
         scale: f64 = 1.0
         focused: bool
-        closed: bool
         hidden: bool
+        marked: bool # the input method is composing a character
+        delegate: id
         events: &list[Event] = heap([])
         first: i64
 
     type Native:
         window: *NSWindow
         view: *NSView
+
+    NOT_FOUND: u64 = 0x7fff_ffff_ffff_ffff # NSNotFound, an empty range of text
 
     priv extern "Foundation.framework":
         NSDefaultRunLoopMode: **NSString
@@ -667,11 +719,46 @@ where @macos():
         if made as u64 == 0:
             drain(pool)
             return WindowError{"cannot open window; AppKit returned no window"}
-        setReleasedWhenClosed(made, false) # closing it hides it, and close() releases it
+        setReleasedWhenClosed(made, false) # close() releases it
         setAcceptsMouseMovedEvents(made, true)
         center(made)
         s := heap(State{app = app, window = made, width = width, height = height})
         s.scale = backingScaleFactor(made)
+        # two classes made once at run time, each holding the state: the content view takes keys through the input method,
+        # and the delegate turns the close button into a Closed event
+        views := objc_lookUpClass("FlagView")
+        if views as u64 == 0:
+            views = objc_allocateClassPair(objc_getClass("NSView") as Class, "FlagView", 0)
+            _ = class_addIvar(views, "flag_state", 8, 3, "^v")
+            _ = class_addProtocol(views, objc_getProtocol("NSTextInputClient"))
+            method(views, "acceptsFirstResponder", ptr(flag_accepts_first_responder), "c@:")
+            method(views, "keyDown:", ptr(flag_key_down), "v@:@")
+            method(views, "insertText:replacementRange:", ptr(flag_insert_text), "v@:@{_NSRange=QQ}")
+            method(views, "setMarkedText:selectedRange:replacementRange:", ptr(flag_set_marked_text), "v@:@{_NSRange=QQ}{_NSRange=QQ}")
+            method(views, "unmarkText", ptr(flag_unmark_text), "v@:")
+            method(views, "hasMarkedText", ptr(flag_has_marked_text), "c@:")
+            method(views, "markedRange", ptr(flag_no_range), "{_NSRange=QQ}@:")
+            method(views, "selectedRange", ptr(flag_no_range), "{_NSRange=QQ}@:")
+            method(views, "validAttributesForMarkedText", ptr(flag_valid_attributes), "@@:")
+            method(views, "attributedSubstringForProposedRange:actualRange:", ptr(flag_attributed_substring), "@@:{_NSRange=QQ}^{_NSRange=QQ}")
+            method(views, "characterIndexForPoint:", ptr(flag_character_index), "Q@:{CGPoint=dd}")
+            method(views, "firstRectForCharacterRange:actualRange:", ptr(flag_first_rect), "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}")
+            method(views, "doCommandBySelector:", ptr(flag_do_command), "v@::")
+            objc_registerClassPair(views)
+        delegates := objc_lookUpClass("FlagWindowDelegate")
+        if delegates as u64 == 0:
+            delegates = objc_allocateClassPair(objc_getClass("NSObject") as Class, "FlagWindowDelegate", 0)
+            _ = class_addIvar(delegates, "flag_state", 8, 3, "^v")
+            method(delegates, "windowShouldClose:", ptr(flag_window_should_close), "c@:@")
+            objc_registerClassPair(delegates)
+        view := initWithFrame((objc_msgSend as extern func(Class, SEL) -> *NSView)(views, sel_registerName("alloc")), frame)
+        state_slot(view as id).* = s
+        setContentView(made, view)
+        _ = makeFirstResponder(made, view as *NSResponder)
+        release(view)
+        s.delegate = (objc_msgSend as extern func(Class, SEL) -> id)(delegates, sel_registerName("new"))
+        state_slot(s.delegate).* = s
+        setDelegate(made, s.delegate)
         w := Window{s}
         set_size(w, width, height) # the window took points, and on a screen of double density a point is 2 pixels
         set_title(w, title)
@@ -681,10 +768,68 @@ where @macos():
         return w
 
     func close(w: Window):
+        setDelegate(w.state.window, 0 as id) # the window does not keep its delegate
+        release(w.state.delegate as *NSObject)
         close(w.state.window)
         release(w.state.window)
         free(w.state.events)
         free(w.state)
+
+    priv func method(kind: Class, selector: cstr, code: *bytes, types: cstr):
+        _ = class_addMethod(kind, sel_registerName(selector), code as IMP, types)
+
+    # where an object of the two classes keeps the state of its window
+    priv func state_slot(object: id) -> **State:
+        offset := ivar_getOffset(class_getInstanceVariable(object_getClass(object), "flag_state"))
+        return (object as *bytes + offset) as **State
+
+    # the text of an NSString, or of the NSAttributedString that the input method may give instead
+    priv func plain(text: id) -> *NSString:
+        if isKindOfClass(text as *NSObject, objc_getClass("NSAttributedString") as Class):
+            return (objc_msgSend as extern func(id, SEL) -> *NSString)(text, sel_registerName("string"))
+        return text as *NSString
+
+    export func flag_window_should_close(self: id, command: SEL, sender: id) -> bool:
+        append(state_slot(self).*.events, Closed)
+        return false # the program decides, and calls close()
+
+    export func flag_accepts_first_responder(self: id, command: SEL) -> bool:
+        return true
+
+    export func flag_key_down(self: id, command: SEL, event: *NSEvent):
+        interpretKeyEvents(self as *NSView, arrayWithObject(NSArray, event as *NSObject)) # the input method answers with the calls below
+
+    export func flag_insert_text(self: id, command: SEL, text: id, replaced: NSRange):
+        s := state_slot(self).*
+        s.marked = false
+        typed(s, view(UTF8String(plain(text))))
+
+    export func flag_set_marked_text(self: id, command: SEL, text: id, selected: NSRange, replaced: NSRange):
+        state_slot(self).*.marked = length(plain(text)) > 0
+
+    export func flag_unmark_text(self: id, command: SEL):
+        state_slot(self).*.marked = false
+
+    export func flag_has_marked_text(self: id, command: SEL) -> bool:
+        return state_slot(self).*.marked
+
+    export func flag_no_range(self: id, command: SEL) -> NSRange:
+        return NSRange{NOT_FOUND, 0}
+
+    export func flag_valid_attributes(self: id, command: SEL) -> *NSArray:
+        return array(NSArray)
+
+    export func flag_attributed_substring(self: id, command: SEL, range: NSRange, actual: *NSRange) -> id:
+        return 0 as id
+
+    export func flag_character_index(self: id, command: SEL, at: NSPoint) -> u64:
+        return NOT_FOUND
+
+    export func flag_first_rect(self: id, command: SEL, range: NSRange, actual: *NSRange) -> NSRect:
+        return NSRect{frame(window(self as *NSView)).origin, CGSize{0.0, 0.0}} # the input method puts its candidates there
+
+    export func flag_do_command(self: id, command: SEL, selector: SEL):
+        pass # Enter, Backspace and the arrows already came as KeyDown, and AppKit beeps when nothing answers
 
     func native(w: Window) -> Native:
         return Native{w.state.window, contentView(w.state.window)}
@@ -701,7 +846,6 @@ where @macos():
             switch type(event):
             case NSEventTypeKeyDown:
                 append(s.events, KeyDown{key_of(keyCode(event)), isARepeat(event), mods_of(flags)})
-                typed(s, view(UTF8String(characters(event))))
             case NSEventTypeKeyUp:
                 append(s.events, KeyUp{key_of(keyCode(event)), mods_of(flags)})
             case NSEventTypeFlagsChanged:
@@ -733,9 +877,6 @@ where @macos():
                 append(s.events, Scrolled{scrollingDeltaX(event) * step, scrollingDeltaY(event) * step})
             sendEvent(s.app, event)
         updateWindows(s.app)
-        if not s.closed and not isVisible(s.window) and not isMiniaturized(s.window): # the close button hid it
-            s.closed = true
-            append(s.events, Closed)
         s.scale = backingScaleFactor(s.window)
         frame := frame(contentView(s.window))
         width := i32(frame.size.width * s.scale)

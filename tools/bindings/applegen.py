@@ -14,6 +14,7 @@ import os
 import re
 import sys
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cgen  # noqa: E402
 
@@ -32,7 +33,7 @@ SCALARS = {
     "unsigned char": "u8", "short": "i16", "unsigned short": "u16", "long": "i64", "unsigned long": "u64",
     "NS::unichar": "u16", "unichar": "u16", "CGFloat": "f64", "IOSurfaceRef": "*bytes", "dispatch_queue_t": "*bytes",
     "dispatch_data_t": "*bytes", "CGColorSpaceRef": "*bytes", "mach_port_t": "u32", "kern_return_t": "i32",
-    "task_id_token_t": "u32", "pid_t": "i32", "uintptr_t": "u64", "NS::ExceptionName": "*NSString",
+    "task_id_token_t": "u32", "pid_t": "i32", "uintptr_t": "u64", "intptr_t": "i64", "NS::ExceptionName": "*NSString",
     "unsigned long long": "u64", "long long": "i64",
 }
 
@@ -43,7 +44,7 @@ RUST_SCALARS = {
     "NSTimeInterval": "f64", "bool": "bool", "Bool": "bool", "f32": "f32", "f64": "f64", "i8": "i8", "u8": "u8",
     "i16": "i16", "u16": "u16", "i32": "i32", "u32": "u32", "i64": "i64", "u64": "u64", "isize": "i64",
     "usize": "u64", "NSStringEncoding": "u64", "CGWindowID": "u32", "CGDirectDisplayID": "u32", "pid_t": "i32",
-    "NSComparisonResult": "i64", "CGGlyph": "u16", "NSGlyph": "u32", "NSRectEdge": "u64", "NSAlignmentOptions": "u64",
+    "NSComparisonResult": "i64", "CGGlyph": "u16", "NSGlyph": "u32", "NSRectEdge": "u64", "NSAlignmentOptions": "u64", "libc::pid_t": "i32",
 }
 
 FOUNDATION_GEOMETRY = """type CGPoint:
@@ -276,32 +277,37 @@ class Apple:
         local = {}
         for ns, mod, text, selectors, f in files:
             for m in re.finditer(r"class (\w+)\s*:\s*public\s+(?:(?:NS::)?(?:Referencing|Copying|SecureCoding)<\s*\w+\s*(?:,\s*([\w:]+)\s*)?>|(?:NS::)?Object\b)", text):
-                name = ns + m.group(1)
+                here = space(text, m, ns)
+                name = here + m.group(1)
                 base = m.group(2)
                 if base is None or base in ("NS::Object", "Object"):
                     sup = "NSObject" if name != "NSObject" else None
                 elif "::" in base:
                     sup = base.replace("::", "")
                 else:
-                    sup = ns + base
+                    sup = here + base
                 self.classes[name] = {"super": sup, "objc": name, "methods": [], "module": mod}
                 self.known[name] = mod
                 local[m.group(1)] = name
             for m in re.finditer(r"_(?:NS|MTL|CA)_(?:ENUM|OPTIONS)\(([\w:]+),\s*(\w+)\)", text):
-                self.known[ns + m.group(2)] = mod
-                local.setdefault(m.group(2), ns + m.group(2))
+                here = space(text, m, ns)
+                self.known[here + m.group(2)] = mod
+                local.setdefault(m.group(2), here + m.group(2))
             for m in re.finditer(r"^struct (\w+)\s*$", text, re.M):
-                self.known[ns + m.group(1)] = mod
-                local.setdefault(m.group(1), ns + m.group(1))
+                here = space(text, m, ns)
+                self.known[here + m.group(1)] = mod
+                local.setdefault(m.group(1), here + m.group(1))
             for m in re.finditer(r"^\s*using (\w+)\s*=\s*([^;]+);", text, re.M):
-                local.setdefault(m.group(1), ns + m.group(1))
+                here = space(text, m, ns)
+                local.setdefault(m.group(1), here + m.group(1))
         self.classes.setdefault("NSObject", {"super": None, "objc": "NSObject", "methods": [], "module": foundation})
         self.known["NSObject"] = foundation
         for ns, mod, text, selectors, f in files:
             for m in re.finditer(r"^\s*using (\w+)\s*=\s*([^;]+);", text, re.M):
-                name = ns + m.group(1)
+                here = space(text, m, ns)
+                name = here + m.group(1)
                 try:
-                    under = self.cpp_type(m.group(2), local) if "^" not in m.group(2) and "std::" not in m.group(2) else "*bytes"
+                    under = "*bytes" if "^" in m.group(2) or "std::function" in m.group(2) else self.cpp_type(m.group(2).replace("std::", ""), local)
                 except cgen.Unsupported:
                     continue
                 if name not in self.known and mod.declare(name, "type"):
@@ -309,7 +315,8 @@ class Apple:
                     self.known[name] = mod
                     self.aliases[name] = under
             for m in re.finditer(r"_(?:NS|MTL|CA)_(ENUM|OPTIONS)\(([\w:]+),\s*(\w+)\)\s*\{(.*?)\};", text, re.S):
-                name = ns + m.group(3)
+                here = space(text, m, ns)
+                name = here + m.group(3)
                 if mod.declare(name, "type"):
                     mod.types.append("type " + name + " = " + SCALARS.get(m.group(2), "u64"))
                     self.aliases[name] = SCALARS.get(m.group(2), "u64")
@@ -320,17 +327,18 @@ class Apple:
                         continue
                     if "=" in entry:
                         key, expr = [x.strip() for x in entry.split("=", 1)]
-                        value = self.evaluate(expr, ns)
+                        value = self.evaluate(expr, here)
                         if value is None:
-                            mod.report.append("skipped constant " + ns + key + ": " + expr)
+                            mod.report.append("skipped constant " + here + key + ": " + expr)
                             continue
                     else:
                         key = entry
                         value += 1
-                    self.values[ns + key] = value
-                    if mod.declare(ns + key, "constant"):
-                        mod.consts.append(ns + key + " = " + str(value))
+                    self.values[here + key] = value
+                    if mod.declare(here + key, "constant"):
+                        mod.consts.append(here + key + " = " + str(value))
             for m in re.finditer(r"^struct (\w+)\s*\n\{(.*?)\n\}\s*_(?:NS|MTL|CA)_PACKED;", text, re.S | re.M):
+                here = space(text, m, ns)
                 fields = []
                 try:
                     for line in m.group(2).split("\n"):
@@ -342,20 +350,22 @@ class Apple:
                                 t = "array[" + t + ", " + fm.group(3) + "]"
                             fields.append(cgen.Generator.flag_name(None, fm.group(2)) + ": " + t)
                 except cgen.Unsupported as why:
-                    mod.report.append("skipped struct " + ns + m.group(1) + ": " + str(why))
+                    mod.report.append("skipped struct " + here + m.group(1) + ": " + str(why))
                     continue
-                if mod.declare(ns + m.group(1), "type"):
-                    mod.types.append("type " + ns + m.group(1) + (":\n" + "\n".join("    " + x for x in fields) if fields else ""))
-                    self.fields[ns + m.group(1)] = [x.split(": ", 1)[1] for x in fields]
+                if mod.declare(here + m.group(1), "type"):
+                    mod.types.append("type " + here + m.group(1) + (":\n" + "\n".join("    " + x for x in fields) if fields else ""))
+                    self.fields[here + m.group(1)] = [x.split(": ", 1)[1] for x in fields]
             for m in re.finditer(r"_(?:NS|MTL|CA)_CONST\(([\w:]+),\s*(\w+)\)", text):
+                here = space(text, m, ns)
                 try:
                     t = self.cpp_type(m.group(1), local)
                 except cgen.Unsupported:
                     continue
-                name = ns + m.group(2)
+                name = here + m.group(2)
                 if mod.declare(name, "variable"):
-                    mod.externs.setdefault(self.framework(ns), []).append("    " + name + ": *" + t)
+                    mod.externs.setdefault(self.framework(here), []).append("    " + name + ": *" + t)
             for m in re.finditer(r'extern "C" ([^;(]+?)(\w+)\(([^)]*)\);', text):
+                here = space(text, m, ns)
                 try:
                     ret = self.cpp_type(m.group(1), local)
                     params = self.cpp_params(m.group(3), local)
@@ -366,7 +376,7 @@ class Apple:
                     continue
                 line = "    func " + m.group(2) + "(" + ", ".join(n + ": " + t for n, t in params) + ")" + (" -> " + ret if ret != "void" else "")
                 if mod.declare(m.group(2), "function"):
-                    mod.externs.setdefault(self.framework(ns), []).append(line)
+                    mod.externs.setdefault(self.framework(here), []).append(line)
         for ns, mod, text, selectors, f in files:
             pattern = r"_(?:NS|MTL|CA)_INLINE\s+([^\n]+?)\s+(MTL4|MTL|NS|CA)::(\w+)::(\w+)\(([^)]*)\)(\s*const)?\s*\n\{(.*?)\n\}"
             for m in re.finditer(pattern, text, re.S):
@@ -408,10 +418,10 @@ class Apple:
             return None
         out = []
         for part in text.split(","):
-            pm = re.match(r"^(.*?)(\w+)$", part.strip())
+            pm = re.match(r"^(.*?)(\w+)(\s*\[\s*\])?$", part.strip())
             if pm is None:
                 raise cgen.Unsupported(part)
-            out.append((pm.group(2), self.cpp_type(pm.group(1), local)))
+            out.append((pm.group(2), self.cpp_type(pm.group(1) + ("*" if pm.group(3) else ""), local)))
         return out
 
     def evaluate(self, expr, ns):
@@ -612,6 +622,14 @@ class Apple:
                         continue
                     flag = selector.rstrip(":").replace(":", "_")
                     self.classes[cls]["methods"].append(Method(cgen.Generator.flag_name(None, flag), selector, params, result, static))
+
+
+def space(text, m, default):
+    # the namespace a declaration sits in, which a file may change from the one of its prefix
+    found = default
+    for n in re.finditer(r"namespace (MTL4|MTL|NS|CA)\b", text[:m.start()]):
+        found = n.group(1)
+    return found
 
 
 def method_blocks(text):

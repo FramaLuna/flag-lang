@@ -1033,7 +1033,7 @@ type error WindowError:
 
 | Event | Fields | When |
 |---|---|---|
-| `Closed` | | The user requested to close the window. It stays open until you call `close`, except on macOS, where the close button hides it first. |
+| `Closed` | | The user requested to close the window. It stays open until you call `close`. |
 | `Resized` | `width: i32`, `height: i32` | The drawing area changed size, in pixels. |
 | `Focus` | `on: bool` | The window gained or lost keyboard focus. |
 | `KeyDown` | `key: Key`, `repeat: bool`, `mods: Mods` | A key was pressed. `repeat` is `true` for key repeats while the key is held. |
