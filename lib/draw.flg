@@ -704,8 +704,20 @@ func read_target(s: Screen, target: Target) -> Image:
     pixels: &list[u8] = heap([])
     for k in 0..i64(target.texture.width) * i64(target.texture.height) * 4:
         append(pixels, u8(0))
+    for k in 0..64:
+        append(pixels, u8(0xab))
+    pixels.len -= 64
+    eprint("DEBUG read_target drawing ", st.drawing, " slot ", target.texture.slot, " size ", target.texture.width, "x", target.texture.height, " header ", (ptr(pixels) as *u64).*, " data ", ptr(pixels[0]) as u64, " len ", pixels.len)
     gpu_read(ptr(s.state.gpu), target.texture.slot, ptr(pixels[0]))
-    return Image{target.texture.width, target.texture.height, pixels}
+    eprint("DEBUG after gpu_read header ", (ptr(pixels) as *u64).*, " len ", pixels.len)
+    canary := 0
+    for k in 0..64:
+        if ((ptr(pixels[0]) as *bytes + pixels.len + k) as *u8).* != 0xab:
+            canary += 1
+    eprint("DEBUG canary bytes changed ", canary)
+    image := Image{target.texture.width, target.texture.height, pixels}
+    eprint("DEBUG image ", image.width, "x", image.height, " header ", (ptr(image.pixels) as *u64).*)
+    return image
 
 # draws only inside the rectangle, and inside the clip before it, until pop_clip
 func push_clip(s: Screen, x: f64, y: f64, width: f64, height: f64):
@@ -1830,7 +1842,9 @@ fragment float4 pixel_main(Out i [[stage_in]], texture2d<float> image [[texture(
             waitUntilCompleted(commands)
             drain(pool)
         region := MTLRegion{MTLOrigin{0, 0, 0}, MTLSize{u64(t.width), u64(t.height), 1}}
+        eprint("DEBUG metal read ", t.width, "x", t.height, " unified ", g.unified, " target ", t.target, " texture ", t.texture as u64, " real ", width(t.texture), "x", height(t.texture), " format ", u64(pixelFormat(t.texture)), " into ", into as u64)
         getBytes_bytesPerRow_fromRegion_mipmapLevel(t.texture, into as *bytes, u64(t.width) * 4, region, 0)
+        eprint("DEBUG metal read done")
         if t.target:
             for k in 0..i64(t.width) * i64(t.height):
                 at := into as *bytes + k * 4
