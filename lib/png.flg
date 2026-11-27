@@ -1,0 +1,522 @@
+module png
+
+type Image:
+    width: i32
+    height: i32
+    pixels: &list[u8] # 8-bit RGBA, rows from top to bottom (the image owns it)
+
+type error PngError:
+    reason: &strview
+
+operator +=(s: *&str, e: PngError):
+    s.* += e.reason
+
+func free(image: Image):
+    free(image.pixels)
+
+priv type Pass:
+    x: i64
+    y: i64
+    dx: i64
+    dy: i64
+
+priv type Bits:
+    data: &listview[u8] = []
+    at: i64
+    buffer: u64
+    count: i64
+
+priv type Code:
+    fast: array[u16, 512] # by the next 9 bits: size << 9 or symbol, or 0 for a longer code
+    counts: array[u16, 16]
+    symbols: array[u16, 288]
+
+priv SIGNATURE = "\x89PNG\r\n\x1a\n"
+priv PASSES: array[Pass, 8] = [{0, 0, 1, 1}, {0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}] # the whole image, then the seven of Adam7
+priv CHANNELS: array[i64, 7] = [1, 0, 3, 1, 2, 0, 4]
+priv SIZE_CODE_ORDER: array[i64, 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+priv LENGTHS: array[u32, 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+priv LENGTH_BITS: array[i64, 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+priv DISTANCES: array[u32, 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+priv DISTANCE_BITS: array[i64, 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+priv DAMAGED = "cannot read png; compressed image data is damaged"
+priv TRUNCATED = "cannot read png; compressed image data ends early"
+priv OVERFLOWING = "cannot read png; image data has more bytes than the image needs"
+
+func decode_png(data: &strview) -> Image|PngError:
+    bytes := items(data)
+    if not starts_with(data, SIGNATURE):
+        return PngError{"cannot read png; the file does not start with the png signature"}
+    zlib: &str = heap("")
+    defer free(zlib)
+    width := 0
+    height := 0
+    depth := 0
+    color := 0
+    interlaced := false
+    palette: array[u8, 1024]
+    colors := 0
+    key: array[u16, 3]
+    keyed := false
+    at := SIGNATURE.len
+    while true:
+        if at + 12 > data.len:
+            return PngError{"cannot read png; the file ends before chunk IEND"}
+        size := i64(u32_at(bytes, at))
+        name := data[at + 4:at + 8]
+        if size > data.len - at - 12:
+            return PngError{"cannot read png; the file ends inside chunk " + name}
+        body := bytes[at + 8:at + 8 + size]
+        if crc(bytes[at + 4:at + 8 + size]) != u32_at(bytes, at + 8 + size):
+            return PngError{"cannot read png; chunk " + name + " does not match its crc"}
+        at += 12 + size
+        if (width == 0) != (name == "IHDR"):
+            return PngError{"cannot read png; chunk IHDR must appear first and only once"}
+        switch name:
+        case "IHDR":
+            if size != 13:
+                return PngError{"cannot read png; chunk IHDR must be 13 bytes"}
+            width = u32_at(body, 0)
+            height = u32_at(body, 4)
+            depth = body[8]
+            color = body[9]
+            if width == 0 or height == 0 or width > 0x7fff_ffff or height > 0x7fff_ffff:
+                return PngError{"cannot read png; width and height must be between 1 and 2^31 - 1"}
+            small := depth == 1 or depth == 2 or depth == 4
+            if color > 6 or CHANNELS[color] == 0 or not (depth == 8 or depth == 16 and color != 3 or small and (color == 0 or color == 3)):
+                return PngError{"cannot read png; color type " + color + " with bit depth " + depth + " is invalid"}
+            if body[10] != 0 or body[11] != 0 or body[12] > 1:
+                return PngError{"cannot read png; compression and filter methods must be 0, and interlace method must be 0 or 1"}
+            interlaced = body[12] == 1
+        case "PLTE":
+            colors = size / 3
+            if size % 3 != 0 or colors == 0 or colors > 256:
+                return PngError{"cannot read png; chunk PLTE must hold 1 to 256 3-byte colors"}
+            for k in 0..colors:
+                for c in 0..3:
+                    palette[4 * k + c] = body[3 * k + c]
+                palette[4 * k + 3] = 255
+        case "tRNS":
+            if color == 3 and size <= colors:
+                for k in 0..size:
+                    palette[4 * k + 3] = body[k]
+            elif color == 0 and size == 2 or color == 2 and size == 6:
+                for c in 0..3:
+                    from := 2 * c if color == 2 else 0
+                    key[c] = u16(body[from]) << 8 or body[from + 1]
+                keyed = true
+            else:
+                return PngError{"cannot read png; chunk tRNS does not match color type " + color + " or appears before PLTE"}
+        case "IDAT":
+            zlib += view(body)
+        case "IEND":
+            break
+        case:
+            if (name[0] and 0x20) == 0:
+                return PngError{"cannot read png; critical chunk " + name + " is unknown"}
+    if color == 3 and colors == 0:
+        return PngError{"cannot read png; color type 3 requires chunk PLTE"}
+    passes := PASSES[1:] if interlaced else PASSES[:1]
+    channels := CHANNELS[color]
+    pixel_bits := channels * depth
+    pixel_bytes := (pixel_bits + 7) / 8
+    size := 0
+    for p in passes:
+        columns := (width - p.x + p.dx - 1) / p.dx
+        rows := (height - p.y + p.dy - 1) / p.dy
+        stride := (columns * pixel_bits + 7) / 8
+        if columns == 0:
+            continue
+        if rows > (zlib.len * 1032 - size) / (stride + 1): # deflate grows data at most 1032 times
+            return PngError{"cannot read png; image data is too short for a " + width + "x" + height + " image"}
+        size += rows * (stride + 1)
+    if zlib.len < 2 or (zlib[0] and 15) != 8 or zlib[0] >> 4 > 7 or (u32(zlib[0]) << 8 or zlib[1]) % 31 != 0 or (zlib[1] and 0x20) != 0:
+        return PngError{"cannot read png; image data has an invalid zlib header"}
+    raw: &list[u8] = heap([])
+    defer free(raw)
+    reserve(raw, size)
+    stream := Bits{data = items(zlib[2:])}
+    litlen: Code
+    distances: Code
+    final := false
+    while not final:
+        final = take(stream, 1) == 1
+        kind := take(stream, 2)
+        if kind == 0:
+            _ = take(stream, stream.count % 8)
+            length := take(stream, 16)
+            if length != (take(stream, 16) xor 0xffff):
+                return PngError{DAMAGED}
+            from := stream.at - stream.count / 8
+            if from + length > stream.data.len:
+                return PngError{TRUNCATED}
+            if raw.len + length > size:
+                return PngError{OVERFLOWING}
+            append(raw, stream.data[from:from + length])
+            stream = Bits{data = stream.data, at = from + length}
+            continue
+        if kind == 3:
+            return PngError{DAMAGED}
+        sizes: array[u8, 320]
+        litlen_codes := 288
+        distance_codes := 32
+        if kind == 1:
+            for s in 0..320:
+                sizes[s] = 8
+            for s in 144..256:
+                sizes[s] = 9
+            for s in 256..280:
+                sizes[s] = 7
+            for s in 288..320:
+                sizes[s] = 5
+        else:
+            litlen_codes = take(stream, 5) + 257
+            distance_codes = take(stream, 5) + 1
+            for k in 0..take(stream, 4) + 4:
+                sizes[SIZE_CODE_ORDER[k]] = u8(take(stream, 3))
+            try build(litlen, sizes[0:19])
+            n := 0
+            while n < litlen_codes + distance_codes:
+                symbol := decode(litlen, stream) ifnull return PngError{DAMAGED}
+                value := u8(symbol)
+                repeat: u32 = 1
+                switch symbol:
+                case 16:
+                    if n == 0:
+                        return PngError{DAMAGED}
+                    value = sizes[n - 1]
+                    repeat = 3 + take(stream, 2)
+                case 17:
+                    value = 0
+                    repeat = 3 + take(stream, 3)
+                case 18:
+                    value = 0
+                    repeat = 11 + take(stream, 7)
+                if n + repeat > litlen_codes + distance_codes:
+                    return PngError{DAMAGED}
+                for k in 0..repeat:
+                    sizes[n] = value
+                    n += 1
+        try build(litlen, sizes[0:litlen_codes])
+        try build(distances, sizes[litlen_codes:litlen_codes + distance_codes])
+        while true:
+            symbol := decode(litlen, stream) ifnull return PngError{DAMAGED}
+            if symbol < 256:
+                if raw.len == size:
+                    return PngError{OVERFLOWING}
+                append(raw, u8(symbol))
+                continue
+            if symbol == 256:
+                break
+            k := symbol - 257
+            if k >= 29:
+                return PngError{DAMAGED}
+            length := LENGTHS[k] + take(stream, LENGTH_BITS[k])
+            d := decode(distances, stream) ifnull return PngError{DAMAGED}
+            if d >= 30:
+                return PngError{DAMAGED}
+            distance := DISTANCES[d] + take(stream, DISTANCE_BITS[d])
+            if distance > raw.len:
+                return PngError{DAMAGED}
+            if raw.len + length > size:
+                return PngError{OVERFLOWING}
+            for n in 0..length:
+                append(raw, raw[raw.len - distance])
+    _ = take(stream, stream.count % 8)
+    check: u32 = 0
+    for k in 0..4:
+        check = check << 8 or take(stream, 8)
+    if stream.at * 8 - stream.count > stream.data.len * 8:
+        return PngError{TRUNCATED}
+    if raw.len < size:
+        return PngError{"cannot read png; image data has fewer bytes than the image needs"}
+    if adler(raw) != check:
+        return PngError{"cannot read png; image data does not match its adler-32 checksum"}
+    pixels: &list[u8] = heap([])
+    reserve(pixels, width * height * 4)
+    pixels.len = width * height * 4
+    largest := u16((1 << depth) - 1)
+    scale := 255 / largest
+    start := 0
+    for p in passes:
+        columns := (width - p.x + p.dx - 1) / p.dx
+        rows := (height - p.y + p.dy - 1) / p.dy
+        stride := (columns * pixel_bits + 7) / 8
+        if columns == 0:
+            continue
+        for y in 0..rows:
+            filter := raw[start]
+            if filter > 4:
+                free(pixels)
+                return PngError{"cannot read png; invalid row filter type " + filter + " (must be 0 to 4)"}
+            row := raw[start + 1:start + 1 + stride]
+            prior: &listview[u8] = []
+            if y > 0:
+                prior = raw[start - stride:start]
+            for i in 0..stride:
+                row[i] += predict(filter, row, prior, i, pixel_bytes)
+            for x in 0..columns:
+                to := ((p.y + y * p.dy) * width + p.x + x * p.dx) * 4
+                samples: array[u16, 4]
+                for c in 0..channels:
+                    n := x * channels + c
+                    if depth == 16:
+                        samples[c] = u16(row[2 * n]) << 8 or row[2 * n + 1]
+                    else:
+                        samples[c] = row[n * depth / 8] >> (8 - depth - n * depth % 8) and largest
+                if color == 3:
+                    if samples[0] >= colors:
+                        free(pixels)
+                        return PngError{"cannot read png; palette index " + samples[0] + " is out of range for " + colors + " colors in chunk PLTE"}
+                    for c in 0..4:
+                        pixels[to + c] = palette[4 * samples[0] + c]
+                    continue
+                rgba: array[u16, 4] = [samples[0], samples[0], samples[0], samples[channels - 1]]
+                if (color and 2) != 0:
+                    rgba[1] = samples[1]
+                    rgba[2] = samples[2]
+                if (color and 4) == 0:
+                    rgba[3] = largest
+                    if keyed and rgba[0] == key[0] and rgba[1] == key[1] and rgba[2] == key[2]:
+                        rgba[3] = 0
+                for c in 0..4:
+                    pixels[to + c] = u8(rgba[c] >> 8) if depth == 16 else u8(rgba[c] * scale)
+            start += stride + 1
+    return Image{i32(width), i32(height), pixels}
+
+func encode_png(image: Image) -> &str:
+    width := i64(image.width)
+    height := i64(image.height)
+    stride := width * 4
+    if width < 1 or height < 1:
+        panic("cannot encode a " + width + "x" + height + " png; the width and height must be at least 1")
+    if image.pixels.len != height * stride:
+        panic("cannot encode png; a " + width + "x" + height + " image needs " + height * stride + " bytes of pixels, not " + image.pixels.len)
+    raw: &list[u8] = heap([])
+    defer free(raw)
+    reserve(raw, height * (stride + 1))
+    for y in 0..height:
+        row := image.pixels[y * stride:(y + 1) * stride]
+        prior: &listview[u8] = []
+        if y > 0:
+            prior = image.pixels[(y - 1) * stride:y * stride]
+        best: u8 = 0
+        least := 0
+        for filter in u8(0)..5:
+            cost := 0
+            for i in 0..stride:
+                cost += abs(i64(i8(row[i] - predict(filter, row, prior, i, 4))))
+            if filter == 0 or cost < least:
+                best = filter
+                least = cost
+        append(raw, best)
+        for i in 0..stride:
+            append(raw, row[i] - predict(best, row, prior, i, 4))
+    out: &str = heap("")
+    out += SIGNATURE
+    start := out.len
+    out += "\0\0\0\0IHDR"
+    add_u32(out, u32(width))
+    add_u32(out, u32(height))
+    out += "\x08\x06\0\0\0"
+    seal(out, start)
+    start = out.len
+    out += "\0\0\0\0IDAT\x78\x01" # and the zlib header of deflate with a 32 KiB window
+    stream: Bits
+    put(out, stream, 3, 3) # the last block, with fixed codes
+    seen: &list[i64] = heap([]) # by a hash of 3 bytes: 1 + where they were last, or 0
+    defer free(seen)
+    for k in 0..32768:
+        append(seen, 0)
+    at := 0
+    while at < raw.len:
+        length := 0
+        distance := 0
+        if at + 3 <= raw.len:
+            hash := ((u32(raw[at]) << 16 or u32(raw[at + 1]) << 8 or raw[at + 2]) * 0x9e37_79b1) >> 17
+            before := seen[hash] - 1
+            seen[hash] = at + 1
+            if before >= 0 and at - before <= 32768:
+                while length < 258 and at + length < raw.len and raw[before + length] == raw[at + length]:
+                    length += 1
+                distance = at - before
+        if length < 3:
+            put_fixed(out, stream, raw[at])
+            at += 1
+            continue
+        k := 28
+        while LENGTHS[k] > length:
+            k -= 1
+        put_fixed(out, stream, u32(257 + k))
+        put(out, stream, u32(length) - LENGTHS[k], LENGTH_BITS[k])
+        k = 29
+        while DISTANCES[k] > distance:
+            k -= 1
+        put(out, stream, reversed(u32(k), 5), 5)
+        put(out, stream, u32(distance) - DISTANCES[k], DISTANCE_BITS[k])
+        at += length
+    put_fixed(out, stream, 256)
+    if stream.count > 0:
+        add_byte(out, u8(stream.buffer))
+    add_u32(out, adler(raw))
+    seal(out, start)
+    start = out.len
+    out += "\0\0\0\0IEND"
+    seal(out, start)
+    return out
+
+priv inline func predict(filter: u8, row: &listview[u8], prior: &listview[u8], i: i64, pixel_bytes: i64) -> u8:
+    left: u8 = 0
+    up: u8 = 0
+    corner: u8 = 0
+    if i >= pixel_bytes:
+        left = row[i - pixel_bytes]
+    if prior.len > 0:
+        up = prior[i]
+        if i >= pixel_bytes:
+            corner = prior[i - pixel_bytes]
+    switch filter:
+    case 1:
+        return left
+    case 2:
+        return up
+    case 3:
+        return u8((u16(left) + up) / 2)
+    case 4:
+        guess := i16(left) + up - corner
+        to_left := abs(guess - left)
+        to_up := abs(guess - up)
+        to_corner := abs(guess - corner)
+        if to_left <= to_up and to_left <= to_corner:
+            return left
+        if to_up <= to_corner:
+            return up
+        return corner
+    return 0
+
+# past the end of the data it reads zeros, and the decoder checks how far it went
+priv inline func fill(stream: *Bits):
+    while stream.count <= 56:
+        if stream.at < stream.data.len:
+            stream.buffer = stream.buffer or u64(stream.data[stream.at]) << stream.count
+        stream.at += 1
+        stream.count += 8
+
+priv inline func take(stream: *Bits, size: i64) -> u32:
+    fill(stream)
+    value := u32(stream.buffer and (u64(1) << size) - 1)
+    stream.buffer = stream.buffer >> size
+    stream.count -= size
+    return value
+
+priv func put(out: *&str, stream: *Bits, value: u32, size: i64):
+    stream.buffer = stream.buffer or u64(value) << stream.count
+    stream.count += size
+    while stream.count >= 8:
+        add_byte(out, u8(stream.buffer))
+        stream.buffer = stream.buffer >> 8
+        stream.count -= 8
+
+priv func put_fixed(out: *&str, stream: *Bits, symbol: u32):
+    if symbol < 144:
+        put(out, stream, reversed(0x30 + symbol, 8), 8)
+    elif symbol < 256:
+        put(out, stream, reversed(0x190 + symbol - 144, 9), 9)
+    elif symbol < 280:
+        put(out, stream, reversed(symbol - 256, 7), 7)
+    else:
+        put(out, stream, reversed(0xc0 + symbol - 280, 8), 8)
+
+priv func reversed(word: u32, size: i64) -> u32:
+    out: u32 = 0
+    for k in 0..size:
+        out = out << 1 or (word >> k) and 1
+    return out
+
+priv func build(code: *Code, sizes: &listview[u8]) -> PngError?:
+    code.* = Code{}
+    for n in sizes:
+        code.counts[n] += 1
+    left := 1
+    for size in 1..16:
+        left = left * 2 - code.counts[size]
+        if left < 0:
+            return PngError{DAMAGED}
+    starts: array[u16, 16]
+    for size in 1..15:
+        starts[size + 1] = starts[size] + code.counts[size]
+    for symbol, n in sizes:
+        if n > 0:
+            code.symbols[starts[n]] = u16(symbol)
+            starts[n] += 1
+    word: u32 = 0
+    index := 0
+    for size in 1..10:
+        for k in 0..code.counts[size]:
+            entry := u16(size << 9) or code.symbols[index]
+            slot := reversed(word, size)
+            while slot < 512:
+                code.fast[slot] = entry
+                slot += u32(1) << size
+            word += 1
+            index += 1
+        word = word << 1
+    return null
+
+priv inline func decode(code: *Code, stream: *Bits) -> u16|null:
+    fill(stream)
+    entry := code.fast[stream.buffer and 511]
+    if entry != 0:
+        stream.buffer = stream.buffer >> (entry >> 9)
+        stream.count -= entry >> 9
+        return entry and 511
+    word := 0
+    first := 0
+    index := 0
+    for size in 1..16:
+        word = word or i64(stream.buffer >> (size - 1)) and 1
+        count := i64(code.counts[size])
+        if word < first + count:
+            stream.buffer = stream.buffer >> size
+            stream.count -= size
+            return code.symbols[index + word - first]
+        index += count
+        first = (first + count) << 1
+        word = word << 1
+    return null
+
+priv func crc(bytes: &listview[u8]) -> u32:
+    table: array[u32, 256]
+    for n in 0..256:
+        entry := u32(n)
+        for k in 0..8:
+            entry = (entry >> 1) xor 0xedb8_8320 if (entry and 1) != 0 else entry >> 1
+        table[n] = entry
+    c: u32 = 0xffff_ffff
+    for x in bytes:
+        c = table[(c xor x) and 255] xor c >> 8
+    return c xor 0xffff_ffff
+
+priv func adler(bytes: &listview[u8]) -> u32:
+    low: u32 = 1
+    high: u32 = 0
+    for block in 0..(bytes.len + 5551) / 5552: # 5552 bytes cannot overflow the sums
+        for x in bytes[block * 5552:min(block * 5552 + 5552, bytes.len)]:
+            low += x
+            high += low
+        low %= 65521
+        high %= 65521
+    return high << 16 or low
+
+priv func u32_at(bytes: &listview[u8], at: i64) -> u32:
+    return u32(bytes[at]) << 24 or u32(bytes[at + 1]) << 16 or u32(bytes[at + 2]) << 8 or bytes[at + 3]
+
+priv func add_u32(out: *&str, value: u32):
+    for k in 0..4:
+        add_byte(out, u8(value >> (24 - 8 * k)))
+
+priv func seal(out: *&str, start: i64):
+    size := u32(out.len - start - 8)
+    for k in 0..4:
+        out[start + k] = u8(size >> (24 - 8 * k))
+    add_u32(out, crc(items(out[start + 4:])))

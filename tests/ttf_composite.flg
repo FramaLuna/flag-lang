@@ -1,0 +1,33 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    scale := scale_for(font, 32.0)
+    e: &list[u8] = heap([])
+    defer free(e)
+    accented: &list[u8] = heap([])
+    defer free(accented)
+    plain := render_glyph(font, glyph_of(font, 'e'), scale, e)
+    g := render_glyph(font, glyph_of(font, 0xe9), scale, accented)
+    print(glyph_of(font, 0xe9), " ", plain, " ", g)
+    rows := g.top - plain.top
+    same := true
+    for y in 0..plain.height:
+        for x in 0..plain.width:
+            if e[y * plain.width + x] != accented[(y + rows) * g.width + x + plain.left - g.left]:
+                same = false
+    print("e inside its accented glyph is the same: ", same)
+    for y in 0..rows:
+        with scratch():
+            line: &str = heap("|")
+            defer free(line)
+            for x in 0..g.width:
+                v := i64(accented[y * g.width + x]) * 10 / 256
+                line += " .:-=+*#%@"[v:v + 1]
+            print(line, "|")

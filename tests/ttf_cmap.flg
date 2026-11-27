@@ -1,0 +1,32 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    codes: array[u32, 10] = [' ', 'A', 'a', 0xe9, 0x301, 0x20ac, 0x4e2d, 0x1f600, 0x10ffff, 0xffff_ffff]
+    for code in codes:
+        print(hex(code), " ", glyph_of(font, code))
+    copy: &str = heap(FONT)
+    defer free(copy)
+    copy[48908 + 1] = 1 # the encodings (0, 4) and (3, 10) of format 12 now say Macintosh, so format 4 wins
+    copy[48932 + 1] = 1
+    bmp := load_font(copy)
+    if bmp is FontError:
+        print(bmp)
+        return
+    defer free(bmp)
+    mapped := 0
+    different := 0
+    for code in 0..0x1_0000:
+        g := glyph_of(bmp, u32(code))
+        if g != 0:
+            mapped += 1
+        if g != glyph_of(font, u32(code)):
+            different += 1
+    print("format 4 maps ", mapped, ", ", different, " differ from format 12")
+    print(glyph_of(bmp, 0xe9), " ", glyph_of(bmp, 0x1f600), " ", glyph_of(bmp, 0xffff_ffff))

@@ -1,0 +1,51 @@
+use objc
+use metal
+use cocoa
+
+func layer_for(device: *MTLDevice) -> *CAMetalLayer where @macos():
+    layer := layer(CAMetalLayer)
+    setDevice(layer, device)
+    setPixelFormat(layer, MTLPixelFormatBGRA8Unorm)
+    setDrawableSize(layer, CGSize{640.0, 480.0})
+    return layer
+
+func clear(device: *MTLDevice, layer: *CAMetalLayer) where @macos():
+    queue := newCommandQueue(device)
+    drawable := nextDrawable(layer)
+    frame := renderPassDescriptor(MTLRenderPassDescriptor)
+    color := objectAtIndexedSubscript(colorAttachments(frame), 0)
+    setTexture(color, texture(drawable))
+    setLoadAction(color, MTLLoadActionClear)
+    setClearColor(color, MTLClearColor{0.2, 0.4, 0.8, 1.0})
+    commands := commandBuffer(queue)
+    encoder := renderCommandEncoderWithDescriptor(commands, frame)
+    endEncoding(encoder)
+    presentDrawable(commands, drawable as *MTLDrawable)
+    commit(commands)
+    release(queue)
+
+func show(text: &strview) where @macos():
+    pool := init(alloc(NSAutoreleasePool))
+    app := sharedApplication(NSApplication)
+    _ = setActivationPolicy(app, NSApplicationActivationPolicyRegular)
+    title := stringWithCString_encoding(NSString, cstr(text), NSUTF8StringEncoding)
+    window := initWithContentRect_styleMask_backing_defer(alloc(NSWindow), NSRect{CGPoint{0.0, 0.0}, CGSize{640.0, 480.0}}, NSWindowStyleMaskTitled, NSBackingStoreBuffered, false)
+    setTitle(window, title)
+    device := MTLCreateSystemDefaultDevice()
+    layer := layer_for(device)
+    view := contentView(window)
+    setWantsLayer(view, true)
+    setLayer(view, layer as *CALayer)
+    clear(device, layer)
+    print(view(UTF8String(title)), " ", clipboard_text())
+    drain(pool)
+
+func clipboard_text() -> &strview where @macos():
+    found := stringForType(generalPasteboard(NSPasteboard), NSPasteboardTypeString.*)
+    return view(UTF8String(found)) if found as u64 != 0 else ""
+
+func main() where @macos():
+    show("Flag")
+
+func main() where not @macos():
+    print(@sizeof(MTLClearColor), " ", @sizeof(MTLRegion), " ", @sizeof(NSRect), " ", MTLPixelFormatBGRA8Unorm, " ", NSWindowStyleMaskResizable)

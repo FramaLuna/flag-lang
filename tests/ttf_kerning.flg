@@ -1,0 +1,23 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    for pair in ["AV", "VA", "AT", "To", "AA", "LT", "Yo", "av"]:
+        print(pair, " ", kerning(font, glyph_of(font, u32(pair[0])), glyph_of(font, u32(pair[1])), 1.0))
+    print(kerning(font, glyph_of(font, 'A'), glyph_of(font, 'V'), scale_for(font, 16.0)))
+    print(kerning(font, -1, 99999, 1.0))
+    copy: &str = heap(FONT)
+    defer free(copy)
+    copy[12 + 16 * 14 + 3] = 'x' # the table kern is now kerx, which ttf does not read
+    plain := load_font(copy)
+    if plain is FontError:
+        print(plain)
+        return
+    defer free(plain)
+    print(kerning(plain, glyph_of(plain, 'A'), glyph_of(plain, 'V'), 1.0))

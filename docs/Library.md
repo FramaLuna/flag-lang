@@ -9,12 +9,16 @@ Every function of the standard library, module by module.
 - [fs](#fs): files, folders, and paths
 - [os](#os): program environment, [other programs](#other-programs), random bytes, [libraries](#libraries), and time
 - [json](#json): reading and writing JSON
+- [png](#png): reading and writing PNG images
 - [net](#net): TCP connections, [UDP](#udp), and waiting on multiple sockets
 - [math](#math): floating-point math and random numbers
 - [utf8](#utf8): UTF-8 character helpers
+- [ttf](#ttf): TrueType fonts and glyph bitmaps
 - [bits](#bits): fixed-size bit sets
 - [ring](#ring): double-ended queue
-- [raylib](#raylib): graphics, input, and audio
+- [draw](#draw): 2D drawing on the GPU for games and app interfaces
+- [window](#window): windows and events on Linux, Windows, and macOS
+- [System and GPU bindings](#system-and-gpu-bindings): `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa`
 
 ---
 
@@ -746,6 +750,50 @@ type error NotJson:
 
 `Document` exposes `text: &strview` and `nodes: &list[Node]`. Each `Node` has `kind: Kind`, `from: i64`, `to: i64` (`d.text[from:to]` is its raw JSON text), `size: i64` (total nodes covered including descendants), and `escaped: bool` (whether a `Text` node contains escapes). Inside an `Object`, each key is stored as a `Text` node immediately preceding its value node.
 
+
+---
+
+## png
+
+Decodes every PNG the specification allows into 8-bit RGBA and encodes 8-bit RGBA images as PNG files.
+
+```flag
+use fs
+use png
+
+func main():
+    data := read_file("logo.png")
+    if data is FsError:
+        eprint(data)
+        return
+    defer free(data)
+    image := decode_png(data)
+    if image is PngError:
+        eprint(image) # e.g. cannot read png; the file ends inside chunk IDAT
+        return
+    defer free(image)
+    print(image.width, "x", image.height)
+    file := encode_png(image)
+    defer free(file)
+    _ = write_file("copy.png", file)
+```
+
+- `decode_png(data: &strview) -> Image|PngError`: decodes a PNG file in memory (such as from `read_file` or `@embed`). Supports color types 0, 2, 3, 4, and 6; bit depths 1, 2, 4, 8, and 16; palettes; `tRNS` transparency; and Adam7 interlacing. Pixels are always 8-bit RGBA (**yours**), keeping the high byte of 16-bit samples. Verifies every chunk CRC and the Adler-32 checksum, skips unused ancillary chunks, and returns `PngError` on truncated or malformed data.
+- `encode_png(image: Image) -> &str`: encodes `image` as an 8-bit RGBA PNG (**yours**), choosing a filter per row and compressing with deflate using fixed Huffman codes. Aborts if width or height is below 1, or if `pixels` does not hold `width * height * 4` bytes.
+- `free(image: Image)`: frees `image.pixels`.
+
+```flag
+type Image:
+    width: i32
+    height: i32
+    pixels: &list[u8] # 8-bit RGBA, rows from top to bottom (the image owns it)
+
+type error PngError:
+    reason: &strview
+```
+
+Printing a `PngError` shows its reason, for example `cannot read png; chunk IDAT does not match its crc`. A reason that names a chunk or number is **temporary**.
+
 ---
 
 ## net
@@ -886,6 +934,71 @@ All threads share the generator via atomic `add` (lock-free), so no two threads 
 
 Iterate characters with `for c in text`, and encode code points with `add_char` in [core](#text).
 
+
+---
+
+## ttf
+
+Reads TrueType fonts (`.ttf`) and renders glyphs to antialiased 8-bit coverage bitmaps for glyph atlases.
+
+```flag
+use ttf
+
+FONT = @embed("fonts/sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        eprint(font)
+        return
+    defer free(font)
+    scale := scale_for(font, 16.0)
+    ascent, descent, gap := metrics(font, scale)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    a := glyph_of(font, 'A')
+    g := render_glyph(font, a, scale, bitmap) # appends g.width * g.height bytes to bitmap
+    print(g, " ", kerning(font, a, glyph_of(font, 'V'), scale))
+```
+
+Supported tables: `head`, `hhea`, `maxp`, `hmtx`, `cmap` (formats 4 and 12, preferring Unicode subtables, then format 12), `loca` (short and long), `glyf` (simple glyphs, and composite glyphs with offsets, scales, and 2x2 matrices), and `kern` (the first format 0 subtable when it holds horizontal pairs). Composite parts positioned by point numbers instead of offsets are placed at zero offset. `GPOS` kerning, hinting, and CFF outlines are not read.
+
+#### Loading and freeing
+
+- `load_font(data: &strview) -> Font|FontError`: validates the tables it reads and keeps its own copy of `data`, so `data` can be freed afterward. Fails with `FontError` for CFF outlines (OpenType `.otf`), truncated files, or missing, short, or inconsistent tables. A glyph with a damaged outline renders from the bytes present without reading past the end.
+- `free(font: Font)`: frees the font's copy of `data`.
+
+#### Metrics and glyphs
+
+- `scale_for(font: Font, pixels: f32) -> f32`: returns the scale at which ascent minus descent is `pixels` tall.
+- `metrics(font: Font, scale: f32) -> (f32, f32, f32)`: returns ascent, descent (negative), and line gap in pixels. The next line starts `ascent - descent + gap` lower.
+- `glyph_of(font: Font, code: u32) -> i32`: returns the glyph index for a Unicode code point, or `0` (the missing-glyph box) if absent.
+- `kerning(font: Font, left: i32, right: i32, scale: f32) -> f32`: returns the pixel adjustment to add to the advance of `left` before `right`, or `0.0` without a `kern` table or matching pair.
+
+#### Rendering
+
+- `render_glyph(font: Font, glyph: i32, scale: f32, into: *&list[u8]) -> Glyph`: appends `width * height` coverage bytes (`0` to `255`, rows top to bottom) to `into`. Curves are flattened within 1/32 pixel, and each pixel receives the exact area covered by the outline under the nonzero winding rule. A glyph without an outline (such as a space) returns width and height `0` with only its advance; an out-of-range glyph index returns a zeroed `Glyph`.
+
+```flag
+type Glyph:
+    width: i32
+    height: i32
+    left: i32 # from the pen to the left edge of the bitmap, in pixels
+    top: i32 # from the baseline up to the top row of the bitmap, in pixels (rows go down)
+    advance: f32 # how far the pen moves, in pixels
+```
+
+To draw a glyph with the pen at `(x, y)` on the baseline, place its bitmap's top-left corner at `(x + left, y - top)`, then move the pen by `advance` plus the kerning with the next glyph. Rendering the 95 printable ASCII glyphs of DejaVu Sans takes about 0.5 ms at 16 pixels and under 2 ms at 64 pixels.
+
+#### `FontError`
+
+```flag
+type error FontError:
+    reason: &strview
+```
+
+Printing a `FontError` shows its reason, for example `cannot read font; table glyf ends inside glyph 41`. A reason that names a table or a number is **temporary**.
+
 ---
 
 ## bits
@@ -942,46 +1055,285 @@ func main():
 
 ---
 
-## raylib
+## draw
 
-Windows, 2D and 3D drawing, input, textures, and audio via [raylib](https://www.raylib.com).
+Immediate-mode 2D drawing on the GPU for games and app interfaces, using Vulkan on Linux, Direct3D 11 on Windows, and Metal on macOS. It opens its window with [window](#window), and the program draws each frame from scratch.
 
-The standard library bundles a prebuilt `libraylib.a` for Linux x86_64; on other systems, pass the folder of your own `libraylib.a` after `-cc`: `flagc game.flg -cc -Lfolder`. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
+```flag
+use draw
+use window
 
-Functions keep raylib's names and parameter order, so the [raylib cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) applies directly. String parameters take `cstr` (pass text literals directly, or wrap a `&str` with `c_text(label)`). `GetClipboardText` returns a `cstr` that is `NULL` when the clipboard has no text; `view` reads that as empty text. `LoadFontEx` takes `0 as *i32` for raylib's default character set.
+func main():
+    s := open_screen("Flag", 800, 450)
+    if s is DrawError:
+        eprint(s)
+        return
+    defer close_screen(s)
+    font := default_font(s, 20.0)
+    x := 400.0
+    while frame(s):
+        if key_down(s, KeyArrowRight):
+            x += 300.0 * frame_time(s)
+        clear(s, WHITE)
+        fill_circle(s, x, 225.0, 20.0, RED)
+        draw_text(s, font, "the right arrow moves the ball", 10.0, 10.0, GRAY)
+```
 
-#### Raylib functions
+Positions and sizes are `f64` pixels from the top-left corner. On Linux, `draw` requires Vulkan 1.3 and loads it when the screen opens; without it, the program still starts and `open_screen` returns `DrawError`.
 
-| Category | Functions |
+#### The screen
+
+- `open_screen(title: &strview, width: i32, height: i32) -> Screen|DrawError`: opens a window and sets up the GPU for drawing in it.
+- `close_screen(s: Screen)`: closes the screen and frees its resources.
+- `frame(s: Screen, wait: bool = false) -> bool`: presents the frame drawn since the last call, reads pending events, and starts the next frame; returns `false` once the user closes the window. With `wait = true`, sleeps until an event arrives so programs that redraw only on input use no CPU while waiting.
+- `frame_time(s: Screen) -> f64`: seconds elapsed since the previous frame.
+- `size(s: Screen) -> (i32, i32)` and `scale(s: Screen) -> f64`: window drawing area and display scale (see [window](#window)).
+- `window_of(s: Screen) -> Window`: returns the window for `set_title`, `set_cursor`, the clipboard, and the rest of [window](#window).
+- `events(s: Screen) -> &listview[Event]`: returns every event received since the previous frame in order (a **view**, valid until the next `frame` or `close_screen`).
+
+Each frame starts cleared to black. Calling `clear(s: Screen, color: Color)` before drawing sets the starting color; calling it later paints the color over the whole target, blended like any shape and inside the current clip.
+
+```flag
+type error DrawError:
+    reason: &strview
+```
+
+Printing a `DrawError` shows its reason. A reason that names a file or an error code is **temporary**.
+
+#### Input
+
+Keyboard and mouse state in the current frame, updated from [window](#window) events:
+
+- `key_down(s: Screen, key: Key) -> bool`: returns `true` while the key is held; `key_pressed` and `key_released` report whether it went down or up since the previous frame. The repeats of a held key do not count as presses.
+- `mouse(s: Screen) -> (f64, f64)`: returns the pointer position.
+- `mouse_down(s: Screen, button: Button) -> bool`: returns `true` while the button is held, with `mouse_pressed` and `mouse_released` for changes since the previous frame.
+- `wheel(s: Screen) -> (f64, f64)`: returns how far the wheel scrolled since the previous frame.
+- `typed(s: Screen) -> u32?`: returns the next character typed in this frame, or `null`.
+
+#### Colors
+
+```flag
+type Color:
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+```
+
+Constants: `BLACK`, `WHITE`, `GRAY`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `ORANGE`, `PURPLE`, and `TRANSPARENT`.
+
+#### Shapes
+
+Rectangles, circles, and lines have smooth edges at any size; rounded corners, borders, and shadows cost the same as a plain rectangle. Triangles, polygons, gradients, and arcs have hard edges.
+
+- `fill_rect(s, x, y, width, height, color)` and `stroke_rect(s, x, y, width, height, thickness, color)`: filled or outlined rectangle; a stroke is drawn inside the rectangle with that thickness.
+- `fill_round_rect(s, x, y, width, height, radius, color)` and `stroke_round_rect(s, x, y, width, height, radius, thickness, color)`: filled or outlined rounded rectangle.
+- `shadow(s, x, y, width, height, radius, blur, color)`: blurred shadow of a rounded rectangle, fading from `blur` pixels inside its edge to `blur` pixels outside it.
+- `fill_circle(s, x, y, radius, color)` and `stroke_circle(s, x, y, radius, thickness, color)`: filled or outlined circle.
+- `line(s, x1, y1, x2, y2, thickness, color)`: line with round ends.
+- `fill_triangle(s, x1, y1, x2, y2, x3, y3, color)` and `fill_polygon(s, points: &listview[Point], color)`: filled triangle or convex polygon.
+
+```flag
+type Point:
+    x: f64
+    y: f64
+```
+
+- `gradient_rect(s, x, y, width, height, top_left, top_right, bottom_right, bottom_left)`: rectangle interpolating colors across its four corners.
+- `fill_arc(s, x, y, inner, outer, start, end, color)`: piece of a ring from `start` to `end` degrees clockwise from the right; `inner = 0.0` draws a slice.
+
+#### Textures
+
+```flag
+type Texture:
+    slot: i32
+    width: i32
+    height: i32
+
+type Rect:
+    x: f64
+    y: f64
+    width: f64
+    height: f64
+```
+
+- `load_texture(s: Screen, path: &strview, smooth: bool = true) -> Texture|DrawError`: loads a PNG file as a texture (see [png](#png)). `smooth` blends pixels when scaled; `false` keeps them sharp for pixel art.
+- `texture_from_image(s: Screen, image: Image, smooth: bool = true) -> Texture` and `texture_from_pixels(s: Screen, width: i32, height: i32, pixels: &listview[u8], smooth: bool = true) -> Texture`: creates a texture from 8-bit RGBA pixels, rows top to bottom.
+- `update_texture(s: Screen, texture: Texture, pixels: &listview[u8])`: replaces all pixels of the texture.
+- `free_texture(s: Screen, texture: Texture)`: frees the texture.
+- `draw_texture(s, texture, x, y, tint)`: draws the whole texture at its size, multiplied by `tint` (`WHITE` leaves it unchanged).
+- `draw_texture_part(s, texture, source: Rect, dest: Rect, rotation, tint)`: draws the `source` pixels of the texture stretched into `dest`, rotated by `rotation` degrees around its center.
+
+#### Text
+
+- `default_font(s: Screen, size: f64) -> Font`: returns the bundled DejaVu Sans font (`draw` includes it). `size` is in pixels, from the top of the tallest letter to the bottom of the lowest.
+- `load_font(s: Screen, path: &strview, size: f64) -> Font|DrawError` and `font_from_bytes(s: Screen, data: &strview, size: f64) -> Font|DrawError`: loads a TrueType font (see [ttf](#ttf)).
+- `draw_text(s, font, text, x, y, color)`: draws text with the top-left corner of the first line at `x`, `y`; newlines start new lines.
+- `measure_text(s: Screen, font: Font, text: &strview) -> (f64, f64)`: returns the width of the widest line and the total height of all lines.
+- `line_height(s: Screen, font: Font) -> f64`: returns the height from one line to the next.
+
+Each character is rendered the first time it is drawn or measured, at its pixel size, so text stays sharp on any display; on a double-density display, request twice the size.
+
+#### Targets, clips, and the camera
+
+- `new_target(s: Screen, width: i32, height: i32) -> Target`: creates a texture to draw into (draw it via its `texture` field).
+- `begin_target(s: Screen, target: Target)` and `end_target(s: Screen)`: redirects drawing into the target between the two calls, clearing it to transparent each time.
+- `read_target(s: Screen, target: Target) -> Image`: reads the target's pixels (**yours**), for saving with `encode_png` or testing.
+- `free_target(s: Screen, target: Target)`: frees the target.
+- `push_clip(s, x, y, width, height)` and `pop_clip(s)`: restricts drawing to the rectangle, intersected with any enclosing clip, until `pop_clip`. The rectangle is in pixels of the target; the camera does not move it.
+- `set_camera(s: Screen, camera: Camera)` and `reset_camera(s: Screen)`: draws through a 2D camera that moves, rotates, and zooms the world, or resets it.
+
+```flag
+type Camera:
+    x: f64 # the point of the world in the middle of the view
+    y: f64
+    offset_x: f64 # where that point goes on the screen
+    offset_y: f64
+    rotation: f64 # degrees
+    zoom: f64 = 1.0
+```
+
+---
+
+## window
+
+Opens a window and reads keyboard, mouse, and window events through one API on Linux (X11), Windows, and macOS. It does not draw; pass its native handles (see `native`) to a GPU API such as `vulkan`, `d3d11`, or `metal` (see [System and GPU bindings](#system-and-gpu-bindings)).
+
+```flag
+use window
+
+func main():
+    w := open("Flag", 640, 480)
+    if w is WindowError:
+        eprint(w)
+        return
+    defer close(w)
+    while true:
+        e := wait(w)
+        if e is Closed or e is KeyDown and e.key == KeyEscape:
+            return
+        if e is Resized:
+            print("drawing area of ", e.width, "x", e.height, " pixels")
+```
+
+All sizes and positions are in pixels on every system. `scale` returns the number of pixels per system point (`2.0` on a Retina display or at 200% scaling on Windows).
+
+#### Opening and closing
+
+- `open(title: &strview, width: i32, height: i32) -> Window|WindowError`: opens a window with a `width` by `height` pixel drawing area. Fails when no display is available (for example, when no X server is available at `DISPLAY`).
+- `close(w: Window)`: closes the window and frees its resources.
+
+```flag
+type error WindowError:
+    reason: &strview
+```
+
+#### Events
+
+- `poll(w: Window) -> Event?`: returns the next pending event without blocking, or `null` when none is waiting. Call it in a loop each frame until it returns `null`.
+- `wait(w: Window) -> Event`: blocks until the next event arrives and returns it. Use this in programs that redraw only when something happens.
+
+`Event` is `Closed|Resized|Focus|KeyDown|KeyUp|Typed|MouseMoved|MouseDown|MouseUp|Scrolled`:
+
+| Event | Fields | When |
+|---|---|---|
+| `Closed` | | The user requested to close the window. It stays open until you call `close`. |
+| `Resized` | `width: i32`, `height: i32` | The drawing area changed size, in pixels. |
+| `Focus` | `on: bool` | The window gained or lost keyboard focus. |
+| `KeyDown` | `key: Key`, `repeat: bool`, `mods: Mods` | A key was pressed. `repeat` is `true` for key repeats while the key is held. |
+| `KeyUp` | `key: Key`, `mods: Mods` | A key was released. |
+| `Typed` | `code: u32` | A character was typed (its Unicode code point, after keyboard layout and dead-key processing). Use this for text input; use `KeyDown` for actions. |
+| `MouseMoved` | `x: f64`, `y: f64` | The pointer moved, in pixels from the top-left corner of the drawing area. |
+| `MouseDown`, `MouseUp` | `button: Button`, `x: f64`, `y: f64`, `mods: Mods` | A mouse button was pressed or released. |
+| `Scrolled` | `x: f64`, `y: f64` | The mouse wheel or trackpad scrolled. One wheel notch is `1.0`; positive `y` scrolls up and positive `x` scrolls left. |
+
+`Mods` reports which modifier keys were held: `shift`, `control`, `alt`, and `super` (Windows or Command), all `bool`.
+
+`Key` identifies keys by physical position on a US keyboard regardless of layout (the key right of Tab is `KeyQ` on a French layout too). Its variants are `KeyA` to `KeyZ`, `Key0` to `Key9`, `KeyF1` to `KeyF12`, `KeySpace`, `KeyApostrophe`, `KeyComma`, `KeyMinus`, `KeyPeriod`, `KeySlash`, `KeySemicolon`, `KeyEqual`, `KeyLeftBracket`, `KeyBackslash`, `KeyRightBracket`, `KeyGrave`, `KeyEscape`, `KeyEnter`, `KeyTab`, `KeyBackspace`, `KeyInsert`, `KeyDelete`, `KeyCapsLock`, `KeyMenu`, `KeyArrowRight`, `KeyArrowLeft`, `KeyArrowDown`, `KeyArrowUp`, `KeyPageUp`, `KeyPageDown`, `KeyHome`, `KeyEnd`, `KeyLeftShift`, `KeyLeftControl`, `KeyLeftAlt`, `KeyLeftSuper`, `KeyRightShift`, `KeyRightControl`, `KeyRightAlt`, `KeyRightSuper`, and `KeyUnknown` for any other key.
+
+`Button` is `MouseLeft|MouseRight|MouseMiddle`.
+
+#### The window
+
+- `size(w: Window) -> (i32, i32)`: width and height of the drawing area, in pixels.
+- `scale(w: Window) -> f64`: pixels per system point.
+- `set_title(w: Window, title: &strview)`: sets the window title.
+- `set_size(w: Window, width: i32, height: i32)`: resizes the drawing area, in pixels.
+- `set_fullscreen(w: Window, on: bool)`: enters or exits fullscreen mode.
+- `set_cursor(w: Window, shape: CursorShape)`: sets the pointer cursor over the window. `CursorShape` is `CursorArrow|CursorText|CursorHand|CursorCrosshair|CursorResizeH|CursorResizeV|CursorResizeAll|CursorNotAllowed|CursorHidden`.
+
+#### Clipboard
+
+- `clipboard(w: Window) -> &str`: returns the text on the system clipboard (**yours**), or empty text if it holds none.
+- `set_clipboard(w: Window, text: &strview)`: copies `text` to the clipboard. On Linux, the window owns the clipboard text and serves it to other programs while you keep calling `poll` or `wait`.
+
+#### Native handles
+
+- `native(w: Window) -> Native`: returns the OS handles for the window, for creating a GPU surface or calling system APIs directly. `Native`'s fields depend on the platform:
+
+| System | Fields |
 |---|---|
-| Window | `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `SetWindowMinSize`, `SetWindowSize`, `SetWindowPosition`, `GetWindowPosition`, `MaximizeWindow`, `MinimizeWindow`, `RestoreWindow`, `IsWindowMaximized`, `IsWindowMinimized`, `IsWindowResized`, `GetWindowScaleDPI`, `EnableEventWaiting`, `DisableEventWaiting`, `PollInputEvents`, `SwapScreenBuffer`, `WaitTime`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot` |
-| Drawing | `BeginDrawing`, `EndDrawing`, `ClearBackground`, `BeginMode2D`, `EndMode2D`, `BeginMode3D`, `EndMode3D`, `BeginTextureMode`, `EndTextureMode`, `BeginScissorMode`, `EndScissorMode` |
-| Keyboard & mouse | `IsKeyPressed`, `IsKeyPressedRepeat`, `IsKeyDown`, `IsKeyReleased`, `GetKeyPressed`, `GetCharPressed`, `SetExitKey`, `IsMouseButtonPressed`, `IsMouseButtonDown`, `IsMouseButtonReleased`, `GetMousePosition`, `GetMouseDelta`, `GetMouseWheelMove`, `GetMouseWheelMoveV`, `IsCursorOnScreen`, `SetMouseCursor` |
-| Clipboard | `GetClipboardText`, `SetClipboardText` |
-| 2D shapes | `DrawPixel`, `DrawLine`, `DrawLineV`, `DrawLineEx`, `DrawCircle`, `DrawCircleV`, `DrawCircleLines`, `DrawCircleSector`, `DrawRing`, `DrawRectangle`, `DrawRectangleV`, `DrawRectangleRec`, `DrawRectanglePro`, `DrawRectangleGradientV`, `DrawRectangleGradientH`, `DrawRectangleGradientEx`, `DrawRectangleLines`, `DrawRectangleLinesEx`, `DrawRectangleRounded`, `DrawRectangleRoundedLines`, `DrawRectangleRoundedLinesEx`, `DrawTriangle` |
-| Text & fonts | `DrawText`, `MeasureText`, `DrawFPS`, `GetFontDefault`, `LoadFont`, `LoadFontEx`, `LoadFontFromMemory`, `UnloadFont`, `DrawTextEx`, `MeasureTextEx` |
-| 3D | `DrawCube`, `DrawCubeWires`, `DrawSphere`, `DrawPlane`, `DrawGrid` |
-| Images & textures | `LoadImage`, `LoadImageFromScreen`, `ExportImage`, `GenImageColor`, `UnloadImage`, `LoadTexture`, `LoadTextureFromImage`, `UnloadTexture`, `GenTextureMipmaps`, `SetTextureFilter`, `LoadRenderTexture`, `UnloadRenderTexture`, `DrawTexture`, `DrawTextureV`, `DrawTextureEx`, `DrawTextureRec`, `DrawTexturePro` |
-| Collisions | `CheckCollisionRecs`, `CheckCollisionCircles`, `CheckCollisionCircleRec`, `CheckCollisionPointRec`, `CheckCollisionPointCircle`, `GetCollisionRec` |
-| Colors | `Fade`, `ColorFromHSV` |
-| Audio | `InitAudioDevice`, `CloseAudioDevice`, `LoadSound`, `UnloadSound`, `PlaySound`, `StopSound`, `SetSoundVolume`, `LoadMusicStream`, `UnloadMusicStream`, `PlayMusicStream`, `StopMusicStream`, `UpdateMusicStream` |
+| Linux | `display: *x11.Display`, `window: x11.Window` |
+| Windows | `hwnd: HWND`, `instance: HINSTANCE` |
+| macOS | `window: *NSWindow`, `view: *NSView` |
 
-#### Types
+```flag
+n := native(w) # on Linux, a Vulkan surface for the window
+given := VkXlibSurfaceCreateInfoKHR{sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, dpy = n.display as *bytes, window = n.window}
+_ = vkCreateXlibSurfaceKHR(instance, given, 0 as *VkAllocationCallbacks, ptr(surface))
+```
 
-`Vector2`, `Vector3`, `Color`, `Rectangle`, `Image`, `Texture`, `RenderTexture`, `GlyphInfo`, `Font`, `Camera2D`, `Camera3D`, `AudioStream`, `Sound`, and `Music`, with raylib's field names converted to `snake_case`.
+Links `libX11.so.6` on Linux, `user32` and `kernel32` on Windows, and `libobjc` plus the `AppKit` and `Foundation` frameworks on macOS.
 
-#### Constants
+---
 
-- **Colors**: `LIGHTGRAY`, `GRAY`, `DARKGRAY`, `YELLOW`, `GOLD`, `ORANGE`, `PINK`, `RED`, `MAROON`, `GREEN`, `LIME`, `DARKGREEN`, `SKYBLUE`, `BLUE`, `DARKBLUE`, `PURPLE`, `VIOLET`, `DARKPURPLE`, `BEIGE`, `BROWN`, `DARKBROWN`, `WHITE`, `BLACK`, `BLANK`, `MAGENTA`, `RAYWHITE`
-- **Keys**: `KEY_A` to `KEY_Z`, `KEY_SPACE`, `KEY_ESCAPE`, `KEY_ENTER`, `KEY_TAB`, `KEY_BACKSPACE`, `KEY_DELETE`, `KEY_RIGHT`, `KEY_LEFT`, `KEY_DOWN`, `KEY_UP`, `KEY_PAGE_UP`, `KEY_PAGE_DOWN`, `KEY_HOME`, `KEY_END`, `KEY_LEFT_SHIFT`, `KEY_RIGHT_SHIFT`, `KEY_LEFT_CONTROL`, `KEY_RIGHT_CONTROL`, `KEY_LEFT_ALT`, `KEY_RIGHT_ALT`, `KEY_LEFT_SUPER`, `KEY_RIGHT_SUPER`
-- **Mouse buttons**: `MOUSE_BUTTON_LEFT`, `MOUSE_BUTTON_RIGHT`, `MOUSE_BUTTON_MIDDLE`
-- **Mouse cursors** (`SetMouseCursor`): `MOUSE_CURSOR_DEFAULT`, `MOUSE_CURSOR_ARROW`, `MOUSE_CURSOR_IBEAM`, `MOUSE_CURSOR_CROSSHAIR`, `MOUSE_CURSOR_POINTING_HAND`, `MOUSE_CURSOR_RESIZE_EW`, `MOUSE_CURSOR_RESIZE_NS`, `MOUSE_CURSOR_RESIZE_NWSE`, `MOUSE_CURSOR_RESIZE_NESW`, `MOUSE_CURSOR_RESIZE_ALL`, `MOUSE_CURSOR_NOT_ALLOWED`
-- **Texture filters** (`SetTextureFilter`): `TEXTURE_FILTER_POINT`, `TEXTURE_FILTER_BILINEAR`, `TEXTURE_FILTER_TRILINEAR`
-- **Config flags** (`SetConfigFlags`): `FLAG_FULLSCREEN_MODE`, `FLAG_WINDOW_RESIZABLE`, `FLAG_WINDOW_UNDECORATED`, `FLAG_WINDOW_TRANSPARENT`, `FLAG_WINDOW_HIDDEN`, `FLAG_WINDOW_MAXIMIZED`, `FLAG_WINDOW_UNFOCUSED`, `FLAG_WINDOW_TOPMOST`, `FLAG_WINDOW_HIGHDPI`, `FLAG_MSAA_4X_HINT`, `FLAG_VSYNC_HINT`
+## System and GPU bindings
 
-#### Flag additions
+These modules declare the APIs exposed by C and Objective-C headers, letting programs call system and GPU libraries directly or build a layer on top. Scripts in `tools/bindings` generate them from official headers while keeping C names intact, so each API's documentation applies as written.
 
-- `+` and `-` between two `Vector2` or two `Vector3` values, and `*` multiplying a `Vector2` or `Vector3` by an `f32`.
-- `length(v: Vector2) -> f32` and `normalize(v: Vector2) -> Vector2`.
+| Module | Declares | From |
+|---|---|---|
+| `vulkan` | Vulkan 1.4 and extensions: every loader-exported function, plus a `PFN_` type for all others | Khronos Vulkan-Headers |
+| `d3d11` | Direct3D 11.0-11.4, DXGI 1.0-1.6, and `d3dcompiler` | mingw-w64 headers |
+| `metal` | Metal and `CAMetalLayer` | Apple's metal-cpp |
+| `objc` | Objective-C runtime and Foundation | macOS headers and metal-cpp |
+| `x11` | Xlib, Xutil, XKB, Xrm, Xcursor, XRandR, and XInput2, including all keysyms and cursors | X11 headers |
+| `win32` | Windows, messages, input, clipboard, and DPI (`user32`), drawing contexts (`gdi32`), DLLs and errors (`kernel32`), `shcore`, `dwmapi`, `imm32`, and `shell32` | mingw-w64 headers |
+| `cocoa` | Window, event, screen, cursor, pasteboard, menu, image, and panel classes of AppKit | objc2-app-kit crate, generated from the macOS SDK |
 
-Any raylib function not listed above can be declared directly in your own `extern "raylib":` block.
+#### What C becomes
+
+- **Functions**: keep their names in a target-guarded `extern` block, so programs targeting another OS still compile unless they call them. A library links only when the program uses one of its functions or variables (see [extern](Reference.md#extern)), so `use vulkan` does not require Vulkan to be installed until you call into it.
+- **Structs**: keep their field names and C layout. For `x11`, `vulkan`, `win32`, and `d3d11`, `tests/*_sizes.flg` verifies that every struct and union matches its C size.
+- **Unions**: become untagged unions (`type VkClearValue = VkClearColorValue||VkClearDepthStencilValue`); read a member by converting to it (`VkClearDepthStencilValue(value)`).
+- **Bit fields**: merge into one field of their type, named after the fields it holds (`instanceCustomIndex_mask: u32`).
+- **Handles**: pointers to a void type (`type VkInstance = *VkInstance_T`, `type HWND = *HWND__`). Pass `0 as VkInstance` for C's `NULL`.
+- **`enum`s and `#define`s**: become untyped constants that adopt their target type (`DXGI_FORMAT_B8G8R8A8_UNORM`, `WS_OVERLAPPEDWINDOW`, `XK_Escape`). A C `enum` type becomes an alias of its integer type.
+- **Text and sizes**: `const char *` is `cstr`, Windows `WCHAR` strings are `wstr`, and `size_t` is `i64`.
+- **Reserved names**: names reserved by Flag get a trailing `_` (`hash_`, `in_`).
+
+#### Direct3D 11 objects
+
+Each COM interface is a struct whose `lpVtbl` points to its method table, and each method also has a function taking the object first, so `CreateBuffer(device, desc, data, ptr(buffer))` calls `device.lpVtbl.CreateBuffer(device, ...)`. Parent interface methods work on child interfaces too, so `Release(texture)` works on every object. Interface `IID_` constants (`IID_ID3D11Texture2D`) are `GUID` values passed as written. `d3d11` uses `win32` for Windows types.
+
+#### Objective-C objects
+
+Each class is a void type used behind a pointer (`*NSWindow`, `*MTLDevice`). Methods are functions named after their selector, with `:` replaced by `_` and the trailing `:` dropped (`initWithContentRect:styleMask:backing:defer:` becomes `initWithContentRect_styleMask_backing_defer`). Instance methods take the object first; class methods take the class itself:
+
+```flag
+use objc
+use metal
+
+device := MTLCreateSystemDefaultDevice()
+buffer := newBufferWithLength_options(device, 1024, MTLResourceStorageModeShared)
+descriptor := init(alloc(MTLRenderPipelineDescriptor)) # a class method takes the class as a value
+release(buffer)
+```
+
+Each class also inherits the methods of its parent classes and `NSObject` (`retain`, `release`, `autorelease`, `description`, `alloc`, `init`, `new`), accepting that class directly. These methods exist only on macOS. Since they find their classes by name at run time, `objc`, `metal`, and `cocoa` always link their frameworks (Foundation, Metal and QuartzCore, and AppKit). They dispatch via `objc_msgSend`, which `objc` declares along with the rest of the runtime, so you can also send any selector manually: `(objc_msgSend as extern func(id, SEL) -> id)(object, sel_registerName("name"))`. Objects returned by methods whose names do not contain `new`, `alloc`, `copy`, or `init` are autoreleased; wrap code that creates many of them in an `NSAutoreleasePool` (`pool := init(alloc(NSAutoreleasePool))`, then `drain(pool)`).
+
+`objc` also declares `CGPoint`, `CGSize`, `CGRect`, and their AppKit names `NSPoint`, `NSSize`, and `NSRect`.
+
+#### Regenerating the bindings
+
+`tools/bindings/cgen.py` generates `x11`, `vulkan`, `win32`, and `d3d11` from C headers via libclang, along with their size tests. `tools/bindings/applegen.py` generates `objc`, `metal`, and `cocoa`. Both scripts list their prerequisites at the top.

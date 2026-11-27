@@ -1,0 +1,42 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+HEAD = 611512
+HHEA = 611568
+LOCA = 652968
+MAXP = 677984
+
+func put(s: *&str, at: i64, value: i64, size: i64):
+    for k in 0..size:
+        s[at + k] = u8(value >> (8 * (size - 1 - k)) and 0xff)
+
+func main():
+    copy: &str = heap(FONT)
+    defer free(copy)
+    put(copy, MAXP + 4, 100, 2)
+    put(copy, HHEA + 34, 100, 2)
+    put(copy, HEAD + 50, 0, 2)
+    for k in 0..=100:
+        at := LOCA + 4 * k
+        put(copy, LOCA + 2 * k, (i64(FONT[at]) << 24 or i64(FONT[at + 1]) << 16 or i64(FONT[at + 2]) << 8 or FONT[at + 3]) / 2, 2)
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    short := load_font(copy)
+    if short is FontError:
+        print(short)
+        return
+    defer free(short)
+    long_bitmap: &list[u8] = heap([])
+    defer free(long_bitmap)
+    short_bitmap: &list[u8] = heap([])
+    defer free(short_bitmap)
+    same := true
+    for glyph in 0..100:
+        scale := scale_for(font, 16.0)
+        if render_glyph(font, i32(glyph), scale, long_bitmap) != render_glyph(short, i32(glyph), scale, short_bitmap):
+            same = false
+    print("the first 100 glyphs render the same from short loca: ", same and long_bitmap == short_bitmap, ", ", short_bitmap.len, " bytes")
+    print(glyph_of(short, 'A'), " ", glyph_of(short, 0xe9))

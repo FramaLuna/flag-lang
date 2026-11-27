@@ -122,7 +122,7 @@ if [ "${1:-}" = package ]; then
     mkdir -p "build/$name/bin"
     cp build/flagc$exe "build/$name/bin/"
     cp README.md LICENSE LICENSE.qbe lib/flag-gdb.py "build/$name/"
-    cp lib/raylib.license "build/$name/LICENSE.raylib"
+    cp lib/third_party.license "build/$name/LICENSE.third_party"
     tar -czf "build/$name.tar.gz" -C build "$name"
     echo "packaged build/$name.tar.gz"
 fi

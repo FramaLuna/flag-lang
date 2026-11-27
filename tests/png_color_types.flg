@@ -1,0 +1,19 @@
+use png
+
+func main():
+    show("gray8", @embed("png_images/gray8.png"))
+    show("rgb8", @embed("png_images/rgb8.png"))
+    show("palette8", @embed("png_images/palette8.png"))
+    show("gray_alpha8", @embed("png_images/gray_alpha8.png"))
+    show("rgba8", @embed("png_images/rgba8.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    defer free(image)
+    hash: u32 = 0x811c_9dc5 # FNV-1a of the pixels
+    for b in image.pixels:
+        hash = (hash xor b) * 0x0100_0193
+    print(name, ": ", image.width, "x", image.height, " ", hex(hash, 8))

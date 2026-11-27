@@ -1,0 +1,30 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func show(font: Font, c: &strview, pixels: f32):
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    g := render_glyph(font, glyph_of(font, u32(c[0])), scale_for(font, pixels), bitmap)
+    print(c, " ", g)
+    for y in 0..g.height:
+        with scratch():
+            line: &str = heap("|")
+            defer free(line)
+            for x in 0..g.width:
+                v := i64(bitmap[y * g.width + x]) * 10 / 256
+                line += " .:-=+*#%@"[v:v + 1]
+            print(line, "|")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    show(font, "I", 20.0)
+    show(font, "l", 14.0)
+    show(font, "o", 14.0)
+    show(font, "A", 14.0)
+    show(font, "g", 14.0)
+    show(font, "@", 18.0)

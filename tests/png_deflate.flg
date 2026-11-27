@@ -1,0 +1,20 @@
+use png
+
+func main():
+    show("stored", @embed("png_images/stored.png"))
+    show("fixed", @embed("png_images/fixed.png"))
+    show("dynamic", @embed("png_images/dynamic.png"))
+    show("long_codes", @embed("png_images/long_codes.png"))
+    show("blocks", @embed("png_images/blocks.png"))
+    show("split_idat", @embed("png_images/split_idat.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    defer free(image)
+    hash: u32 = 0x811c_9dc5 # FNV-1a of the pixels
+    for b in image.pixels:
+        hash = (hash xor b) * 0x0100_0193
+    print(name, ": ", image.width, "x", image.height, " ", hex(hash, 8))

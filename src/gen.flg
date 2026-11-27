@@ -25,8 +25,6 @@ func gen_program(check: bool, testing: bool) -> Fail?:
                 return fail("omit the leading ':' in 'extern' library file names: extern \"" + lib[1:] + "\"", at)
             if ends_with(lib, ".framework") and comp.system != "macos":
                 return fail(lib + " is a macOS framework and cannot be linked on this target; guard the 'extern' block with 'where @macos()'", at)
-            if lib != "c" and not contains(comp.libs, lib):
-                append(comp.libs, lib)
     for k in 1..comp.syms.len:
         d := comp.syms[k].node
         kind := comp.nodes[d].kind
@@ -319,6 +317,21 @@ func gen_program(check: bool, testing: bool) -> Fail?:
     comp.pieces.len = pieces
     clear(comp.stored)
     comp.reached = reached
+    reaching: &list[i64] = heap([]) # the extern blocks of the functions and variables of C that the program reaches
+    defer free(reaching)
+    for inst in comp.insts[:done]:
+        if inst.node != 0 and body(inst.node) == 0:
+            append(reaching, extern_of(inst.node))
+    for held in comp.syms:
+        if comp.nodes[held.node].kind == Var:
+            for d in comp.data:
+                if d.name == "$flag.c." + linked(held.node):
+                    append(reaching, extern_of(held.node))
+    for e in 0..comp.nodes.len: # in the order of the blocks, so a library comes before the ones it needs
+        if comp.nodes[e].kind == Extern and (node_end(e) == e + 1 or contains(reaching, e)):
+            lib := text(e)[1:text(e).len - 1]
+            if lib != "c" and not contains(comp.libs, lib):
+                append(comp.libs, lib)
     return null
 
 func test_name(s: i64) -> &strview:
@@ -1252,9 +1265,7 @@ func gen(n: i64, want: i64) -> Value|Fail:
         if k == Var: # the address of a variable of C, from a slot of data that the loader fills, which a library takes too
             if comp.system == "wasm":
                 return fail("C variable " + tok.text + " cannot be accessed on wasm-" + comp.machine + "; WebAssembly modules can only import functions", tok.at)
-            symbol := text(d)
-            if kids(d) == 2:
-                symbol = text(kid(d, 1))[1:text(kid(d, 1)).len - 1]
+            symbol := linked(d)
             slot: &str = heap("$flag.c.")
             slot += symbol
             if comp.stored[view(slot)] is null:

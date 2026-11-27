@@ -1,0 +1,35 @@
+use png
+
+func main():
+    check("one pixel", noise(1, 1, 1))
+    check("noise", noise(37, 23, 23))
+    check("same rows", noise(300, 200, 1))
+    check("rows repeating far apart", noise(2000, 9, 3))
+    gradient: &list[u8] = heap([])
+    for y in 0..64:
+        for x in 0..80:
+            for b in [x * 3, y * 4, x + y, 255 - x]:
+                append(gradient, u8(b))
+    check("gradient", Image{80, 64, gradient})
+    check("decoded adam7_rgb16", trust decode_png(@embed("png_images/adam7_rgb16.png")))
+    check("decoded palette_trns", trust decode_png(@embed("png_images/palette_trns.png")))
+
+func noise(width: i32, height: i32, period: i64) -> Image:
+    pixels: &list[u8] = heap([])
+    for y in 0..height:
+        seed := u32(y % period + 1)
+        for i in 0..width * 4:
+            seed = seed * 1_103_515_245 + 12345
+            append(pixels, u8(seed >> 24))
+    return Image{width, height, pixels}
+
+func check(name: &strview, image: Image):
+    defer free(image)
+    file := encode_png(image)
+    defer free(file)
+    back := decode_png(file)
+    if back is PngError:
+        print(name, ": ", back)
+        return
+    defer free(back)
+    print(name, ": ", back.width, "x", back.height, " in ", file.len, " bytes, same pixels: ", back.pixels == image.pixels)
