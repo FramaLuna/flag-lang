@@ -1914,12 +1914,11 @@ fragment float4 pixel_main(Out i [[stage_in]], texture2d<float> image [[texture(
         free(g.textures)
 
     priv func gpu_close(g: *Gpu):
-        settled(g)
-        if g.last as u64 != 0:
-            release(g.last)
         for k in 0..g.textures.len:
             if g.textures[k].live:
                 gpu_free(g, i32(k))
+        if g.last as u64 != 0: # after gpu_free, which waits for it
+            release(g.last)
         gpu_drop(g)
         release(g.smooth)
         release(g.sharp)
