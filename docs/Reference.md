@@ -112,7 +112,7 @@ error: no test name matches parse or lex
 `flagc` invokes `cc` by default, or the command in the `CC` environment variable split on spaces (so `CC="zig cc"` works). Linking runs:
 
 ```text
-cc -o program program.s -L<each -L after -cc> -L<library folder> -L<folder of each file of the program> <the library of each extern> <what goes after -cc>
+cc -o program program.s -L<each -L after -cc> -L<library folder> -L<folder of each file of the program> <the library of each extern the program uses> <what goes after -cc>
 ```
 
 Each `extern` library entry becomes `-lname`, `-framework X`, or a library file path (see [extern](#extern)). With `-shared`, `flagc` adds `-shared` before the `-cc` arguments, and on Linux also `-fPIC -Wl,-Bsymbolic` (see [Libraries](#libraries)).
@@ -1479,7 +1479,7 @@ All Apple Silicon Macs support ARMv8.1 atomics, while Linux `arm64` targets incl
   - A user module with the same name as a standard library module (e.g., `module math`) shadows it in user files, while standard library files (such as `raylib.flg`) continue using the standard library module (called `lib$math` in diagnostics). User files cannot reach the shadowed library module (`sqrt is in standard library module math, which is shadowed by this program's own module math`).
 - **Missing `use` hints**: referencing a name from an unimported module (including unloaded standard library modules) names the module: `T belongs to module a; add: use a`, `one belongs to module a; access it through its alias: m.one`, `sqrt belongs to module math; add: use math`. `priv` names are not revealed.
 
-The standard library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring`, and `raylib` (see [Library](Library.md)).
+The standard library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring`, `raylib`, `window`, plus the system and GPU bindings `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa` (see [Library](Library.md)).
 
 ## Memory
 
@@ -1893,7 +1893,7 @@ gdb --args ./tests parse.test_parse
 
 ### extern
 
-An `extern` block declares C functions and global variables and specifies how to link their library:
+An `extern` block declares C functions and global variables and specifies how to link their library. Its library is linked only when the program uses one of its functions or variables, so a module can declare an entire C library without linking it unless used. An empty block always links its library (see below):
 
 - `"c"`: the C standard library (always linked).
 - `"Metal.framework"`: a macOS framework linked with `-framework Metal`. On non-macOS targets, fails with `Metal.framework is a macOS framework and cannot be linked on this target; guard the 'extern' block with 'where @macos()'`.

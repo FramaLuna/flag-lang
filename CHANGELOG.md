@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- **`window`:** Cross-platform window and event API for Linux (X11), Windows, and macOS, supporting physical key positions, input-method text input, mouse, scrolling, resizing, focus, cursor shapes, clipboard, fullscreen, and display scale. `native(w)` returns the platform handles needed to create a GPU surface. See [window](docs/Library.md#window).
+- **System and GPU bindings:** Added `vulkan`, `d3d11` (with DXGI), `metal`, `objc`, `x11`, `win32`, and `cocoa`, declaring everything their headers offer under C names for direct GPU and window-system calls. Generated from official headers by `tools/bindings`, with tests checking that every struct of `x11`, `vulkan`, `win32`, and `d3d11` matches its C size. See [System and GPU bindings](docs/Library.md#system-and-gpu-bindings).
+
+### Changed
+
+- **Libraries link when used:** An `extern` block now links its library only when the program uses one of its functions or variables. Empty blocks still always link. See [extern](docs/Reference.md#extern).
+
 ## 0.7.0
 
 A major release that adds WebAssembly targets and moves the backend into Flag. `flagc -target wasm-wasm32` and `-target wasm-wasm64` emit WebAssembly modules directly with no C compiler, and the native backend is now QBE ported to Flag with no C sources left in the compiler. Existing programs keep compiling.

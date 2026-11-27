@@ -1077,7 +1077,7 @@ func kids(n: i64) -> i64:
         c += comp.nodes[c].size
     return count
 
-# the function of C that a func of an extern block calls: its name, or the symbol after =
+# the symbol of C that a func or a variable of an extern block names: its name, or the symbol after =
 func linked(f: i64) -> &strview:
     c := kid(f, params(f))
     while c < node_end(f) and comp.nodes[c].kind != Literal:
@@ -1085,6 +1085,12 @@ func linked(f: i64) -> &strview:
     if c == node_end(f):
         return text(f)
     return text(c)[1:text(c).len - 1]
+
+func extern_of(n: i64) -> i64:
+    e := n - 1
+    while comp.nodes[e].kind != Extern or node_end(e) <= n:
+        e -= 1
+    return e
 
 func body(f: i64) -> i64:
     last := 0

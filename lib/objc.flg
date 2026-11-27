@@ -1,0 +1,1649 @@
+module objc
+
+type objc_class
+type Class = *objc_class
+type objc_object:
+    isa: Class
+type id = *objc_object
+type Protocol = objc_object
+type objc_selector
+type SEL = *objc_selector
+type IMP = extern func()
+type BOOL = bool
+type objc_zone_t = *malloc_zone_t
+type malloc_zone_t
+type objc_objectptr_t = *bytes
+type objc_method
+type Method = *objc_method
+type objc_ivar
+type Ivar = *objc_ivar
+type objc_category
+type Category = *objc_category
+type objc_property
+type objc_property_t = *objc_property
+type objc_method_description:
+    name: SEL
+    types: cstr
+type objc_property_attribute_t:
+    name: cstr
+    value: cstr
+type mach_header
+type objc_AssociationPolicy = u64
+type objc_hook_getImageName = extern func(Class, *cstr) -> BOOL
+type objc_hook_getClass = extern func(cstr, *Class) -> BOOL
+type objc_func_loadImage = extern func(*mach_header)
+type objc_hook_lazyClassNamer = extern func(Class) -> cstr
+type _objc_swiftMetadataInitializer = extern func(Class, *bytes) -> Class
+type objc_method_list
+type objc_super:
+    receiver: id
+    super_class: Class
+
+OBJC_ASSOCIATION_ASSIGN = 0
+OBJC_ASSOCIATION_RETAIN_NONATOMIC = 1
+OBJC_ASSOCIATION_COPY_NONATOMIC = 3
+OBJC_ASSOCIATION_RETAIN = 769
+OBJC_ASSOCIATION_COPY = 771
+OBJC_BOOL_IS_BOOL = 1
+YES = 1
+NO = 0
+Nil = 0
+nil = 0
+OBJC_DYNAMIC_CLASSES = 18446744073709551615
+OBJC_GETCLASSHOOK_DEFINED = 1
+OBJC_ADDLOADIMAGEFUNC_DEFINED = 1
+OBJC_SETHOOK_LAZYCLASSNAMER_DEFINED = 1
+OBJC_REALIZECLASSFROMSWIFT_DEFINED = 1
+_C_ID = 64
+_C_CLASS = 35
+_C_SEL = 58
+_C_CHR = 99
+_C_UCHR = 67
+_C_SHT = 115
+_C_USHT = 83
+_C_INT = 105
+_C_UINT = 73
+_C_LNG = 108
+_C_ULNG = 76
+_C_LNG_LNG = 113
+_C_ULNG_LNG = 81
+_C_INT128 = 116
+_C_UINT128 = 84
+_C_FLT = 102
+_C_DBL = 100
+_C_LNG_DBL = 68
+_C_BFLD = 98
+_C_BOOL = 66
+_C_VOID = 118
+_C_UNDEF = 63
+_C_PTR = 94
+_C_CHARPTR = 42
+_C_ATOM = 37
+_C_ARY_B = 91
+_C_ARY_E = 93
+_C_UNION_B = 40
+_C_UNION_E = 41
+_C_STRUCT_B = 123
+_C_STRUCT_E = 125
+_C_VECTOR = 33
+_C_COMPLEX = 106
+_C_ATOMIC = 65
+_C_CONST = 114
+_C_IN = 110
+_C_INOUT = 78
+_C_OUT = 111
+_C_BYCOPY = 79
+_C_BYREF = 82
+_C_ONEWAY = 86
+_C_GNUREGISTER = 43
+
+extern "objc" where @macos():
+    func sel_getName(sel: SEL) -> cstr
+    func sel_registerName(str_: cstr) -> SEL
+    func object_getClassName(obj: id) -> cstr
+    func object_getIndexedIvars(obj: id) -> *bytes
+    func sel_isMapped(sel: SEL) -> BOOL
+    func sel_getUid(str_: cstr) -> SEL
+    func objc_retainedObject(obj: objc_objectptr_t) -> id
+    func objc_unretainedObject(obj: objc_objectptr_t) -> id
+    func objc_unretainedPointer(obj: id) -> objc_objectptr_t
+    func object_copy(obj: id, size: i64) -> id
+    func object_dispose(obj: id) -> id
+    func object_getClass(obj: id) -> Class
+    func object_setClass(obj: id, cls: Class) -> Class
+    func object_isClass(obj: id) -> BOOL
+    func object_getIvar(obj: id, ivar: Ivar) -> id
+    func object_setIvar(obj: id, ivar: Ivar, value: id)
+    func object_setIvarWithStrongDefault(obj: id, ivar: Ivar, value: id)
+    func object_setInstanceVariable(obj: id, name: cstr, value: *bytes) -> Ivar
+    func object_setInstanceVariableWithStrongDefault(obj: id, name: cstr, value: *bytes) -> Ivar
+    func object_getInstanceVariable(obj: id, name: cstr, outValue: **bytes) -> Ivar
+    func objc_getClass(name: cstr) -> Class
+    func objc_getMetaClass(name: cstr) -> Class
+    func objc_lookUpClass(name: cstr) -> Class
+    func objc_getRequiredClass(name: cstr) -> Class
+    func objc_getClassList(buffer: *Class, bufferCount: i32) -> i32
+    func objc_copyClassList(outCount: *u32) -> *Class
+    func class_getName(cls: Class) -> cstr
+    func class_isMetaClass(cls: Class) -> BOOL
+    func class_getSuperclass(cls: Class) -> Class
+    func class_setSuperclass(cls: Class, newSuper: Class) -> Class
+    func class_getVersion(cls: Class) -> i32
+    func class_setVersion(cls: Class, version: i32)
+    func class_getInstanceSize(cls: Class) -> i64
+    func class_getInstanceVariable(cls: Class, name: cstr) -> Ivar
+    func class_getClassVariable(cls: Class, name: cstr) -> Ivar
+    func class_copyIvarList(cls: Class, outCount: *u32) -> *Ivar
+    func class_getInstanceMethod(cls: Class, name: SEL) -> Method
+    func class_getClassMethod(cls: Class, name: SEL) -> Method
+    func class_getMethodImplementation(cls: Class, name: SEL) -> IMP
+    func class_getMethodImplementation_stret(cls: Class, name: SEL) -> IMP
+    func class_respondsToSelector(cls: Class, sel: SEL) -> BOOL
+    func class_copyMethodList(cls: Class, outCount: *u32) -> *Method
+    func class_conformsToProtocol(cls: Class, protocol: *Protocol) -> BOOL
+    func class_copyProtocolList(cls: Class, outCount: *u32) -> **Protocol
+    func class_getProperty(cls: Class, name: cstr) -> objc_property_t
+    func class_copyPropertyList(cls: Class, outCount: *u32) -> *objc_property_t
+    func class_getIvarLayout(cls: Class) -> *u8
+    func class_getWeakIvarLayout(cls: Class) -> *u8
+    func class_addMethod(cls: Class, name: SEL, imp: IMP, types: cstr) -> BOOL
+    func class_replaceMethod(cls: Class, name: SEL, imp: IMP, types: cstr) -> IMP
+    func class_addIvar(cls: Class, name: cstr, size: i64, alignment: u8, types: cstr) -> BOOL
+    func class_addProtocol(cls: Class, protocol: *Protocol) -> BOOL
+    func class_addProperty(cls: Class, name: cstr, attributes: *objc_property_attribute_t, attributeCount: u32) -> BOOL
+    func class_replaceProperty(cls: Class, name: cstr, attributes: *objc_property_attribute_t, attributeCount: u32)
+    func class_setIvarLayout(cls: Class, layout: *u8)
+    func class_setWeakIvarLayout(cls: Class, layout: *u8)
+    func objc_getFutureClass(name: cstr) -> Class
+    func class_createInstance(cls: Class, extraBytes: i64) -> id
+    func objc_constructInstance(cls: Class, bytes_: *bytes) -> id
+    func objc_destructInstance(obj: id) -> *bytes
+    func objc_allocateClassPair(superclass: Class, name: cstr, extraBytes: i64) -> Class
+    func objc_registerClassPair(cls: Class)
+    func objc_duplicateClass(original: Class, name: cstr, extraBytes: i64) -> Class
+    func objc_disposeClassPair(cls: Class)
+    func method_getName(m: Method) -> SEL
+    func method_getImplementation(m: Method) -> IMP
+    func method_getTypeEncoding(m: Method) -> cstr
+    func method_getNumberOfArguments(m: Method) -> u32
+    func method_copyReturnType(m: Method) -> cstr
+    func method_copyArgumentType(m: Method, index: u32) -> cstr
+    func method_getReturnType(m: Method, dst: cstr, dst_len: i64)
+    func method_getArgumentType(m: Method, index: u32, dst: cstr, dst_len: i64)
+    func method_getDescription(m: Method) -> *objc_method_description
+    func method_setImplementation(m: Method, imp: IMP) -> IMP
+    func method_exchangeImplementations(m1: Method, m2: Method)
+    func ivar_getName(v: Ivar) -> cstr
+    func ivar_getTypeEncoding(v: Ivar) -> cstr
+    func ivar_getOffset(v: Ivar) -> i64
+    func property_getName(property: objc_property_t) -> cstr
+    func property_getAttributes(property: objc_property_t) -> cstr
+    func property_copyAttributeList(property: objc_property_t, outCount: *u32) -> *objc_property_attribute_t
+    func property_copyAttributeValue(property: objc_property_t, attributeName: cstr) -> cstr
+    func objc_getProtocol(name: cstr) -> *Protocol
+    func objc_copyProtocolList(outCount: *u32) -> **Protocol
+    func protocol_conformsToProtocol(proto: *Protocol, other: *Protocol) -> BOOL
+    func protocol_isEqual(proto: *Protocol, other: *Protocol) -> BOOL
+    func protocol_getName(proto: *Protocol) -> cstr
+    func protocol_getMethodDescription(proto: *Protocol, aSel: SEL, isRequiredMethod: BOOL, isInstanceMethod: BOOL) -> objc_method_description
+    func protocol_copyMethodDescriptionList(proto: *Protocol, isRequiredMethod: BOOL, isInstanceMethod: BOOL, outCount: *u32) -> *objc_method_description
+    func protocol_getProperty(proto: *Protocol, name: cstr, isRequiredProperty: BOOL, isInstanceProperty: BOOL) -> objc_property_t
+    func protocol_copyPropertyList(proto: *Protocol, outCount: *u32) -> *objc_property_t
+    func protocol_copyPropertyList2(proto: *Protocol, outCount: *u32, isRequiredProperty: BOOL, isInstanceProperty: BOOL) -> *objc_property_t
+    func protocol_copyProtocolList(proto: *Protocol, outCount: *u32) -> **Protocol
+    func objc_allocateProtocol(name: cstr) -> *Protocol
+    func objc_registerProtocol(proto: *Protocol)
+    func protocol_addMethodDescription(proto: *Protocol, name: SEL, types: cstr, isRequiredMethod: BOOL, isInstanceMethod: BOOL)
+    func protocol_addProtocol(proto: *Protocol, addition: *Protocol)
+    func protocol_addProperty(proto: *Protocol, name: cstr, attributes: *objc_property_attribute_t, attributeCount: u32, isRequiredProperty: BOOL, isInstanceProperty: BOOL)
+    func objc_copyImageNames(outCount: *u32) -> *cstr
+    func class_getImageName(cls: Class) -> cstr
+    func objc_copyClassNamesForImage(image: cstr, outCount: *u32) -> *cstr
+    func sel_isEqual(lhs: SEL, rhs: SEL) -> BOOL
+    func objc_enumerationMutation(obj: id)
+    func objc_setEnumerationMutationHandler(handler: extern func(id))
+    func objc_setForwardHandler(fwd: *bytes, fwd_stret: *bytes)
+    func imp_implementationWithBlock(block: id) -> IMP
+    func imp_getBlock(anImp: IMP) -> id
+    func imp_removeBlock(anImp: IMP) -> BOOL
+    func objc_loadWeak(location: *id) -> id
+    func objc_storeWeak(location: *id, obj: id) -> id
+    func objc_setAssociatedObject(object: id, key: *bytes, value: id, policy: objc_AssociationPolicy)
+    func objc_getAssociatedObject(object: id, key: *bytes) -> id
+    func objc_removeAssociatedObjects(object: id)
+    func objc_setHook_getImageName(newValue: objc_hook_getImageName, outOldValue: *objc_hook_getImageName)
+    func objc_setHook_getClass(newValue: objc_hook_getClass, outOldValue: *objc_hook_getClass)
+    func objc_addLoadImageFunc(func: objc_func_loadImage)
+    func objc_setHook_lazyClassNamer(newValue: objc_hook_lazyClassNamer, oldOutValue: *objc_hook_lazyClassNamer)
+    func _objc_realizeClassFromSwift(cls: Class, previously: *bytes) -> Class
+    func _objc_flush_caches(cls: Class)
+    func class_lookupMethod(cls: Class, sel: SEL) -> IMP
+    func class_respondsToMethod(cls: Class, sel: SEL) -> BOOL
+    func object_copyFromZone(anObject: id, nBytes: i64, zone: *bytes) -> id
+    func class_createInstanceFromZone(a0: Class, idxIvars: i64, zone: *bytes) -> id
+    func objc_msgSend()
+    func objc_msgSendSuper()
+    func objc_msgSend_stret()
+    func objc_msgSendSuper_stret()
+    func method_invoke()
+    func method_invoke_stret()
+    func _objc_msgForward()
+    func _objc_msgForward_stret()
+
+extern "Foundation.framework" where @macos():
+
+type CGPoint:
+    x: f64
+    y: f64
+type CGSize:
+    width: f64
+    height: f64
+type CGRect:
+    origin: CGPoint
+    size: CGSize
+type NSPoint = CGPoint
+type NSSize = CGSize
+type NSRect = CGRect
+type CGFloat = f64
+type NSEdgeInsets:
+    top: f64
+    left: f64
+    bottom: f64
+    right: f64
+type NSRangePointer = *NSRange
+type NSArray
+type NSAutoreleasePool
+type NSBundle
+type NSCopying
+type NSData
+type NSDate
+type NSDictionary
+type NSError
+type NSFastEnumeration
+type NSNotification
+type NSNotificationCenter
+type NSNumber
+type NSObject
+type NSProcessInfo
+type NSSecureCoding
+type NSString
+type NSURL
+type NSValue
+type NSTimeInterval = f64
+type NSFastEnumerationState
+type NSErrorDomain = *NSString
+type NSErrorUserInfoKey = *NSString
+type NSNotificationName = *NSString
+type NSObserverBlock = *bytes
+type NSObserverFunction = *bytes
+type NSComparisonResult = i64
+type NSProcessInfoThermalState = i64
+type NSActivityOptions = u64
+type NSRange:
+    location: u64
+    length: u64
+type NSunichar = u16
+type NSStringEncoding = u64
+type NSStringCompareOptions = u64
+type NSInteger = *bytes
+type NSUInteger = *bytes
+type NSOperatingSystemVersion:
+    majorVersion: i64
+    minorVersion: i64
+    patchVersion: i64
+
+NSOrderedAscending = -1
+NSOrderedSame = 0
+NSOrderedDescending = 1
+NSProcessInfoThermalStateNominal = 0
+NSProcessInfoThermalStateFair = 1
+NSProcessInfoThermalStateSerious = 2
+NSProcessInfoThermalStateCritical = 3
+NSActivityIdleDisplaySleepDisabled = 1099511627776
+NSActivityIdleSystemSleepDisabled = 1048576
+NSActivitySuddenTerminationDisabled = 16384
+NSActivityAutomaticTerminationDisabled = 32768
+NSActivityUserInitiated = 16777215
+NSActivityUserInitiatedAllowingIdleSystemSleep = 15728639
+NSActivityBackground = 255
+NSActivityLatencyCritical = 1095216660480
+NSASCIIStringEncoding = 1
+NSNEXTSTEPStringEncoding = 2
+NSJapaneseEUCStringEncoding = 3
+NSUTF8StringEncoding = 4
+NSISOLatin1StringEncoding = 5
+NSSymbolStringEncoding = 6
+NSNonLossyASCIIStringEncoding = 7
+NSShiftJISStringEncoding = 8
+NSISOLatin2StringEncoding = 9
+NSUnicodeStringEncoding = 10
+NSWindowsCP1251StringEncoding = 11
+NSWindowsCP1252StringEncoding = 12
+NSWindowsCP1253StringEncoding = 13
+NSWindowsCP1254StringEncoding = 14
+NSWindowsCP1250StringEncoding = 15
+NSISO2022JPStringEncoding = 21
+NSMacOSRomanStringEncoding = 30
+NSUTF16StringEncoding = 10
+NSUTF16BigEndianStringEncoding = 2415919360
+NSUTF16LittleEndianStringEncoding = 2483028224
+NSUTF32StringEncoding = 2348810496
+NSUTF32BigEndianStringEncoding = 2550137088
+NSUTF32LittleEndianStringEncoding = 2617245952
+NSCaseInsensitiveSearch = 1
+NSLiteralSearch = 2
+NSBackwardsSearch = 4
+NSAnchoredSearch = 8
+NSNumericSearch = 64
+NSDiacriticInsensitiveSearch = 128
+NSWidthInsensitiveSearch = 256
+NSForcedOrderingSearch = 512
+NSRegularExpressionSearch = 1024
+
+extern "Foundation.framework" where @macos():
+    NSCocoaErrorDomain: *NSErrorDomain
+    NSPOSIXErrorDomain: *NSErrorDomain
+    NSOSStatusErrorDomain: *NSErrorDomain
+    NSMachErrorDomain: *NSErrorDomain
+    NSUnderlyingErrorKey: *NSErrorUserInfoKey
+    NSLocalizedDescriptionKey: *NSErrorUserInfoKey
+    NSLocalizedFailureReasonErrorKey: *NSErrorUserInfoKey
+    NSLocalizedRecoverySuggestionErrorKey: *NSErrorUserInfoKey
+    NSLocalizedRecoveryOptionsErrorKey: *NSErrorUserInfoKey
+    NSRecoveryAttempterErrorKey: *NSErrorUserInfoKey
+    NSHelpAnchorErrorKey: *NSErrorUserInfoKey
+    NSDebugDescriptionErrorKey: *NSErrorUserInfoKey
+    NSLocalizedFailureErrorKey: *NSErrorUserInfoKey
+    NSStringEncodingErrorKey: *NSErrorUserInfoKey
+    NSURLErrorKey: *NSErrorUserInfoKey
+    NSFilePathErrorKey: *NSErrorUserInfoKey
+    NSProcessInfoThermalStateDidChangeNotification: *NSNotificationName
+    NSProcessInfoPowerStateDidChangeNotification: *NSNotificationName
+    NSProcessInfoPerformanceProfileDidChangeNotification: *NSNotificationName
+
+func array(kind: NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSArray)(objc_getClass("NSArray") as Class, sel_registerName("array"))
+
+func arrayWithObject(kind: NSArray, pObject: *NSObject) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSObject) -> *NSArray)(objc_getClass("NSArray") as Class, sel_registerName("arrayWithObject:"), pObject)
+
+func arrayWithObjects_count(kind: NSArray, pObjects: **NSObject, count: u64) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL, **NSObject, u64) -> *NSArray)(objc_getClass("NSArray") as Class, sel_registerName("arrayWithObjects:count:"), pObjects, count)
+
+func alloc(kind: NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSArray)(objc_getClass("NSArray") as Class, sel_registerName("alloc"))
+
+func init(self: *NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> *NSArray)(self, sel_registerName("init"))
+
+func initWithObjects_count(self: *NSArray, pObjects: **NSObject, count: u64) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL, **NSObject, u64) -> *NSArray)(self, sel_registerName("initWithObjects:count:"), pObjects, count)
+
+func count(self: *NSArray) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> u64)(self, sel_registerName("count"))
+
+func hash_(self: *NSArray) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSArray, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSArray) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSArray) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> *NSArray)(self, sel_registerName("retain"))
+
+func release(self: *NSArray) where @macos():
+    (objc_msgSend as extern func(*NSArray, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> *NSArray)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSArray) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSArray, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSArray, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSArray) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSArray, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSArray) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSArray)(objc_getClass("NSArray") as Class, sel_registerName("new"))
+
+func alloc(kind: NSAutoreleasePool) -> *NSAutoreleasePool where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSAutoreleasePool)(objc_getClass("NSAutoreleasePool") as Class, sel_registerName("alloc"))
+
+func init(self: *NSAutoreleasePool) -> *NSAutoreleasePool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> *NSAutoreleasePool)(self, sel_registerName("init"))
+
+func drain(self: *NSAutoreleasePool) where @macos():
+    (objc_msgSend as extern func(*NSAutoreleasePool, SEL))(self, sel_registerName("drain"))
+
+func addObject(self: *NSAutoreleasePool, pObject: *NSObject) where @macos():
+    (objc_msgSend as extern func(*NSAutoreleasePool, SEL, *NSObject))(self, sel_registerName("addObject:"), pObject)
+
+func showPools(kind: NSAutoreleasePool) where @macos():
+    (objc_msgSend as extern func(Class, SEL))(objc_getClass("NSAutoreleasePool") as Class, sel_registerName("showPools"))
+
+func hash_(self: *NSAutoreleasePool) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSAutoreleasePool, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSAutoreleasePool) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSAutoreleasePool) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSAutoreleasePool) -> *NSAutoreleasePool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> *NSAutoreleasePool)(self, sel_registerName("retain"))
+
+func release(self: *NSAutoreleasePool) where @macos():
+    (objc_msgSend as extern func(*NSAutoreleasePool, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSAutoreleasePool) -> *NSAutoreleasePool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> *NSAutoreleasePool)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSAutoreleasePool) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSAutoreleasePool, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSAutoreleasePool, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSAutoreleasePool) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSAutoreleasePool, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSAutoreleasePool) -> *NSAutoreleasePool where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSAutoreleasePool)(objc_getClass("NSAutoreleasePool") as Class, sel_registerName("new"))
+
+func mainBundle(kind: NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSBundle)(objc_getClass("NSBundle") as Class, sel_registerName("mainBundle"))
+
+func bundleWithPath(kind: NSBundle, pPath: *NSString) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSString) -> *NSBundle)(objc_getClass("NSBundle") as Class, sel_registerName("bundleWithPath:"), pPath)
+
+func bundleWithURL(kind: NSBundle, pURL: *NSURL) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSURL) -> *NSBundle)(objc_getClass("NSBundle") as Class, sel_registerName("bundleWithURL:"), pURL)
+
+func allBundles(kind: NSBundle) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSArray)(objc_getClass("NSBundle") as Class, sel_registerName("allBundles"))
+
+func allFrameworks(kind: NSBundle) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSArray)(objc_getClass("NSBundle") as Class, sel_registerName("allFrameworks"))
+
+func alloc(kind: NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSBundle)(objc_getClass("NSBundle") as Class, sel_registerName("alloc"))
+
+func initWithPath(self: *NSBundle, pPath: *NSString) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSString) -> *NSBundle)(self, sel_registerName("initWithPath:"), pPath)
+
+func initWithURL(self: *NSBundle, pURL: *NSURL) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSURL) -> *NSBundle)(self, sel_registerName("initWithURL:"), pURL)
+
+func load(self: *NSBundle) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> bool)(self, sel_registerName("load"))
+
+func unload(self: *NSBundle) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> bool)(self, sel_registerName("unload"))
+
+func isLoaded(self: *NSBundle) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> bool)(self, sel_registerName("isLoaded"))
+
+func preflightAndReturnError(self: *NSBundle, pError: **NSError) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, **NSError) -> bool)(self, sel_registerName("preflightAndReturnError:"), pError)
+
+func loadAndReturnError(self: *NSBundle, pError: **NSError) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, **NSError) -> bool)(self, sel_registerName("loadAndReturnError:"), pError)
+
+func bundleURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("bundleURL"))
+
+func resourceURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("resourceURL"))
+
+func executableURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("executableURL"))
+
+func URLForAuxiliaryExecutable(self: *NSBundle, pExecutableName: *NSString) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSString) -> *NSURL)(self, sel_registerName("URLForAuxiliaryExecutable:"), pExecutableName)
+
+func URLForResource_withExtension(self: *NSBundle, name: *NSString, extension: *NSString) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSString, *NSString) -> *NSURL)(self, sel_registerName("URLForResource:withExtension:"), name, extension)
+
+func privateFrameworksURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("privateFrameworksURL"))
+
+func sharedFrameworksURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("sharedFrameworksURL"))
+
+func sharedSupportURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("sharedSupportURL"))
+
+func builtInPlugInsURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("builtInPlugInsURL"))
+
+func appStoreReceiptURL(self: *NSBundle) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSURL)(self, sel_registerName("appStoreReceiptURL"))
+
+func bundlePath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("bundlePath"))
+
+func resourcePath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("resourcePath"))
+
+func executablePath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("executablePath"))
+
+func pathForAuxiliaryExecutable(self: *NSBundle, pExecutableName: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSString) -> *NSString)(self, sel_registerName("pathForAuxiliaryExecutable:"), pExecutableName)
+
+func privateFrameworksPath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("privateFrameworksPath"))
+
+func sharedFrameworksPath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("sharedFrameworksPath"))
+
+func sharedSupportPath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("sharedSupportPath"))
+
+func builtInPlugInsPath(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("builtInPlugInsPath"))
+
+func bundleIdentifier(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("bundleIdentifier"))
+
+func infoDictionary(self: *NSBundle) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSDictionary)(self, sel_registerName("infoDictionary"))
+
+func localizedInfoDictionary(self: *NSBundle) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSDictionary)(self, sel_registerName("localizedInfoDictionary"))
+
+func objectForInfoDictionaryKey(self: *NSBundle, pKey: *NSString) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSString) -> *NSObject)(self, sel_registerName("objectForInfoDictionaryKey:"), pKey)
+
+func hash_(self: *NSBundle) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSBundle, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSBundle) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSBundle)(self, sel_registerName("retain"))
+
+func release(self: *NSBundle) where @macos():
+    (objc_msgSend as extern func(*NSBundle, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSBundle)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSBundle) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSBundle, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSBundle, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSBundle) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(*NSBundle, SEL) -> *NSBundle)(self, sel_registerName("init"))
+
+func new(kind: NSBundle) -> *NSBundle where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSBundle)(objc_getClass("NSBundle") as Class, sel_registerName("new"))
+
+func retain(self: *NSCopying) -> *NSCopying where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> *NSCopying)(self, sel_registerName("retain"))
+
+func release(self: *NSCopying) where @macos():
+    (objc_msgSend as extern func(*NSCopying, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSCopying) -> *NSCopying where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> *NSCopying)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSCopying) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func hash_(self: *NSCopying) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSCopying, object: id) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL, id) -> bool)(self, sel_registerName("isEqual:"), object)
+
+func description(self: *NSCopying) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSCopying) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func respondsToSelector(self: *NSCopying, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSCopying, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSCopying) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSCopying) -> *NSCopying where @macos():
+    return (objc_msgSend as extern func(*NSCopying, SEL) -> *NSCopying)(self, sel_registerName("init"))
+
+func alloc(kind: NSCopying) -> *NSCopying where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSCopying)(objc_getClass("NSCopying") as Class, sel_registerName("alloc"))
+
+func new(kind: NSCopying) -> *NSCopying where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSCopying)(objc_getClass("NSCopying") as Class, sel_registerName("new"))
+
+func bytes_(self: *NSData) -> *bytes where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *bytes)(self, sel_registerName("bytes"))
+
+func length(self: *NSData) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> u64)(self, sel_registerName("length"))
+
+func hash_(self: *NSData) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSData, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSData) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSData) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSData) -> *NSData where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *NSData)(self, sel_registerName("retain"))
+
+func release(self: *NSData) where @macos():
+    (objc_msgSend as extern func(*NSData, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSData) -> *NSData where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *NSData)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSData) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSData, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSData, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSData) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSData) -> *NSData where @macos():
+    return (objc_msgSend as extern func(*NSData, SEL) -> *NSData)(self, sel_registerName("init"))
+
+func alloc(kind: NSData) -> *NSData where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSData)(objc_getClass("NSData") as Class, sel_registerName("alloc"))
+
+func new(kind: NSData) -> *NSData where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSData)(objc_getClass("NSData") as Class, sel_registerName("new"))
+
+func dateWithTimeIntervalSinceNow(kind: NSDate, secs: f64) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(Class, SEL, f64) -> *NSDate)(objc_getClass("NSDate") as Class, sel_registerName("dateWithTimeIntervalSinceNow:"), secs)
+
+func hash_(self: *NSDate) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSDate, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSDate) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSDate) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSDate) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> *NSDate)(self, sel_registerName("retain"))
+
+func release(self: *NSDate) where @macos():
+    (objc_msgSend as extern func(*NSDate, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSDate) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> *NSDate)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSDate) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSDate, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSDate, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSDate) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSDate) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(*NSDate, SEL) -> *NSDate)(self, sel_registerName("init"))
+
+func alloc(kind: NSDate) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSDate)(objc_getClass("NSDate") as Class, sel_registerName("alloc"))
+
+func new(kind: NSDate) -> *NSDate where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSDate)(objc_getClass("NSDate") as Class, sel_registerName("new"))
+
+func dictionary(kind: NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSDictionary)(objc_getClass("NSDictionary") as Class, sel_registerName("dictionary"))
+
+func dictionaryWithObject_forKey(kind: NSDictionary, pObject: *NSObject, pKey: *NSObject) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSObject, *NSObject) -> *NSDictionary)(objc_getClass("NSDictionary") as Class, sel_registerName("dictionaryWithObject:forKey:"), pObject, pKey)
+
+func dictionaryWithObjects_forKeys_count(kind: NSDictionary, pObjects: **NSObject, pKeys: **NSObject, count: u64) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(Class, SEL, **NSObject, **NSObject, u64) -> *NSDictionary)(objc_getClass("NSDictionary") as Class, sel_registerName("dictionaryWithObjects:forKeys:count:"), pObjects, pKeys, count)
+
+func alloc(kind: NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSDictionary)(objc_getClass("NSDictionary") as Class, sel_registerName("alloc"))
+
+func init(self: *NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> *NSDictionary)(self, sel_registerName("init"))
+
+func initWithObjects_forKeys_count(self: *NSDictionary, pObjects: **NSObject, pKeys: **NSObject, count: u64) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL, **NSObject, **NSObject, u64) -> *NSDictionary)(self, sel_registerName("initWithObjects:forKeys:count:"), pObjects, pKeys, count)
+
+func count(self: *NSDictionary) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> u64)(self, sel_registerName("count"))
+
+func hash_(self: *NSDictionary) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSDictionary, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSDictionary) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSDictionary) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> *NSDictionary)(self, sel_registerName("retain"))
+
+func release(self: *NSDictionary) where @macos():
+    (objc_msgSend as extern func(*NSDictionary, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> *NSDictionary)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSDictionary) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSDictionary, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSDictionary, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSDictionary) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSDictionary, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSDictionary) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSDictionary)(objc_getClass("NSDictionary") as Class, sel_registerName("new"))
+
+func errorWithDomain_code_userInfo(kind: NSError, domain: NSErrorDomain, code: i64, pDictionary: *NSDictionary) -> *NSError where @macos():
+    return (objc_msgSend as extern func(Class, SEL, NSErrorDomain, i64, *NSDictionary) -> *NSError)(objc_getClass("NSError") as Class, sel_registerName("errorWithDomain:code:userInfo:"), domain, code, pDictionary)
+
+func alloc(kind: NSError) -> *NSError where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSError)(objc_getClass("NSError") as Class, sel_registerName("alloc"))
+
+func init(self: *NSError) -> *NSError where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSError)(self, sel_registerName("init"))
+
+func initWithDomain_code_userInfo(self: *NSError, domain: NSErrorDomain, code: i64, pDictionary: *NSDictionary) -> *NSError where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL, NSErrorDomain, i64, *NSDictionary) -> *NSError)(self, sel_registerName("initWithDomain:code:userInfo:"), domain, code, pDictionary)
+
+func code(self: *NSError) -> i64 where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> i64)(self, sel_registerName("code"))
+
+func domain(self: *NSError) -> NSErrorDomain where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> NSErrorDomain)(self, sel_registerName("domain"))
+
+func userInfo(self: *NSError) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSDictionary)(self, sel_registerName("userInfo"))
+
+func localizedDescription(self: *NSError) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSString)(self, sel_registerName("localizedDescription"))
+
+func localizedRecoveryOptions(self: *NSError) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSArray)(self, sel_registerName("localizedRecoveryOptions"))
+
+func localizedRecoverySuggestion(self: *NSError) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSString)(self, sel_registerName("localizedRecoverySuggestion"))
+
+func localizedFailureReason(self: *NSError) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSString)(self, sel_registerName("localizedFailureReason"))
+
+func hash_(self: *NSError) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSError, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSError) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSError) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSError) -> *NSError where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSError)(self, sel_registerName("retain"))
+
+func release(self: *NSError) where @macos():
+    (objc_msgSend as extern func(*NSError, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSError) -> *NSError where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> *NSError)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSError) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSError, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSError, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSError) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSError, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSError) -> *NSError where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSError)(objc_getClass("NSError") as Class, sel_registerName("new"))
+
+func countByEnumeratingWithState_objects_count(self: *NSFastEnumeration, pState: *NSFastEnumerationState, pBuffer: **NSObject, len: u64) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL, *NSFastEnumerationState, **NSObject, u64) -> u64)(self, sel_registerName("countByEnumeratingWithState:objects:count:"), pState, pBuffer, len)
+
+func hash_(self: *NSFastEnumeration) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSFastEnumeration, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSFastEnumeration) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSFastEnumeration) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSFastEnumeration) -> *NSFastEnumeration where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> *NSFastEnumeration)(self, sel_registerName("retain"))
+
+func release(self: *NSFastEnumeration) where @macos():
+    (objc_msgSend as extern func(*NSFastEnumeration, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSFastEnumeration) -> *NSFastEnumeration where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> *NSFastEnumeration)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSFastEnumeration) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSFastEnumeration, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSFastEnumeration, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSFastEnumeration) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSFastEnumeration) -> *NSFastEnumeration where @macos():
+    return (objc_msgSend as extern func(*NSFastEnumeration, SEL) -> *NSFastEnumeration)(self, sel_registerName("init"))
+
+func alloc(kind: NSFastEnumeration) -> *NSFastEnumeration where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSFastEnumeration)(objc_getClass("NSFastEnumeration") as Class, sel_registerName("alloc"))
+
+func new(kind: NSFastEnumeration) -> *NSFastEnumeration where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSFastEnumeration)(objc_getClass("NSFastEnumeration") as Class, sel_registerName("new"))
+
+func name(self: *NSNotification) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSString)(self, sel_registerName("name"))
+
+func object(self: *NSNotification) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSObject)(self, sel_registerName("object"))
+
+func userInfo(self: *NSNotification) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSDictionary)(self, sel_registerName("userInfo"))
+
+func hash_(self: *NSNotification) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSNotification, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSNotification) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSNotification) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSNotification) -> *NSNotification where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSNotification)(self, sel_registerName("retain"))
+
+func release(self: *NSNotification) where @macos():
+    (objc_msgSend as extern func(*NSNotification, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSNotification) -> *NSNotification where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSNotification)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSNotification) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSNotification, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSNotification, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSNotification) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSNotification) -> *NSNotification where @macos():
+    return (objc_msgSend as extern func(*NSNotification, SEL) -> *NSNotification)(self, sel_registerName("init"))
+
+func alloc(kind: NSNotification) -> *NSNotification where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNotification)(objc_getClass("NSNotification") as Class, sel_registerName("alloc"))
+
+func new(kind: NSNotification) -> *NSNotification where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNotification)(objc_getClass("NSNotification") as Class, sel_registerName("new"))
+
+func defaultCenter(kind: NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNotificationCenter)(objc_getClass("NSNotificationCenter") as Class, sel_registerName("defaultCenter"))
+
+func addObserverForName_object_queue_usingBlock(self: *NSNotificationCenter, name: NSNotificationName, pObj: *NSObject, pQueue: *bytes, block: NSObserverBlock) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL, NSNotificationName, *NSObject, *bytes, NSObserverBlock) -> *NSObject)(self, sel_registerName("addObserverForName:object:queue:usingBlock:"), name, pObj, pQueue, block)
+
+func removeObserver(self: *NSNotificationCenter, pObserver: *NSObject) where @macos():
+    (objc_msgSend as extern func(*NSNotificationCenter, SEL, *NSObject))(self, sel_registerName("removeObserver:"), pObserver)
+
+func hash_(self: *NSNotificationCenter) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSNotificationCenter, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSNotificationCenter) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSNotificationCenter) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> *NSNotificationCenter)(self, sel_registerName("retain"))
+
+func release(self: *NSNotificationCenter) where @macos():
+    (objc_msgSend as extern func(*NSNotificationCenter, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> *NSNotificationCenter)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSNotificationCenter) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSNotificationCenter, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSNotificationCenter, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSNotificationCenter) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(*NSNotificationCenter, SEL) -> *NSNotificationCenter)(self, sel_registerName("init"))
+
+func alloc(kind: NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNotificationCenter)(objc_getClass("NSNotificationCenter") as Class, sel_registerName("alloc"))
+
+func new(kind: NSNotificationCenter) -> *NSNotificationCenter where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNotificationCenter)(objc_getClass("NSNotificationCenter") as Class, sel_registerName("new"))
+
+func numberWithChar(kind: NSNumber, value: u8) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u8) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithChar:"), value)
+
+func numberWithUnsignedChar(kind: NSNumber, value: u8) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u8) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithUnsignedChar:"), value)
+
+func numberWithShort(kind: NSNumber, value: i16) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, i16) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithShort:"), value)
+
+func numberWithUnsignedShort(kind: NSNumber, value: u16) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u16) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithUnsignedShort:"), value)
+
+func numberWithInt(kind: NSNumber, value: i32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, i32) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithInt:"), value)
+
+func numberWithUnsignedInt(kind: NSNumber, value: u32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u32) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithUnsignedInt:"), value)
+
+func numberWithLong(kind: NSNumber, value: i64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, i64) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithLong:"), value)
+
+func numberWithUnsignedLong(kind: NSNumber, value: u64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u64) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithUnsignedLong:"), value)
+
+func numberWithLongLong(kind: NSNumber, value: i64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, i64) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithLongLong:"), value)
+
+func numberWithUnsignedLongLong(kind: NSNumber, value: u64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, u64) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithUnsignedLongLong:"), value)
+
+func numberWithFloat(kind: NSNumber, value: f32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, f32) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithFloat:"), value)
+
+func numberWithDouble(kind: NSNumber, value: f64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, f64) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithDouble:"), value)
+
+func numberWithBool(kind: NSNumber, value: bool) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL, bool) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("numberWithBool:"), value)
+
+func alloc(kind: NSNumber) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("alloc"))
+
+func initWithChar(self: *NSNumber, value: u8) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u8) -> *NSNumber)(self, sel_registerName("initWithChar:"), value)
+
+func initWithUnsignedChar(self: *NSNumber, value: u8) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u8) -> *NSNumber)(self, sel_registerName("initWithUnsignedChar:"), value)
+
+func initWithShort(self: *NSNumber, value: i16) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, i16) -> *NSNumber)(self, sel_registerName("initWithShort:"), value)
+
+func initWithUnsignedShort(self: *NSNumber, value: u16) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u16) -> *NSNumber)(self, sel_registerName("initWithUnsignedShort:"), value)
+
+func initWithInt(self: *NSNumber, value: i32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, i32) -> *NSNumber)(self, sel_registerName("initWithInt:"), value)
+
+func initWithUnsignedInt(self: *NSNumber, value: u32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u32) -> *NSNumber)(self, sel_registerName("initWithUnsignedInt:"), value)
+
+func initWithLong(self: *NSNumber, value: i64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, i64) -> *NSNumber)(self, sel_registerName("initWithLong:"), value)
+
+func initWithUnsignedLong(self: *NSNumber, value: u64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u64) -> *NSNumber)(self, sel_registerName("initWithUnsignedLong:"), value)
+
+func initWithLongLong(self: *NSNumber, value: i64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, i64) -> *NSNumber)(self, sel_registerName("initWithLongLong:"), value)
+
+func initWithUnsignedLongLong(self: *NSNumber, value: u64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, u64) -> *NSNumber)(self, sel_registerName("initWithUnsignedLongLong:"), value)
+
+func initWithFloat(self: *NSNumber, value: f32) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, f32) -> *NSNumber)(self, sel_registerName("initWithFloat:"), value)
+
+func initWithDouble(self: *NSNumber, value: f64) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, f64) -> *NSNumber)(self, sel_registerName("initWithDouble:"), value)
+
+func initWithBool(self: *NSNumber, value: bool) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, bool) -> *NSNumber)(self, sel_registerName("initWithBool:"), value)
+
+func charValue(self: *NSNumber) -> u8 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u8)(self, sel_registerName("charValue"))
+
+func unsignedCharValue(self: *NSNumber) -> u8 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u8)(self, sel_registerName("unsignedCharValue"))
+
+func shortValue(self: *NSNumber) -> i16 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> i16)(self, sel_registerName("shortValue"))
+
+func unsignedShortValue(self: *NSNumber) -> u16 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u16)(self, sel_registerName("unsignedShortValue"))
+
+func intValue(self: *NSNumber) -> i32 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> i32)(self, sel_registerName("intValue"))
+
+func unsignedIntValue(self: *NSNumber) -> u32 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u32)(self, sel_registerName("unsignedIntValue"))
+
+func longValue(self: *NSNumber) -> i64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> i64)(self, sel_registerName("longValue"))
+
+func unsignedLongValue(self: *NSNumber) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u64)(self, sel_registerName("unsignedLongValue"))
+
+func longLongValue(self: *NSNumber) -> i64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> i64)(self, sel_registerName("longLongValue"))
+
+func unsignedLongLongValue(self: *NSNumber) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u64)(self, sel_registerName("unsignedLongLongValue"))
+
+func floatValue(self: *NSNumber) -> f32 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> f32)(self, sel_registerName("floatValue"))
+
+func doubleValue(self: *NSNumber) -> f64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> f64)(self, sel_registerName("doubleValue"))
+
+func boolValue(self: *NSNumber) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> bool)(self, sel_registerName("boolValue"))
+
+func integerValue(self: *NSNumber) -> i64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> i64)(self, sel_registerName("integerValue"))
+
+func unsignedIntegerValue(self: *NSNumber) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u64)(self, sel_registerName("unsignedIntegerValue"))
+
+func stringValue(self: *NSNumber) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSString)(self, sel_registerName("stringValue"))
+
+func compare(self: *NSNumber, pOtherNumber: *NSNumber) -> NSComparisonResult where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *NSNumber) -> NSComparisonResult)(self, sel_registerName("compare:"), pOtherNumber)
+
+func isEqualToNumber(self: *NSNumber, pNumber: *NSNumber) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *NSNumber) -> bool)(self, sel_registerName("isEqualToNumber:"), pNumber)
+
+func descriptionWithLocale(self: *NSNumber, pLocale: *NSObject) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *NSObject) -> *NSString)(self, sel_registerName("descriptionWithLocale:"), pLocale)
+
+func valueWithBytes_objCType(kind: NSNumber, pValue: *bytes, pType: cstr) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *bytes, cstr) -> *NSValue)(objc_getClass("NSNumber") as Class, sel_registerName("valueWithBytes:objCType:"), pValue, pType)
+
+func valueWithPointer(kind: NSNumber, pPointer: *bytes) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *bytes) -> *NSValue)(objc_getClass("NSNumber") as Class, sel_registerName("valueWithPointer:"), pPointer)
+
+func initWithBytes_objCType(self: *NSNumber, pValue: *bytes, pType: cstr) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *bytes, cstr) -> *NSValue)(self, sel_registerName("initWithBytes:objCType:"), pValue, pType)
+
+func getValue_size(self: *NSNumber, pValue: *bytes, size: u64) where @macos():
+    (objc_msgSend as extern func(*NSNumber, SEL, *bytes, u64))(self, sel_registerName("getValue:size:"), pValue, size)
+
+func objCType(self: *NSNumber) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> cstr)(self, sel_registerName("objCType"))
+
+func isEqualToValue(self: *NSNumber, pValue: *NSValue) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *NSValue) -> bool)(self, sel_registerName("isEqualToValue:"), pValue)
+
+func pointerValue(self: *NSNumber) -> *bytes where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *bytes)(self, sel_registerName("pointerValue"))
+
+func hash_(self: *NSNumber) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSNumber, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSNumber) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSNumber) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSNumber) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSNumber)(self, sel_registerName("retain"))
+
+func release(self: *NSNumber) where @macos():
+    (objc_msgSend as extern func(*NSNumber, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSNumber) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSNumber)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSNumber) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSNumber, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSNumber, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSNumber) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSNumber) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(*NSNumber, SEL) -> *NSNumber)(self, sel_registerName("init"))
+
+func new(kind: NSNumber) -> *NSNumber where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSNumber)(objc_getClass("NSNumber") as Class, sel_registerName("new"))
+
+func hash_(self: *NSObject) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSObject, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSObject) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSObject) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSObject) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> *NSObject)(self, sel_registerName("retain"))
+
+func release(self: *NSObject) where @macos():
+    (objc_msgSend as extern func(*NSObject, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSObject) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> *NSObject)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSObject) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSObject, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSObject, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSObject) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSObject) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSObject, SEL) -> *NSObject)(self, sel_registerName("init"))
+
+func alloc(kind: NSObject) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSObject)(objc_getClass("NSObject") as Class, sel_registerName("alloc"))
+
+func new(kind: NSObject) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSObject)(objc_getClass("NSObject") as Class, sel_registerName("new"))
+
+func processInfo(kind: NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSProcessInfo)(objc_getClass("NSProcessInfo") as Class, sel_registerName("processInfo"))
+
+func arguments(self: *NSProcessInfo) -> *NSArray where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSArray)(self, sel_registerName("arguments"))
+
+func environment(self: *NSProcessInfo) -> *NSDictionary where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSDictionary)(self, sel_registerName("environment"))
+
+func hostName(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("hostName"))
+
+func processName(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("processName"))
+
+func setProcessName(self: *NSProcessInfo, pString: *NSString) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL, *NSString))(self, sel_registerName("setProcessName:"), pString)
+
+func processIdentifier(self: *NSProcessInfo) -> i32 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> i32)(self, sel_registerName("processIdentifier"))
+
+func globallyUniqueString(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("globallyUniqueString"))
+
+func userName(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("userName"))
+
+func fullUserName(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("fullUserName"))
+
+func operatingSystem(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("operatingSystem"))
+
+func operatingSystemVersion(self: *NSProcessInfo) -> NSOperatingSystemVersion where @macos() and @x86_64():
+    return (objc_msgSend_stret as extern func(*NSProcessInfo, SEL) -> NSOperatingSystemVersion)(self, sel_registerName("operatingSystemVersion"))
+
+func operatingSystemVersion(self: *NSProcessInfo) -> NSOperatingSystemVersion where @macos() and not @x86_64():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> NSOperatingSystemVersion)(self, sel_registerName("operatingSystemVersion"))
+
+func operatingSystemVersionString(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("operatingSystemVersionString"))
+
+func isOperatingSystemAtLeastVersion(self: *NSProcessInfo, version: NSOperatingSystemVersion) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL, NSOperatingSystemVersion) -> bool)(self, sel_registerName("isOperatingSystemAtLeastVersion:"), version)
+
+func processorCount(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("processorCount"))
+
+func activeProcessorCount(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("activeProcessorCount"))
+
+func physicalMemory(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("physicalMemory"))
+
+func systemUptime(self: *NSProcessInfo) -> f64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> f64)(self, sel_registerName("systemUptime"))
+
+func disableSuddenTermination(self: *NSProcessInfo) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL))(self, sel_registerName("disableSuddenTermination"))
+
+func enableSuddenTermination(self: *NSProcessInfo) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL))(self, sel_registerName("enableSuddenTermination"))
+
+func disableAutomaticTermination(self: *NSProcessInfo, pReason: *NSString) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL, *NSString))(self, sel_registerName("disableAutomaticTermination:"), pReason)
+
+func enableAutomaticTermination(self: *NSProcessInfo, pReason: *NSString) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL, *NSString))(self, sel_registerName("enableAutomaticTermination:"), pReason)
+
+func automaticTerminationSupportEnabled(self: *NSProcessInfo) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> bool)(self, sel_registerName("automaticTerminationSupportEnabled"))
+
+func setAutomaticTerminationSupportEnabled(self: *NSProcessInfo, enabled: bool) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL, bool))(self, sel_registerName("setAutomaticTerminationSupportEnabled:"), enabled)
+
+func beginActivityWithOptions_reason(self: *NSProcessInfo, options: NSActivityOptions, pReason: *NSString) -> *NSObject where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL, NSActivityOptions, *NSString) -> *NSObject)(self, sel_registerName("beginActivityWithOptions:reason:"), options, pReason)
+
+func endActivity(self: *NSProcessInfo, pActivity: *NSObject) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL, *NSObject))(self, sel_registerName("endActivity:"), pActivity)
+
+func thermalState(self: *NSProcessInfo) -> NSProcessInfoThermalState where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> NSProcessInfoThermalState)(self, sel_registerName("thermalState"))
+
+func isLowPowerModeEnabled(self: *NSProcessInfo) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> bool)(self, sel_registerName("isLowPowerModeEnabled"))
+
+func isiOSAppOnMac(self: *NSProcessInfo) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> bool)(self, sel_registerName("isiOSAppOnMac"))
+
+func isMacCatalystApp(self: *NSProcessInfo) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> bool)(self, sel_registerName("isMacCatalystApp"))
+
+func hash_(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSProcessInfo, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSProcessInfo) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSProcessInfo)(self, sel_registerName("retain"))
+
+func release(self: *NSProcessInfo) where @macos():
+    (objc_msgSend as extern func(*NSProcessInfo, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSProcessInfo)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSProcessInfo) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSProcessInfo, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSProcessInfo, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSProcessInfo) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(*NSProcessInfo, SEL) -> *NSProcessInfo)(self, sel_registerName("init"))
+
+func alloc(kind: NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSProcessInfo)(objc_getClass("NSProcessInfo") as Class, sel_registerName("alloc"))
+
+func new(kind: NSProcessInfo) -> *NSProcessInfo where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSProcessInfo)(objc_getClass("NSProcessInfo") as Class, sel_registerName("new"))
+
+func retain(self: *NSSecureCoding) -> *NSSecureCoding where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> *NSSecureCoding)(self, sel_registerName("retain"))
+
+func release(self: *NSSecureCoding) where @macos():
+    (objc_msgSend as extern func(*NSSecureCoding, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSSecureCoding) -> *NSSecureCoding where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> *NSSecureCoding)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSSecureCoding) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func hash_(self: *NSSecureCoding) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSSecureCoding, object: id) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL, id) -> bool)(self, sel_registerName("isEqual:"), object)
+
+func description(self: *NSSecureCoding) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSSecureCoding) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func respondsToSelector(self: *NSSecureCoding, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSSecureCoding, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSSecureCoding) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSSecureCoding) -> *NSSecureCoding where @macos():
+    return (objc_msgSend as extern func(*NSSecureCoding, SEL) -> *NSSecureCoding)(self, sel_registerName("init"))
+
+func alloc(kind: NSSecureCoding) -> *NSSecureCoding where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSSecureCoding)(objc_getClass("NSSecureCoding") as Class, sel_registerName("alloc"))
+
+func new(kind: NSSecureCoding) -> *NSSecureCoding where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSSecureCoding)(objc_getClass("NSSecureCoding") as Class, sel_registerName("new"))
+
+func string(kind: NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSString)(objc_getClass("NSString") as Class, sel_registerName("string"))
+
+func stringWithString(kind: NSString, pString: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSString) -> *NSString)(objc_getClass("NSString") as Class, sel_registerName("stringWithString:"), pString)
+
+func stringWithCString_encoding(kind: NSString, pString: cstr, encoding: NSStringEncoding) -> *NSString where @macos():
+    return (objc_msgSend as extern func(Class, SEL, cstr, NSStringEncoding) -> *NSString)(objc_getClass("NSString") as Class, sel_registerName("stringWithCString:encoding:"), pString, encoding)
+
+func alloc(kind: NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSString)(objc_getClass("NSString") as Class, sel_registerName("alloc"))
+
+func init(self: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> *NSString)(self, sel_registerName("init"))
+
+func initWithString(self: *NSString, pString: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSString) -> *NSString)(self, sel_registerName("initWithString:"), pString)
+
+func initWithCString_encoding(self: *NSString, pString: cstr, encoding: NSStringEncoding) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, cstr, NSStringEncoding) -> *NSString)(self, sel_registerName("initWithCString:encoding:"), pString, encoding)
+
+func initWithBytesNoCopy_length_encoding_freeWhenDone(self: *NSString, pBytes: *bytes, len: u64, encoding: NSStringEncoding, freeBuffer: bool) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *bytes, u64, NSStringEncoding, bool) -> *NSString)(self, sel_registerName("initWithBytesNoCopy:length:encoding:freeWhenDone:"), pBytes, len, encoding, freeBuffer)
+
+func characterAtIndex(self: *NSString, index: u64) -> u16 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, u64) -> u16)(self, sel_registerName("characterAtIndex:"), index)
+
+func length(self: *NSString) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> u64)(self, sel_registerName("length"))
+
+func cStringUsingEncoding(self: *NSString, encoding: NSStringEncoding) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, NSStringEncoding) -> cstr)(self, sel_registerName("cStringUsingEncoding:"), encoding)
+
+func UTF8String(self: *NSString) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> cstr)(self, sel_registerName("UTF8String"))
+
+func maximumLengthOfBytesUsingEncoding(self: *NSString, encoding: NSStringEncoding) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, NSStringEncoding) -> u64)(self, sel_registerName("maximumLengthOfBytesUsingEncoding:"), encoding)
+
+func lengthOfBytesUsingEncoding(self: *NSString, encoding: NSStringEncoding) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, NSStringEncoding) -> u64)(self, sel_registerName("lengthOfBytesUsingEncoding:"), encoding)
+
+func isEqualToString(self: *NSString, pString: *NSString) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSString) -> bool)(self, sel_registerName("isEqualToString:"), pString)
+
+func rangeOfString_options(self: *NSString, pString: *NSString, options: NSStringCompareOptions) -> NSRange where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSString, NSStringCompareOptions) -> NSRange)(self, sel_registerName("rangeOfString:options:"), pString, options)
+
+func fileSystemRepresentation(self: *NSString) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> cstr)(self, sel_registerName("fileSystemRepresentation"))
+
+func stringByAppendingString(self: *NSString, pString: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSString) -> *NSString)(self, sel_registerName("stringByAppendingString:"), pString)
+
+func caseInsensitiveCompare(self: *NSString, pString: *NSString) -> NSComparisonResult where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSString) -> NSComparisonResult)(self, sel_registerName("caseInsensitiveCompare:"), pString)
+
+func hash_(self: *NSString) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSString, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> *NSString)(self, sel_registerName("retain"))
+
+func release(self: *NSString) where @macos():
+    (objc_msgSend as extern func(*NSString, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> *NSString)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSString) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSString, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSString, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSString) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSString, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSString) -> *NSString where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSString)(objc_getClass("NSString") as Class, sel_registerName("new"))
+
+func fileURLWithPath(kind: NSURL, pPath: *NSString) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *NSString) -> *NSURL)(objc_getClass("NSURL") as Class, sel_registerName("fileURLWithPath:"), pPath)
+
+func alloc(kind: NSURL) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSURL)(objc_getClass("NSURL") as Class, sel_registerName("alloc"))
+
+func init(self: *NSURL) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> *NSURL)(self, sel_registerName("init"))
+
+func initWithString(self: *NSURL, pString: *NSString) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL, *NSString) -> *NSURL)(self, sel_registerName("initWithString:"), pString)
+
+func initFileURLWithPath(self: *NSURL, pPath: *NSString) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL, *NSString) -> *NSURL)(self, sel_registerName("initFileURLWithPath:"), pPath)
+
+func fileSystemRepresentation(self: *NSURL) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> cstr)(self, sel_registerName("fileSystemRepresentation"))
+
+func hash_(self: *NSURL) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSURL, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSURL) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSURL) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSURL) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> *NSURL)(self, sel_registerName("retain"))
+
+func release(self: *NSURL) where @macos():
+    (objc_msgSend as extern func(*NSURL, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSURL) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> *NSURL)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSURL) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSURL, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSURL, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSURL) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSURL, SEL) -> Class)(self, sel_registerName("class"))
+
+func new(kind: NSURL) -> *NSURL where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSURL)(objc_getClass("NSURL") as Class, sel_registerName("new"))
+
+func valueWithBytes_objCType(kind: NSValue, pValue: *bytes, pType: cstr) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *bytes, cstr) -> *NSValue)(objc_getClass("NSValue") as Class, sel_registerName("valueWithBytes:objCType:"), pValue, pType)
+
+func valueWithPointer(kind: NSValue, pPointer: *bytes) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL, *bytes) -> *NSValue)(objc_getClass("NSValue") as Class, sel_registerName("valueWithPointer:"), pPointer)
+
+func alloc(kind: NSValue) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSValue)(objc_getClass("NSValue") as Class, sel_registerName("alloc"))
+
+func initWithBytes_objCType(self: *NSValue, pValue: *bytes, pType: cstr) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL, *bytes, cstr) -> *NSValue)(self, sel_registerName("initWithBytes:objCType:"), pValue, pType)
+
+func getValue_size(self: *NSValue, pValue: *bytes, size: u64) where @macos():
+    (objc_msgSend as extern func(*NSValue, SEL, *bytes, u64))(self, sel_registerName("getValue:size:"), pValue, size)
+
+func objCType(self: *NSValue) -> cstr where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> cstr)(self, sel_registerName("objCType"))
+
+func isEqualToValue(self: *NSValue, pValue: *NSValue) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL, *NSValue) -> bool)(self, sel_registerName("isEqualToValue:"), pValue)
+
+func pointerValue(self: *NSValue) -> *bytes where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *bytes)(self, sel_registerName("pointerValue"))
+
+func hash_(self: *NSValue) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> u64)(self, sel_registerName("hash"))
+
+func isEqual(self: *NSValue, pObject: *NSObject) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL, *NSObject) -> bool)(self, sel_registerName("isEqual:"), pObject)
+
+func description(self: *NSValue) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *NSString)(self, sel_registerName("description"))
+
+func debugDescription(self: *NSValue) -> *NSString where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *NSString)(self, sel_registerName("debugDescription"))
+
+func retain(self: *NSValue) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *NSValue)(self, sel_registerName("retain"))
+
+func release(self: *NSValue) where @macos():
+    (objc_msgSend as extern func(*NSValue, SEL))(self, sel_registerName("release"))
+
+func autorelease(self: *NSValue) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *NSValue)(self, sel_registerName("autorelease"))
+
+func retainCount(self: *NSValue) -> u64 where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> u64)(self, sel_registerName("retainCount"))
+
+func respondsToSelector(self: *NSValue, selector: SEL) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL, SEL) -> bool)(self, sel_registerName("respondsToSelector:"), selector)
+
+func isKindOfClass(self: *NSValue, kind0: Class) -> bool where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL, Class) -> bool)(self, sel_registerName("isKindOfClass:"), kind0)
+
+func class_(self: *NSValue) -> Class where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> Class)(self, sel_registerName("class"))
+
+func init(self: *NSValue) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(*NSValue, SEL) -> *NSValue)(self, sel_registerName("init"))
+
+func new(kind: NSValue) -> *NSValue where @macos():
+    return (objc_msgSend as extern func(Class, SEL) -> *NSValue)(objc_getClass("NSValue") as Class, sel_registerName("new"))

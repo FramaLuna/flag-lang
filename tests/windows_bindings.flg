@@ -1,0 +1,42 @@
+use win32
+use d3d11
+
+export func window_proc(hwnd: HWND, message: UINT, w: WPARAM, l: LPARAM) -> LRESULT where @windows():
+    if message == WM_DESTROY:
+        PostQuitMessage(0)
+        return 0
+    return DefWindowProcW(hwnd, message, w, l)
+
+func main() where @windows():
+    instance := GetModuleHandleW(0 as LPCWSTR)
+    class := WNDCLASSEXW{cbSize = @sizeof(WNDCLASSEXW), lpfnWndProc = window_proc, hInstance = instance, lpszClassName = wstr("flag test")}
+    _ = RegisterClassExW(class)
+    hwnd := CreateWindowExW(0, wstr("flag test"), wstr("D3D11"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 320, 240, 0 as HWND, 0 as HMENU, instance, 0 as LPVOID)
+    desc := DXGI_SWAP_CHAIN_DESC{BufferCount = 2, OutputWindow = hwnd, Windowed = TRUE, SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD, BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT}
+    desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
+    desc.SampleDesc.Count = 1
+    swap := 0 as *IDXGISwapChain
+    device := 0 as *ID3D11Device
+    context := 0 as *ID3D11DeviceContext
+    made := D3D11CreateDeviceAndSwapChain(0 as *IDXGIAdapter, D3D_DRIVER_TYPE_WARP, 0 as HMODULE, 0, 0 as *D3D_FEATURE_LEVEL, 0, D3D11_SDK_VERSION, desc, ptr(swap), ptr(device), 0 as *D3D_FEATURE_LEVEL, ptr(context))
+    if made != S_OK:
+        print("no device: ", made)
+        return
+    back := 0 as *ID3D11Texture2D
+    _ = GetBuffer(swap, 0, IID_ID3D11Texture2D, ptr(back) as *LPVOID)
+    target := 0 as *ID3D11RenderTargetView
+    _ = CreateRenderTargetView(device, back as *ID3D11Resource, 0 as *D3D11_RENDER_TARGET_VIEW_DESC, ptr(target))
+    color: array[f32, 4] = [0.2, 0.4, 0.8, 1.0]
+    ClearRenderTargetView(context, target, ptr(color[0]))
+    shown := Present(swap, 0, 0)
+    if shown != S_OK:
+        print("present: ", shown)
+    _ = Release(target)
+    _ = Release(back)
+    _ = Release(swap)
+    _ = Release(context)
+    _ = Release(device)
+    _ = DestroyWindow(hwnd)
+
+func main() where not @windows():
+    pass

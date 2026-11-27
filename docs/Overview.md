@@ -1628,6 +1628,9 @@ Additional modules are imported with `use` (no extra files needed). Using a name
 | `bits` | Fixed-size bitsets |
 | `ring` | Double-ended growable queue |
 | `raylib` | Windows, drawing, input, and audio |
+| `window` | Window creation and events on Linux, Windows, and macOS |
+| `vulkan`, `d3d11`, `metal` | Full bindings for the GPU APIs |
+| `objc`, `x11`, `win32`, `cocoa` | Objective-C runtime and window-system bindings for Linux, Windows, and macOS |
 
 Here is a program that counts the lines in a file:
 

@@ -15,6 +15,8 @@ Every function of the standard library, module by module.
 - [bits](#bits): fixed-size bit sets
 - [ring](#ring): double-ended queue
 - [raylib](#raylib): graphics, input, and audio
+- [window](#window): windows and events on Linux, Windows, and macOS
+- [System and GPU bindings](#system-and-gpu-bindings): `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa`
 
 ---
 
@@ -985,3 +987,149 @@ Functions keep raylib's names and parameter order, so the [raylib cheatsheet](ht
 - `length(v: Vector2) -> f32` and `normalize(v: Vector2) -> Vector2`.
 
 Any raylib function not listed above can be declared directly in your own `extern "raylib":` block.
+
+
+---
+
+## window
+
+Opens a window and reads keyboard, mouse, and window events through one API on Linux (X11), Windows, and macOS. It does not draw; pass its native handles (see `native`) to a GPU API such as `vulkan`, `d3d11`, or `metal` (see [System and GPU bindings](#system-and-gpu-bindings)).
+
+```flag
+use window
+
+func main():
+    w := open("Flag", 640, 480)
+    if w is WindowError:
+        eprint(w)
+        return
+    defer close(w)
+    while true:
+        e := wait(w)
+        if e is Closed or e is KeyDown and e.key == KeyEscape:
+            return
+        if e is Resized:
+            print("drawing area of ", e.width, "x", e.height, " pixels")
+```
+
+All sizes and positions are in pixels on every system. `scale` returns the number of pixels per system point (`2.0` on a Retina display or at 200% scaling on Windows).
+
+#### Opening and closing
+
+- `open(title: &strview, width: i32, height: i32) -> Window|WindowError`: opens a window with a `width` by `height` pixel drawing area. Fails when no display is available (for example, when no X server is available at `DISPLAY`).
+- `close(w: Window)`: closes the window and frees its resources.
+
+```flag
+type error WindowError:
+    reason: &strview
+```
+
+#### Events
+
+- `poll(w: Window) -> Event?`: returns the next pending event without blocking, or `null` when none is waiting. Call it in a loop each frame until it returns `null`.
+- `wait(w: Window) -> Event`: blocks until the next event arrives and returns it. Use this in programs that redraw only when something happens.
+
+`Event` is `Closed|Resized|Focus|KeyDown|KeyUp|Typed|MouseMoved|MouseDown|MouseUp|Scrolled`:
+
+| Event | Fields | When |
+|---|---|---|
+| `Closed` | | The user requested to close the window. It stays open until you call `close`, except on macOS, where the close button hides it first. |
+| `Resized` | `width: i32`, `height: i32` | The drawing area changed size, in pixels. |
+| `Focus` | `on: bool` | The window gained or lost keyboard focus. |
+| `KeyDown` | `key: Key`, `repeat: bool`, `mods: Mods` | A key was pressed. `repeat` is `true` for key repeats while the key is held. |
+| `KeyUp` | `key: Key`, `mods: Mods` | A key was released. |
+| `Typed` | `code: u32` | A character was typed (its Unicode code point, after keyboard layout and dead-key processing). Use this for text input; use `KeyDown` for actions. |
+| `MouseMoved` | `x: f64`, `y: f64` | The pointer moved, in pixels from the top-left corner of the drawing area. |
+| `MouseDown`, `MouseUp` | `button: Button`, `x: f64`, `y: f64`, `mods: Mods` | A mouse button was pressed or released. |
+| `Scrolled` | `x: f64`, `y: f64` | The mouse wheel or trackpad scrolled. One wheel notch is `1.0`; positive `y` scrolls up and positive `x` scrolls left. |
+
+`Mods` reports which modifier keys were held: `shift`, `control`, `alt`, and `super` (Windows or Command), all `bool`.
+
+`Key` identifies keys by physical position on a US keyboard regardless of layout (the key right of Tab is `KeyQ` on a French layout too). Its variants are `KeyA` to `KeyZ`, `Key0` to `Key9`, `KeyF1` to `KeyF12`, `KeySpace`, `KeyApostrophe`, `KeyComma`, `KeyMinus`, `KeyPeriod`, `KeySlash`, `KeySemicolon`, `KeyEqual`, `KeyLeftBracket`, `KeyBackslash`, `KeyRightBracket`, `KeyGrave`, `KeyEscape`, `KeyEnter`, `KeyTab`, `KeyBackspace`, `KeyInsert`, `KeyDelete`, `KeyCapsLock`, `KeyMenu`, `KeyArrowRight`, `KeyArrowLeft`, `KeyArrowDown`, `KeyArrowUp`, `KeyPageUp`, `KeyPageDown`, `KeyHome`, `KeyEnd`, `KeyLeftShift`, `KeyLeftControl`, `KeyLeftAlt`, `KeyLeftSuper`, `KeyRightShift`, `KeyRightControl`, `KeyRightAlt`, `KeyRightSuper`, and `KeyUnknown` for any other key.
+
+`Button` is `MouseLeft|MouseRight|MouseMiddle`.
+
+#### The window
+
+- `size(w: Window) -> (i32, i32)`: width and height of the drawing area, in pixels.
+- `scale(w: Window) -> f64`: pixels per system point.
+- `set_title(w: Window, title: &strview)`: sets the window title.
+- `set_size(w: Window, width: i32, height: i32)`: resizes the drawing area, in pixels.
+- `set_fullscreen(w: Window, on: bool)`: enters or exits fullscreen mode.
+- `set_cursor(w: Window, shape: CursorShape)`: sets the pointer cursor over the window. `CursorShape` is `CursorArrow|CursorText|CursorHand|CursorCrosshair|CursorResizeH|CursorResizeV|CursorResizeAll|CursorNotAllowed|CursorHidden`.
+
+#### Clipboard
+
+- `clipboard(w: Window) -> &str`: returns the text on the system clipboard (**yours**), or empty text if it holds none.
+- `set_clipboard(w: Window, text: &strview)`: copies `text` to the clipboard. On Linux, the window owns the clipboard text and serves it to other programs while you keep calling `poll` or `wait`.
+
+#### Native handles
+
+- `native(w: Window) -> Native`: returns the OS handles for the window, for creating a GPU surface or calling system APIs directly. `Native`'s fields depend on the platform:
+
+| System | Fields |
+|---|---|
+| Linux | `display: *x11.Display`, `window: x11.Window` |
+| Windows | `hwnd: HWND`, `instance: HINSTANCE` |
+| macOS | `window: *NSWindow`, `view: *NSView` |
+
+```flag
+n := native(w) # on Linux, a Vulkan surface for the window
+given := VkXlibSurfaceCreateInfoKHR{sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, dpy = n.display as *bytes, window = n.window}
+_ = vkCreateXlibSurfaceKHR(instance, given, 0 as *VkAllocationCallbacks, ptr(surface))
+```
+
+Links `libX11.so.6` on Linux, `user32` and `kernel32` on Windows, and `libobjc` plus the `AppKit` and `Foundation` frameworks on macOS.
+
+---
+
+## System and GPU bindings
+
+These modules declare the APIs exposed by C and Objective-C headers, letting programs call system and GPU libraries directly or build a layer on top. Scripts in `tools/bindings` generate them from official headers while keeping C names intact, so each API's documentation applies as written.
+
+| Module | Declares | From |
+|---|---|---|
+| `vulkan` | Vulkan 1.4 and extensions: every loader-exported function, plus a `PFN_` type for all others | Khronos Vulkan-Headers |
+| `d3d11` | Direct3D 11.0-11.4, DXGI 1.0-1.6, and `d3dcompiler` | mingw-w64 headers |
+| `metal` | Metal and `CAMetalLayer` | Apple's metal-cpp |
+| `objc` | Objective-C runtime and Foundation | macOS headers and metal-cpp |
+| `x11` | Xlib, Xutil, XKB, Xrm, Xcursor, XRandR, and XInput2, including all keysyms and cursors | X11 headers |
+| `win32` | Windows, messages, input, clipboard, and DPI (`user32`), drawing contexts (`gdi32`), DLLs and errors (`kernel32`), `shcore`, `dwmapi`, `imm32`, and `shell32` | mingw-w64 headers |
+| `cocoa` | Window, event, screen, cursor, pasteboard, menu, image, and panel classes of AppKit | objc2-app-kit crate, generated from the macOS SDK |
+
+#### What C becomes
+
+- **Functions**: keep their names in a target-guarded `extern` block, so programs targeting another OS still compile unless they call them. A library links only when the program uses one of its functions or variables (see [extern](Reference.md#extern)), so `use vulkan` does not require Vulkan to be installed until you call into it.
+- **Structs**: keep their field names and C layout. For `x11`, `vulkan`, `win32`, and `d3d11`, `tests/*_sizes.flg` verifies that every struct and union matches its C size.
+- **Unions**: become untagged unions (`type VkClearValue = VkClearColorValue||VkClearDepthStencilValue`); read a member by converting to it (`VkClearDepthStencilValue(value)`).
+- **Bit fields**: merge into one field of their type, named after the fields it holds (`instanceCustomIndex_mask: u32`).
+- **Handles**: pointers to a void type (`type VkInstance = *VkInstance_T`, `type HWND = *HWND__`). Pass `0 as VkInstance` for C's `NULL`.
+- **`enum`s and `#define`s**: become untyped constants that adopt their target type (`DXGI_FORMAT_B8G8R8A8_UNORM`, `WS_OVERLAPPEDWINDOW`, `XK_Escape`). A C `enum` type becomes an alias of its integer type.
+- **Text and sizes**: `const char *` is `cstr`, Windows `WCHAR` strings are `wstr`, and `size_t` is `i64`.
+- **Reserved names**: names reserved by Flag get a trailing `_` (`hash_`, `in_`).
+
+#### Direct3D 11 objects
+
+Each COM interface is a struct whose `lpVtbl` points to its method table, and each method also has a function taking the object first, so `CreateBuffer(device, desc, data, ptr(buffer))` calls `device.lpVtbl.CreateBuffer(device, ...)`. Parent interface methods work on child interfaces too, so `Release(texture)` works on every object. Interface `IID_` constants (`IID_ID3D11Texture2D`) are `GUID` values passed as written. `d3d11` uses `win32` for Windows types.
+
+#### Objective-C objects
+
+Each class is a void type used behind a pointer (`*NSWindow`, `*MTLDevice`). Methods are functions named after their selector, with `:` replaced by `_` and the trailing `:` dropped (`initWithContentRect:styleMask:backing:defer:` becomes `initWithContentRect_styleMask_backing_defer`). Instance methods take the object first; class methods take the class itself:
+
+```flag
+use objc
+use metal
+
+device := MTLCreateSystemDefaultDevice()
+buffer := newBufferWithLength_options(device, 1024, MTLResourceStorageModeShared)
+descriptor := init(alloc(MTLRenderPipelineDescriptor)) # a class method takes the class as a value
+release(buffer)
+```
+
+Each class also inherits the methods of its parent classes and `NSObject` (`retain`, `release`, `autorelease`, `description`, `alloc`, `init`, `new`), accepting that class directly. These methods exist only on macOS. Since they find their classes by name at run time, `objc`, `metal`, and `cocoa` always link their frameworks (Foundation, Metal and QuartzCore, and AppKit). They dispatch via `objc_msgSend`, which `objc` declares along with the rest of the runtime, so you can also send any selector manually: `(objc_msgSend as extern func(id, SEL) -> id)(object, sel_registerName("name"))`. Objects returned by methods whose names do not contain `new`, `alloc`, `copy`, or `init` are autoreleased; wrap code that creates many of them in an `NSAutoreleasePool` (`pool := init(alloc(NSAutoreleasePool))`, then `drain(pool)`).
+
+`objc` also declares `CGPoint`, `CGSize`, `CGRect`, and their AppKit names `NSPoint`, `NSSize`, and `NSRect`.
+
+#### Regenerating the bindings
+
+`tools/bindings/cgen.py` generates `x11`, `vulkan`, `win32`, and `d3d11` from C headers via libclang, along with their size tests. `tools/bindings/applegen.py` generates `objc`, `metal`, and `cocoa`. Both scripts list their prerequisites at the top.
