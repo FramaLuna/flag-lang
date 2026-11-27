@@ -2536,6 +2536,7 @@ priv func drop_stack() where @windows() or @wasm():
     return
 
 priv export func flag_crash(signal: i32, info: *bytes, context: *bytes) where not @wasm():
+    dump(context as u64)
     c := crash(info as u64, context as u64)
     what: &strview = "invalid memory access"
     if signal == 4:
@@ -2566,6 +2567,19 @@ priv export func flag_exception(pointers: *bytes) -> i32 where not @wasm():
     if what.len > 0:
         crashed(what, crash(record, peek(pointers as u64 + 8)), i32(code))
     return 0 # EXCEPTION_CONTINUE_SEARCH, the exception is not one that ends the program
+
+priv func dump(context: u64) where @macos():
+    state := peek(context + 48)
+    report("DEBUG registers")
+    for k in 0..34:
+        report(" ")
+        report(u64(k), 10)
+        report("=")
+        report(peek(state + 16 + u64(k) * 8), 16)
+    report("\n")
+
+priv func dump(context: u64) where not @macos() and not @wasm():
+    return
 
 priv func crash(info: u64, context: u64) -> Crash where @linux() and @x86_64():
     return {peek(context + 120), peek(context + 168), peek(context + 160), peek(info + 16), peek(context + 160)} # rbp, rip and rsp of the ucontext_t, si_addr of the siginfo_t
@@ -2658,8 +2672,15 @@ priv func trace(c: Crash) where not @wasm():
             c.leaf = 0
             continue
         reached = true
-        code = 0
         f := low - 1
+        report("DEBUG frame ")
+        report(view((chain.head + chain.table[f].place) as cstr))
+        report(" offset 0x")
+        report(code - table[f].start, 16)
+        report(" fp 0x")
+        report(fp, 16)
+        report("\n")
+        code = 0
         if table[f].library:
             continue
         if f == chain.line:
