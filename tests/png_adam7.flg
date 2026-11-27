@@ -1,0 +1,20 @@
+use png
+
+func main():
+    show("adam7_rgba8", @embed("png_images/adam7_rgba8.png"))
+    show("adam7_gray1", @embed("png_images/adam7_gray1.png"))
+    show("adam7_palette4", @embed("png_images/adam7_palette4.png"))
+    show("adam7_rgb16", @embed("png_images/adam7_rgb16.png"))
+    show("adam7_1x1", @embed("png_images/adam7_1x1.png"))
+    show("adam7_3x2", @embed("png_images/adam7_3x2.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    defer free(image)
+    hash: u32 = 0x811c_9dc5 # FNV-1a of the pixels
+    for b in image.pixels:
+        hash = (hash xor b) * 0x0100_0193
+    print(name, ": ", image.width, "x", image.height, " ", hex(hash, 8))

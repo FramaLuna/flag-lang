@@ -9,12 +9,14 @@ Every function of the standard library, module by module.
 - [fs](#fs): files, folders, and paths
 - [os](#os): program environment, [other programs](#other-programs), random bytes, [libraries](#libraries), and time
 - [json](#json): reading and writing JSON
+- [png](#png): reading and writing PNG images
 - [net](#net): TCP connections, [UDP](#udp), and waiting on multiple sockets
 - [math](#math): floating-point math and random numbers
 - [utf8](#utf8): UTF-8 character helpers
+- [ttf](#ttf): TrueType fonts and glyph bitmaps
 - [bits](#bits): fixed-size bit sets
 - [ring](#ring): double-ended queue
-- [raylib](#raylib): graphics, input, and audio
+- [draw](#draw): 2D drawing on the GPU for games and app interfaces
 - [window](#window): windows and events on Linux, Windows, and macOS
 - [System and GPU bindings](#system-and-gpu-bindings): `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa`
 
@@ -748,6 +750,50 @@ type error NotJson:
 
 `Document` exposes `text: &strview` and `nodes: &list[Node]`. Each `Node` has `kind: Kind`, `from: i64`, `to: i64` (`d.text[from:to]` is its raw JSON text), `size: i64` (total nodes covered including descendants), and `escaped: bool` (whether a `Text` node contains escapes). Inside an `Object`, each key is stored as a `Text` node immediately preceding its value node.
 
+
+---
+
+## png
+
+Decodes every PNG the specification allows into 8-bit RGBA and encodes 8-bit RGBA images as PNG files.
+
+```flag
+use fs
+use png
+
+func main():
+    data := read_file("logo.png")
+    if data is FsError:
+        eprint(data)
+        return
+    defer free(data)
+    image := decode_png(data)
+    if image is PngError:
+        eprint(image) # e.g. cannot read png; the file ends inside chunk IDAT
+        return
+    defer free(image)
+    print(image.width, "x", image.height)
+    file := encode_png(image)
+    defer free(file)
+    _ = write_file("copy.png", file)
+```
+
+- `decode_png(data: &strview) -> Image|PngError`: decodes a PNG file in memory (such as from `read_file` or `@embed`). Supports color types 0, 2, 3, 4, and 6; bit depths 1, 2, 4, 8, and 16; palettes; `tRNS` transparency; and Adam7 interlacing. Pixels are always 8-bit RGBA (**yours**), keeping the high byte of 16-bit samples. Verifies every chunk CRC and the Adler-32 checksum, skips unused ancillary chunks, and returns `PngError` on truncated or malformed data.
+- `encode_png(image: Image) -> &str`: encodes `image` as an 8-bit RGBA PNG (**yours**), choosing a filter per row and compressing with deflate using fixed Huffman codes. Aborts if width or height is below 1, or if `pixels` does not hold `width * height * 4` bytes.
+- `free(image: Image)`: frees `image.pixels`.
+
+```flag
+type Image:
+    width: i32
+    height: i32
+    pixels: &list[u8] # 8-bit RGBA, rows from top to bottom (the image owns it)
+
+type error PngError:
+    reason: &strview
+```
+
+Printing a `PngError` shows its reason, for example `cannot read png; chunk IDAT does not match its crc`. A reason that names a chunk or number is **temporary**.
+
 ---
 
 ## net
@@ -888,6 +934,71 @@ All threads share the generator via atomic `add` (lock-free), so no two threads 
 
 Iterate characters with `for c in text`, and encode code points with `add_char` in [core](#text).
 
+
+---
+
+## ttf
+
+Reads TrueType fonts (`.ttf`) and renders glyphs to antialiased 8-bit coverage bitmaps for glyph atlases.
+
+```flag
+use ttf
+
+FONT = @embed("fonts/sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        eprint(font)
+        return
+    defer free(font)
+    scale := scale_for(font, 16.0)
+    ascent, descent, gap := metrics(font, scale)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    a := glyph_of(font, 'A')
+    g := render_glyph(font, a, scale, bitmap) # appends g.width * g.height bytes to bitmap
+    print(g, " ", kerning(font, a, glyph_of(font, 'V'), scale))
+```
+
+Supported tables: `head`, `hhea`, `maxp`, `hmtx`, `cmap` (formats 4 and 12, preferring Unicode subtables, then format 12), `loca` (short and long), `glyf` (simple glyphs, and composite glyphs with offsets, scales, and 2x2 matrices), and `kern` (the first format 0 subtable when it holds horizontal pairs). Composite parts positioned by point numbers instead of offsets are placed at zero offset. `GPOS` kerning, hinting, and CFF outlines are not read.
+
+#### Loading and freeing
+
+- `load_font(data: &strview) -> Font|FontError`: validates the tables it reads and keeps its own copy of `data`, so `data` can be freed afterward. Fails with `FontError` for CFF outlines (OpenType `.otf`), truncated files, or missing, short, or inconsistent tables. A glyph with a damaged outline renders from the bytes present without reading past the end.
+- `free(font: Font)`: frees the font's copy of `data`.
+
+#### Metrics and glyphs
+
+- `scale_for(font: Font, pixels: f32) -> f32`: returns the scale at which ascent minus descent is `pixels` tall.
+- `metrics(font: Font, scale: f32) -> (f32, f32, f32)`: returns ascent, descent (negative), and line gap in pixels. The next line starts `ascent - descent + gap` lower.
+- `glyph_of(font: Font, code: u32) -> i32`: returns the glyph index for a Unicode code point, or `0` (the missing-glyph box) if absent.
+- `kerning(font: Font, left: i32, right: i32, scale: f32) -> f32`: returns the pixel adjustment to add to the advance of `left` before `right`, or `0.0` without a `kern` table or matching pair.
+
+#### Rendering
+
+- `render_glyph(font: Font, glyph: i32, scale: f32, into: *&list[u8]) -> Glyph`: appends `width * height` coverage bytes (`0` to `255`, rows top to bottom) to `into`. Curves are flattened within 1/32 pixel, and each pixel receives the exact area covered by the outline under the nonzero winding rule. A glyph without an outline (such as a space) returns width and height `0` with only its advance; an out-of-range glyph index returns a zeroed `Glyph`.
+
+```flag
+type Glyph:
+    width: i32
+    height: i32
+    left: i32 # from the pen to the left edge of the bitmap, in pixels
+    top: i32 # from the baseline up to the top row of the bitmap, in pixels (rows go down)
+    advance: f32 # how far the pen moves, in pixels
+```
+
+To draw a glyph with the pen at `(x, y)` on the baseline, place its bitmap's top-left corner at `(x + left, y - top)`, then move the pen by `advance` plus the kerning with the next glyph. Rendering the 95 printable ASCII glyphs of DejaVu Sans takes about 0.5 ms at 16 pixels and under 2 ms at 64 pixels.
+
+#### `FontError`
+
+```flag
+type error FontError:
+    reason: &strview
+```
+
+Printing a `FontError` shows its reason, for example `cannot read font; table glyf ends inside glyph 41`. A reason that names a table or a number is **temporary**.
+
 ---
 
 ## bits
@@ -944,50 +1055,143 @@ func main():
 
 ---
 
-## raylib
+## draw
 
-Windows, 2D and 3D drawing, input, textures, and audio via [raylib](https://www.raylib.com).
+Immediate-mode 2D drawing on the GPU for games and app interfaces, using Vulkan on Linux, Direct3D 11 on Windows, and Metal on macOS. It opens its window with [window](#window), and the program draws each frame from scratch.
 
-The standard library bundles a prebuilt `libraylib.a` for Linux x86_64; on other systems, pass the folder of your own `libraylib.a` after `-cc`: `flagc game.flg -cc -Lfolder`. The module automatically links raylib's platform dependencies (`m` everywhere, `dl` on Linux, macOS frameworks `Cocoa`, `IOKit`, `CoreVideo`, `OpenGL`, and `opengl32`, `gdi32`, `winmm` on Windows).
+```flag
+use draw
+use window
 
-Functions keep raylib's names and parameter order, so the [raylib cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html) applies directly. String parameters take `cstr` (pass text literals directly, or wrap a `&str` with `c_text(label)`). `GetClipboardText` returns a `cstr` that is `NULL` when the clipboard has no text; `view` reads that as empty text. `LoadFontEx` takes `0 as *i32` for raylib's default character set.
+func main():
+    s := open_screen("Flag", 800, 450)
+    if s is DrawError:
+        eprint(s)
+        return
+    defer close_screen(s)
+    font := default_font(s, 20.0)
+    x := 400.0
+    while frame(s):
+        if key_down(s, KeyArrowRight):
+            x += 300.0 * frame_time(s)
+        clear(s, WHITE)
+        fill_circle(s, x, 225.0, 20.0, RED)
+        draw_text(s, font, "the right arrow moves the ball", 10.0, 10.0, GRAY)
+```
 
-#### Raylib functions
+Positions and sizes are `f64` pixels from the top-left corner. On Linux, `draw` requires Vulkan 1.3 and loads it when the screen opens; without it, the program still starts and `open_screen` returns `DrawError`.
 
-| Category | Functions |
-|---|---|
-| Window | `InitWindow`, `CloseWindow`, `WindowShouldClose`, `SetConfigFlags`, `SetTargetFPS`, `SetWindowTitle`, `SetWindowMinSize`, `SetWindowSize`, `SetWindowPosition`, `GetWindowPosition`, `MaximizeWindow`, `MinimizeWindow`, `RestoreWindow`, `IsWindowMaximized`, `IsWindowMinimized`, `IsWindowResized`, `GetWindowScaleDPI`, `EnableEventWaiting`, `DisableEventWaiting`, `PollInputEvents`, `SwapScreenBuffer`, `WaitTime`, `ToggleFullscreen`, `GetScreenWidth`, `GetScreenHeight`, `GetFrameTime`, `GetTime`, `GetFPS`, `GetRandomValue`, `TakeScreenshot` |
-| Drawing | `BeginDrawing`, `EndDrawing`, `ClearBackground`, `BeginMode2D`, `EndMode2D`, `BeginMode3D`, `EndMode3D`, `BeginTextureMode`, `EndTextureMode`, `BeginScissorMode`, `EndScissorMode` |
-| Keyboard & mouse | `IsKeyPressed`, `IsKeyPressedRepeat`, `IsKeyDown`, `IsKeyReleased`, `GetKeyPressed`, `GetCharPressed`, `SetExitKey`, `IsMouseButtonPressed`, `IsMouseButtonDown`, `IsMouseButtonReleased`, `GetMousePosition`, `GetMouseDelta`, `GetMouseWheelMove`, `GetMouseWheelMoveV`, `IsCursorOnScreen`, `SetMouseCursor` |
-| Clipboard | `GetClipboardText`, `SetClipboardText` |
-| 2D shapes | `DrawPixel`, `DrawLine`, `DrawLineV`, `DrawLineEx`, `DrawCircle`, `DrawCircleV`, `DrawCircleLines`, `DrawCircleSector`, `DrawRing`, `DrawRectangle`, `DrawRectangleV`, `DrawRectangleRec`, `DrawRectanglePro`, `DrawRectangleGradientV`, `DrawRectangleGradientH`, `DrawRectangleGradientEx`, `DrawRectangleLines`, `DrawRectangleLinesEx`, `DrawRectangleRounded`, `DrawRectangleRoundedLines`, `DrawRectangleRoundedLinesEx`, `DrawTriangle` |
-| Text & fonts | `DrawText`, `MeasureText`, `DrawFPS`, `GetFontDefault`, `LoadFont`, `LoadFontEx`, `LoadFontFromMemory`, `UnloadFont`, `DrawTextEx`, `MeasureTextEx` |
-| 3D | `DrawCube`, `DrawCubeWires`, `DrawSphere`, `DrawPlane`, `DrawGrid` |
-| Images & textures | `LoadImage`, `LoadImageFromScreen`, `ExportImage`, `GenImageColor`, `UnloadImage`, `LoadTexture`, `LoadTextureFromImage`, `UnloadTexture`, `GenTextureMipmaps`, `SetTextureFilter`, `LoadRenderTexture`, `UnloadRenderTexture`, `DrawTexture`, `DrawTextureV`, `DrawTextureEx`, `DrawTextureRec`, `DrawTexturePro` |
-| Collisions | `CheckCollisionRecs`, `CheckCollisionCircles`, `CheckCollisionCircleRec`, `CheckCollisionPointRec`, `CheckCollisionPointCircle`, `GetCollisionRec` |
-| Colors | `Fade`, `ColorFromHSV` |
-| Audio | `InitAudioDevice`, `CloseAudioDevice`, `LoadSound`, `UnloadSound`, `PlaySound`, `StopSound`, `SetSoundVolume`, `LoadMusicStream`, `UnloadMusicStream`, `PlayMusicStream`, `StopMusicStream`, `UpdateMusicStream` |
+#### The screen
 
-#### Types
+- `open_screen(title: &strview, width: i32, height: i32) -> Screen|DrawError`: opens a window and sets up the GPU for drawing in it.
+- `close_screen(s: Screen)`: closes the screen and frees its resources.
+- `frame(s: Screen, wait: bool = false) -> bool`: presents the frame drawn since the last call, reads pending events, and starts the next frame; returns `false` once the user closes the window. With `wait = true`, sleeps until an event arrives so programs that redraw only on input use no CPU while waiting.
+- `frame_time(s: Screen) -> f64`: seconds elapsed since the previous frame.
+- `size(s: Screen) -> (i32, i32)` and `scale(s: Screen) -> f64`: window drawing area and display scale (see [window](#window)).
+- `window_of(s: Screen) -> Window`: returns the window for `set_title`, `set_cursor`, the clipboard, and the rest of [window](#window).
+- `events(s: Screen) -> &listview[Event]`: returns every event received since the previous frame in order (a **view**, valid until the next `frame` or `close_screen`).
 
-`Vector2`, `Vector3`, `Color`, `Rectangle`, `Image`, `Texture`, `RenderTexture`, `GlyphInfo`, `Font`, `Camera2D`, `Camera3D`, `AudioStream`, `Sound`, and `Music`, with raylib's field names converted to `snake_case`.
+Each frame starts cleared to black. Calling `clear(s: Screen, color: Color)` before drawing sets the starting color; calling it later paints the color over the whole target, blended like any shape and inside the current clip.
 
-#### Constants
+```flag
+type error DrawError:
+    reason: &strview
+```
 
-- **Colors**: `LIGHTGRAY`, `GRAY`, `DARKGRAY`, `YELLOW`, `GOLD`, `ORANGE`, `PINK`, `RED`, `MAROON`, `GREEN`, `LIME`, `DARKGREEN`, `SKYBLUE`, `BLUE`, `DARKBLUE`, `PURPLE`, `VIOLET`, `DARKPURPLE`, `BEIGE`, `BROWN`, `DARKBROWN`, `WHITE`, `BLACK`, `BLANK`, `MAGENTA`, `RAYWHITE`
-- **Keys**: `KEY_A` to `KEY_Z`, `KEY_SPACE`, `KEY_ESCAPE`, `KEY_ENTER`, `KEY_TAB`, `KEY_BACKSPACE`, `KEY_DELETE`, `KEY_RIGHT`, `KEY_LEFT`, `KEY_DOWN`, `KEY_UP`, `KEY_PAGE_UP`, `KEY_PAGE_DOWN`, `KEY_HOME`, `KEY_END`, `KEY_LEFT_SHIFT`, `KEY_RIGHT_SHIFT`, `KEY_LEFT_CONTROL`, `KEY_RIGHT_CONTROL`, `KEY_LEFT_ALT`, `KEY_RIGHT_ALT`, `KEY_LEFT_SUPER`, `KEY_RIGHT_SUPER`
-- **Mouse buttons**: `MOUSE_BUTTON_LEFT`, `MOUSE_BUTTON_RIGHT`, `MOUSE_BUTTON_MIDDLE`
-- **Mouse cursors** (`SetMouseCursor`): `MOUSE_CURSOR_DEFAULT`, `MOUSE_CURSOR_ARROW`, `MOUSE_CURSOR_IBEAM`, `MOUSE_CURSOR_CROSSHAIR`, `MOUSE_CURSOR_POINTING_HAND`, `MOUSE_CURSOR_RESIZE_EW`, `MOUSE_CURSOR_RESIZE_NS`, `MOUSE_CURSOR_RESIZE_NWSE`, `MOUSE_CURSOR_RESIZE_NESW`, `MOUSE_CURSOR_RESIZE_ALL`, `MOUSE_CURSOR_NOT_ALLOWED`
-- **Texture filters** (`SetTextureFilter`): `TEXTURE_FILTER_POINT`, `TEXTURE_FILTER_BILINEAR`, `TEXTURE_FILTER_TRILINEAR`
-- **Config flags** (`SetConfigFlags`): `FLAG_FULLSCREEN_MODE`, `FLAG_WINDOW_RESIZABLE`, `FLAG_WINDOW_UNDECORATED`, `FLAG_WINDOW_TRANSPARENT`, `FLAG_WINDOW_HIDDEN`, `FLAG_WINDOW_MAXIMIZED`, `FLAG_WINDOW_UNFOCUSED`, `FLAG_WINDOW_TOPMOST`, `FLAG_WINDOW_HIGHDPI`, `FLAG_MSAA_4X_HINT`, `FLAG_VSYNC_HINT`
+Printing a `DrawError` shows its reason. A reason that names a file or an error code is **temporary**.
 
-#### Flag additions
+#### Input
 
-- `+` and `-` between two `Vector2` or two `Vector3` values, and `*` multiplying a `Vector2` or `Vector3` by an `f32`.
-- `length(v: Vector2) -> f32` and `normalize(v: Vector2) -> Vector2`.
+Keyboard and mouse state in the current frame, updated from [window](#window) events:
 
-Any raylib function not listed above can be declared directly in your own `extern "raylib":` block.
+- `key_down(s: Screen, key: Key) -> bool`: returns `true` while the key is held; `key_pressed` and `key_released` report whether it went down or up since the previous frame. The repeats of a held key do not count as presses.
+- `mouse(s: Screen) -> (f64, f64)`: returns the pointer position.
+- `mouse_down(s: Screen, button: Button) -> bool`: returns `true` while the button is held, with `mouse_pressed` and `mouse_released` for changes since the previous frame.
+- `wheel(s: Screen) -> (f64, f64)`: returns how far the wheel scrolled since the previous frame.
+- `typed(s: Screen) -> u32?`: returns the next character typed in this frame, or `null`.
 
+#### Colors
+
+```flag
+type Color:
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+```
+
+Constants: `BLACK`, `WHITE`, `GRAY`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `ORANGE`, `PURPLE`, and `TRANSPARENT`.
+
+#### Shapes
+
+Rectangles, circles, and lines have smooth edges at any size; rounded corners, borders, and shadows cost the same as a plain rectangle. Triangles, polygons, gradients, and arcs have hard edges.
+
+- `fill_rect(s, x, y, width, height, color)` and `stroke_rect(s, x, y, width, height, thickness, color)`: filled or outlined rectangle; a stroke is drawn inside the rectangle with that thickness.
+- `fill_round_rect(s, x, y, width, height, radius, color)` and `stroke_round_rect(s, x, y, width, height, radius, thickness, color)`: filled or outlined rounded rectangle.
+- `shadow(s, x, y, width, height, radius, blur, color)`: blurred shadow of a rounded rectangle, fading from `blur` pixels inside its edge to `blur` pixels outside it.
+- `fill_circle(s, x, y, radius, color)` and `stroke_circle(s, x, y, radius, thickness, color)`: filled or outlined circle.
+- `line(s, x1, y1, x2, y2, thickness, color)`: line with round ends.
+- `fill_triangle(s, x1, y1, x2, y2, x3, y3, color)` and `fill_polygon(s, points: &listview[Point], color)`: filled triangle or convex polygon.
+
+```flag
+type Point:
+    x: f64
+    y: f64
+```
+
+- `gradient_rect(s, x, y, width, height, top_left, top_right, bottom_right, bottom_left)`: rectangle interpolating colors across its four corners.
+- `fill_arc(s, x, y, inner, outer, start, end, color)`: piece of a ring from `start` to `end` degrees clockwise from the right; `inner = 0.0` draws a slice.
+
+#### Textures
+
+```flag
+type Texture:
+    slot: i32
+    width: i32
+    height: i32
+
+type Rect:
+    x: f64
+    y: f64
+    width: f64
+    height: f64
+```
+
+- `load_texture(s: Screen, path: &strview, smooth: bool = true) -> Texture|DrawError`: loads a PNG file as a texture (see [png](#png)). `smooth` blends pixels when scaled; `false` keeps them sharp for pixel art.
+- `texture_from_image(s: Screen, image: Image, smooth: bool = true) -> Texture` and `texture_from_pixels(s: Screen, width: i32, height: i32, pixels: &listview[u8], smooth: bool = true) -> Texture`: creates a texture from 8-bit RGBA pixels, rows top to bottom.
+- `update_texture(s: Screen, texture: Texture, pixels: &listview[u8])`: replaces all pixels of the texture.
+- `free_texture(s: Screen, texture: Texture)`: frees the texture.
+- `draw_texture(s, texture, x, y, tint)`: draws the whole texture at its size, multiplied by `tint` (`WHITE` leaves it unchanged).
+- `draw_texture_part(s, texture, source: Rect, dest: Rect, rotation, tint)`: draws the `source` pixels of the texture stretched into `dest`, rotated by `rotation` degrees around its center.
+
+#### Text
+
+- `default_font(s: Screen, size: f64) -> Font`: returns the bundled DejaVu Sans font (`draw` includes it). `size` is in pixels, from the top of the tallest letter to the bottom of the lowest.
+- `load_font(s: Screen, path: &strview, size: f64) -> Font|DrawError` and `font_from_bytes(s: Screen, data: &strview, size: f64) -> Font|DrawError`: loads a TrueType font (see [ttf](#ttf)).
+- `draw_text(s, font, text, x, y, color)`: draws text with the top-left corner of the first line at `x`, `y`; newlines start new lines.
+- `measure_text(s: Screen, font: Font, text: &strview) -> (f64, f64)`: returns the width of the widest line and the total height of all lines.
+- `line_height(s: Screen, font: Font) -> f64`: returns the height from one line to the next.
+
+Each character is rendered the first time it is drawn or measured, at its pixel size, so text stays sharp on any display; on a double-density display, request twice the size.
+
+#### Targets, clips, and the camera
+
+- `new_target(s: Screen, width: i32, height: i32) -> Target`: creates a texture to draw into (draw it via its `texture` field).
+- `begin_target(s: Screen, target: Target)` and `end_target(s: Screen)`: redirects drawing into the target between the two calls, clearing it to transparent each time.
+- `read_target(s: Screen, target: Target) -> Image`: reads the target's pixels (**yours**), for saving with `encode_png` or testing.
+- `free_target(s: Screen, target: Target)`: frees the target.
+- `push_clip(s, x, y, width, height)` and `pop_clip(s)`: restricts drawing to the rectangle, intersected with any enclosing clip, until `pop_clip`. The rectangle is in pixels of the target; the camera does not move it.
+- `set_camera(s: Screen, camera: Camera)` and `reset_camera(s: Screen)`: draws through a 2D camera that moves, rotates, and zooms the world, or resets it.
+
+```flag
+type Camera:
+    x: f64 # the point of the world in the middle of the view
+    y: f64
+    offset_x: f64 # where that point goes on the screen
+    offset_y: f64
+    rotation: f64 # degrees
+    zoom: f64 = 1.0
+```
 
 ---
 

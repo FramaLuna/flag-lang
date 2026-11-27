@@ -1622,12 +1622,14 @@ Additional modules are imported with `use` (no extra files needed). Using a name
 | `fs` | Opening files, whole-file I/O, folders, and paths |
 | `os` | CLI arguments, environment variables, subprocesses, shared libraries, CPU cores, and time |
 | `json` | Reading and writing JSON |
+| `png` | Reading and writing PNG images |
 | `net` | TCP connections and UDP |
 | `math` | `sqrt`, `sin`, `PI`, random numbers, and more |
 | `utf8` | UTF-8 character inspection |
+| `ttf` | Reading TrueType fonts and rendering antialiased glyphs |
 | `bits` | Fixed-size bitsets |
 | `ring` | Double-ended growable queue |
-| `raylib` | Windows, drawing, input, and audio |
+| `draw` | 2D drawing on the GPU for games and app interfaces |
 | `window` | Window creation and events on Linux, Windows, and macOS |
 | `vulkan`, `d3d11`, `metal` | Full bindings for the GPU APIs |
 | `objc`, `x11`, `win32`, `cocoa` | Objective-C runtime and window-system bindings for Linux, Windows, and macOS |

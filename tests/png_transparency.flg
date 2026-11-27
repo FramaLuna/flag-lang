@@ -1,0 +1,20 @@
+use png
+
+func main():
+    show("palette_trns", @embed("png_images/palette_trns.png"))
+    show("gray2_trns", @embed("png_images/gray2_trns.png"))
+    show("gray8_trns", @embed("png_images/gray8_trns.png"))
+    show("gray16_trns", @embed("png_images/gray16_trns.png"))
+    show("rgb8_trns", @embed("png_images/rgb8_trns.png"))
+    show("rgb16_trns", @embed("png_images/rgb16_trns.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    defer free(image)
+    hash: u32 = 0x811c_9dc5 # FNV-1a of the pixels
+    for b in image.pixels:
+        hash = (hash xor b) * 0x0100_0193
+    print(name, ": ", image.width, "x", image.height, " ", hex(hash, 8))

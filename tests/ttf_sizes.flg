@@ -1,0 +1,26 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    for pixels in [8.0, 16.0, 32.0, 64.0, 128.0]:
+        clear(bitmap)
+        g := render_glyph(font, glyph_of(font, 'o'), scale_for(font, f32(pixels)), bitmap)
+        area := 0
+        for v in bitmap:
+            area += v
+        print(pixels, " ", g.width, "x", g.height, " covers ", fixed(f64(area) / 255.0, 1), " pixels")
+    clear(bitmap)
+    g := render_glyph(font, glyph_of(font, 'l'), scale_for(font, 64.0), bitmap)
+    rows := 0
+    for y in 1..g.height - 1:
+        if bitmap[y * g.width:(y + 1) * g.width] == bitmap[g.width:2 * g.width]:
+            rows += 1
+    print("l at 64 pixels: ", rows, " of ", g.height - 2, " inner rows are ", bitmap[g.width:2 * g.width])

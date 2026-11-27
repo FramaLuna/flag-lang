@@ -1,0 +1,1929 @@
+module draw
+use fs
+use math
+use os
+use png
+use ttf
+use utf8
+use window
+use vulkan
+use win32
+use d3d11
+use objc
+use metal
+use cocoa
+
+type Screen:
+    state: *State # in one place, as the window keeps its own
+
+type error DrawError:
+    reason: &strview
+
+operator +=(s: *&str, e: DrawError):
+    s.* += e.reason
+
+type Color:
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+
+BLACK = Color{0, 0, 0, 255}
+WHITE = Color{255, 255, 255, 255}
+GRAY = Color{128, 128, 128, 255}
+RED = Color{230, 41, 55, 255}
+GREEN = Color{0, 200, 80, 255}
+BLUE = Color{0, 121, 241, 255}
+YELLOW = Color{253, 249, 0, 255}
+ORANGE = Color{255, 161, 0, 255}
+PURPLE = Color{200, 122, 255, 255}
+TRANSPARENT = Color{0, 0, 0, 0}
+
+type Point:
+    x: f64
+    y: f64
+
+type Rect:
+    x: f64
+    y: f64
+    width: f64
+    height: f64
+
+type Texture:
+    slot: i32 # its place in the textures of the GPU
+    width: i32
+    height: i32
+
+type Font:
+    slot: i32 # its place in the fonts of the screen
+
+type Target:
+    texture: Texture
+
+type Camera:
+    x: f64 # the point of the world in the middle of the view
+    y: f64
+    offset_x: f64 # where that point goes on the screen
+    offset_y: f64
+    rotation: f64 # in degrees
+    zoom: f64 = 1.0
+
+# what the shader takes: a shape of radius 0 or more is a rounded rectangle that it measures by distance
+priv type Vertex:
+    x: f32
+    y: f32
+    u: f32
+    v: f32
+    color: u32
+    local_x: f32
+    local_y: f32
+    half_width: f32
+    half_height: f32
+    radius: f32
+    border: f32
+    soft: f32
+
+priv type Clip:
+    x: i32
+    y: i32
+    width: i32
+    height: i32
+
+priv type Face:
+    font: ttf.Font
+    scale: f32
+    ascent: f64
+    descent: f64
+    gap: f64
+    pages: &list[i32] = heap([]) # textures of the atlas, the last one filling
+    glyphs: &map[u32, Placed] = heap({})
+    shelf_x: i32
+    shelf_y: i32
+    shelf_height: i32
+
+# a glyph in the atlas
+priv type Placed:
+    page: i32
+    x: i32
+    y: i32
+    width: i32
+    height: i32
+    left: i32
+    top: i32
+    advance: f64
+    glyph: i32
+
+PAGE = 1024 # pixels on each side of a page of glyphs
+
+priv type State:
+    window: Window
+    gpu: Gpu
+    width: i32
+    height: i32
+    vertices: &list[Vertex] = heap([])
+    texture: i32 # of the vertices waiting to be drawn
+    white: i32 # a pixel that shapes take their color from
+    target: i32 # the texture drawn into, or -1 for the screen
+    target_width: i32
+    target_height: i32
+    drawing: bool
+    passing: bool
+    clearing: bool # the pass that opens next clears to clear_color
+    clear_color: Color
+    clips: &list[Clip] = heap([])
+    camera: Camera?
+    fonts: &list[Face] = heap([])
+    defaults: &list[(f64, i32)] = heap([]) # the size of each default font and its slot
+    keys: &list[Key] = heap([])
+    pressed: &list[Key] = heap([])
+    released: &list[Key] = heap([])
+    buttons: &list[Button] = heap([])
+    clicked: &list[Button] = heap([])
+    unclicked: &list[Button] = heap([])
+    mouse_x: f64
+    mouse_y: f64
+    wheel_x: f64
+    wheel_y: f64
+    text: &list[u32] = heap([])
+    read: i64 # of text
+    events: &list[Event] = heap([])
+    freeing: &list[i32] = heap([]) # textures freed while the frame was drawn
+    last: f64
+    delta: f64
+    closed: bool
+
+DEFAULT_FONT = @embed("dejavu_sans.ttf")
+
+func open_screen(title: &strview, width: i32, height: i32) -> Screen|DrawError:
+    w := window.open(title, width, height)
+    if w is WindowError:
+        return DrawError{w.reason}
+    width, height = size(w)
+    s := heap(State{window = w, width = width, height = height, target = -1, camera = null})
+    failed := gpu_open(ptr(s.gpu), w, width, height)
+    if failed is DrawError:
+        gpu_drop(ptr(s.gpu))
+        window.close(w)
+        free(s)
+        return failed
+    white: array[u8, 4] = [255, 255, 255, 255]
+    s.white = gpu_texture(ptr(s.gpu), 1, 1, ptr(white[0]), false, false)
+    s.last = clock()
+    return Screen{s}
+
+func close_screen(s: Screen):
+    st := s.state
+    if st.drawing:
+        finish(st)
+    for f in st.fonts:
+        ttf.free(f.font)
+        free(f.pages)
+        free(f.glyphs)
+    gpu_close(ptr(st.gpu))
+    window.close(st.window)
+    free(st.vertices)
+    free(st.clips)
+    free(st.fonts)
+    free(st.defaults)
+    free(st.keys)
+    free(st.pressed)
+    free(st.released)
+    free(st.buttons)
+    free(st.clicked)
+    free(st.unclicked)
+    free(st.text)
+    free(st.events)
+    free(st.freeing)
+    free(st)
+
+# shows the frame drawn, reads what happened, and starts the next one; false once the window is closed
+func frame(s: Screen, wait: bool = false) -> bool:
+    st := s.state
+    if st.drawing:
+        finish(st)
+    st.pressed.len = 0
+    st.released.len = 0
+    st.clicked.len = 0
+    st.unclicked.len = 0
+    st.text.len = 0
+    st.read = 0
+    st.wheel_x = 0.0
+    st.wheel_y = 0.0
+    st.events.len = 0
+    if wait:
+        take(st, window.wait(st.window))
+    while true:
+        e := poll(st.window)
+        if e == null:
+            break
+        take(st, e)
+    if st.closed:
+        return false
+    now := clock()
+    st.delta = now - st.last
+    st.last = now
+    st.drawing = gpu_begin(ptr(st.gpu))
+    st.passing = false
+    st.target = -1
+    st.target_width = st.width
+    st.target_height = st.height
+    st.clearing = true
+    st.clear_color = BLACK
+    st.clips.len = 0
+    return true
+
+priv func take(st: *State, e: Event):
+    append(st.events, e)
+    switch e:
+    case Closed:
+        st.closed = true
+    case Resized:
+        st.width = e.width
+        st.height = e.height
+        gpu_resize(ptr(st.gpu), e.width, e.height)
+    case KeyDown:
+        if not e.repeat:
+            append(st.pressed, e.key)
+            if not contains(st.keys, e.key):
+                append(st.keys, e.key)
+    case KeyUp:
+        append(st.released, e.key)
+        for k, held in st.keys:
+            if held == e.key:
+                st.keys[k] = st.keys[-1]
+                st.keys.len -= 1
+                break
+    case Typed:
+        append(st.text, e.code)
+    case MouseMoved:
+        st.mouse_x = e.x
+        st.mouse_y = e.y
+    case MouseDown:
+        append(st.clicked, e.button)
+        if not contains(st.buttons, e.button):
+            append(st.buttons, e.button)
+    case MouseUp:
+        append(st.unclicked, e.button)
+        for k, held in st.buttons:
+            if held == e.button:
+                st.buttons[k] = st.buttons[-1]
+                st.buttons.len -= 1
+                break
+    case Scrolled:
+        st.wheel_x += e.x
+        st.wheel_y += e.y
+    case Focus:
+        pass
+
+priv func finish(st: *State):
+    flush(st)
+    if st.passing:
+        gpu_end_pass(ptr(st.gpu))
+        st.passing = false
+    gpu_present(ptr(st.gpu))
+    st.drawing = false
+    for slot in st.freeing:
+        gpu_free(ptr(st.gpu), slot)
+    st.freeing.len = 0
+
+# seconds since the frame before
+func frame_time(s: Screen) -> f64:
+    return s.state.delta
+
+func size(s: Screen) -> (i32, i32):
+    return s.state.width, s.state.height
+
+func scale(s: Screen) -> f64:
+    return scale(s.state.window)
+
+func window_of(s: Screen) -> Window:
+    return s.state.window
+
+# what happened since the frame before
+func events(s: Screen) -> &listview[Event]:
+    return s.state.events[:]
+
+func key_down(s: Screen, key: Key) -> bool:
+    return contains(s.state.keys, key)
+
+func key_pressed(s: Screen, key: Key) -> bool:
+    return contains(s.state.pressed, key)
+
+func key_released(s: Screen, key: Key) -> bool:
+    return contains(s.state.released, key)
+
+func mouse(s: Screen) -> (f64, f64):
+    return s.state.mouse_x, s.state.mouse_y
+
+func mouse_down(s: Screen, button: Button) -> bool:
+    return contains(s.state.buttons, button)
+
+func mouse_pressed(s: Screen, button: Button) -> bool:
+    return contains(s.state.clicked, button)
+
+func mouse_released(s: Screen, button: Button) -> bool:
+    return contains(s.state.unclicked, button)
+
+func wheel(s: Screen) -> (f64, f64):
+    return s.state.wheel_x, s.state.wheel_y
+
+# the next character typed in this frame, or null
+func typed(s: Screen) -> u32?:
+    st := s.state
+    if st.read == st.text.len:
+        return null
+    st.read += 1
+    return st.text[st.read - 1]
+
+# ---------- the batch ----------
+
+# gets the vertices ready for a texture; false while the window shows nothing, minimized
+priv func batch(st: *State, texture: i32) -> bool:
+    if not st.drawing:
+        return false
+    if texture != st.texture:
+        flush(st)
+        st.texture = texture
+    if not st.passing:
+        gpu_pass(ptr(st.gpu), st.target, st.clearing, st.clear_color)
+        st.passing = true
+        st.clearing = false
+    return true
+
+priv func flush(st: *State):
+    if st.vertices.len == 0:
+        return
+    clip := Clip{0, 0, st.target_width, st.target_height}
+    if st.clips.len > 0:
+        clip = st.clips[-1]
+    gpu_draw(ptr(st.gpu), ptr(st.vertices[0]), st.vertices.len, st.texture, clip, st.target_width, st.target_height)
+    st.vertices.len = 0
+
+priv func packed(c: Color) -> u32:
+    return u32(c.r) or (u32(c.g) << 8) or (u32(c.b) << 16) or (u32(c.a) << 24)
+
+# where a point of the world lands on the target, through the camera
+priv func placed(st: *State, x: f64, y: f64) -> (f32, f32):
+    c := st.camera
+    if c is Camera:
+        angle := c.rotation * PI / 180.0
+        dx := (x - c.x) * c.zoom
+        dy := (y - c.y) * c.zoom
+        return f32(dx * cos(angle) - dy * sin(angle) + c.offset_x), f32(dx * sin(angle) + dy * cos(angle) + c.offset_y)
+    return f32(x), f32(y)
+
+priv func corner(st: *State, x: f64, y: f64, u: f64, v: f64, color: u32):
+    px, py := placed(st, x, y)
+    append(st.vertices, Vertex{px, py, f32(u), f32(v), color, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0})
+
+# a rounded rectangle centered at x, y, turned by angle (radians); the quad around it leaves room for the soft edge
+priv func shape(st: *State, x: f64, y: f64, half_width: f64, half_height: f64, angle: f64, radius: f64, border: f64, soft: f64, color: Color):
+    if not batch(st, st.white):
+        return
+    pad := soft + 1.0
+    w := half_width + pad
+    h := half_height + pad
+    ax := cos(angle)
+    ay := sin(angle)
+    c := packed(color)
+    r := f32(min(radius, min(half_width, half_height)))
+    for corner in [{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}]:
+        lx := corner.0 * w
+        ly := corner.1 * h
+        px, py := placed(st, x + lx * ax - ly * ay, y + lx * ay + ly * ax)
+        append(st.vertices, Vertex{px, py, 0.0, 0.0, c, f32(lx), f32(ly), f32(half_width), f32(half_height), r, f32(border), f32(soft)})
+
+func clear(s: Screen, color: Color):
+    st := s.state
+    if st.drawing and not st.passing:
+        st.clearing = true
+        st.clear_color = color
+        return
+    camera := st.camera
+    st.camera = null
+    fill_rect(s, 0.0, 0.0, f64(st.target_width), f64(st.target_height), color)
+    st.camera = camera
+
+func fill_rect(s: Screen, x: f64, y: f64, width: f64, height: f64, color: Color):
+    shape(s.state, x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, 0.0, 0.0, 0.0, 0.0, color)
+
+# a frame of that thickness inside the rectangle
+func stroke_rect(s: Screen, x: f64, y: f64, width: f64, height: f64, thickness: f64, color: Color):
+    shape(s.state, x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, 0.0, 0.0, thickness, 0.0, color)
+
+func fill_round_rect(s: Screen, x: f64, y: f64, width: f64, height: f64, radius: f64, color: Color):
+    shape(s.state, x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, 0.0, radius, 0.0, 0.0, color)
+
+func stroke_round_rect(s: Screen, x: f64, y: f64, width: f64, height: f64, radius: f64, thickness: f64, color: Color):
+    shape(s.state, x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, 0.0, radius, thickness, 0.0, color)
+
+# the blurred shadow of a rounded rectangle; blur is how far it fades, in pixels
+func shadow(s: Screen, x: f64, y: f64, width: f64, height: f64, radius: f64, blur: f64, color: Color):
+    shape(s.state, x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, 0.0, radius, 0.0, blur, color)
+
+func fill_circle(s: Screen, x: f64, y: f64, radius: f64, color: Color):
+    shape(s.state, x, y, radius, radius, 0.0, radius, 0.0, 0.0, color)
+
+func stroke_circle(s: Screen, x: f64, y: f64, radius: f64, thickness: f64, color: Color):
+    shape(s.state, x, y, radius, radius, 0.0, radius, thickness, 0.0, color)
+
+# a line with round ends
+func line(s: Screen, x1: f64, y1: f64, x2: f64, y2: f64, thickness: f64, color: Color):
+    dx := x2 - x1
+    dy := y2 - y1
+    half := thickness / 2.0
+    shape(s.state, (x1 + x2) / 2.0, (y1 + y2) / 2.0, sqrt(dx * dx + dy * dy) / 2.0 + half, half, atan2(dy, dx), half, 0.0, 0.0, color)
+
+func fill_triangle(s: Screen, x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64, color: Color):
+    st := s.state
+    if batch(st, st.white):
+        c := packed(color)
+        corner(st, x1, y1, 0.0, 0.0, c)
+        corner(st, x2, y2, 0.0, 0.0, c)
+        corner(st, x3, y3, 0.0, 0.0, c)
+
+# a convex polygon, from its first point to each pair after it
+func fill_polygon(s: Screen, points: &listview[Point], color: Color):
+    for k in 2..points.len:
+        fill_triangle(s, points[0].x, points[0].y, points[k - 1].x, points[k - 1].y, points[k].x, points[k].y, color)
+
+# a rectangle whose color goes from each corner to the others
+func gradient_rect(s: Screen, x: f64, y: f64, width: f64, height: f64, top_left: Color, top_right: Color, bottom_right: Color, bottom_left: Color):
+    st := s.state
+    if batch(st, st.white):
+        corner(st, x, y, 0.0, 0.0, packed(top_left))
+        corner(st, x + width, y, 0.0, 0.0, packed(top_right))
+        corner(st, x + width, y + height, 0.0, 0.0, packed(bottom_right))
+        corner(st, x, y, 0.0, 0.0, packed(top_left))
+        corner(st, x + width, y + height, 0.0, 0.0, packed(bottom_right))
+        corner(st, x, y + height, 0.0, 0.0, packed(bottom_left))
+
+# a piece of a ring, from start to end in degrees clockwise from the right; inner 0 gives a pie slice
+func fill_arc(s: Screen, x: f64, y: f64, inner: f64, outer: f64, start: f64, end: f64, color: Color):
+    st := s.state
+    if not batch(st, st.white):
+        return
+    c := packed(color)
+    steps := max(i64(abs(end - start) / 360.0 * outer), 4) # a segment for each pixel of the edge, about
+    for k in 0..steps:
+        a := (start + (end - start) * f64(k) / f64(steps)) * PI / 180.0
+        b := (start + (end - start) * f64(k + 1) / f64(steps)) * PI / 180.0
+        corner(st, x + cos(a) * inner, y + sin(a) * inner, 0.0, 0.0, c)
+        corner(st, x + cos(a) * outer, y + sin(a) * outer, 0.0, 0.0, c)
+        corner(st, x + cos(b) * outer, y + sin(b) * outer, 0.0, 0.0, c)
+        corner(st, x + cos(a) * inner, y + sin(a) * inner, 0.0, 0.0, c)
+        corner(st, x + cos(b) * outer, y + sin(b) * outer, 0.0, 0.0, c)
+        corner(st, x + cos(b) * inner, y + sin(b) * inner, 0.0, 0.0, c)
+
+# ---------- textures ----------
+
+func load_texture(s: Screen, path: &strview, smooth: bool = true) -> Texture|DrawError:
+    data := read_file(path)
+    if data is FsError:
+        return DrawError{"cannot load texture " + path + "; " + data}
+    defer free(data)
+    image := decode_png(data)
+    if image is PngError:
+        return DrawError{"cannot load texture " + path + "; " + image.reason}
+    defer png.free(image)
+    return texture_from_image(s, image, smooth)
+
+func texture_from_image(s: Screen, image: Image, smooth: bool = true) -> Texture:
+    return texture_from_pixels(s, image.width, image.height, image.pixels[:], smooth)
+
+# a texture of width by height pixels, RGBA with 8 bits each, from the top row down
+func texture_from_pixels(s: Screen, width: i32, height: i32, pixels: &listview[u8], smooth: bool = true) -> Texture:
+    assert pixels.len == i64(width) * i64(height) * 4
+    return Texture{gpu_texture(ptr(s.state.gpu), width, height, ptr(pixels[0]), false, smooth), width, height}
+
+func update_texture(s: Screen, texture: Texture, pixels: &listview[u8]):
+    assert pixels.len == i64(texture.width) * i64(texture.height) * 4
+    st := s.state
+    if st.texture == texture.slot:
+        flush(st)
+    gpu_update(ptr(st.gpu), texture.slot, 0, 0, texture.width, texture.height, ptr(pixels[0]))
+
+func free_texture(s: Screen, texture: Texture):
+    st := s.state
+    if st.drawing: # this frame may still draw it
+        append(st.freeing, texture.slot)
+    else:
+        gpu_free(ptr(st.gpu), texture.slot)
+
+func draw_texture(s: Screen, texture: Texture, x: f64, y: f64, tint: Color):
+    draw_texture_part(s, texture, Rect{0.0, 0.0, f64(texture.width), f64(texture.height)}, Rect{x, y, f64(texture.width), f64(texture.height)}, 0.0, tint)
+
+# the source rectangle of the texture, in its pixels, drawn into dest and turned around its center by rotation degrees
+func draw_texture_part(s: Screen, texture: Texture, source: Rect, dest: Rect, rotation: f64, tint: Color):
+    st := s.state
+    if not batch(st, texture.slot):
+        return
+    c := packed(tint)
+    u0 := source.x / f64(texture.width)
+    v0 := source.y / f64(texture.height)
+    u1 := (source.x + source.width) / f64(texture.width)
+    v1 := (source.y + source.height) / f64(texture.height)
+    angle := rotation * PI / 180.0
+    cx := dest.x + dest.width / 2.0
+    cy := dest.y + dest.height / 2.0
+    for k in [0, 1, 2, 0, 2, 3]:
+        lx := dest.width / 2.0 * (-1.0 if k == 0 or k == 3 else 1.0)
+        ly := dest.height / 2.0 * (-1.0 if k < 2 else 1.0)
+        corner(st, cx + lx * cos(angle) - ly * sin(angle), cy + lx * sin(angle) + ly * cos(angle), u0 if k == 0 or k == 3 else u1, v0 if k < 2 else v1, c)
+
+# ---------- text ----------
+
+# DejaVu Sans, which comes with draw; size is from the top of the tallest letter to the bottom of the lowest, in pixels
+func default_font(s: Screen, size: f64) -> Font:
+    st := s.state
+    for d in st.defaults:
+        if d.0 == size:
+            return Font{d.1}
+    f := trust font_from_bytes(s, DEFAULT_FONT, size)
+    append(st.defaults, {size, f.slot})
+    return f
+
+func load_font(s: Screen, path: &strview, size: f64) -> Font|DrawError:
+    data := read_file(path)
+    if data is FsError:
+        return DrawError{"cannot load font " + path + "; " + data}
+    defer free(data)
+    return font_from_bytes(s, data, size)
+
+func font_from_bytes(s: Screen, data: &strview, size: f64) -> Font|DrawError:
+    font := ttf.load_font(data)
+    if font is FontError:
+        return DrawError{font.reason}
+    scale := scale_for(font, f32(size))
+    ascent, descent, gap := metrics(font, scale)
+    st := s.state
+    append(st.fonts, Face{font = font, scale = scale, ascent = f64(ascent), descent = f64(descent), gap = f64(gap)})
+    return Font{i32(st.fonts.len - 1)}
+
+# from the top of one line of the font to the top of the next
+func line_height(s: Screen, font: Font) -> f64:
+    f := s.state.fonts[font.slot]
+    return f.ascent - f.descent + f.gap
+
+# the glyph of a character in the atlas, rendered the first time it is asked for
+priv func glyph(st: *State, f: *Face, code: u32) -> Placed:
+    known := f.glyphs[code]
+    if known is Placed:
+        return known
+    index := glyph_of(f.font, code)
+    coverage: &list[u8] = heap([])
+    defer free(coverage)
+    g := render_glyph(f.font, index, f.scale, ptr(coverage))
+    if f.shelf_x + g.width + 1 > PAGE: # the next shelf, under this one
+        f.shelf_x = 0
+        f.shelf_y += f.shelf_height + 1
+        f.shelf_height = 0
+    if f.pages.len == 0 or f.shelf_y + g.height + 1 > PAGE:
+        append(f.pages, gpu_texture(ptr(st.gpu), PAGE, PAGE, 0 as *u8, false, true))
+        f.shelf_x = 0
+        f.shelf_y = 0
+        f.shelf_height = 0
+    placed := Placed{f.pages[-1], f.shelf_x, f.shelf_y, g.width, g.height, g.left, g.top, f64(g.advance), index}
+    if g.width > 0 and g.height > 0:
+        pixels: &list[u8] = heap([])
+        defer free(pixels)
+        for a in coverage: # white, seen through its coverage
+            append(pixels, u8(255))
+            append(pixels, u8(255))
+            append(pixels, u8(255))
+            append(pixels, a)
+        if st.texture == placed.page:
+            flush(st)
+        gpu_update(ptr(st.gpu), placed.page, placed.x, placed.y, g.width, g.height, ptr(pixels[0]))
+    f.shelf_x += g.width + 1
+    f.shelf_height = max(f.shelf_height, g.height)
+    f.glyphs[code] = placed
+    return placed
+
+# text with its top left corner at x, y; a newline starts the next line
+func draw_text(s: Screen, font: Font, text: &strview, x: f64, y: f64, color: Color):
+    st := s.state
+    f := ptr(st.fonts[font.slot])
+    c := packed(color)
+    pen := x
+    base := y + f.ascent
+    before: i32 = -1
+    for ch in text:
+        code := first_code(ch) ifnull 0xfffd
+        if code == '\n':
+            pen = x
+            base += f.ascent - f.descent + f.gap
+            before = -1
+            continue
+        g := glyph(st, f, code)
+        if before >= 0:
+            pen += f64(kerning(f.font, before, g.glyph, f.scale))
+        before = g.glyph
+        if g.width > 0 and batch(st, g.page):
+            left := pen + f64(g.left)
+            top := base - f64(g.top)
+            u0 := f64(g.x) / f64(PAGE)
+            v0 := f64(g.y) / f64(PAGE)
+            u1 := f64(g.x + g.width) / f64(PAGE)
+            v1 := f64(g.y + g.height) / f64(PAGE)
+            right := left + f64(g.width)
+            bottom := top + f64(g.height)
+            corner(st, left, top, u0, v0, c)
+            corner(st, right, top, u1, v0, c)
+            corner(st, right, bottom, u1, v1, c)
+            corner(st, left, top, u0, v0, c)
+            corner(st, right, bottom, u1, v1, c)
+            corner(st, left, bottom, u0, v1, c)
+        pen += g.advance
+
+# the width of the widest line and the height of all the lines
+func measure_text(s: Screen, font: Font, text: &strview) -> (f64, f64):
+    st := s.state
+    f := ptr(st.fonts[font.slot])
+    widest := 0.0
+    pen := 0.0
+    lines := 1
+    before: i32 = -1
+    for ch in text:
+        code := first_code(ch) ifnull 0xfffd
+        if code == '\n':
+            widest = max(widest, pen)
+            pen = 0.0
+            lines += 1
+            before = -1
+            continue
+        g := glyph(st, f, code)
+        if before >= 0:
+            pen += f64(kerning(f.font, before, g.glyph, f.scale))
+        before = g.glyph
+        pen += g.advance
+    return max(widest, pen), f64(lines) * (f.ascent - f.descent + f.gap) - f.gap
+
+# ---------- targets, clips and the camera ----------
+
+func new_target(s: Screen, width: i32, height: i32) -> Target:
+    return Target{Texture{gpu_texture(ptr(s.state.gpu), width, height, 0 as *u8, true, true), width, height}}
+
+# draws into the target until end_target; it starts cleared to transparent
+func begin_target(s: Screen, target: Target):
+    st := s.state
+    if not st.drawing:
+        return
+    flush(st)
+    if st.passing:
+        gpu_end_pass(ptr(st.gpu))
+    gpu_pass(ptr(st.gpu), target.texture.slot, true, TRANSPARENT)
+    st.passing = true
+    st.target = target.texture.slot
+    st.target_width = target.texture.width
+    st.target_height = target.texture.height
+
+func end_target(s: Screen):
+    st := s.state
+    if not st.drawing or st.target < 0:
+        return
+    flush(st)
+    gpu_end_pass(ptr(st.gpu))
+    st.passing = false
+    st.target = -1
+    st.target_width = st.width
+    st.target_height = st.height
+
+func free_target(s: Screen, target: Target):
+    free_texture(s, target.texture)
+
+# the pixels of the target, RGBA with 8 bits each from the top row down
+func read_target(s: Screen, target: Target) -> Image:
+    st := s.state
+    if st.drawing: # what this frame drew is still waiting to go to the GPU
+        flush(st)
+        if st.passing:
+            gpu_end_pass(ptr(st.gpu))
+            st.passing = false
+        gpu_sync(ptr(st.gpu))
+    pixels: &list[u8] = heap([])
+    for k in 0..i64(target.texture.width) * i64(target.texture.height) * 4:
+        append(pixels, u8(0))
+    gpu_read(ptr(s.state.gpu), target.texture.slot, ptr(pixels[0]))
+    return Image{target.texture.width, target.texture.height, pixels}
+
+# draws only inside the rectangle, and inside the clip before it, until pop_clip
+func push_clip(s: Screen, x: f64, y: f64, width: f64, height: f64):
+    st := s.state
+    flush(st)
+    clip := Clip{i32(max(x, 0.0)), i32(max(y, 0.0)), 0, 0}
+    right := min(i32(x + width), st.target_width)
+    bottom := min(i32(y + height), st.target_height)
+    if st.clips.len > 0:
+        outer := st.clips[-1]
+        clip.x = max(clip.x, outer.x)
+        clip.y = max(clip.y, outer.y)
+        right = min(right, outer.x + outer.width)
+        bottom = min(bottom, outer.y + outer.height)
+    clip.width = max(right - clip.x, 0)
+    clip.height = max(bottom - clip.y, 0)
+    append(st.clips, clip)
+
+func pop_clip(s: Screen):
+    st := s.state
+    flush(st)
+    if st.clips.len > 0:
+        st.clips.len -= 1
+
+func set_camera(s: Screen, camera: Camera):
+    s.state.camera = camera
+
+func reset_camera(s: Screen):
+    s.state.camera = null
+
+# ---------- Vulkan ----------
+
+where @linux():
+    priv type Gpu:
+        instance: VkInstance
+        surface: VkSurfaceKHR
+        physical: VkPhysicalDevice
+        device: VkDevice
+        queue: VkQueue
+        family: u32
+        memory: VkPhysicalDeviceMemoryProperties
+        swapchain: VkSwapchainKHR
+        format: VkFormat
+        width: u32
+        height: u32
+        images: &list[VkImage] = heap([])
+        views: &list[VkImageView] = heap([])
+        done: &list[VkSemaphore] = heap([]) # each image of the swapchain, drawn
+        image: u32 # of the swapchain, this frame
+        acquired: bool # the frame has not waited yet for its image to be free
+        pool: VkCommandPool
+        frames: array[Frame, 2]
+        frame: i64
+        layout: VkDescriptorSetLayout
+        sets: VkDescriptorPool
+        pipeline_layout: VkPipelineLayout
+        pipeline: VkPipeline
+        smooth: VkSampler
+        sharp: VkSampler
+        textures: &list[GpuTexture] = heap([])
+        loader: Library
+        vk: Calls
+        into: i32 # the texture of the open pass, or -1 for the screen
+
+    # the functions of Vulkan, asked of the loader when the screen opens, so a program without Vulkan still starts
+    priv type Calls:
+        vkGetInstanceProcAddr: PFN_vkGetInstanceProcAddr
+        vkAcquireNextImageKHR: PFN_vkAcquireNextImageKHR
+        vkAllocateCommandBuffers: PFN_vkAllocateCommandBuffers
+        vkAllocateDescriptorSets: PFN_vkAllocateDescriptorSets
+        vkAllocateMemory: PFN_vkAllocateMemory
+        vkBeginCommandBuffer: PFN_vkBeginCommandBuffer
+        vkBindBufferMemory: PFN_vkBindBufferMemory
+        vkBindImageMemory: PFN_vkBindImageMemory
+        vkCmdBeginRendering: PFN_vkCmdBeginRendering
+        vkCmdBindDescriptorSets: PFN_vkCmdBindDescriptorSets
+        vkCmdBindPipeline: PFN_vkCmdBindPipeline
+        vkCmdBindVertexBuffers: PFN_vkCmdBindVertexBuffers
+        vkCmdClearColorImage: PFN_vkCmdClearColorImage
+        vkCmdCopyBufferToImage: PFN_vkCmdCopyBufferToImage
+        vkCmdCopyImageToBuffer: PFN_vkCmdCopyImageToBuffer
+        vkCmdDraw: PFN_vkCmdDraw
+        vkCmdEndRendering: PFN_vkCmdEndRendering
+        vkCmdPipelineBarrier2: PFN_vkCmdPipelineBarrier2
+        vkCmdPushConstants: PFN_vkCmdPushConstants
+        vkCmdSetScissor: PFN_vkCmdSetScissor
+        vkCmdSetViewport: PFN_vkCmdSetViewport
+        vkCreateBuffer: PFN_vkCreateBuffer
+        vkCreateCommandPool: PFN_vkCreateCommandPool
+        vkCreateDescriptorPool: PFN_vkCreateDescriptorPool
+        vkCreateDescriptorSetLayout: PFN_vkCreateDescriptorSetLayout
+        vkCreateDevice: PFN_vkCreateDevice
+        vkCreateFence: PFN_vkCreateFence
+        vkCreateGraphicsPipelines: PFN_vkCreateGraphicsPipelines
+        vkCreateImage: PFN_vkCreateImage
+        vkCreateImageView: PFN_vkCreateImageView
+        vkCreateInstance: PFN_vkCreateInstance
+        vkCreatePipelineLayout: PFN_vkCreatePipelineLayout
+        vkCreateSampler: PFN_vkCreateSampler
+        vkCreateSemaphore: PFN_vkCreateSemaphore
+        vkCreateShaderModule: PFN_vkCreateShaderModule
+        vkCreateSwapchainKHR: PFN_vkCreateSwapchainKHR
+        vkCreateXlibSurfaceKHR: PFN_vkCreateXlibSurfaceKHR
+        vkDestroyBuffer: PFN_vkDestroyBuffer
+        vkDestroyCommandPool: PFN_vkDestroyCommandPool
+        vkDestroyDescriptorPool: PFN_vkDestroyDescriptorPool
+        vkDestroyDescriptorSetLayout: PFN_vkDestroyDescriptorSetLayout
+        vkDestroyDevice: PFN_vkDestroyDevice
+        vkDestroyFence: PFN_vkDestroyFence
+        vkDestroyImage: PFN_vkDestroyImage
+        vkDestroyImageView: PFN_vkDestroyImageView
+        vkDestroyInstance: PFN_vkDestroyInstance
+        vkDestroyPipeline: PFN_vkDestroyPipeline
+        vkDestroyPipelineLayout: PFN_vkDestroyPipelineLayout
+        vkDestroySampler: PFN_vkDestroySampler
+        vkDestroySemaphore: PFN_vkDestroySemaphore
+        vkDestroyShaderModule: PFN_vkDestroyShaderModule
+        vkDestroySurfaceKHR: PFN_vkDestroySurfaceKHR
+        vkDestroySwapchainKHR: PFN_vkDestroySwapchainKHR
+        vkDeviceWaitIdle: PFN_vkDeviceWaitIdle
+        vkEndCommandBuffer: PFN_vkEndCommandBuffer
+        vkEnumeratePhysicalDevices: PFN_vkEnumeratePhysicalDevices
+        vkFreeCommandBuffers: PFN_vkFreeCommandBuffers
+        vkFreeDescriptorSets: PFN_vkFreeDescriptorSets
+        vkFreeMemory: PFN_vkFreeMemory
+        vkGetBufferMemoryRequirements: PFN_vkGetBufferMemoryRequirements
+        vkGetDeviceQueue: PFN_vkGetDeviceQueue
+        vkGetImageMemoryRequirements: PFN_vkGetImageMemoryRequirements
+        vkGetPhysicalDeviceMemoryProperties: PFN_vkGetPhysicalDeviceMemoryProperties
+        vkGetPhysicalDeviceProperties: PFN_vkGetPhysicalDeviceProperties
+        vkGetPhysicalDeviceQueueFamilyProperties: PFN_vkGetPhysicalDeviceQueueFamilyProperties
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR: PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+        vkGetPhysicalDeviceSurfaceFormatsKHR: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
+        vkGetPhysicalDeviceSurfaceSupportKHR: PFN_vkGetPhysicalDeviceSurfaceSupportKHR
+        vkGetSwapchainImagesKHR: PFN_vkGetSwapchainImagesKHR
+        vkMapMemory: PFN_vkMapMemory
+        vkQueuePresentKHR: PFN_vkQueuePresentKHR
+        vkQueueSubmit: PFN_vkQueueSubmit
+        vkQueueWaitIdle: PFN_vkQueueWaitIdle
+        vkResetCommandBuffer: PFN_vkResetCommandBuffer
+        vkResetFences: PFN_vkResetFences
+        vkUnmapMemory: PFN_vkUnmapMemory
+        vkUpdateDescriptorSets: PFN_vkUpdateDescriptorSets
+        vkWaitForFences: PFN_vkWaitForFences
+
+    priv type Frame:
+        commands: VkCommandBuffer
+        fence: VkFence
+        acquired: VkSemaphore
+        buffer: VkBuffer
+        memory: VkDeviceMemory
+        mapped: *bytes
+        capacity: i64
+        used: i64
+        retired: &list[(VkBuffer, VkDeviceMemory)] = heap([]) # buffers that grew, freed when the frame comes back
+
+    priv type GpuTexture:
+        image: VkImage
+        memory: VkDeviceMemory
+        view: VkImageView
+        set: VkDescriptorSet
+        width: i32
+        height: i32
+        target: bool
+        live: bool
+
+    NO_ALLOCATOR = 0 as *VkAllocationCallbacks
+
+    priv func gpu_open(g: *Gpu, w: Window, width: i32, height: i32) -> DrawError?:
+        loader := load_library("libvulkan.so.1")
+        if loader is LoadError:
+            return DrawError{"cannot draw; Vulkan is not installed (no libvulkan.so.1)"}
+        g.loader = loader
+        entry := symbol(loader, "vkGetInstanceProcAddr")
+        if entry == null:
+            return DrawError{"cannot draw; libvulkan.so.1 has no vkGetInstanceProcAddr"}
+        g.vk.vkGetInstanceProcAddr = entry as PFN_vkGetInstanceProcAddr
+        g.vk.vkCreateInstance = called(g, "vkCreateInstance") as PFN_vkCreateInstance
+        app := VkApplicationInfo{sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, pApplicationName = "flag", apiVersion = VK_API_VERSION_1_3}
+        extensions: array[cstr, 2] = ["VK_KHR_surface", "VK_KHR_xlib_surface"]
+        given := VkInstanceCreateInfo{sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, pApplicationInfo = ptr(app), enabledExtensionCount = 2, ppEnabledExtensionNames = ptr(extensions[0])}
+        if g.vk.vkCreateInstance(given, NO_ALLOCATOR, ptr(g.instance)) != VK_SUCCESS:
+            return DrawError{"cannot draw; Vulkan failed to create an instance (no driver installed)"}
+        g.vk.vkAcquireNextImageKHR = called(g, "vkAcquireNextImageKHR") as PFN_vkAcquireNextImageKHR
+        g.vk.vkAllocateCommandBuffers = called(g, "vkAllocateCommandBuffers") as PFN_vkAllocateCommandBuffers
+        g.vk.vkAllocateDescriptorSets = called(g, "vkAllocateDescriptorSets") as PFN_vkAllocateDescriptorSets
+        g.vk.vkAllocateMemory = called(g, "vkAllocateMemory") as PFN_vkAllocateMemory
+        g.vk.vkBeginCommandBuffer = called(g, "vkBeginCommandBuffer") as PFN_vkBeginCommandBuffer
+        g.vk.vkBindBufferMemory = called(g, "vkBindBufferMemory") as PFN_vkBindBufferMemory
+        g.vk.vkBindImageMemory = called(g, "vkBindImageMemory") as PFN_vkBindImageMemory
+        g.vk.vkCmdBeginRendering = called(g, "vkCmdBeginRendering") as PFN_vkCmdBeginRendering
+        g.vk.vkCmdBindDescriptorSets = called(g, "vkCmdBindDescriptorSets") as PFN_vkCmdBindDescriptorSets
+        g.vk.vkCmdBindPipeline = called(g, "vkCmdBindPipeline") as PFN_vkCmdBindPipeline
+        g.vk.vkCmdBindVertexBuffers = called(g, "vkCmdBindVertexBuffers") as PFN_vkCmdBindVertexBuffers
+        g.vk.vkCmdClearColorImage = called(g, "vkCmdClearColorImage") as PFN_vkCmdClearColorImage
+        g.vk.vkCmdCopyBufferToImage = called(g, "vkCmdCopyBufferToImage") as PFN_vkCmdCopyBufferToImage
+        g.vk.vkCmdCopyImageToBuffer = called(g, "vkCmdCopyImageToBuffer") as PFN_vkCmdCopyImageToBuffer
+        g.vk.vkCmdDraw = called(g, "vkCmdDraw") as PFN_vkCmdDraw
+        g.vk.vkCmdEndRendering = called(g, "vkCmdEndRendering") as PFN_vkCmdEndRendering
+        g.vk.vkCmdPipelineBarrier2 = called(g, "vkCmdPipelineBarrier2") as PFN_vkCmdPipelineBarrier2
+        g.vk.vkCmdPushConstants = called(g, "vkCmdPushConstants") as PFN_vkCmdPushConstants
+        g.vk.vkCmdSetScissor = called(g, "vkCmdSetScissor") as PFN_vkCmdSetScissor
+        g.vk.vkCmdSetViewport = called(g, "vkCmdSetViewport") as PFN_vkCmdSetViewport
+        g.vk.vkCreateBuffer = called(g, "vkCreateBuffer") as PFN_vkCreateBuffer
+        g.vk.vkCreateCommandPool = called(g, "vkCreateCommandPool") as PFN_vkCreateCommandPool
+        g.vk.vkCreateDescriptorPool = called(g, "vkCreateDescriptorPool") as PFN_vkCreateDescriptorPool
+        g.vk.vkCreateDescriptorSetLayout = called(g, "vkCreateDescriptorSetLayout") as PFN_vkCreateDescriptorSetLayout
+        g.vk.vkCreateDevice = called(g, "vkCreateDevice") as PFN_vkCreateDevice
+        g.vk.vkCreateFence = called(g, "vkCreateFence") as PFN_vkCreateFence
+        g.vk.vkCreateGraphicsPipelines = called(g, "vkCreateGraphicsPipelines") as PFN_vkCreateGraphicsPipelines
+        g.vk.vkCreateImage = called(g, "vkCreateImage") as PFN_vkCreateImage
+        g.vk.vkCreateImageView = called(g, "vkCreateImageView") as PFN_vkCreateImageView
+        g.vk.vkCreatePipelineLayout = called(g, "vkCreatePipelineLayout") as PFN_vkCreatePipelineLayout
+        g.vk.vkCreateSampler = called(g, "vkCreateSampler") as PFN_vkCreateSampler
+        g.vk.vkCreateSemaphore = called(g, "vkCreateSemaphore") as PFN_vkCreateSemaphore
+        g.vk.vkCreateShaderModule = called(g, "vkCreateShaderModule") as PFN_vkCreateShaderModule
+        g.vk.vkCreateSwapchainKHR = called(g, "vkCreateSwapchainKHR") as PFN_vkCreateSwapchainKHR
+        g.vk.vkCreateXlibSurfaceKHR = called(g, "vkCreateXlibSurfaceKHR") as PFN_vkCreateXlibSurfaceKHR
+        g.vk.vkDestroyBuffer = called(g, "vkDestroyBuffer") as PFN_vkDestroyBuffer
+        g.vk.vkDestroyCommandPool = called(g, "vkDestroyCommandPool") as PFN_vkDestroyCommandPool
+        g.vk.vkDestroyDescriptorPool = called(g, "vkDestroyDescriptorPool") as PFN_vkDestroyDescriptorPool
+        g.vk.vkDestroyDescriptorSetLayout = called(g, "vkDestroyDescriptorSetLayout") as PFN_vkDestroyDescriptorSetLayout
+        g.vk.vkDestroyDevice = called(g, "vkDestroyDevice") as PFN_vkDestroyDevice
+        g.vk.vkDestroyFence = called(g, "vkDestroyFence") as PFN_vkDestroyFence
+        g.vk.vkDestroyImage = called(g, "vkDestroyImage") as PFN_vkDestroyImage
+        g.vk.vkDestroyImageView = called(g, "vkDestroyImageView") as PFN_vkDestroyImageView
+        g.vk.vkDestroyInstance = called(g, "vkDestroyInstance") as PFN_vkDestroyInstance
+        g.vk.vkDestroyPipeline = called(g, "vkDestroyPipeline") as PFN_vkDestroyPipeline
+        g.vk.vkDestroyPipelineLayout = called(g, "vkDestroyPipelineLayout") as PFN_vkDestroyPipelineLayout
+        g.vk.vkDestroySampler = called(g, "vkDestroySampler") as PFN_vkDestroySampler
+        g.vk.vkDestroySemaphore = called(g, "vkDestroySemaphore") as PFN_vkDestroySemaphore
+        g.vk.vkDestroyShaderModule = called(g, "vkDestroyShaderModule") as PFN_vkDestroyShaderModule
+        g.vk.vkDestroySurfaceKHR = called(g, "vkDestroySurfaceKHR") as PFN_vkDestroySurfaceKHR
+        g.vk.vkDestroySwapchainKHR = called(g, "vkDestroySwapchainKHR") as PFN_vkDestroySwapchainKHR
+        g.vk.vkDeviceWaitIdle = called(g, "vkDeviceWaitIdle") as PFN_vkDeviceWaitIdle
+        g.vk.vkEndCommandBuffer = called(g, "vkEndCommandBuffer") as PFN_vkEndCommandBuffer
+        g.vk.vkEnumeratePhysicalDevices = called(g, "vkEnumeratePhysicalDevices") as PFN_vkEnumeratePhysicalDevices
+        g.vk.vkFreeCommandBuffers = called(g, "vkFreeCommandBuffers") as PFN_vkFreeCommandBuffers
+        g.vk.vkFreeDescriptorSets = called(g, "vkFreeDescriptorSets") as PFN_vkFreeDescriptorSets
+        g.vk.vkFreeMemory = called(g, "vkFreeMemory") as PFN_vkFreeMemory
+        g.vk.vkGetBufferMemoryRequirements = called(g, "vkGetBufferMemoryRequirements") as PFN_vkGetBufferMemoryRequirements
+        g.vk.vkGetDeviceQueue = called(g, "vkGetDeviceQueue") as PFN_vkGetDeviceQueue
+        g.vk.vkGetImageMemoryRequirements = called(g, "vkGetImageMemoryRequirements") as PFN_vkGetImageMemoryRequirements
+        g.vk.vkGetPhysicalDeviceMemoryProperties = called(g, "vkGetPhysicalDeviceMemoryProperties") as PFN_vkGetPhysicalDeviceMemoryProperties
+        g.vk.vkGetPhysicalDeviceProperties = called(g, "vkGetPhysicalDeviceProperties") as PFN_vkGetPhysicalDeviceProperties
+        g.vk.vkGetPhysicalDeviceQueueFamilyProperties = called(g, "vkGetPhysicalDeviceQueueFamilyProperties") as PFN_vkGetPhysicalDeviceQueueFamilyProperties
+        g.vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR = called(g, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") as PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+        g.vk.vkGetPhysicalDeviceSurfaceFormatsKHR = called(g, "vkGetPhysicalDeviceSurfaceFormatsKHR") as PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
+        g.vk.vkGetPhysicalDeviceSurfaceSupportKHR = called(g, "vkGetPhysicalDeviceSurfaceSupportKHR") as PFN_vkGetPhysicalDeviceSurfaceSupportKHR
+        g.vk.vkGetSwapchainImagesKHR = called(g, "vkGetSwapchainImagesKHR") as PFN_vkGetSwapchainImagesKHR
+        g.vk.vkMapMemory = called(g, "vkMapMemory") as PFN_vkMapMemory
+        g.vk.vkQueuePresentKHR = called(g, "vkQueuePresentKHR") as PFN_vkQueuePresentKHR
+        g.vk.vkQueueSubmit = called(g, "vkQueueSubmit") as PFN_vkQueueSubmit
+        g.vk.vkQueueWaitIdle = called(g, "vkQueueWaitIdle") as PFN_vkQueueWaitIdle
+        g.vk.vkResetCommandBuffer = called(g, "vkResetCommandBuffer") as PFN_vkResetCommandBuffer
+        g.vk.vkResetFences = called(g, "vkResetFences") as PFN_vkResetFences
+        g.vk.vkUnmapMemory = called(g, "vkUnmapMemory") as PFN_vkUnmapMemory
+        g.vk.vkUpdateDescriptorSets = called(g, "vkUpdateDescriptorSets") as PFN_vkUpdateDescriptorSets
+        g.vk.vkWaitForFences = called(g, "vkWaitForFences") as PFN_vkWaitForFences
+        n := native(w)
+        surface := VkXlibSurfaceCreateInfoKHR{sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, dpy = n.display as *bytes, window = n.window}
+        if g.vk.vkCreateXlibSurfaceKHR(g.instance, surface, NO_ALLOCATOR, ptr(g.surface)) != VK_SUCCESS:
+            return DrawError{"cannot draw; Vulkan failed to create a window surface"}
+        count: u32 = 0
+        _ = g.vk.vkEnumeratePhysicalDevices(g.instance, ptr(count), 0 as *VkPhysicalDevice)
+        devices: &list[VkPhysicalDevice] = heap([])
+        defer free(devices)
+        for k in 0..count:
+            append(devices, 0 as VkPhysicalDevice)
+        if count > 0:
+            _ = g.vk.vkEnumeratePhysicalDevices(g.instance, ptr(count), ptr(devices[0]))
+        found := false
+        best := -1
+        for d in devices: # a GPU of its own first, then one in the processor, then any
+            properties: VkPhysicalDeviceProperties
+            g.vk.vkGetPhysicalDeviceProperties(d, ptr(properties))
+            if properties.apiVersion < VK_API_VERSION_1_3:
+                continue
+            families: u32 = 0
+            g.vk.vkGetPhysicalDeviceQueueFamilyProperties(d, ptr(families), 0 as *VkQueueFamilyProperties)
+            kinds: &list[VkQueueFamilyProperties] = heap([])
+            defer free(kinds)
+            for k in 0..families:
+                append(kinds, VkQueueFamilyProperties{})
+            g.vk.vkGetPhysicalDeviceQueueFamilyProperties(d, ptr(families), ptr(kinds[0]))
+            rank := 3 if properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU else 2 if properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU else 1
+            for k, kind in kinds:
+                shows: u32 = 0
+                _ = g.vk.vkGetPhysicalDeviceSurfaceSupportKHR(d, u32(k), g.surface, ptr(shows))
+                if (kind.queueFlags and VK_QUEUE_GRAPHICS_BIT) != 0 and shows != 0 and rank > best:
+                    best = rank
+                    g.physical = d
+                    g.family = u32(k)
+                    found = true
+                    break
+        if not found:
+            return DrawError{"cannot draw; no GPU supports Vulkan 1.3 on this window"}
+        g.vk.vkGetPhysicalDeviceMemoryProperties(g.physical, ptr(g.memory))
+        priority: f32 = 1.0
+        queue := VkDeviceQueueCreateInfo{sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, queueFamilyIndex = g.family, queueCount = 1, pQueuePriorities = ptr(priority)}
+        features := VkPhysicalDeviceVulkan13Features{sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, synchronization2 = VK_TRUE, dynamicRendering = VK_TRUE}
+        swap: array[cstr, 1] = ["VK_KHR_swapchain"]
+        device := VkDeviceCreateInfo{sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, pNext = ptr(features) as *bytes, queueCreateInfoCount = 1, pQueueCreateInfos = ptr(queue), enabledExtensionCount = 1, ppEnabledExtensionNames = ptr(swap[0])}
+        if g.vk.vkCreateDevice(g.physical, device, NO_ALLOCATOR, ptr(g.device)) != VK_SUCCESS:
+            return DrawError{"cannot draw; Vulkan failed to create a device"}
+        g.vk.vkGetDeviceQueue(g.device, g.family, 0, ptr(g.queue))
+        pool := VkCommandPoolCreateInfo{sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, queueFamilyIndex = g.family}
+        _ = g.vk.vkCreateCommandPool(g.device, pool, NO_ALLOCATOR, ptr(g.pool))
+        for f in g.frames:
+            take_commands := VkCommandBufferAllocateInfo{sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, commandPool = g.pool, level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, commandBufferCount = 1}
+            _ = g.vk.vkAllocateCommandBuffers(g.device, take_commands, ptr(f.commands))
+            fence := VkFenceCreateInfo{sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags = VK_FENCE_CREATE_SIGNALED_BIT}
+            _ = g.vk.vkCreateFence(g.device, fence, NO_ALLOCATOR, ptr(f.fence))
+            semaphore := VkSemaphoreCreateInfo{sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}
+            _ = g.vk.vkCreateSemaphore(g.device, semaphore, NO_ALLOCATOR, ptr(f.acquired))
+            f.retired = heap([])
+            grow(g, ptr(f), 1 << 20)
+        binding := VkDescriptorSetLayoutBinding{binding = 0, descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, descriptorCount = 1, stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}
+        layout := VkDescriptorSetLayoutCreateInfo{sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, bindingCount = 1, pBindings = ptr(binding)}
+        _ = g.vk.vkCreateDescriptorSetLayout(g.device, layout, NO_ALLOCATOR, ptr(g.layout))
+        size := VkDescriptorPoolSize{type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, descriptorCount = 4096}
+        sets := VkDescriptorPoolCreateInfo{sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, maxSets = 4096, poolSizeCount = 1, pPoolSizes = ptr(size)}
+        _ = g.vk.vkCreateDescriptorPool(g.device, sets, NO_ALLOCATOR, ptr(g.sets))
+        for smooth in [true, false]:
+            filter: VkFilter = VK_FILTER_LINEAR if smooth else VK_FILTER_NEAREST
+            sampler := VkSamplerCreateInfo{sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, magFilter = filter, minFilter = filter, mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, maxLod = 0.0}
+            _ = g.vk.vkCreateSampler(g.device, sampler, NO_ALLOCATOR, ptr(g.smooth) if smooth else ptr(g.sharp))
+        g.width = u32(width)
+        g.height = u32(height)
+        count = 0 # the format of the window first, which the pipeline draws in
+        _ = g.vk.vkGetPhysicalDeviceSurfaceFormatsKHR(g.physical, g.surface, ptr(count), 0 as *VkSurfaceFormatKHR)
+        formats: &list[VkSurfaceFormatKHR] = heap([])
+        defer free(formats)
+        for k in 0..count:
+            append(formats, VkSurfaceFormatKHR{})
+        _ = g.vk.vkGetPhysicalDeviceSurfaceFormatsKHR(g.physical, g.surface, ptr(count), ptr(formats[0]))
+        g.format = formats[0].format
+        for f in formats:
+            if f.format == VK_FORMAT_B8G8R8A8_UNORM:
+                g.format = f.format
+        failed := pipeline(g)
+        if failed is DrawError:
+            return failed
+        return swapchain(g)
+
+    priv func called(g: *Gpu, name: cstr) -> *bytes:
+        return g.vk.vkGetInstanceProcAddr(g.instance, name) as *bytes
+
+    priv func pipeline(g: *Gpu) -> DrawError?:
+        pushed := VkPushConstantRange{stageFlags = VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 8}
+        layout := VkPipelineLayoutCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, setLayoutCount = 1, pSetLayouts = ptr(g.layout), pushConstantRangeCount = 1, pPushConstantRanges = ptr(pushed)}
+        _ = g.vk.vkCreatePipelineLayout(g.device, layout, NO_ALLOCATOR, ptr(g.pipeline_layout))
+        modules: array[VkShaderModule, 2]
+        codes: array[&strview, 2] = [@embed("draw_vertex.spv"), @embed("draw_fragment.spv")]
+        for k, code in codes:
+            words: &list[u32] = heap([]) # the code must start at a multiple of 4 bytes
+            defer free(words)
+            for at in 0..code.len / 4:
+                append(words, u32(0))
+            _ = memcpy(ptr(words[0]) as *bytes, ptr(code.*) as *bytes, code.len)
+            given := VkShaderModuleCreateInfo{sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, codeSize = code.len, pCode = ptr(words[0])}
+            _ = g.vk.vkCreateShaderModule(g.device, given, NO_ALLOCATOR, ptr(modules[k]))
+        stages: array[VkPipelineShaderStageCreateInfo, 2] = [VkPipelineShaderStageCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, stage = VK_SHADER_STAGE_VERTEX_BIT, module = modules[0], pName = "main"}, VkPipelineShaderStageCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, stage = VK_SHADER_STAGE_FRAGMENT_BIT, module = modules[1], pName = "main"}]
+        binding := VkVertexInputBindingDescription{binding = 0, stride = @sizeof(Vertex), inputRate = VK_VERTEX_INPUT_RATE_VERTEX}
+        attributes: array[VkVertexInputAttributeDescription, 6] = [VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32_SFLOAT, 0}, VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32_SFLOAT, 8}, VkVertexInputAttributeDescription{2, 0, VK_FORMAT_R8G8B8A8_UNORM, 16}, VkVertexInputAttributeDescription{3, 0, VK_FORMAT_R32G32_SFLOAT, 20}, VkVertexInputAttributeDescription{4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 28}, VkVertexInputAttributeDescription{5, 0, VK_FORMAT_R32_SFLOAT, 44}]
+        input := VkPipelineVertexInputStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, vertexBindingDescriptionCount = 1, pVertexBindingDescriptions = ptr(binding), vertexAttributeDescriptionCount = 6, pVertexAttributeDescriptions = ptr(attributes[0])}
+        assembly := VkPipelineInputAssemblyStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST}
+        viewport := VkPipelineViewportStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, viewportCount = 1, scissorCount = 1}
+        raster := VkPipelineRasterizationStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, polygonMode = VK_POLYGON_MODE_FILL, cullMode = VK_CULL_MODE_NONE, frontFace = VK_FRONT_FACE_CLOCKWISE, lineWidth = 1.0}
+        samples := VkPipelineMultisampleStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, rasterizationSamples = VK_SAMPLE_COUNT_1_BIT}
+        mixing := VkPipelineColorBlendAttachmentState{blendEnable = VK_TRUE, srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, colorBlendOp = VK_BLEND_OP_ADD, srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, alphaBlendOp = VK_BLEND_OP_ADD, colorWriteMask = VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT}
+        blend := VkPipelineColorBlendStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, attachmentCount = 1, pAttachments = ptr(mixing)}
+        changing: array[VkDynamicState, 2] = [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+        dynamic := VkPipelineDynamicStateCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, dynamicStateCount = 2, pDynamicStates = ptr(changing[0])}
+        rendering := VkPipelineRenderingCreateInfo{sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, colorAttachmentCount = 1, pColorAttachmentFormats = ptr(g.format)}
+        given := VkGraphicsPipelineCreateInfo{sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, pNext = ptr(rendering) as *bytes, stageCount = 2, pStages = ptr(stages[0]), pVertexInputState = ptr(input), pInputAssemblyState = ptr(assembly), pViewportState = ptr(viewport), pRasterizationState = ptr(raster), pMultisampleState = ptr(samples), pColorBlendState = ptr(blend), pDynamicState = ptr(dynamic), layout = g.pipeline_layout}
+        made := g.vk.vkCreateGraphicsPipelines(g.device, 0 as VkPipelineCache, 1, given, NO_ALLOCATOR, ptr(g.pipeline))
+        for m in modules:
+            g.vk.vkDestroyShaderModule(g.device, m, NO_ALLOCATOR)
+        if made != VK_SUCCESS:
+            return DrawError{"cannot draw; Vulkan failed to create the pipeline"}
+        return null
+
+    # the images that the window shows, made again when it changes size
+    priv func swapchain(g: *Gpu) -> DrawError?:
+        caps: VkSurfaceCapabilitiesKHR
+        _ = g.vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.physical, g.surface, ptr(caps))
+        if caps.currentExtent.width != 0xffff_ffff:
+            g.width = caps.currentExtent.width
+            g.height = caps.currentExtent.height
+        if g.width == 0 or g.height == 0: # minimized
+            return null
+        count: u32 = 0
+        images := max(caps.minImageCount + 1, 2)
+        if caps.maxImageCount > 0:
+            images = min(images, caps.maxImageCount)
+        old := g.swapchain
+        given := VkSwapchainCreateInfoKHR{sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, surface = g.surface, minImageCount = images, imageFormat = g.format, imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, imageExtent = VkExtent2D{g.width, g.height}, imageArrayLayers = 1, imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, preTransform = caps.currentTransform, compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, presentMode = VK_PRESENT_MODE_FIFO_KHR, clipped = VK_TRUE, oldSwapchain = old}
+        if g.vk.vkCreateSwapchainKHR(g.device, given, NO_ALLOCATOR, ptr(g.swapchain)) != VK_SUCCESS:
+            return DrawError{"cannot draw; Vulkan failed to create the window swapchain"}
+        if old as u64 != 0:
+            g.vk.vkDestroySwapchainKHR(g.device, old, NO_ALLOCATOR)
+        for v in g.views:
+            g.vk.vkDestroyImageView(g.device, v, NO_ALLOCATOR)
+        for d in g.done:
+            g.vk.vkDestroySemaphore(g.device, d, NO_ALLOCATOR)
+        g.views.len = 0
+        g.done.len = 0
+        _ = g.vk.vkGetSwapchainImagesKHR(g.device, g.swapchain, ptr(count), 0 as *VkImage)
+        g.images.len = 0
+        for k in 0..count:
+            append(g.images, 0 as VkImage)
+        _ = g.vk.vkGetSwapchainImagesKHR(g.device, g.swapchain, ptr(count), ptr(g.images[0]))
+        for image in g.images:
+            append(g.views, view_of(g, image, g.format))
+            semaphore := VkSemaphoreCreateInfo{sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}
+            append(g.done, 0 as VkSemaphore)
+            _ = g.vk.vkCreateSemaphore(g.device, semaphore, NO_ALLOCATOR, ptr(g.done[-1]))
+        return null
+
+    priv func view_of(g: *Gpu, image: VkImage, format: VkFormat) -> VkImageView:
+        given := VkImageViewCreateInfo{sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, image = image, viewType = VK_IMAGE_VIEW_TYPE_2D, format = format, subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}
+        made := 0 as VkImageView
+        _ = g.vk.vkCreateImageView(g.device, given, NO_ALLOCATOR, ptr(made))
+        return made
+
+    priv func memory_of(g: *Gpu, needs: VkMemoryRequirements, wanted: u32) -> VkDeviceMemory:
+        index: u32 = 0
+        for k in 0..g.memory.memoryTypeCount:
+            if (needs.memoryTypeBits and (u32(1) << k)) != 0 and (g.memory.memoryTypes[k].propertyFlags and wanted) == wanted:
+                index = u32(k)
+                break
+        given := VkMemoryAllocateInfo{sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, allocationSize = needs.size, memoryTypeIndex = index}
+        made := 0 as VkDeviceMemory
+        _ = g.vk.vkAllocateMemory(g.device, given, NO_ALLOCATOR, ptr(made))
+        return made
+
+    # a buffer the CPU writes and the GPU reads
+    priv func host_buffer(g: *Gpu, size: i64, usage: VkBufferUsageFlags) -> (VkBuffer, VkDeviceMemory):
+        given := VkBufferCreateInfo{sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, size = u64(size), usage = usage, sharingMode = VK_SHARING_MODE_EXCLUSIVE}
+        buffer := 0 as VkBuffer
+        _ = g.vk.vkCreateBuffer(g.device, given, NO_ALLOCATOR, ptr(buffer))
+        needs: VkMemoryRequirements
+        g.vk.vkGetBufferMemoryRequirements(g.device, buffer, ptr(needs))
+        memory := memory_of(g, needs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        _ = g.vk.vkBindBufferMemory(g.device, buffer, memory, 0)
+        return buffer, memory
+
+    priv func grow(g: *Gpu, f: *Frame, size: i64):
+        if f.capacity > 0:
+            append(f.retired, {f.buffer, f.memory})
+        f.buffer, f.memory = host_buffer(g, size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+        _ = g.vk.vkMapMemory(g.device, f.memory, 0, u64(size), 0, ptr(f.mapped))
+        f.capacity = size
+
+    # commands that run at once, apart from the frame: begin_now, record, and end_now waits for them
+    priv func begin_now(g: *Gpu) -> VkCommandBuffer:
+        commands := 0 as VkCommandBuffer
+        given := VkCommandBufferAllocateInfo{sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, commandPool = g.pool, level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, commandBufferCount = 1}
+        _ = g.vk.vkAllocateCommandBuffers(g.device, given, ptr(commands))
+        begin := VkCommandBufferBeginInfo{sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}
+        _ = g.vk.vkBeginCommandBuffer(commands, begin)
+        return commands
+
+    priv func end_now(g: *Gpu, commands: VkCommandBuffer):
+        _ = g.vk.vkEndCommandBuffer(commands)
+        sent := VkSubmitInfo{sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ptr(commands)}
+        _ = g.vk.vkQueueSubmit(g.queue, 1, sent, 0 as VkFence)
+        _ = g.vk.vkQueueWaitIdle(g.queue)
+        g.vk.vkFreeCommandBuffers(g.device, g.pool, 1, ptr(commands))
+
+    priv func barrier(g: *Gpu, commands: VkCommandBuffer, image: VkImage, before: VkImageLayout, after: VkImageLayout):
+        b := VkImageMemoryBarrier2{sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT or VK_ACCESS_2_MEMORY_WRITE_BIT, oldLayout = before, newLayout = after, srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, image = image, subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}
+        d := VkDependencyInfo{sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = ptr(b)}
+        g.vk.vkCmdPipelineBarrier2(commands, d)
+
+    priv func gpu_texture(g: *Gpu, width: i32, height: i32, pixels: *u8, target: bool, smooth: bool) -> i32:
+        usage: VkImageUsageFlags = VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT
+        format: VkFormat = VK_FORMAT_R8G8B8A8_UNORM
+        if target: # drawn into with the pipeline of the window, so in its format
+            usage = usage or VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+            format = g.format
+        given := VkImageCreateInfo{sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, imageType = VK_IMAGE_TYPE_2D, format = format, extent = VkExtent3D{u32(width), u32(height), 1}, mipLevels = 1, arrayLayers = 1, samples = VK_SAMPLE_COUNT_1_BIT, tiling = VK_IMAGE_TILING_OPTIMAL, usage = usage, sharingMode = VK_SHARING_MODE_EXCLUSIVE, initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}
+        t := GpuTexture{width = width, height = height, target = target, live = true}
+        _ = g.vk.vkCreateImage(g.device, given, NO_ALLOCATOR, ptr(t.image))
+        needs: VkMemoryRequirements
+        g.vk.vkGetImageMemoryRequirements(g.device, t.image, ptr(needs))
+        t.memory = memory_of(g, needs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        _ = g.vk.vkBindImageMemory(g.device, t.image, t.memory, 0)
+        t.view = view_of(g, t.image, format)
+        take := VkDescriptorSetAllocateInfo{sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, descriptorPool = g.sets, descriptorSetCount = 1, pSetLayouts = ptr(g.layout)}
+        _ = g.vk.vkAllocateDescriptorSets(g.device, take, ptr(t.set))
+        seen := VkDescriptorImageInfo{sampler = g.smooth if smooth else g.sharp, imageView = t.view, imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+        write := VkWriteDescriptorSet{sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, dstSet = t.set, dstBinding = 0, descriptorCount = 1, descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, pImageInfo = ptr(seen)}
+        g.vk.vkUpdateDescriptorSets(g.device, 1, write, 0, 0 as *VkCopyDescriptorSet)
+        slot := g.textures.len
+        for k, old in g.textures:
+            if not old.live:
+                slot = k
+                break
+        if slot == g.textures.len:
+            append(g.textures, t)
+        else:
+            g.textures[slot] = t
+        commands := begin_now(g) # every texture rests as a shader reads it, between passes and copies
+        if pixels as u64 == 0:
+            barrier(g, commands, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+            transparent: VkClearColorValue = array[f32, 4]([0.0, 0.0, 0.0, 0.0])
+            whole := VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+            g.vk.vkCmdClearColorImage(commands, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, transparent, 1, whole)
+            barrier(g, commands, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        else:
+            barrier(g, commands, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end_now(g, commands)
+        if pixels as u64 != 0:
+            gpu_update(g, i32(slot), 0, 0, width, height, pixels)
+        return i32(slot)
+
+    priv func gpu_update(g: *Gpu, slot: i32, x: i32, y: i32, width: i32, height: i32, pixels: *u8):
+        size := i64(width) * i64(height) * 4
+        buffer, memory := host_buffer(g, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+        mapped := 0 as *bytes
+        _ = g.vk.vkMapMemory(g.device, memory, 0, u64(size), 0, ptr(mapped))
+        _ = memcpy(mapped, pixels as *bytes, size)
+        g.vk.vkUnmapMemory(g.device, memory)
+        image := g.textures[slot].image
+        commands := begin_now(g)
+        barrier(g, commands, image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        region := VkBufferImageCopy{imageSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, imageOffset = VkOffset3D{x, y, 0}, imageExtent = VkExtent3D{u32(width), u32(height), 1}}
+        g.vk.vkCmdCopyBufferToImage(commands, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region)
+        barrier(g, commands, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end_now(g, commands)
+        g.vk.vkDestroyBuffer(g.device, buffer, NO_ALLOCATOR)
+        g.vk.vkFreeMemory(g.device, memory, NO_ALLOCATOR)
+
+    priv func gpu_read(g: *Gpu, slot: i32, into: *u8):
+        t := g.textures[slot]
+        size := i64(t.width) * i64(t.height) * 4
+        buffer, memory := host_buffer(g, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+        commands := begin_now(g)
+        barrier(g, commands, t.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        region := VkBufferImageCopy{imageSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, imageExtent = VkExtent3D{u32(t.width), u32(t.height), 1}}
+        g.vk.vkCmdCopyImageToBuffer(commands, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, region)
+        barrier(g, commands, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end_now(g, commands)
+        mapped := 0 as *bytes
+        _ = g.vk.vkMapMemory(g.device, memory, 0, u64(size), 0, ptr(mapped))
+        _ = memcpy(into as *bytes, mapped, size)
+        g.vk.vkUnmapMemory(g.device, memory)
+        g.vk.vkDestroyBuffer(g.device, buffer, NO_ALLOCATOR)
+        g.vk.vkFreeMemory(g.device, memory, NO_ALLOCATOR)
+        if g.format == VK_FORMAT_B8G8R8A8_UNORM: # a target has the format of the window
+            for k in 0..size / 4:
+                at := into as *bytes + k * 4
+                blue := (at as *u8).*
+                (at as *u8).* = ((at + 2) as *u8).*
+                ((at + 2) as *u8).* = blue
+
+    priv func gpu_free(g: *Gpu, slot: i32):
+        _ = g.vk.vkDeviceWaitIdle(g.device)
+        t := g.textures[slot]
+        _ = g.vk.vkFreeDescriptorSets(g.device, g.sets, 1, ptr(t.set))
+        g.vk.vkDestroyImageView(g.device, t.view, NO_ALLOCATOR)
+        g.vk.vkDestroyImage(g.device, t.image, NO_ALLOCATOR)
+        g.vk.vkFreeMemory(g.device, t.memory, NO_ALLOCATOR)
+        g.textures[slot].live = false
+
+    priv func gpu_resize(g: *Gpu, width: i32, height: i32):
+        _ = g.vk.vkDeviceWaitIdle(g.device)
+        g.width = u32(width)
+        g.height = u32(height)
+        _ = swapchain(g)
+
+    # false while there is nothing to draw on, as when the window is minimized
+    priv func gpu_begin(g: *Gpu) -> bool:
+        if g.width == 0 or g.height == 0:
+            return false
+        f := ptr(g.frames[g.frame])
+        _ = g.vk.vkWaitForFences(g.device, 1, ptr(f.fence), VK_TRUE, 0xffff_ffff_ffff_ffff)
+        for r in f.retired:
+            g.vk.vkDestroyBuffer(g.device, r.0, NO_ALLOCATOR)
+            g.vk.vkFreeMemory(g.device, r.1, NO_ALLOCATOR)
+        f.retired.len = 0
+        got := g.vk.vkAcquireNextImageKHR(g.device, g.swapchain, 0xffff_ffff_ffff_ffff, f.acquired, 0 as VkFence, ptr(g.image))
+        if got == VK_ERROR_OUT_OF_DATE_KHR:
+            gpu_resize(g, i32(g.width), i32(g.height))
+            return false
+        _ = g.vk.vkResetFences(g.device, 1, ptr(f.fence))
+        _ = g.vk.vkResetCommandBuffer(f.commands, 0)
+        begin := VkCommandBufferBeginInfo{sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}
+        _ = g.vk.vkBeginCommandBuffer(f.commands, begin)
+        f.used = 0
+        g.acquired = true
+        barrier(g, f.commands, g.images[g.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+        return true
+
+    # runs what the frame recorded so far and waits for it, and goes on recording the frame
+    priv func gpu_sync(g: *Gpu):
+        f := ptr(g.frames[g.frame])
+        _ = g.vk.vkEndCommandBuffer(f.commands)
+        waiting: VkPipelineStageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        sent := VkSubmitInfo{sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount = u32(1) if g.acquired else 0, pWaitSemaphores = ptr(f.acquired), pWaitDstStageMask = ptr(waiting), commandBufferCount = 1, pCommandBuffers = ptr(f.commands)}
+        _ = g.vk.vkQueueSubmit(g.queue, 1, sent, f.fence)
+        _ = g.vk.vkWaitForFences(g.device, 1, ptr(f.fence), VK_TRUE, 0xffff_ffff_ffff_ffff)
+        _ = g.vk.vkResetFences(g.device, 1, ptr(f.fence))
+        g.acquired = false
+        _ = g.vk.vkResetCommandBuffer(f.commands, 0)
+        begin := VkCommandBufferBeginInfo{sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}
+        _ = g.vk.vkBeginCommandBuffer(f.commands, begin)
+
+    priv func gpu_pass(g: *Gpu, slot: i32, clear: bool, color: Color):
+        f := ptr(g.frames[g.frame])
+        view := g.views[g.image]
+        width := g.width
+        height := g.height
+        if slot >= 0:
+            t := g.textures[slot]
+            barrier(g, f.commands, t.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+            view = t.view
+            width = u32(t.width)
+            height = u32(t.height)
+        g.into = slot
+        cleared: VkClearValue = array[f32, 4]([f32(color.r) / 255.0, f32(color.g) / 255.0, f32(color.b) / 255.0, f32(color.a) / 255.0])
+        attachment := VkRenderingAttachmentInfo{sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, imageView = view, imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR if clear else VK_ATTACHMENT_LOAD_OP_LOAD, storeOp = VK_ATTACHMENT_STORE_OP_STORE, clearValue = cleared}
+        rendering := VkRenderingInfo{sType = VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea = VkRect2D{VkOffset2D{0, 0}, VkExtent2D{width, height}}, layerCount = 1, colorAttachmentCount = 1, pColorAttachments = ptr(attachment)}
+        g.vk.vkCmdBeginRendering(f.commands, rendering)
+        g.vk.vkCmdBindPipeline(f.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipeline)
+        viewport := VkViewport{0.0, 0.0, f32(width), f32(height), 0.0, 1.0}
+        g.vk.vkCmdSetViewport(f.commands, 0, 1, viewport)
+        size: array[f32, 2] = [f32(width), f32(height)]
+        g.vk.vkCmdPushConstants(f.commands, g.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, ptr(size[0]) as *bytes)
+
+    priv func gpu_draw(g: *Gpu, vertices: *Vertex, count: i64, texture: i32, clip: Clip, width: i32, height: i32):
+        f := ptr(g.frames[g.frame])
+        size := count * @sizeof(Vertex)
+        if f.used + size > f.capacity:
+            grow(g, f, max(f.capacity * 2, f.used + size))
+            f.used = 0
+        _ = memcpy(f.mapped + f.used, vertices as *bytes, size)
+        offset := u64(f.used)
+        g.vk.vkCmdBindVertexBuffers(f.commands, 0, 1, ptr(f.buffer), ptr(offset))
+        g.vk.vkCmdBindDescriptorSets(f.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipeline_layout, 0, 1, ptr(g.textures[texture].set), 0, 0 as *u32)
+        scissor := VkRect2D{VkOffset2D{clip.x, clip.y}, VkExtent2D{u32(clip.width), u32(clip.height)}}
+        g.vk.vkCmdSetScissor(f.commands, 0, 1, scissor)
+        g.vk.vkCmdDraw(f.commands, u32(count), 1, 0, 0)
+        f.used += size
+
+    priv func gpu_end_pass(g: *Gpu):
+        f := ptr(g.frames[g.frame])
+        g.vk.vkCmdEndRendering(f.commands)
+        if g.into >= 0:
+            barrier(g, f.commands, g.textures[g.into].image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+
+    priv func gpu_present(g: *Gpu):
+        f := ptr(g.frames[g.frame])
+        barrier(g, f.commands, g.images[g.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+        _ = g.vk.vkEndCommandBuffer(f.commands)
+        waiting: VkPipelineStageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        sent := VkSubmitInfo{sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount = u32(1) if g.acquired else 0, pWaitSemaphores = ptr(f.acquired), pWaitDstStageMask = ptr(waiting), commandBufferCount = 1, pCommandBuffers = ptr(f.commands), signalSemaphoreCount = 1, pSignalSemaphores = ptr(g.done[g.image])}
+        _ = g.vk.vkQueueSubmit(g.queue, 1, sent, f.fence)
+        shown := VkPresentInfoKHR{sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, waitSemaphoreCount = 1, pWaitSemaphores = ptr(g.done[g.image]), swapchainCount = 1, pSwapchains = ptr(g.swapchain), pImageIndices = ptr(g.image)}
+        presented := g.vk.vkQueuePresentKHR(g.queue, shown)
+        if presented == VK_ERROR_OUT_OF_DATE_KHR or presented == VK_SUBOPTIMAL_KHR:
+            gpu_resize(g, i32(g.width), i32(g.height))
+        g.frame = 1 - g.frame
+
+    priv func gpu_close(g: *Gpu):
+        _ = g.vk.vkDeviceWaitIdle(g.device)
+        for k in 0..g.textures.len:
+            if g.textures[k].live:
+                gpu_free(g, i32(k))
+        for f in g.frames:
+            for r in f.retired:
+                g.vk.vkDestroyBuffer(g.device, r.0, NO_ALLOCATOR)
+                g.vk.vkFreeMemory(g.device, r.1, NO_ALLOCATOR)
+            g.vk.vkDestroyBuffer(g.device, f.buffer, NO_ALLOCATOR)
+            g.vk.vkFreeMemory(g.device, f.memory, NO_ALLOCATOR)
+            g.vk.vkDestroyFence(g.device, f.fence, NO_ALLOCATOR)
+            g.vk.vkDestroySemaphore(g.device, f.acquired, NO_ALLOCATOR)
+        for v in g.views:
+            g.vk.vkDestroyImageView(g.device, v, NO_ALLOCATOR)
+        for d in g.done:
+            g.vk.vkDestroySemaphore(g.device, d, NO_ALLOCATOR)
+        g.vk.vkDestroySwapchainKHR(g.device, g.swapchain, NO_ALLOCATOR)
+        g.vk.vkDestroyPipeline(g.device, g.pipeline, NO_ALLOCATOR)
+        g.vk.vkDestroyPipelineLayout(g.device, g.pipeline_layout, NO_ALLOCATOR)
+        g.vk.vkDestroyDescriptorPool(g.device, g.sets, NO_ALLOCATOR)
+        g.vk.vkDestroyDescriptorSetLayout(g.device, g.layout, NO_ALLOCATOR)
+        g.vk.vkDestroySampler(g.device, g.smooth, NO_ALLOCATOR)
+        g.vk.vkDestroySampler(g.device, g.sharp, NO_ALLOCATOR)
+        g.vk.vkDestroyCommandPool(g.device, g.pool, NO_ALLOCATOR)
+        g.vk.vkDestroyDevice(g.device, NO_ALLOCATOR)
+        g.vk.vkDestroySurfaceKHR(g.instance, g.surface, NO_ALLOCATOR)
+        g.vk.vkDestroyInstance(g.instance, NO_ALLOCATOR)
+        gpu_drop(g)
+        close(g.loader)
+
+    # the lists of the GPU, which the rest of it does not need to be made to free
+    priv func gpu_drop(g: *Gpu):
+        free(g.images)
+        free(g.views)
+        free(g.done)
+        free(g.textures)
+        for f in g.frames:
+            free(f.retired)
+
+# ---------- Direct3D 11 ----------
+
+where @windows():
+    priv type Gpu:
+        device: *ID3D11Device
+        context: *ID3D11DeviceContext
+        swap: *IDXGISwapChain
+        back: *ID3D11RenderTargetView # the image of the window
+        buffer: *ID3D11Buffer
+        capacity: i64
+        constants: *ID3D11Buffer
+        vertex: *ID3D11VertexShader
+        pixel: *ID3D11PixelShader
+        layout: *ID3D11InputLayout
+        blend: *ID3D11BlendState
+        raster: *ID3D11RasterizerState
+        smooth: *ID3D11SamplerState
+        sharp: *ID3D11SamplerState
+        textures: &list[GpuTexture] = heap([])
+        width: i32
+        height: i32
+
+    priv type GpuTexture:
+        texture: *ID3D11Texture2D
+        view: *ID3D11ShaderResourceView
+        target: *ID3D11RenderTargetView # when it is drawn into
+        width: i32
+        height: i32
+        smooth: bool
+        live: bool
+
+    SHADER = "
+cbuffer Target : register(b0) { float2 size; float2 unused; };
+struct In { float2 position : POSITION; float2 uv : TEXCOORD0; float4 color : COLOR; float2 local : TEXCOORD1; float4 shape : TEXCOORD2; float soft : TEXCOORD3; };
+struct Out { float4 position : SV_Position; float2 uv : TEXCOORD0; float4 color : COLOR; float2 local : TEXCOORD1; float4 shape : TEXCOORD2; float soft : TEXCOORD3; };
+Out vertex_main(In i) {
+    Out o;
+    o.position = float4(i.position.x / size.x * 2.0 - 1.0, 1.0 - i.position.y / size.y * 2.0, 0.0, 1.0);
+    o.uv = i.uv; o.color = i.color; o.local = i.local; o.shape = i.shape; o.soft = i.soft;
+    return o;
+}
+Texture2D image : register(t0);
+SamplerState taken : register(s0);
+float4 pixel_main(Out i) : SV_Target {
+    float4 c = i.color * image.Sample(taken, i.uv);
+    if (i.shape.z >= 0.0) {
+        float2 q = abs(i.local) - i.shape.xy + i.shape.z;
+        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - i.shape.z;
+        if (i.shape.w > 0.0) { d = abs(d + i.shape.w * 0.5) - i.shape.w * 0.5; }
+        c.a *= i.soft > 0.0 ? 1.0 - smoothstep(-i.soft, i.soft, d) : saturate(0.5 - d);
+    }
+    return c;
+}
+"
+
+    priv func compiled(entry: cstr, model: cstr) -> *ID3DBlob|DrawError:
+        code := 0 as *ID3DBlob
+        errors := 0 as *ID3DBlob
+        if D3DCompile(ptr(SHADER.*) as *bytes, SHADER.len, "draw", 0 as *D3D_SHADER_MACRO, 0 as *ID3DInclude, entry, model, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, ptr(code), ptr(errors)) != S_OK:
+            return DrawError{"cannot draw; Direct3D failed to compile the shader"}
+        return code
+
+    priv func gpu_open(g: *Gpu, w: Window, width: i32, height: i32) -> DrawError?:
+        desc := DXGI_SWAP_CHAIN_DESC{BufferCount = 2, OutputWindow = native(w).hwnd, Windowed = TRUE, SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD, BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT}
+        desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
+        desc.SampleDesc.Count = 1
+        made := S_FALSE
+        drivers: array[D3D_DRIVER_TYPE, 2] = [D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP] # the GPU, or Windows drawing on the processor
+        for driver in drivers:
+            made = D3D11CreateDeviceAndSwapChain(0 as *IDXGIAdapter, driver, 0 as HMODULE, 0, 0 as *D3D_FEATURE_LEVEL, 0, D3D11_SDK_VERSION, desc, ptr(g.swap), ptr(g.device), 0 as *D3D_FEATURE_LEVEL, ptr(g.context))
+            if made == S_OK:
+                break
+        if made != S_OK:
+            return DrawError{"cannot draw; Direct3D 11 failed to create a device, error " + made}
+        g.width = width
+        g.height = height
+        back := 0 as *ID3D11Texture2D
+        _ = GetBuffer(g.swap, 0, IID_ID3D11Texture2D, ptr(back) as *LPVOID)
+        _ = CreateRenderTargetView(g.device, back as *ID3D11Resource, 0 as *D3D11_RENDER_TARGET_VIEW_DESC, ptr(g.back))
+        _ = Release(back)
+        vertex := compiled("vertex_main", "vs_5_0")
+        if vertex is DrawError:
+            return vertex
+        pixel := compiled("pixel_main", "ps_5_0")
+        if pixel is DrawError:
+            return pixel
+        _ = CreateVertexShader(g.device, GetBufferPointer(vertex), GetBufferSize(vertex), 0 as *ID3D11ClassLinkage, ptr(g.vertex))
+        _ = CreatePixelShader(g.device, GetBufferPointer(pixel), GetBufferSize(pixel), 0 as *ID3D11ClassLinkage, ptr(g.pixel))
+        inputs: array[D3D11_INPUT_ELEMENT_DESC, 6] = [D3D11_INPUT_ELEMENT_DESC{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0}, D3D11_INPUT_ELEMENT_DESC{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0}, D3D11_INPUT_ELEMENT_DESC{"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0}, D3D11_INPUT_ELEMENT_DESC{"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0}, D3D11_INPUT_ELEMENT_DESC{"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0}, D3D11_INPUT_ELEMENT_DESC{"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0}]
+        _ = CreateInputLayout(g.device, ptr(inputs[0]), 6, GetBufferPointer(vertex), GetBufferSize(vertex), ptr(g.layout))
+        _ = Release(vertex)
+        _ = Release(pixel)
+        constants := D3D11_BUFFER_DESC{ByteWidth = 16, Usage = D3D11_USAGE_DYNAMIC, BindFlags = D3D11_BIND_CONSTANT_BUFFER, CPUAccessFlags = D3D11_CPU_ACCESS_WRITE}
+        _ = CreateBuffer(g.device, constants, 0 as *D3D11_SUBRESOURCE_DATA, ptr(g.constants))
+        mixing: D3D11_BLEND_DESC
+        mixing.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC{TRUE, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL}
+        _ = CreateBlendState(g.device, mixing, ptr(g.blend))
+        raster := D3D11_RASTERIZER_DESC{FillMode = D3D11_FILL_SOLID, CullMode = D3D11_CULL_NONE, DepthClipEnable = TRUE, ScissorEnable = TRUE}
+        _ = CreateRasterizerState(g.device, raster, ptr(g.raster))
+        for smooth in [true, false]:
+            sampler := D3D11_SAMPLER_DESC{Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR if smooth else D3D11_FILTER_MIN_MAG_MIP_POINT, AddressU = D3D11_TEXTURE_ADDRESS_CLAMP, AddressV = D3D11_TEXTURE_ADDRESS_CLAMP, AddressW = D3D11_TEXTURE_ADDRESS_CLAMP, ComparisonFunc = D3D11_COMPARISON_NEVER, MaxLOD = 0.0}
+            _ = CreateSamplerState(g.device, sampler, ptr(g.smooth) if smooth else ptr(g.sharp))
+        return null
+
+    priv func gpu_texture(g: *Gpu, width: i32, height: i32, pixels: *u8, target: bool, smooth: bool) -> i32:
+        given := pixels as *bytes
+        if pixels as u64 == 0: # starts transparent
+            given = calloc(i64(width) * i64(height), 4)
+        desc := D3D11_TEXTURE2D_DESC{Width = u32(width), Height = u32(height), MipLevels = 1, ArraySize = 1, Format = DXGI_FORMAT_R8G8B8A8_UNORM, Usage = D3D11_USAGE_DEFAULT, BindFlags = D3D11_BIND_SHADER_RESOURCE}
+        desc.SampleDesc.Count = 1
+        if target:
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE or D3D11_BIND_RENDER_TARGET
+        data := D3D11_SUBRESOURCE_DATA{pSysMem = given, SysMemPitch = u32(width) * 4}
+        t := GpuTexture{width = width, height = height, smooth = smooth, live = true}
+        _ = CreateTexture2D(g.device, desc, data, ptr(t.texture))
+        if pixels as u64 == 0:
+            free(given)
+        _ = CreateShaderResourceView(g.device, t.texture as *ID3D11Resource, 0 as *D3D11_SHADER_RESOURCE_VIEW_DESC, ptr(t.view))
+        if target:
+            _ = CreateRenderTargetView(g.device, t.texture as *ID3D11Resource, 0 as *D3D11_RENDER_TARGET_VIEW_DESC, ptr(t.target))
+        for k, old in g.textures:
+            if not old.live:
+                g.textures[k] = t
+                return i32(k)
+        append(g.textures, t)
+        return i32(g.textures.len - 1)
+
+    priv func gpu_update(g: *Gpu, slot: i32, x: i32, y: i32, width: i32, height: i32, pixels: *u8):
+        region := D3D11_BOX{u32(x), u32(y), 0, u32(x + width), u32(y + height), 1}
+        UpdateSubresource(g.context, g.textures[slot].texture as *ID3D11Resource, 0, region, pixels as *bytes, u32(width) * 4, 0)
+
+    priv func gpu_read(g: *Gpu, slot: i32, into: *u8):
+        t := g.textures[slot]
+        desc := D3D11_TEXTURE2D_DESC{Width = u32(t.width), Height = u32(t.height), MipLevels = 1, ArraySize = 1, Format = DXGI_FORMAT_R8G8B8A8_UNORM, Usage = D3D11_USAGE_STAGING, CPUAccessFlags = D3D11_CPU_ACCESS_READ}
+        desc.SampleDesc.Count = 1
+        staging := 0 as *ID3D11Texture2D
+        _ = CreateTexture2D(g.device, desc, 0 as *D3D11_SUBRESOURCE_DATA, ptr(staging))
+        CopyResource(g.context, staging as *ID3D11Resource, t.texture as *ID3D11Resource)
+        mapped: D3D11_MAPPED_SUBRESOURCE
+        _ = Map(g.context, staging as *ID3D11Resource, 0, D3D11_MAP_READ, 0, ptr(mapped))
+        row := i64(t.width) * 4
+        for y in 0..i64(t.height):
+            _ = memcpy(into as *bytes + y * row, mapped.pData + y * i64(mapped.RowPitch), row)
+        Unmap(g.context, staging as *ID3D11Resource, 0)
+        _ = Release(staging)
+
+    priv func gpu_free(g: *Gpu, slot: i32):
+        t := g.textures[slot]
+        if t.target as u64 != 0:
+            _ = Release(t.target)
+        _ = Release(t.view)
+        _ = Release(t.texture)
+        g.textures[slot].live = false
+
+    priv func gpu_resize(g: *Gpu, width: i32, height: i32):
+        g.width = width
+        g.height = height
+        if width == 0 or height == 0:
+            return
+        _ = Release(g.back)
+        _ = ResizeBuffers(g.swap, 0, u32(width), u32(height), DXGI_FORMAT_UNKNOWN, 0)
+        back := 0 as *ID3D11Texture2D
+        _ = GetBuffer(g.swap, 0, IID_ID3D11Texture2D, ptr(back) as *LPVOID)
+        _ = CreateRenderTargetView(g.device, back as *ID3D11Resource, 0 as *D3D11_RENDER_TARGET_VIEW_DESC, ptr(g.back))
+        _ = Release(back)
+
+    priv func gpu_begin(g: *Gpu) -> bool:
+        return g.width > 0 and g.height > 0
+
+    priv func gpu_sync(g: *Gpu):
+        pass # the immediate context runs each command as it comes
+
+    priv func gpu_pass(g: *Gpu, slot: i32, clear: bool, color: Color):
+        view := g.back
+        width := g.width
+        height := g.height
+        if slot >= 0:
+            view = g.textures[slot].target
+            width = g.textures[slot].width
+            height = g.textures[slot].height
+        none := 0 as *ID3D11ShaderResourceView
+        PSSetShaderResources(g.context, 0, 1, ptr(none)) # a texture cannot be read while it is drawn into
+        OMSetRenderTargets(g.context, 1, ptr(view), 0 as *ID3D11DepthStencilView)
+        if clear:
+            cleared: array[f32, 4] = [f32(color.r) / 255.0, f32(color.g) / 255.0, f32(color.b) / 255.0, f32(color.a) / 255.0]
+            ClearRenderTargetView(g.context, view, ptr(cleared[0]))
+        viewport := D3D11_VIEWPORT{0.0, 0.0, f32(width), f32(height), 0.0, 1.0}
+        RSSetViewports(g.context, 1, viewport)
+        mapped: D3D11_MAPPED_SUBRESOURCE
+        _ = Map(g.context, g.constants as *ID3D11Resource, 0, D3D11_MAP_WRITE_DISCARD, 0, ptr(mapped))
+        size: array[f32, 4] = [f32(width), f32(height), 0.0, 0.0]
+        _ = memcpy(mapped.pData, ptr(size[0]) as *bytes, 16)
+        Unmap(g.context, g.constants as *ID3D11Resource, 0)
+        IASetInputLayout(g.context, g.layout)
+        IASetPrimitiveTopology(g.context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
+        VSSetShader(g.context, g.vertex, 0 as **ID3D11ClassInstance, 0)
+        VSSetConstantBuffers(g.context, 0, 1, ptr(g.constants))
+        PSSetShader(g.context, g.pixel, 0 as **ID3D11ClassInstance, 0)
+        factor: array[f32, 4] = [0.0, 0.0, 0.0, 0.0]
+        OMSetBlendState(g.context, g.blend, ptr(factor[0]), 0xffff_ffff)
+        RSSetState(g.context, g.raster)
+
+    priv func gpu_draw(g: *Gpu, vertices: *Vertex, count: i64, texture: i32, clip: Clip, width: i32, height: i32):
+        size := count * @sizeof(Vertex)
+        if size > g.capacity:
+            if g.buffer as u64 != 0:
+                _ = Release(g.buffer)
+            g.capacity = max(size, max(g.capacity * 2, 1 << 20))
+            desc := D3D11_BUFFER_DESC{ByteWidth = u32(g.capacity), Usage = D3D11_USAGE_DYNAMIC, BindFlags = D3D11_BIND_VERTEX_BUFFER, CPUAccessFlags = D3D11_CPU_ACCESS_WRITE}
+            _ = CreateBuffer(g.device, desc, 0 as *D3D11_SUBRESOURCE_DATA, ptr(g.buffer))
+        mapped: D3D11_MAPPED_SUBRESOURCE
+        _ = Map(g.context, g.buffer as *ID3D11Resource, 0, D3D11_MAP_WRITE_DISCARD, 0, ptr(mapped))
+        _ = memcpy(mapped.pData, vertices as *bytes, size)
+        Unmap(g.context, g.buffer as *ID3D11Resource, 0)
+        stride: u32 = @sizeof(Vertex)
+        offset: u32 = 0
+        IASetVertexBuffers(g.context, 0, 1, ptr(g.buffer), ptr(stride), ptr(offset))
+        t := g.textures[texture]
+        PSSetShaderResources(g.context, 0, 1, ptr(t.view))
+        PSSetSamplers(g.context, 0, 1, ptr(g.smooth) if t.smooth else ptr(g.sharp))
+        scissor := RECT{clip.x, clip.y, clip.x + clip.width, clip.y + clip.height}
+        RSSetScissorRects(g.context, 1, scissor)
+        Draw(g.context, u32(count), 0)
+
+    priv func gpu_end_pass(g: *Gpu):
+        OMSetRenderTargets(g.context, 0, 0 as **ID3D11RenderTargetView, 0 as *ID3D11DepthStencilView)
+
+    priv func gpu_present(g: *Gpu):
+        _ = Present(g.swap, 1, 0)
+
+    priv func gpu_drop(g: *Gpu):
+        free(g.textures)
+
+    priv func gpu_close(g: *Gpu):
+        for k in 0..g.textures.len:
+            if g.textures[k].live:
+                gpu_free(g, i32(k))
+        gpu_drop(g)
+        if g.buffer as u64 != 0:
+            _ = Release(g.buffer)
+        _ = Release(g.constants)
+        _ = Release(g.smooth)
+        _ = Release(g.sharp)
+        _ = Release(g.raster)
+        _ = Release(g.blend)
+        _ = Release(g.layout)
+        _ = Release(g.pixel)
+        _ = Release(g.vertex)
+        _ = Release(g.back)
+        _ = Release(g.swap)
+        _ = Release(g.context)
+        _ = Release(g.device)
+
+# ---------- Metal ----------
+
+where @macos():
+    priv type Gpu:
+        device: *MTLDevice
+        queue: *MTLCommandQueue
+        layer: *CAMetalLayer
+        pipeline: *MTLRenderPipelineState
+        smooth: *MTLSamplerState
+        sharp: *MTLSamplerState
+        textures: &list[GpuTexture] = heap([])
+        unified: bool # the CPU and the GPU share the memory, as on Apple silicon
+        pool: *NSAutoreleasePool
+        drawable: *CAMetalDrawable
+        commands: *MTLCommandBuffer
+        encoder: *MTLRenderCommandEncoder
+        last: *MTLCommandBuffer # of the frame before, which the CPU waits for before it writes a texture
+        width: i32
+        height: i32
+
+    priv type GpuTexture:
+        texture: *MTLTexture
+        width: i32
+        height: i32
+        smooth: bool
+        target: bool
+        live: bool
+
+    SHADER = "
+#include <metal_stdlib>
+using namespace metal;
+struct In { float2 position [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 color [[attribute(2)]]; float2 local [[attribute(3)]]; float4 shape [[attribute(4)]]; float soft [[attribute(5)]]; };
+struct Out { float4 position [[position]]; float2 uv; float4 color; float2 local; float4 shape; float soft; };
+vertex Out vertex_main(In i [[stage_in]], constant float2 &size [[buffer(1)]]) {
+    Out o;
+    o.position = float4(i.position.x / size.x * 2.0 - 1.0, 1.0 - i.position.y / size.y * 2.0, 0.0, 1.0);
+    o.uv = i.uv; o.color = i.color; o.local = i.local; o.shape = i.shape; o.soft = i.soft;
+    return o;
+}
+fragment float4 pixel_main(Out i [[stage_in]], texture2d<float> image [[texture(0)]], sampler taken [[sampler(0)]]) {
+    float4 c = i.color * image.sample(taken, i.uv);
+    if (i.shape.z >= 0.0) {
+        float2 q = abs(i.local) - i.shape.xy + i.shape.z;
+        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - i.shape.z;
+        if (i.shape.w > 0.0) { d = abs(d + i.shape.w * 0.5) - i.shape.w * 0.5; }
+        c.a *= i.soft > 0.0 ? 1.0 - smoothstep(-i.soft, i.soft, d) : saturate(0.5 - d);
+    }
+    return c;
+}
+"
+
+    priv func text_of(text: &strview) -> *NSString:
+        return stringWithCString_encoding(NSString, cstr(text), NSUTF8StringEncoding)
+
+    priv func gpu_open(g: *Gpu, w: Window, width: i32, height: i32) -> DrawError?:
+        pool := init(alloc(NSAutoreleasePool))
+        defer drain(pool)
+        g.device = MTLCreateSystemDefaultDevice()
+        if g.device as u64 == 0:
+            return DrawError{"cannot draw; no Metal device available"}
+        g.unified = hasUnifiedMemory(g.device)
+        g.queue = newCommandQueue(g.device)
+        g.layer = retain(layer(CAMetalLayer))
+        setDevice(g.layer, g.device)
+        setPixelFormat(g.layer, MTLPixelFormatBGRA8Unorm)
+        setDrawableSize(g.layer, CGSize{f64(width), f64(height)})
+        (objc_msgSend as extern func(*CAMetalLayer, SEL, f64))(g.layer, sel_registerName("setContentsScale:"), scale(w)) # its pixels are the pixels of the screen
+        view := native(w).view
+        setWantsLayer(view, true)
+        setLayer(view, g.layer as *CALayer)
+        g.width = width
+        g.height = height
+        failed := 0 as *NSError
+        library := newLibraryWithSource_options_error(g.device, text_of(SHADER), 0 as *MTLCompileOptions, ptr(failed))
+        if library as u64 == 0:
+            return DrawError{"cannot draw; Metal failed to compile the shader"}
+        defer release(library)
+        vertex := newFunctionWithName(library, text_of("vertex_main"))
+        pixel := newFunctionWithName(library, text_of("pixel_main"))
+        desc := init(alloc(MTLRenderPipelineDescriptor))
+        defer release(desc)
+        setVertexFunction(desc, vertex)
+        setFragmentFunction(desc, pixel)
+        release(vertex)
+        release(pixel)
+        color := objectAtIndexedSubscript(colorAttachments(desc), 0)
+        setPixelFormat(color, MTLPixelFormatBGRA8Unorm)
+        setBlendingEnabled(color, true)
+        setSourceRGBBlendFactor(color, MTLBlendFactorSourceAlpha)
+        setDestinationRGBBlendFactor(color, MTLBlendFactorOneMinusSourceAlpha)
+        setSourceAlphaBlendFactor(color, MTLBlendFactorOne)
+        setDestinationAlphaBlendFactor(color, MTLBlendFactorOneMinusSourceAlpha)
+        vertices := vertexDescriptor(MTLVertexDescriptor)
+        formats: array[MTLVertexFormat, 6] = [MTLVertexFormatFloat2, MTLVertexFormatFloat2, MTLVertexFormatUChar4Normalized, MTLVertexFormatFloat2, MTLVertexFormatFloat4, MTLVertexFormatFloat]
+        offsets: array[u64, 6] = [0, 8, 16, 20, 28, 44]
+        for k in 0..6:
+            attribute := objectAtIndexedSubscript(attributes(vertices), u64(k))
+            setFormat(attribute, formats[k])
+            setOffset(attribute, offsets[k])
+            setBufferIndex(attribute, 0)
+        setStride(objectAtIndexedSubscript(layouts(vertices), 0), @sizeof(Vertex))
+        setVertexDescriptor(desc, vertices)
+        g.pipeline = newRenderPipelineStateWithDescriptor_error(g.device, desc, ptr(failed))
+        if g.pipeline as u64 == 0:
+            return DrawError{"cannot draw; Metal failed to create the pipeline"}
+        for smooth in [true, false]:
+            sampler := init(alloc(MTLSamplerDescriptor))
+            filter: MTLSamplerMinMagFilter = MTLSamplerMinMagFilterLinear if smooth else MTLSamplerMinMagFilterNearest
+            setMinFilter(sampler, filter)
+            setMagFilter(sampler, filter)
+            setSAddressMode(sampler, MTLSamplerAddressModeClampToEdge)
+            setTAddressMode(sampler, MTLSamplerAddressModeClampToEdge)
+            made := newSamplerStateWithDescriptor(g.device, sampler)
+            release(sampler)
+            if smooth:
+                g.smooth = made
+            else:
+                g.sharp = made
+        return null
+
+    # the GPU is done with the frame before, so the CPU can write what it reads
+    priv func settled(g: *Gpu):
+        if g.last as u64 != 0:
+            waitUntilCompleted(g.last)
+
+    priv func gpu_texture(g: *Gpu, width: i32, height: i32, pixels: *u8, target: bool, smooth: bool) -> i32:
+        format: MTLPixelFormat = MTLPixelFormatBGRA8Unorm if target else MTLPixelFormatRGBA8Unorm # a target is drawn into with the pipeline of the window
+        desc := texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLTextureDescriptor, format, u64(width), u64(height), false)
+        usage: MTLTextureUsage = MTLTextureUsageShaderRead
+        if target:
+            usage = MTLTextureUsageShaderRead or MTLTextureUsageRenderTarget
+        setUsage(desc, usage)
+        setStorageMode(desc, MTLStorageModeShared if g.unified else MTLStorageModeManaged)
+        t := GpuTexture{texture = newTextureWithDescriptor(g.device, desc), width = width, height = height, smooth = smooth, target = target, live = true}
+        given := pixels as *bytes
+        if pixels as u64 == 0: # starts transparent
+            given = calloc(i64(width) * i64(height), 4)
+        replaceRegion_mipmapLevel_withBytes_bytesPerRow(t.texture, MTLRegion{MTLOrigin{0, 0, 0}, MTLSize{u64(width), u64(height), 1}}, 0, given, u64(width) * 4)
+        if pixels as u64 == 0:
+            free(given)
+        for k, old in g.textures:
+            if not old.live:
+                g.textures[k] = t
+                return i32(k)
+        append(g.textures, t)
+        return i32(g.textures.len - 1)
+
+    priv func gpu_update(g: *Gpu, slot: i32, x: i32, y: i32, width: i32, height: i32, pixels: *u8):
+        settled(g)
+        region := MTLRegion{MTLOrigin{u64(x), u64(y), 0}, MTLSize{u64(width), u64(height), 1}}
+        replaceRegion_mipmapLevel_withBytes_bytesPerRow(g.textures[slot].texture, region, 0, pixels as *bytes, u64(width) * 4)
+
+    priv func gpu_read(g: *Gpu, slot: i32, into: *u8):
+        settled(g)
+        t := g.textures[slot]
+        if not g.unified: # the copy that the CPU sees comes back from the GPU
+            pool := init(alloc(NSAutoreleasePool))
+            commands := commandBuffer(g.queue)
+            copier := blitCommandEncoder(commands)
+            synchronizeResource(copier, t.texture as *MTLResource)
+            endEncoding(copier)
+            commit(commands)
+            waitUntilCompleted(commands)
+            drain(pool)
+        region := MTLRegion{MTLOrigin{0, 0, 0}, MTLSize{u64(t.width), u64(t.height), 1}}
+        getBytes_bytesPerRow_fromRegion_mipmapLevel(t.texture, into as *bytes, u64(t.width) * 4, region, 0)
+        if t.target:
+            for k in 0..i64(t.width) * i64(t.height):
+                at := into as *bytes + k * 4
+                blue := (at as *u8).*
+                (at as *u8).* = ((at + 2) as *u8).*
+                ((at + 2) as *u8).* = blue
+
+    priv func gpu_free(g: *Gpu, slot: i32):
+        settled(g)
+        release(g.textures[slot].texture)
+        g.textures[slot].live = false
+
+    priv func gpu_resize(g: *Gpu, width: i32, height: i32):
+        g.width = width
+        g.height = height
+        if width > 0 and height > 0:
+            setDrawableSize(g.layer, CGSize{f64(width), f64(height)})
+
+    priv func gpu_begin(g: *Gpu) -> bool:
+        if g.width == 0 or g.height == 0:
+            return false
+        settled(g)
+        g.pool = init(alloc(NSAutoreleasePool))
+        drawable := nextDrawable(g.layer)
+        if drawable as u64 == 0:
+            drain(g.pool)
+            return false
+        g.drawable = retain(drawable)
+        g.commands = retain(commandBuffer(g.queue))
+        return true
+
+    priv func gpu_sync(g: *Gpu):
+        commit(g.commands)
+        waitUntilCompleted(g.commands)
+        release(g.commands)
+        g.commands = retain(commandBuffer(g.queue))
+
+    priv func gpu_pass(g: *Gpu, slot: i32, clear: bool, color: Color):
+        into := texture(g.drawable)
+        width := g.width
+        height := g.height
+        if slot >= 0:
+            into = g.textures[slot].texture
+            width = g.textures[slot].width
+            height = g.textures[slot].height
+        frame := renderPassDescriptor(MTLRenderPassDescriptor)
+        attachment := objectAtIndexedSubscript(colorAttachments(frame), 0)
+        setTexture(attachment, into)
+        setLoadAction(attachment, MTLLoadActionClear if clear else MTLLoadActionLoad)
+        setStoreAction(attachment, MTLStoreActionStore)
+        setClearColor(attachment, MTLClearColor{f64(color.r) / 255.0, f64(color.g) / 255.0, f64(color.b) / 255.0, f64(color.a) / 255.0})
+        g.encoder = renderCommandEncoderWithDescriptor(g.commands, frame)
+        setRenderPipelineState(g.encoder, g.pipeline)
+        setViewport(g.encoder, MTLViewport{0.0, 0.0, f64(width), f64(height), 0.0, 1.0})
+        size: array[f32, 2] = [f32(width), f32(height)]
+        setVertexBytes_length_atIndex(g.encoder, ptr(size[0]) as *bytes, 8, 1)
+
+    priv func gpu_draw(g: *Gpu, vertices: *Vertex, count: i64, texture: i32, clip: Clip, width: i32, height: i32):
+        buffer := newBufferWithBytes_length_options(g.device, vertices as *bytes, u64(count * @sizeof(Vertex)), MTLResourceStorageModeShared)
+        setVertexBuffer_offset_atIndex(g.encoder, buffer, 0, 0)
+        release(buffer) # the command buffer keeps it until the GPU is done
+        t := g.textures[texture]
+        setFragmentTexture_atIndex(g.encoder, t.texture, 0)
+        setFragmentSamplerState_atIndex(g.encoder, g.smooth if t.smooth else g.sharp, 0)
+        setScissorRect(g.encoder, MTLScissorRect{u64(clip.x), u64(clip.y), u64(clip.width), u64(clip.height)})
+        drawPrimitives_vertexStart_vertexCount(g.encoder, MTLPrimitiveTypeTriangle, 0, u64(count))
+
+    priv func gpu_end_pass(g: *Gpu):
+        endEncoding(g.encoder)
+
+    priv func gpu_present(g: *Gpu):
+        presentDrawable(g.commands, g.drawable as *MTLDrawable)
+        commit(g.commands)
+        release(g.drawable)
+        if g.last as u64 != 0:
+            release(g.last)
+        g.last = g.commands
+        drain(g.pool)
+
+    priv func gpu_drop(g: *Gpu):
+        free(g.textures)
+
+    priv func gpu_close(g: *Gpu):
+        settled(g)
+        if g.last as u64 != 0:
+            release(g.last)
+        for k in 0..g.textures.len:
+            if g.textures[k].live:
+                gpu_free(g, i32(k))
+        gpu_drop(g)
+        release(g.smooth)
+        release(g.sharp)
+        release(g.pipeline)
+        release(g.queue)
+        release(g.layer)
+        release(g.device)

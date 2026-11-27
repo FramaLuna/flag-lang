@@ -420,6 +420,8 @@ class Generator:
 
     def emit_typedef(self, decl):
         name = self.flag_name(decl.spelling)
+        if decl.spelling in self.external: # another module declares it
+            return
         under = decl.underlying_typedef_type
         try:
             text = self.flag_type(under)

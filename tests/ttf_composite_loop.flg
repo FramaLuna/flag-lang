@@ -1,0 +1,34 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+GLYF = 55508
+LOCA = 652968
+LAST = 6252 # the last glyph, whose outline can move to the end of the file
+
+func add(s: *&str, value: i64, size: i64):
+    for k in 0..size:
+        add_byte(s, u8(value >> (8 * (size - 1 - k)) and 0xff))
+
+func put(s: *&str, at: i64, value: i64, size: i64):
+    for k in 0..size:
+        s[at + k] = u8(value >> (8 * (size - 1 - k)) and 0xff)
+
+func main():
+    copy: &str = heap(FONT)
+    defer free(copy)
+    start := copy.len - GLYF
+    add(copy, -1, 2)
+    add(copy, 0, 8)
+    for value in [0x23, 82, 0, 0, 0x03, LAST, 150, 0]: # o, then the glyph itself 150 units to the right
+        add(copy, value, 2)
+    put(copy, LOCA + 4 * LAST, start, 4)
+    put(copy, LOCA + 4 * LAST + 4, copy.len - GLYF, 4)
+    put(copy, 12 + 16 * 10 + 12, copy.len - GLYF, 4)
+    font := load_font(copy)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    print(render_glyph(font, LAST, scale_for(font, 16.0), bitmap))

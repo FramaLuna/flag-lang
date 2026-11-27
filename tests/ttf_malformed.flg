@@ -1,0 +1,69 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+CMAP = 48896
+GLYF = 55508
+HEAD = 611512
+HHEA = 611568
+KERN = 636588
+LOCA = 652968
+
+func put(s: *&str, at: i64, value: i64, size: i64):
+    for k in 0..size:
+        s[at + k] = u8(value >> (8 * (size - 1 - k)) and 0xff)
+
+func check(data: &strview):
+    font := load_font(data)
+    if font is FontError:
+        print(font)
+        return
+    print("loaded")
+    free(font)
+
+func main():
+    check("")
+    check("this is not a font")
+    check(FONT[:11])
+    check(FONT[:400])
+    check(FONT[:650000])
+    check(FONT[:700000])
+    copy: &str = heap(FONT)
+    defer free(copy)
+    put(copy, 0, 0x4f54_544f, 4)
+    check(copy)
+    copy = FONT
+    put(copy, 12 + 16 * 11 + 12, 20, 4)
+    check(copy)
+    copy = FONT
+    put(copy, HEAD + 50, 2, 2)
+    check(copy)
+    copy = FONT
+    put(copy, HHEA + 4, -600, 2)
+    check(copy)
+    copy = FONT
+    put(copy, HHEA + 34, 0, 2)
+    check(copy)
+    copy = FONT
+    put(copy, LOCA + 4 * 42, 0x7fff_ffff, 4)
+    check(copy)
+    copy = FONT
+    copy[12 + 16 * 10 + 3] = 'p'
+    check(copy)
+    copy = FONT
+    put(copy, CMAP + 2, 0, 2)
+    check(copy)
+    copy = FONT
+    put(copy, KERN + 10, 9999, 2)
+    check(copy)
+    copy = FONT
+    for k in 0..200:
+        copy[GLYF + 2500 + k] = 0xff # inside the outline of A
+    font := load_font(copy)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    g := render_glyph(font, glyph_of(font, 'A'), scale_for(font, 16.0), bitmap)
+    print("a damaged glyph renders ", g.width * g.height == bitmap.len)

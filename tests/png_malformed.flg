@@ -1,0 +1,25 @@
+use png
+
+RGB8 = @embed("png_images/rgb8.png")
+
+func main():
+    show("empty", "")
+    show("text", "not a png at all")
+    show("cut inside IDAT", RGB8[:60])
+    show("cut before IEND", RGB8[:RGB8.len - 12])
+    flipped: &str = heap(RGB8)
+    defer free(flipped)
+    flipped[50] = flipped[50] xor 1
+    show("one bit flipped", flipped)
+    show("bad_adler", @embed("png_images/bad_adler.png"))
+    show("bad_filter", @embed("png_images/bad_filter.png"))
+    show("bad_palette_index", @embed("png_images/bad_palette_index.png"))
+    show("unknown_critical", @embed("png_images/unknown_critical.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    print(name, ": decoded")
+    free(image)

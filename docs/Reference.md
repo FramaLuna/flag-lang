@@ -1476,10 +1476,10 @@ All Apple Silicon Macs support ARMv8.1 atomics, while Linux `arm64` targets incl
   - Built-in names `ptr`, `print`, and `eprint` cannot be declared (`print is built into the language and cannot be redeclared`), and `func hash` is reserved for `operator hash`.
 - **Shadowing `core` and standard library modules**:
   - User global types and constants shadow `core`'s (`File`, `Integer`, `FsError`, `stdout`, etc.), and so does a user function with the same parameters as a `core` one (one with other parameters is just another overload), in user code while `core` and compiler checks continue using `core`'s own definitions (referred to as `core.File` in diagnostics).
-  - A user module with the same name as a standard library module (e.g., `module math`) shadows it in user files, while standard library files (such as `raylib.flg`) continue using the standard library module (called `lib$math` in diagnostics). User files cannot reach the shadowed library module (`sqrt is in standard library module math, which is shadowed by this program's own module math`).
+  - A user module with the same name as a standard library module (e.g., `module math`) shadows it in user files, while standard library files (such as `draw.flg`) continue using the standard library module (called `lib$math` in diagnostics). User files cannot reach the shadowed library module (`sqrt is in standard library module math, which is shadowed by this program's own module math`).
 - **Missing `use` hints**: referencing a name from an unimported module (including unloaded standard library modules) names the module: `T belongs to module a; add: use a`, `one belongs to module a; access it through its alias: m.one`, `sqrt belongs to module math; add: use math`. `priv` names are not revealed.
 
-The standard library modules are `fs`, `os`, `json`, `net`, `math`, `utf8`, `bits`, `ring`, `raylib`, `window`, plus the system and GPU bindings `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa` (see [Library](Library.md)).
+The standard library modules are `fs`, `os`, `json`, `png`, `net`, `math`, `utf8`, `ttf`, `bits`, `ring`, `draw`, `window`, plus the system and GPU bindings `vulkan`, `d3d11`, `metal`, `objc`, `x11`, `win32`, and `cocoa` (see [Library](Library.md)).
 
 ## Memory
 
@@ -2115,7 +2115,6 @@ CC="zig cc -target x86_64-windows-gnu" flagc -target windows-x86_64 game.flg -o 
 - `net` uses Winsock; listening on a non-loopback address (other than `127.0.0.1`) may trigger a Windows Firewall prompt on first run.
 - Any MinGW-w64 GCC works as `cc`, including the one in Strawberry Perl, and programs keep ASLR.
 - A Flag function keeps the registers that the x64 convention of Windows has a callee keep, `xmm6` to `xmm15` included, so a callback that C calls leaves the floats of the C code around it alone.
-- Only Linux `x86_64` ships a bundled `libraylib.a`; on Windows and macOS, pass the folder of your own after `-cc`: `flagc game.flg -cc -Lfolder`.
 - The Windows console displays text using its active code page; run `chcp 65001` for UTF-8 output.
 
 ### WebAssembly

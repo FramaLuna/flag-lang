@@ -1,0 +1,58 @@
+use draw
+use png
+
+func at(image: Image, x: i32, y: i32) -> Color:
+    k := (i64(y) * i64(image.width) + i64(x)) * 4
+    return Color{image.pixels[k], image.pixels[k + 1], image.pixels[k + 2], image.pixels[k + 3]}
+
+func expect(image: Image, x: i32, y: i32, wanted: Color, what: &strview):
+    got := at(image, x, y)
+    if got != wanted:
+        print(what, ": ", got, " instead of ", wanted)
+
+func main() where @riscv64(): # the cross compiler that builds the tests for riscv64 has no libX11 to link with
+    pass
+
+func main() where not @riscv64():
+    s := open_screen("draw test", 160, 120)
+    if s is DrawError: # no display or no GPU on this machine
+        return
+    shapes := new_target(s, 64, 64)
+    words := new_target(s, 128, 48)
+    font := default_font(s, 32.0)
+    if frame(s):
+        begin_target(s, shapes)
+        fill_rect(s, 0.0, 0.0, 64.0, 32.0, RED)
+        fill_circle(s, 32.0, 48.0, 10.0, BLUE)
+        stroke_rect(s, 0.0, 0.0, 64.0, 64.0, 2.0, WHITE)
+        end_target(s)
+        begin_target(s, words)
+        draw_text(s, font, "Flag", 4.0, 4.0, WHITE)
+        end_target(s)
+        clear(s, GRAY)
+        draw_texture(s, shapes.texture, 10.0, 10.0, WHITE)
+    image := read_target(s, shapes)
+    expect(image, 32, 10, RED, "the rectangle")
+    expect(image, 32, 48, BLUE, "the middle of the circle")
+    expect(image, 0, 40, WHITE, "the border")
+    expect(image, 10, 60, TRANSPARENT, "outside the shapes")
+    copy := decode_png(encode_png(image))
+    if copy is PngError:
+        print("the png of the target does not read back: ", copy.reason)
+    elif copy.pixels != image.pixels:
+        print("the png of the target reads back other pixels")
+    else:
+        png.free(copy)
+    png.free(image)
+    text := read_target(s, words)
+    inked := 0
+    for k in 0..i64(text.width) * i64(text.height):
+        if text.pixels[k * 4 + 3] > 128:
+            inked += 1
+    if inked < 100:
+        print("the text left ", inked, " pixels")
+    width, height := measure_text(s, font, "Flag")
+    if width < 50.0 or width > 90.0 or height < 30.0 or height > 45.0:
+        print("Flag at 32 pixels measures ", width, " by ", height)
+    png.free(text)
+    close_screen(s)

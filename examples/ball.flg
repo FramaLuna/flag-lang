@@ -1,39 +1,45 @@
-use raylib
+use draw
 use math
+use window
 
 func main() -> i32:
-    InitWindow(800, 450, "flag + raylib")
-    SetTargetFPS(60)
-    position := Vector2{400, 225}
-    speed := Vector2{240, 180}
-    radius: f32 = 20
-    color := MAROON
+    s := open_screen("flag + draw", 800, 450)
+    if s is DrawError:
+        eprint(s)
+        return 1
+    defer close_screen(s)
+    font := default_font(s, 20.0)
+    x := 400.0
+    y := 225.0
+    speed_x := 240.0
+    speed_y := 180.0
+    radius := 20.0
+    color := Color{190, 33, 55, 255}
     bounces := 0
     label: &str = heap("")
     defer free(label)
-    while not WindowShouldClose():
-        dt := GetFrameTime()
-        if IsMouseButtonDown(MOUSE_BUTTON_LEFT):
-            speed = speed + (GetMousePosition() - position) * (4 * dt)
-        if IsKeyPressed(KEY_SPACE):
-            color = ColorFromHSV(f32(GetRandomValue(0, 360)), 0.8, 0.9)
-        position = position + speed * dt
-        if position.x < radius or position.x > 800 - radius:
-            speed.x = -speed.x
+    while frame(s):
+        dt := frame_time(s)
+        if mouse_down(s, MouseLeft):
+            mx, my := mouse(s)
+            speed_x += (mx - x) * 4.0 * dt
+            speed_y += (my - y) * 4.0 * dt
+        if key_pressed(s, KeySpace):
+            color = Color{u8(random(0, 255)), u8(random(0, 255)), u8(random(0, 255)), 255}
+        x += speed_x * dt
+        y += speed_y * dt
+        if x < radius or x > 800.0 - radius:
+            speed_x = -speed_x
             bounces += 1
-        if position.y < radius or position.y > 450 - radius:
-            speed.y = -speed.y
+        if y < radius or y > 450.0 - radius:
+            speed_y = -speed_y
             bounces += 1
-        position.x = clamp(position.x, radius, 800 - radius)
-        position.y = clamp(position.y, radius, 450 - radius)
-        BeginDrawing()
-        ClearBackground(RAYWHITE)
-        DrawCircleV(position, radius, color)
-        DrawText("hold the mouse to pull the ball, space recolors it", 10, 10, 20, GRAY)
+        x = clamp(x, radius, 800.0 - radius)
+        y = clamp(y, radius, 450.0 - radius)
+        clear(s, Color{245, 245, 245, 255})
+        fill_circle(s, x, y, radius, color)
+        draw_text(s, font, "hold the mouse to pull the ball, space recolors it", 10.0, 10.0, GRAY)
         label.len = 0
         label += "bounces: " + bounces
-        DrawText(c_text(label), 10, 40, 20, DARKGRAY)
-        DrawFPS(10, 420)
-        EndDrawing()
-    CloseWindow()
+        draw_text(s, font, label, 10.0, 40.0, Color{80, 80, 80, 255})
     return 0

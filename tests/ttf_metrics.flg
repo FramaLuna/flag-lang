@@ -1,0 +1,21 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+
+func main():
+    font := load_font(FONT)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    print(metrics(font, 1.0))
+    print(scale_for(font, 2384.0))
+    scale := scale_for(font, 16.0)
+    ascent, descent, gap := metrics(font, scale)
+    print(fixed(ascent, 4), " ", fixed(descent, 4), " ", fixed(gap, 4), " ", fixed(ascent - descent, 4))
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    for c in ["A", "o", "g", "j", "1"]:
+        g := render_glyph(font, glyph_of(font, u32(c[0])), scale, bitmap)
+        print(c, " ", g)
+    print(bitmap.len)

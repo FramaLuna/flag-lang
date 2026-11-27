@@ -1,0 +1,49 @@
+use ttf
+
+FONT = @embed("../lib/dejavu_sans.ttf")
+GLYF = 55508
+LOCA = 652968
+LAST = 6252 # the last glyph, whose outline can move to the end of the file
+
+func add(s: *&str, value: i64, size: i64):
+    for k in 0..size:
+        add_byte(s, u8(value >> (8 * (size - 1 - k)) and 0xff))
+
+func put(s: *&str, at: i64, value: i64, size: i64):
+    for k in 0..size:
+        s[at + k] = u8(value >> (8 * (size - 1 - k)) and 0xff)
+
+func main():
+    copy: &str = heap(FONT)
+    defer free(copy)
+    start := copy.len - GLYF
+    add(copy, -1, 2)
+    add(copy, 0, 8)
+    for value in [0x2b, 82, 0, 0, 0x2000]: # o at half size
+        add(copy, value, 2)
+    for value in [0x63, 82, 1300, 0, 0x4000, 0x2000]: # o at half height, to the right
+        add(copy, value, 2)
+    for value in [0xa3, 79, 4200, 0, 0, 0x4000, 0xc000, 0]: # l turned a quarter, lying down
+        add(copy, value, 2)
+    for value in [0x80b, 82, 9000, 1200, 0x2000]: # o at half size, and its offset too
+        add(copy, value, 2)
+    put(copy, LOCA + 4 * LAST, start, 4)
+    put(copy, LOCA + 4 * LAST + 4, copy.len - GLYF, 4)
+    put(copy, 12 + 16 * 10 + 12, copy.len - GLYF, 4)
+    font := load_font(copy)
+    if font is FontError:
+        print(font)
+        return
+    defer free(font)
+    bitmap: &list[u8] = heap([])
+    defer free(bitmap)
+    g := render_glyph(font, LAST, scale_for(font, 24.0), bitmap)
+    print(g)
+    for y in 0..g.height:
+        with scratch():
+            line: &str = heap("|")
+            defer free(line)
+            for x in 0..g.width:
+                v := i64(bitmap[y * g.width + x]) * 10 / 256
+                line += " .:-=+*#%@"[v:v + 1]
+            print(line, "|")

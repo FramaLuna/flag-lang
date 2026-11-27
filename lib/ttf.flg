@@ -1,0 +1,431 @@
+module ttf
+use math
+
+priv ON_CURVE = 1
+priv X_SHORT = 2 # Y_SHORT is the bit above
+priv REPEAT = 8
+priv X_SAME = 16 # Y_SAME is the bit above
+
+priv WORDS = 1
+priv OFFSETS = 2 # else point numbers to match, which ttf takes as no offset
+priv SCALE = 8
+priv MORE = 0x20
+priv XY_SCALE = 0x40
+priv TWO_BY_TWO = 0x80
+priv SCALED_OFFSETS = 0x800
+
+type Font:
+    data: &str
+    glyphs: i64
+    ascent: i64
+    descent: i64
+    gap: i64
+    advances: i64 # the glyphs with an advance of their own in hmtx; the rest take the last one
+    hmtx: i64
+    loca: i64
+    long: bool # loca holds offsets of 4 bytes, not halves of 2
+    glyf: i64
+    cmap: i64 # the subtable that glyph_of reads, of format 4 or 12
+    kern: i64 # the first of the pairs, sorted by left and right glyph
+    pairs: i64
+
+type error FontError:
+    reason: &strview
+
+operator +=(s: *&str, e: FontError):
+    s.* += e.reason
+
+type Glyph:
+    width: i32
+    height: i32
+    left: i32 # from the pen to the left edge of the bitmap
+    top: i32 # from the baseline up to the top row of the bitmap
+    advance: f32
+
+priv type Point:
+    x: f32
+    y: f32
+    flag: u8
+
+priv type Edge:
+    from: Point
+    to: Point
+
+priv type Matrix: # x' = a * x + c * y + e and y' = b * x + d * y + f, as in glyf
+    a: f32
+    b: f32
+    c: f32
+    d: f32
+    e: f32
+    f: f32
+
+func load_font(data: &strview) -> Font|FontError:
+    b := items(data)
+    switch read(b, 0, 4):
+    case 0x0001_0000, 0x7472_7565: # 'true' in old Apple fonts
+        pass
+    case 0x4f54_544f:
+        return FontError{"cannot read font; CFF outlines (OpenType .otf) are not supported, only TrueType glyf outlines"}
+    case:
+        return FontError{"cannot read font; the file does not start with a TrueType header"}
+    if 12 + 16 * read(b, 4, 2) > b.len:
+        return FontError{"cannot read font; the file ends inside its table directory"}
+    head, _ := try table(b, "head", 54)
+    hhea, _ := try table(b, "hhea", 36)
+    maxp, _ := try table(b, "maxp", 6)
+    glyphs := read(b, maxp + 4, 2)
+    ascent := i16(read(b, hhea + 4, 2))
+    descent := i16(read(b, hhea + 6, 2))
+    if ascent <= descent:
+        return FontError{"cannot read font; table hhea ascent " + ascent + " is not greater than descent " + descent}
+    advances := read(b, hhea + 34, 2)
+    if advances == 0 or advances > glyphs:
+        return FontError{"cannot read font; table hhea has " + advances + " advances for " + glyphs + " glyphs, expected 1 to " + glyphs}
+    hmtx, _ := try table(b, "hmtx", 2 * (glyphs + advances))
+    loca_format := read(b, head + 50, 2)
+    if loca_format > 1:
+        return FontError{"cannot read font; table head has invalid loca format " + loca_format + " (expected 0 or 1)"}
+    long := loca_format == 1
+    loca, _ := try table(b, "loca", (glyphs + 1) * (2 + 2 * loca_format))
+    glyf, glyf_size := try table(b, "glyf", glyph_start(b, loca, long, glyphs))
+    for k in 0..glyphs:
+        if glyph_start(b, loca, long, k + 1) > glyf_size:
+            return FontError{"cannot read font; table glyf ends inside glyph " + k}
+    cmap, cmap_size := try table(b, "cmap", 4)
+    records := read(b, cmap + 2, 2)
+    if 4 + 8 * records > cmap_size:
+        return FontError{"cannot read font; table cmap ends inside its " + records + " encodings"}
+    subtable := 0
+    best := 0
+    for k in 0..records:
+        record := cmap + 4 + 8 * k
+        platform := read(b, record, 2)
+        encoding := read(b, record + 2, 2)
+        at := cmap + read(b, record + 4, 4)
+        format := read(b, at, 2)
+        unicode := platform == 0 or platform == 3 and (encoding == 1 or encoding == 10)
+        if format == 4 or format == 12:
+            rank := 1 + (2 if unicode else 0) + (1 if format == 12 else 0)
+            if rank > best:
+                best = rank
+                subtable = at
+    if best == 0:
+        return FontError{"cannot read font; table cmap has no format 4 or 12 subtable"}
+    format := read(b, subtable, 2)
+    need := 16 + 4 * read(b, subtable + 6, 2)
+    if format == 12:
+        need = 16 + 12 * read(b, subtable + 12, 4)
+    if subtable + need > cmap + cmap_size:
+        return FontError{"cannot read font; table cmap ends inside its subtable of format " + format}
+    kern, kern_size := try table(b, "kern", 0)
+    pairs := 0
+    if kern_size >= 18 and read(b, kern, 2) == 0 and read(b, kern + 2, 2) > 0 and read(b, kern + 8, 2) == 1: # a first subtable of horizontal pairs
+        pairs = read(b, kern + 10, 2)
+        if 18 + 6 * pairs > kern_size:
+            return FontError{"cannot read font; table kern ends inside its " + pairs + " pairs"}
+    return Font{heap(data), glyphs, ascent, descent, i16(read(b, hhea + 8, 2)), advances, hmtx, loca, long, glyf, subtable, kern + 18, pairs}
+
+func free(font: Font):
+    free(font.data)
+
+func scale_for(font: Font, pixels: f32) -> f32:
+    return pixels / f32(font.ascent - font.descent)
+
+func metrics(font: Font, scale: f32) -> (f32, f32, f32):
+    return f32(font.ascent) * scale, f32(font.descent) * scale, f32(font.gap) * scale
+
+func glyph_of(font: Font, code: u32) -> i32:
+    b := items(font.data)
+    at := font.cmap
+    glyph: i64 = 0
+    if read(b, at, 2) == 12:
+        groups := read(b, at + 12, 4)
+        k := search(b, at + 20, 12, 4, groups, code)
+        group := at + 16 + 12 * k
+        if k < groups and read(b, group, 4) <= code:
+            glyph = read(b, group + 8, 4) + code - read(b, group, 4)
+    else:
+        segments := read(b, at + 6, 2) / 2
+        ends := at + 14
+        starts := ends + 2 * segments + 2
+        deltas := starts + 2 * segments
+        ranges := deltas + 2 * segments
+        k := search(b, ends, 2, 2, segments, code)
+        first := read(b, starts + 2 * k, 2)
+        if k < segments and first <= code:
+            delta := read(b, deltas + 2 * k, 2)
+            offset := read(b, ranges + 2 * k, 2)
+            if offset == 0:
+                glyph = (code + delta) and 0xffff
+            else:
+                glyph = read(b, ranges + 2 * k + offset + 2 * (code - first), 2)
+                if glyph != 0:
+                    glyph = (glyph + delta) and 0xffff
+    if glyph >= font.glyphs:
+        return 0
+    return i32(glyph)
+
+func kerning(font: Font, left: i32, right: i32, scale: f32) -> f32:
+    b := items(font.data)
+    key := i64(left) << 16 or right
+    k := search(b, font.kern, 6, 4, font.pairs, key)
+    if k == font.pairs or read(b, font.kern + 6 * k, 4) != key:
+        return 0.0
+    return f32(i16(read(b, font.kern + 6 * k + 4, 2))) * scale
+
+func render_glyph(font: Font, glyph: i32, scale: f32, into: *&list[u8]) -> Glyph:
+    if glyph < 0 or glyph >= font.glyphs:
+        return Glyph{}
+    advance := f32(read(items(font.data), font.hmtx + 4 * min(i64(glyph), font.advances - 1), 2)) * scale
+    edges: &list[Edge] = heap([])
+    defer free(edges)
+    parts := 64 # the glyphs a composite may draw, so one that includes itself ends
+    outline(font, glyph, Matrix{scale, 0.0, 0.0, -scale, 0.0, 0.0}, edges, parts)
+    if edges.len == 0:
+        return Glyph{advance = advance}
+    left := edges[0].from.x
+    right := left
+    top := edges[0].from.y
+    bottom := top
+    for e in edges: # every edge ends where another starts
+        left = min(left, e.from.x)
+        right = max(right, e.from.x)
+        top = min(top, e.from.y)
+        bottom = max(bottom, e.from.y)
+    left = floor(left)
+    top = floor(top)
+    width := i64(ceil(right) - left)
+    height := i64(ceil(bottom) - top)
+    cells: &list[f32] = heap([])
+    defer free(cells)
+    reserve(cells, width * height + 2)
+    for k in 0..width * height + 2: # an edge on the right border writes the two cells after its row
+        append(cells, 0.0)
+    for e in edges: # adds the area right of the edge to each cell, as font-rs does, so a running sum gives the coverage
+        a := Point{e.from.x - left, e.from.y - top, 0}
+        z := Point{e.to.x - left, e.to.y - top, 0}
+        if a.y == z.y:
+            continue
+        direction: f32 = 1.0
+        if a.y > z.y:
+            a, z = z, a
+            direction = -1.0
+        slope := (z.x - a.x) / (z.y - a.y)
+        x := a.x
+        for y in i64(a.y)..i64(ceil(z.y)):
+            row := y * width
+            dy := min(f32(y + 1), z.y) - max(f32(y), a.y)
+            next := clamp(x + slope * dy, 0.0, f32(width))
+            d := dy * direction
+            x0 := min(x, next)
+            x1 := max(x, next)
+            i0 := i64(x0)
+            i1 := i64(ceil(x1))
+            if i1 <= i0 + 1:
+                middle := 0.5 * (x + next) - f32(i0)
+                cells[row + i0] += d - d * middle
+                cells[row + i0 + 1] += d * middle
+            else:
+                s := 1.0 / (x1 - x0)
+                f0 := x0 - f32(i0)
+                a0 := 0.5 * s * (1.0 - f0) * (1.0 - f0)
+                f1 := x1 - f32(i1) + 1.0
+                am := 0.5 * s * f1 * f1
+                cells[row + i0] += d * a0
+                if i1 == i0 + 2:
+                    cells[row + i0 + 1] += d * (1.0 - a0 - am)
+                else:
+                    a1 := s * (1.5 - f0)
+                    cells[row + i0 + 1] += d * (a1 - a0)
+                    for i in i0 + 2..i1 - 1:
+                        cells[row + i] += d * s
+                    a2 := a1 + f32(i1 - i0 - 3) * s
+                    cells[row + i1 - 1] += d * (1.0 - a2 - am)
+                cells[row + i1] += d * am
+            x = next
+    reserve(into, into.len + width * height)
+    area: f32 = 0.0
+    for k in 0..width * height:
+        area += cells[k]
+        append(into, u8(min(abs(area), 1.0) * 255.0 + 0.5))
+    return Glyph{i32(width), i32(height), i32(left), i32(-top), advance}
+
+priv func outline(font: Font, glyph: i64, m: Matrix, edges: *&list[Edge], parts: *i64):
+    parts.* -= 1
+    if parts.* < 0 or glyph >= font.glyphs:
+        return
+    b := items(font.data)
+    from := font.glyf + glyph_start(b, font.loca, font.long, glyph)
+    to := font.glyf + glyph_start(b, font.loca, font.long, glyph + 1)
+    if from + 10 > to:
+        return
+    contours: i64 = i16(read(b, from, 2))
+    g := b[from + 10:to]
+    if contours < 0:
+        at := 0
+        more := true
+        while more:
+            flags := read(g, at, 2)
+            part := read(g, at + 2, 2)
+            at += 4
+            t := Matrix{1.0, 0.0, 0.0, 1.0, 0.0, 0.0}
+            if (flags and WORDS) != 0:
+                t.e = f32(i16(read(g, at, 2)))
+                t.f = f32(i16(read(g, at + 2, 2)))
+                at += 4
+            else:
+                t.e = f32(i8(read(g, at, 1)))
+                t.f = f32(i8(read(g, at + 1, 1)))
+                at += 2
+            if (flags and OFFSETS) == 0:
+                t.e = 0.0
+                t.f = 0.0
+            if (flags and SCALE) != 0:
+                t.a = f2dot14(g, at)
+                t.d = t.a
+                at += 2
+            elif (flags and XY_SCALE) != 0:
+                t.a = f2dot14(g, at)
+                t.d = f2dot14(g, at + 2)
+                at += 4
+            elif (flags and TWO_BY_TWO) != 0:
+                t.a = f2dot14(g, at)
+                t.b = f2dot14(g, at + 2)
+                t.c = f2dot14(g, at + 4)
+                t.d = f2dot14(g, at + 6)
+                at += 8
+            if (flags and SCALED_OFFSETS) != 0:
+                t.e, t.f = t.a * t.e + t.c * t.f, t.b * t.e + t.d * t.f
+            n := Matrix{m.a * t.a + m.c * t.b, m.b * t.a + m.d * t.b, m.a * t.c + m.c * t.d, m.b * t.c + m.d * t.d, m.a * t.e + m.c * t.f + m.e, m.b * t.e + m.d * t.f + m.f}
+            outline(font, part, n, edges, parts)
+            more = (flags and MORE) != 0
+        return
+    if contours == 0:
+        return
+    count := read(g, 2 * contours - 2, 2) + 1
+    at := 2 * contours
+    at += 2 + read(g, at, 2)
+    points: &list[Point] = heap([])
+    defer free(points)
+    while points.len < count:
+        flag := u8(read(g, at, 1))
+        at += 1
+        times := 1
+        if (flag and REPEAT) != 0:
+            times += read(g, at, 1)
+            at += 1
+        while times > 0 and points.len < count:
+            append(points, Point{0.0, 0.0, flag})
+            times -= 1
+    for axis in 0..2:
+        short := u8(X_SHORT) << axis
+        same := u8(X_SAME) << axis
+        v := 0
+        for p in points:
+            if (p.flag and short) != 0:
+                step := read(g, at, 1)
+                at += 1
+                v += step if (p.flag and same) != 0 else -step
+            elif (p.flag and same) == 0:
+                v += i16(read(g, at, 2))
+                at += 2
+            if axis == 0:
+                p.x = f32(v)
+            else:
+                p.y = f32(v)
+    for p in points:
+        p.x, p.y = m.a * p.x + m.c * p.y + m.e, m.b * p.x + m.d * p.y + m.f
+    first := 0
+    for c in 0..contours:
+        last := min(read(g, 2 * c, 2), count - 1)
+        if last < first:
+            continue
+        begin := points[first]
+        visit := first
+        end := last
+        if on_curve(points[first]):
+            visit += 1
+        elif on_curve(points[last]):
+            begin = points[last]
+            end -= 1
+        else:
+            begin = mid(points[first], points[last])
+        pen := begin
+        control := begin
+        curved := false
+        for k in visit..end + 2: # the points and back to begin
+            p := begin if k > end else points[k]
+            if on_curve(p):
+                if not curved:
+                    control = mid(pen, p)
+                curve(edges, pen, control, p)
+                pen = p
+                curved = false
+            else:
+                if curved:
+                    between := mid(control, p)
+                    curve(edges, pen, control, between)
+                    pen = between
+                control = p
+                curved = true
+        first = last + 1
+
+priv func curve(edges: *&list[Edge], a: Point, b: Point, c: Point):
+    dx := a.x - 2.0 * b.x + c.x
+    dy := a.y - 2.0 * b.y + c.y
+    n := 1 + i64(sqrt(8.0 * sqrt(dx * dx + dy * dy))) # strays under 1/32 pixel from the curve
+    from := a
+    for k in 1..=n:
+        t := f32(k) / f32(n)
+        s := 1.0 - t
+        to := Point{s * s * a.x + 2.0 * s * t * b.x + t * t * c.x, s * s * a.y + 2.0 * s * t * b.y + t * t * c.y, ON_CURVE}
+        append(edges, Edge{from, to})
+        from = to
+
+priv func mid(a: Point, b: Point) -> Point:
+    return Point{(a.x + b.x) * 0.5, (a.y + b.y) * 0.5, ON_CURVE}
+
+priv func on_curve(p: Point) -> bool:
+    return (p.flag and ON_CURVE) != 0
+
+priv func f2dot14(g: &listview[u8], at: i64) -> f32:
+    return f32(i16(read(g, at, 2))) / 16384.0
+
+priv func table(b: &listview[u8], tag: &strview, need: i64) -> (i64, i64)|FontError:
+    at := 0
+    size := 0
+    for k in 0..read(b, 4, 2):
+        entry := 12 + 16 * k
+        if view(b[entry:entry + 4]) == tag:
+            at = read(b, entry + 8, 4)
+            size = read(b, entry + 12, 4)
+    if at + size > b.len:
+        return FontError{"cannot read font; table " + tag + " extends past the end of the file"}
+    if size == 0 and need > 0:
+        return FontError{"cannot read font; table " + tag + " is missing"}
+    if size < need:
+        return FontError{"cannot read font; table " + tag + " has " + size + " bytes, needs at least " + need}
+    return at, size
+
+priv func glyph_start(b: &listview[u8], loca: i64, long: bool, glyph: i64) -> i64:
+    if long:
+        return read(b, loca + 4 * glyph, 4)
+    return 2 * read(b, loca + 2 * glyph, 2)
+
+priv func search(b: &listview[u8], at: i64, stride: i64, size: i64, count: i64, key: i64) -> i64: # the first of count sorted entries not below key
+    low := 0
+    high := count
+    while low < high:
+        middle := (low + high) / 2
+        if read(b, at + stride * middle, size) < key:
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+priv func read(b: &listview[u8], at: i64, size: i64) -> i64: # big-endian, 0 past the end
+    n := 0
+    if at >= 0 and at + size <= b.len:
+        for k in at..at + size:
+            n = n << 8 or b[k]
+    return n

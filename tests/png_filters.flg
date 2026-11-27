@@ -1,0 +1,21 @@
+use png
+
+func main():
+    show("filter_none", @embed("png_images/filter_none.png"))
+    show("filter_sub", @embed("png_images/filter_sub.png"))
+    show("filter_up", @embed("png_images/filter_up.png"))
+    show("filter_average", @embed("png_images/filter_average.png"))
+    show("filter_paeth", @embed("png_images/filter_paeth.png"))
+    show("filter_mixed_gray2", @embed("png_images/filter_mixed_gray2.png"))
+    show("filter_mixed_rgb16", @embed("png_images/filter_mixed_rgb16.png"))
+
+func show(name: &strview, file: &strview):
+    image := decode_png(file)
+    if image is PngError:
+        print(name, ": ", image)
+        return
+    defer free(image)
+    hash: u32 = 0x811c_9dc5 # FNV-1a of the pixels
+    for b in image.pixels:
+        hash = (hash xor b) * 0x0100_0193
+    print(name, ": ", image.width, "x", image.height, " ", hex(hash, 8))
